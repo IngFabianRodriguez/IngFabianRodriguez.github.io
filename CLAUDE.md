@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Personal portfolio CV for **Héctor Fabián Rodríguez Acosta** — deployed via GitHub Pages at `IngFabianRodriguez.github.io`. The repo has two parts:
 
 1. **`index.html`** — single-file portfolio (HTML + CSS + JS, no build step)
-2. **`blog/`** — static blog auto-generated from Notion (#365DaysOfAI series)
+2. **`365daysofai/`** — static blog auto-generated from Notion (#365DaysOfAI series)
 
 ## Development
 
@@ -15,12 +15,13 @@ Personal portfolio CV for **Héctor Fabián Rodríguez Acosta** — deployed via
 # Portfolio: open directly in browser
 npx live-server .
 
-# Blog: sync articles from Notion
-export NOTION_TOKEN="your_token"
+# Blog: sync articles from Notion (NOTION_TOKEN already in ~/.bashrc)
 bash sync-blog.sh
 ```
 
 Deploy by pushing to `main`; GitHub Pages serves automatically.
+
+---
 
 ## Portfolio (`index.html`)
 
@@ -43,11 +44,14 @@ Dual dark/light theme via `:root` (dark default) and `[data-theme="light"]` over
 
 **Never use hardcoded colors.** Toggle persisted via `localStorage('theme')`.
 
+### Favicon
+`favicon.svg` — `</>` en teal `#64ffda` sobre fondo navy `#0a192f`. Consistente con el logo `<HFR />`.
+
 ### Navbar
 Single `.nav-actions` div holds theme toggle + hamburger — do NOT split them:
 
 ```html
-<ul class="nav-links"><!-- 6 anchor links only --></ul>
+<ul class="nav-links"><!-- 7 links --></ul>
 <div class="nav-actions">
   <button class="theme-toggle" id="themeToggle"><i class="fas fa-sun" id="themeIcon"></i></button>
   <button class="hamburger" id="hamburger"><span></span><span></span><span></span></button>
@@ -55,7 +59,18 @@ Single `.nav-actions` div holds theme toggle + hamburger — do NOT split them:
 ```
 
 ### Sections (in order)
-`#hero` → `#about` → `#experience` → `#education` → `#skills` → `#certs` → `#contact`
+`#hero` → `#about` → `#experience` → `#education` → `#skills` → `#certs` → `#articles` → `#contact`
+
+Nav numbering:
+| # | Anchor | Label |
+|---|--------|-------|
+| 01 | `#about` | Sobre Mí |
+| 02 | `#experience` | Experiencia |
+| 03 | `#education` | Educación |
+| 04 | `#skills` | Skills |
+| 05 | `#certs` | Certificaciones |
+| 06 | `#articles` | #365DaysOfAI |
+| 07 | `#contact` | Contacto |
 
 ### Responsive Breakpoints
 | Breakpoint | Changes |
@@ -79,6 +94,17 @@ Next tab: `t7` with `onclick="switchTab(this,'t7')"`.
 | Skills | `.skill-card` in `.skills-grid` | |
 | Certifications | `.cert-card` in `.cert-grid` | 5 scrollable thematic cards |
 | Achievements | `.ach-card` in `.ach-grid` | 7 cards |
+| Articles | `.articles-carousel` + `#articlesCarousel` | Populated via fetch to `articles.json` |
+
+### Articles carousel (`#articles`)
+Populated at runtime by fetching `/365daysofai/articles.json`:
+
+```js
+// Strips "Día N/365:" prefix for short display title
+const short = (a.title.match(/:\s*(.+)/) || [, a.title])[1];
+```
+
+Card layout: `flex-column` — day badge top, title middle (`line-clamp: 3`), date anchored bottom via `margin-top: auto`.
 
 ### Key JS functions
 | Function | Purpose |
@@ -86,16 +112,20 @@ Next tab: `t7` with `onclick="switchTab(this,'t7')"`.
 | `switchTab(btn, id)` | Experience tab switching |
 | `toggleTheme()` | Dark↔light + `localStorage` |
 | `setIcon(theme)` | Updates `#themeIcon` class |
-| Hamburger listeners | Toggle `.open` on overlay |
+| `closeMobileNav()` | Closes hamburger overlay |
+| `loadArticlesCarousel()` | Fetches `articles.json`, renders cards |
 | `IntersectionObserver` | Scroll reveal for `.reveal` elements |
 
 ---
 
-## Blog (`blog/` + `scripts/`)
+## Blog (`365daysofai/` + `scripts/`)
+
+> **Note:** The path was renamed from `/blog/` to `/365daysofai/` to reserve `/blog/` for future special-topic posts.
 
 ### Architecture
 ```
-Notion DB "Publicaciones" → scripts/generate-blog.js → blog/slug/index.html
+Notion DB "Publicaciones" → scripts/generate-blog.js → 365daysofai/slug/index.html
+                                                      → 365daysofai/articles.json  ← portfolio carousel
 ```
 
 ### Notion Database
@@ -108,13 +138,16 @@ Day N of the challenge = `2026-01-01 + (N-1) days`. Day 1 → Jan 1 2026, Day 36
 
 Titles may be `"Día N/365: ..."` or `"Dia N/365: ..."` (accent optional) — regex: `/[Dd][ií]a\s+(\d+)/`.
 
-### Client-side date filtering (no server needed)
-Articles are all generated. The browser hides/shows them:
+### `articles.json` manifest
+Generated at the end of `main()` in `generate-blog.js`. Contains the 20 most recent published articles (pubdate ≤ today), sorted newest-first. Used by the portfolio carousel.
 
+```json
+[{ "slug": "dia-60...", "title": "Día 60/365: ...", "day": "60", "pubdate": "2026-03-01", "tech": ["sklearn", ...] }]
+```
+
+### Client-side date filtering (no server needed)
 ```js
 // Index page: hide future cards
-var d = new Date();
-var todayStr = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
 card.dataset.pubdate > todayStr → card.style.display = 'none'
 
 // Article page: show locked screen if visited directly
@@ -130,22 +163,23 @@ pub > todayStr → show "Aún no disponible" overlay
 
 ### Syncing from Notion
 ```bash
-# Requires NOTION_TOKEN in environment (already in ~/.bashrc)
 bash sync-blog.sh
 ```
 
-The script: fetches all pages → converts to HTML → commits changed files → pushes.
+The script: fetches all pages → converts to HTML → generates `articles.json` → commits changed files → pushes.
 
 ### File structure
 ```
-blog/
-├── index.html                  → /blog/
+365daysofai/
+├── index.html                  → /365daysofai/
+├── articles.json               → consumed by portfolio carousel
 └── dia-N-slug/
-    └── index.html              → /blog/dia-N-slug/
+    └── index.html              → /365daysofai/dia-N-slug/
 scripts/
 ├── generate-blog.js            # main generator
 └── package.json                # @notionhq/client, notion-to-md, marked, slugify
 sync-blog.sh                    # one-command sync script
+favicon.svg                     # </> icon, shared by portfolio + blog
 ```
 
 ---
@@ -163,3 +197,4 @@ sync-blog.sh                    # one-command sync script
 | v1.1.0 | Responsive redesign + dark/light theme toggle |
 | v1.1.1 | CLAUDE.md updated |
 | v1.2.0 | #365DaysOfAI blog synced from Notion |
+| v1.3.0 | Rename /blog/ → /365daysofai/, portfolio carousel, favicon |
