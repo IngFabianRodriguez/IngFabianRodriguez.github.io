@@ -10,7 +10,7 @@ const path                 = require('path');
 // ── Config ────────────────────────────────────────────────────────────────────
 const NOTION_TOKEN  = process.env.NOTION_TOKEN;
 const DATABASE_ID   = '2d99db1ddb0d805ea966d1dcab8df32b';
-const BLOG_DIR      = path.resolve(__dirname, '..', 'blog');
+const BLOG_DIR      = path.resolve(__dirname, '..', '365daysofai');
 
 if (!NOTION_TOKEN) {
   console.error('❌  NOTION_TOKEN environment variable not set');
@@ -336,10 +336,10 @@ function articlePage(article, bodyHtml, prev, next) {
   const prevDay = prev ? (dayNum(prev.title) ?? '?') : null;
   const nextDay = next ? (dayNum(next.title) ?? '?') : null;
   const prevLink = prev
-    ? `<a href="/blog/${prev.slug}/">← Día ${prevDay}</a>`
+    ? `<a href="/365daysofai/${prev.slug}/">← Día ${prevDay}</a>`
     : '<span></span>';
   const nextLink = next
-    ? `<a href="/blog/${next.slug}/">Día ${nextDay} →</a>`
+    ? `<a href="/365daysofai/${next.slug}/">Día ${nextDay} →</a>`
     : '<span></span>';
 
   return `<!DOCTYPE html>
@@ -359,7 +359,7 @@ function articlePage(article, bodyHtml, prev, next) {
     <a class="nav-logo" href="/">&lt;HFR /&gt;</a>
     <ul class="nav-links">
       <li><a href="/">Portfolio</a></li>
-      <li><a href="/blog/" class="active">#365DaysOfAI</a></li>
+      <li><a href="/365daysofai/" class="active">#365DaysOfAI</a></li>
     </ul>
     <div class="nav-actions">
       <button class="theme-toggle" id="themeToggle" aria-label="Cambiar tema">
@@ -372,7 +372,7 @@ function articlePage(article, bodyHtml, prev, next) {
   </nav>
   <div class="mobile-nav" id="mobileNav">
     <a href="/">Portfolio</a>
-    <a href="/blog/" class="active">#365DaysOfAI</a>
+    <a href="/365daysofai/" class="active">#365DaysOfAI</a>
   </div>
 
   <header class="article-hero">
@@ -390,7 +390,7 @@ function articlePage(article, bodyHtml, prev, next) {
 
   <nav class="article-nav" aria-label="Navegación entre artículos">
     ${prevLink}
-    <a href="/blog/">↑ Todos los artículos</a>
+    <a href="/365daysofai/">↑ Todos los artículos</a>
     ${nextLink}
   </nav>
 
@@ -424,7 +424,7 @@ function articlePage(article, bodyHtml, prev, next) {
           '<div style="text-align:center;padding:4rem 1rem"><p style="font-family:var(--accent-tint);font-size:3rem">🔒</p>' +
           '<h2 style="color:var(--text-heading);margin:.75rem 0">Aún no disponible</h2>' +
           '<p style="color:var(--text-muted)">Este artículo se publica el <strong style="color:var(--accent)">${pub ? dayToDate(day) : ''}</strong></p>' +
-          '<a href="/blog/" style="display:inline-block;margin-top:1.5rem;color:var(--accent)">← Ver artículos disponibles</a></div>';
+          '<a href="/365daysofai/" style="display:inline-block;margin-top:1.5rem;color:var(--accent)">← Ver artículos disponibles</a></div>';
       }
     })();
   </script>
@@ -439,7 +439,7 @@ function indexPage(articles) {
     const short = escHtml(shortTitle(a.title));
     const pub   = day !== '?' ? pubIso(day) : '';
     return `
-    <a class="article-card" href="/blog/${a.slug}/" ${pub ? `data-pubdate="${pub}"` : ''}>
+    <a class="article-card" href="/365daysofai/${a.slug}/" ${pub ? `data-pubdate="${pub}"` : ''}>
       <span class="day-badge">Día ${day} / 365</span>
       <h3>${short}</h3>
       ${a.tech ? `<div class="tags">${techTags(a.tech)}</div>` : ''}
@@ -462,7 +462,7 @@ function indexPage(articles) {
     <a class="nav-logo" href="/">&lt;HFR /&gt;</a>
     <ul class="nav-links">
       <li><a href="/">Portfolio</a></li>
-      <li><a href="/blog/" class="active">#365DaysOfAI</a></li>
+      <li><a href="/365daysofai/" class="active">#365DaysOfAI</a></li>
     </ul>
     <div class="nav-actions">
       <button class="theme-toggle" id="themeToggle" aria-label="Cambiar tema">
@@ -475,7 +475,7 @@ function indexPage(articles) {
   </nav>
   <div class="mobile-nav" id="mobileNav">
     <a href="/">Portfolio</a>
-    <a href="/blog/" class="active">#365DaysOfAI</a>
+    <a href="/365daysofai/" class="active">#365DaysOfAI</a>
   </div>
 
   <header class="blog-hero">
@@ -545,8 +545,30 @@ async function main() {
     await new Promise(r => setTimeout(r, 400));
   }
 
+  const today = new Date().toISOString().slice(0, 10);
+  const manifest = articles
+    .map(a => {
+      const day = dayNum(a.title);
+      const pubdate = day ? pubIso(day) : null;
+      const tech = a.tech
+        ? a.tech.split(',').map(t => t.trim()).filter(Boolean)
+        : [];
+      return { ...a, day, pubdate, tech };
+    })
+    .filter(a => a.pubdate && a.pubdate <= today)
+    .sort((a, b) => b.pubdate.localeCompare(a.pubdate))
+    .slice(0, 20)
+    .map(a => ({
+      slug: a.slug,
+      title: a.title,
+      day: a.day,
+      pubdate: a.pubdate,
+      tech: a.tech,
+    }));
+  fs.writeFileSync(path.join(BLOG_DIR, 'articles.json'), JSON.stringify(manifest, null, 2));
+
   console.log(`\n🎉 Done! ${ok} generated, ${fail} failed.`);
-  console.log(`   Blog available at: /blog/`);
+  console.log('   Blog available at: /365daysofai/');
 }
 
 main().catch(err => { console.error(err); process.exit(1); });

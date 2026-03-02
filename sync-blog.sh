@@ -14,12 +14,12 @@ cd ..
 
 echo ""
 echo "==> Publicando en GitHub Pages..."
-git add blog/
+git add 365daysofai/
 if git diff --staged --quiet; then
   echo "    Sin cambios nuevos."
 else
   FECHA=$(date '+%Y-%m-%d')
   git commit -m "chore(blog): sync articulos Notion $FECHA"
   git push origin main
-  echo "    Listo! Publicado en ingfabianrodriguez.github.io/blog/"
+  echo "    Listo! Publicado en ingfabianrodriguez.github.io/365daysofai/"
 fi
