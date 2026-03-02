@@ -21,7 +21,32 @@ if (!NOTION_TOKEN) {
 const notion = new Client({ auth: NOTION_TOKEN });
 const n2m    = new NotionToMarkdown({ notionClient: notion });
 
-marked.setOptions({ gfm: true, breaks: true });
+marked.setOptions({ gfm: true, breaks: false });
+
+// Protege bloques de math antes de que marked los procese.
+// notion-to-md genera $$\n...\n$$ y marked con breaks:true metía <br> adentro.
+function protectMath(md) {
+  const placeholders = [];
+  // Bloques $$...$$
+  let out = md.replace(/\$\$([\s\S]*?)\$\$/g, (_, inner) => {
+    const idx = placeholders.length;
+    placeholders.push(`$$${inner.trim()}$$`);
+    return `MATHBLOCK_${idx}_END`;
+  });
+  // Inline $...$
+  out = out.replace(/\$([^\n$]+?)\$/g, (_, inner) => {
+    const idx = placeholders.length;
+    placeholders.push(`$${inner}$`);
+    return `MATHINLINE_${idx}_END`;
+  });
+  return { out, placeholders };
+}
+
+function restoreMath(html, placeholders) {
+  html = html.replace(/MATHBLOCK_(\d+)_END/g, (_, i) => placeholders[i]);
+  html = html.replace(/MATHINLINE_(\d+)_END/g, (_, i) => placeholders[i]);
+  return html;
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function makeSlug(title) {
@@ -99,7 +124,9 @@ async function pageToHtml(pageId) {
   const blocks   = await n2m.pageToMarkdown(pageId);
   const mdResult = n2m.toMarkdownString(blocks);
   const md       = typeof mdResult === 'object' ? (mdResult.parent ?? '') : mdResult;
-  return marked.parse(md);
+  const { out, placeholders } = protectMath(md);
+  const rawHtml = marked.parse(out);
+  return restoreMath(rawHtml, placeholders);
 }
 
 // ── Shared CSS ────────────────────────────────────────────────────────────────
