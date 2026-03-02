@@ -4,24 +4,28 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Personal portfolio CV for **Héctor Fabián Rodríguez Acosta** — deployed via GitHub Pages at `IngFabianRodriguez.github.io`. Single-file static site: all HTML, CSS, and JS live in `index.html`. No build step, no framework, no dependencies to install.
+Personal portfolio CV for **Héctor Fabián Rodríguez Acosta** — deployed via GitHub Pages at `IngFabianRodriguez.github.io`. The repo has two parts:
+
+1. **`index.html`** — single-file portfolio (HTML + CSS + JS, no build step)
+2. **`blog/`** — static blog auto-generated from Notion (#365DaysOfAI series)
 
 ## Development
 
-Open `index.html` directly in a browser — no server needed. To preview locally with live reload:
-
 ```bash
+# Portfolio: open directly in browser
 npx live-server .
+
+# Blog: sync articles from Notion
+export NOTION_TOKEN="your_token"
+bash sync-blog.sh
 ```
 
-Deploy by pushing to `main` on GitHub; GitHub Pages serves automatically.
+Deploy by pushing to `main`; GitHub Pages serves automatically.
 
-## Architecture
-
-Everything is in `index.html`:
+## Portfolio (`index.html`)
 
 ### Theme System (CSS Custom Properties)
-Dual dark/light theme via CSS tokens on `:root` (dark default) and `[data-theme="light"]` override:
+Dual dark/light theme via `:root` (dark default) and `[data-theme="light"]` override:
 
 ```css
 :root {
@@ -37,10 +41,10 @@ Dual dark/light theme via CSS tokens on `:root` (dark default) and `[data-theme=
 }
 ```
 
-**Never use hardcoded colors** — always reference a CSS token. Toggle is persisted via `localStorage('theme')`.
+**Never use hardcoded colors.** Toggle persisted via `localStorage('theme')`.
 
-### Navbar / Theme Toggle
-Single `.nav-actions` div holds **both** the theme button and hamburger — do NOT split them:
+### Navbar
+Single `.nav-actions` div holds theme toggle + hamburger — do NOT split them:
 
 ```html
 <ul class="nav-links"><!-- 6 anchor links only --></ul>
@@ -49,8 +53,6 @@ Single `.nav-actions` div holds **both** the theme button and hamburger — do N
   <button class="hamburger" id="hamburger"><span></span><span></span><span></span></button>
 </div>
 ```
-
-Hamburger opens a fullscreen `.mobile-overlay` and is hidden on desktop (`display:none` above 900px).
 
 ### Sections (in order)
 `#hero` → `#about` → `#experience` → `#education` → `#skills` → `#certs` → `#contact`
@@ -63,69 +65,101 @@ Hamburger opens a fullscreen `.mobile-overlay` and is hidden on desktop (`displa
 | `≤ 400px` | Micro font adjustments |
 
 ### Tab system (Experience)
-`switchTab(btn, id)` toggles `.active` on `.tab-btn` and `.tab-panel`. Current tabs: `#t1`–`#t6`.
+`switchTab(btn, id)` — current tabs `#t1`–`#t6`:
+- t1: Colmédica / Médicos Para Colombia · t2: Sefar Universe · t3: Aseguradora Solidaria
+- t4: Tráfico Bogotá · t5: Telefónica Colombia · t6: Arus Tecnología / C.C. UNILAGO / Enel Colombia
 
-- t1: Colmédica / Médicos Para Colombia
-- t2: Sefar Universe
-- t3: Aseguradora Solidaria
-- t4: Tráfico Bogotá
-- t5: Telefónica Colombia
-- t6: Arus Tecnología / C.C. UNILAGO / Enel Colombia
+Next tab: `t7` with `onclick="switchTab(this,'t7')"`.
 
-To add a new tab: create button + panel with next ID (`t7`), add `onclick="switchTab(this,'t7')"`.
+### Content structure
+| Section | Key classes | Notes |
+|---------|------------|-------|
+| Experience | `.tab-btn`, `.tab-panel`, `#t1–t6` | Button + panel pair |
+| Education | `.edu-card` in `.edu-grid` | 7 cards; `.nota` = GPA, `.edu-project` = thesis |
+| Skills | `.skill-card` in `.skills-grid` | |
+| Certifications | `.cert-card` in `.cert-grid` | 5 scrollable thematic cards |
+| Achievements | `.ach-card` in `.ach-grid` | 7 cards |
 
-### Scroll reveal
-`IntersectionObserver` adds `.visible` to elements with class `.reveal` when they enter the viewport.
-
-### Fixed sidebars
-`.sidebar-left` (social icons) and `.sidebar-right` (email vertical text) — hidden on mobile via `@media (max-width: 900px)`.
-
-## Content Structure
-
-| Section | Key classes/IDs | Notes |
-|---------|----------------|-------|
-| Experience | `.tab-btn`, `.tab-panel`, `#t1–t6` | Add button + panel pair |
-| Education | `.edu-card` inside `.edu-grid` | 7 cards; use `.nota` for GPA, `.edu-project` for thesis |
-| Skills | `.skill-card` inside `.skills-grid` | Copy card block |
-| Certifications | `.cert-card` inside `.cert-grid` | 5 thematic cards with internal scroll (`max-height:260px`) |
-| Achievements | `.ach-card` inside `.ach-grid` | 7 cards |
-
-### Cert card categories (in order)
-1. Cloud & DevOps
-2. IA Generativa & Agentes
-3. Python & Backend
-4. Data Science & BI
-5. Agilidad & Gestión
-
-### New section pattern
-```html
-<section id="name">
-  <div class="section-wrap">
-    <h2 class="section-title reveal"><span class="num">NN.</span> Título</h2>
-    <!-- content -->
-  </div>
-</section>
-```
-And add a nav link in `#navbar`.
-
-## Key JS Functions
-
+### Key JS functions
 | Function | Purpose |
 |----------|---------|
 | `switchTab(btn, id)` | Experience tab switching |
-| `toggleTheme()` | Dark↔light with `localStorage` |
+| `toggleTheme()` | Dark↔light + `localStorage` |
 | `setIcon(theme)` | Updates `#themeIcon` class |
-| Hamburger listeners | Toggle `.open` on `#hamburger` + `.mobile-overlay` |
+| Hamburger listeners | Toggle `.open` on overlay |
 | `IntersectionObserver` | Scroll reveal for `.reveal` elements |
 
-## External Dependencies (CDN)
+---
 
+## Blog (`blog/` + `scripts/`)
+
+### Architecture
+```
+Notion DB "Publicaciones" → scripts/generate-blog.js → blog/slug/index.html
+```
+
+### Notion Database
+- **ID**: `2d99db1ddb0d805ea966d1dcab8df32b`
+- **Fields**: `Articulo` (title), `Tecnologia` (text)
+- **Content**: full article body inside each page
+
+### Publication date logic
+Day N of the challenge = `2026-01-01 + (N-1) days`. Day 1 → Jan 1 2026, Day 365 → Dec 31 2026.
+
+Titles may be `"Día N/365: ..."` or `"Dia N/365: ..."` (accent optional) — regex: `/[Dd][ií]a\s+(\d+)/`.
+
+### Client-side date filtering (no server needed)
+Articles are all generated. The browser hides/shows them:
+
+```js
+// Index page: hide future cards
+var d = new Date();
+var todayStr = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+card.dataset.pubdate > todayStr → card.style.display = 'none'
+
+// Article page: show locked screen if visited directly
+pub > todayStr → show "Aún no disponible" overlay
+```
+
+**Date comparison uses browser local date (not UTC)** to avoid timezone issues (Colombia = UTC-5).
+
+### Math & code rendering
+- **KaTeX** (CDN): renders `$...$` inline and `$$...$$` block equations
+- **highlight.js** (CDN): syntax highlights fenced code blocks
+- `protectMath()` in the script extracts math before `marked` processes it (prevents `<br>` injection inside LaTeX)
+
+### Syncing from Notion
+```bash
+# Requires NOTION_TOKEN in environment (already in ~/.bashrc)
+bash sync-blog.sh
+```
+
+The script: fetches all pages → converts to HTML → commits changed files → pushes.
+
+### File structure
+```
+blog/
+├── index.html                  → /blog/
+└── dia-N-slug/
+    └── index.html              → /blog/dia-N-slug/
+scripts/
+├── generate-blog.js            # main generator
+└── package.json                # @notionhq/client, notion-to-md, marked, slugify
+sync-blog.sh                    # one-command sync script
+```
+
+---
+
+## External Dependencies (CDN)
 - Google Fonts: Inter + Fira Code
-- Font Awesome 6.5.0 (icons)
+- Font Awesome 6.5.0
+- highlight.js 11.9.0 (blog only)
+- KaTeX 0.16.9 (blog only)
 
 ## Versioning
-
 | Tag | Description |
 |-----|-------------|
 | v1.0.0 | Initial portfolio with full LinkedIn content |
 | v1.1.0 | Responsive redesign + dark/light theme toggle |
+| v1.1.1 | CLAUDE.md updated |
+| v1.2.0 | #365DaysOfAI blog synced from Notion |

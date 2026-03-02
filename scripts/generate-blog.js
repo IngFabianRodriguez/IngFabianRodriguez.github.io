@@ -56,8 +56,23 @@ function makeSlug(title) {
 }
 
 function dayNum(title) {
-  const m = title.match(/[Dd]ía\s+(\d+)/);
-  return m ? m[1] : '?';
+  // Acepta "Día", "Dia", "día", "dia" (con o sin acento)
+  const m = title.match(/[Dd][ií]a\s+(\d+)/);
+  return m ? m[1] : null;
+}
+
+// Día N del reto = 1 enero 2026 + (N-1) días
+function dayToDate(n) {
+  const d = new Date('2026-01-01T00:00:00');
+  d.setDate(d.getDate() + (parseInt(n, 10) - 1));
+  return d.toLocaleDateString('es-CO', { year: 'numeric', month: 'long', day: 'numeric' });
+}
+
+// Devuelve fecha ISO YYYY-MM-DD para usar en data-pubdate
+function pubIso(n) {
+  const d = new Date('2026-01-01T00:00:00');
+  d.setDate(d.getDate() + (parseInt(n, 10) - 1));
+  return d.toISOString().slice(0, 10);
 }
 
 function shortTitle(title) {
@@ -269,15 +284,18 @@ const CDN_FONTS = `
 
 // ── Article page template ─────────────────────────────────────────────────────
 function articlePage(article, bodyHtml, prev, next) {
-  const day   = dayNum(article.title);
+  const day   = dayNum(article.title) ?? '?';
+  const pub   = day !== '?' ? pubIso(day) : null;
   const short = shortTitle(article.title);
   const title = escHtml(short);
 
+  const prevDay = prev ? (dayNum(prev.title) ?? '?') : null;
+  const nextDay = next ? (dayNum(next.title) ?? '?') : null;
   const prevLink = prev
-    ? `<a href="/blog/${prev.slug}/">← Día ${dayNum(prev.title)}</a>`
+    ? `<a href="/blog/${prev.slug}/">← Día ${prevDay}</a>`
     : '<span></span>';
   const nextLink = next
-    ? `<a href="/blog/${next.slug}/">Día ${dayNum(next.title)} →</a>`
+    ? `<a href="/blog/${next.slug}/">Día ${nextDay} →</a>`
     : '<span></span>';
 
   return `<!DOCTYPE html>
@@ -308,7 +326,7 @@ function articlePage(article, bodyHtml, prev, next) {
     <div class="day-badge">Día ${day} / 365 &nbsp;·&nbsp; #365DaysOfAI</div>
     <h1 class="article-title">${title}</h1>
     <div class="article-meta">
-      <time class="article-date">${fmtDate(article.created)}</time>
+      <time class="article-date">${day ? dayToDate(day) : fmtDate(article.created)}</time>
       ${article.tech ? `<div class="tags">${techTags(article.tech)}</div>` : ''}
     </div>
   </header>
@@ -340,6 +358,22 @@ function articlePage(article, bodyHtml, prev, next) {
       });
     });
     ${THEME_JS}
+    // Proteger artículo futuro si alguien entra directo por URL
+    (function() {
+      var pub = ${pub ? `"${pub}"` : 'null'};
+      if (!pub) return;
+      var d = new Date();
+      var todayStr = d.getFullYear() + '-' +
+        String(d.getMonth() + 1).padStart(2, '0') + '-' +
+        String(d.getDate()).padStart(2, '0');
+      if (pub > todayStr) {
+        document.querySelector('.article-body').innerHTML =
+          '<div style="text-align:center;padding:4rem 1rem"><p style="font-family:var(--accent-tint);font-size:3rem">🔒</p>' +
+          '<h2 style="color:var(--text-heading);margin:.75rem 0">Aún no disponible</h2>' +
+          '<p style="color:var(--text-muted)">Este artículo se publica el <strong style="color:var(--accent)">${pub ? dayToDate(day) : ''}</strong></p>' +
+          '<a href="/blog/" style="display:inline-block;margin-top:1.5rem;color:var(--accent)">← Ver artículos disponibles</a></div>';
+      }
+    })();
   </script>
 </body>
 </html>`;
@@ -348,14 +382,15 @@ function articlePage(article, bodyHtml, prev, next) {
 // ── Blog index template ───────────────────────────────────────────────────────
 function indexPage(articles) {
   const cards = articles.map(a => {
-    const day   = dayNum(a.title);
+    const day   = dayNum(a.title) ?? '?';
     const short = escHtml(shortTitle(a.title));
+    const pub   = day !== '?' ? pubIso(day) : '';
     return `
-    <a class="article-card" href="/blog/${a.slug}/">
+    <a class="article-card" href="/blog/${a.slug}/" ${pub ? `data-pubdate="${pub}"` : ''}>
       <span class="day-badge">Día ${day} / 365</span>
       <h3>${short}</h3>
       ${a.tech ? `<div class="tags">${techTags(a.tech)}</div>` : ''}
-      <time>${fmtDate(a.created)}</time>
+      <time>${day !== '?' ? dayToDate(day) : fmtDate(a.created)}</time>
     </a>`;
   }).join('\n');
 
@@ -391,7 +426,19 @@ function indexPage(articles) {
     ${cards}
   </main>
 
-  <script>${THEME_JS}</script>
+  <script>
+    ${THEME_JS}
+    // Ocultar artículos futuros según la fecha local del navegador (sin conversión UTC)
+    (function() {
+      var d = new Date();
+      var todayStr = d.getFullYear() + '-' +
+        String(d.getMonth() + 1).padStart(2, '0') + '-' +
+        String(d.getDate()).padStart(2, '0');
+      document.querySelectorAll('.article-card[data-pubdate]').forEach(function(card) {
+        if (card.dataset.pubdate > todayStr) card.style.display = 'none';
+      });
+    })();
+  </script>
 </body>
 </html>`;
 }
