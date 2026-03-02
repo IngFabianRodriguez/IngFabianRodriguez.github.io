@@ -321,6 +321,7 @@ const THEME_JS = `
 `;
 
 const CDN_FONTS = `
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
@@ -358,7 +359,7 @@ function articlePage(article, bodyHtml, prev, next) {
   <nav>
     <a class="nav-logo" href="/">&lt;HFR /&gt;</a>
     <ul class="nav-links">
-      <li><a href="/">Portfolio</a></li>
+      <li><a href="/">Portafolio</a></li>
       <li><a href="/365daysofai/" class="active">#365DaysOfAI</a></li>
     </ul>
     <div class="nav-actions">
@@ -371,7 +372,7 @@ function articlePage(article, bodyHtml, prev, next) {
     </div>
   </nav>
   <div class="mobile-nav" id="mobileNav">
-    <a href="/">Portfolio</a>
+    <a href="/">Portafolio</a>
     <a href="/365daysofai/" class="active">#365DaysOfAI</a>
   </div>
 
@@ -461,7 +462,7 @@ function indexPage(articles) {
   <nav>
     <a class="nav-logo" href="/">&lt;HFR /&gt;</a>
     <ul class="nav-links">
-      <li><a href="/">Portfolio</a></li>
+      <li><a href="/">Portafolio</a></li>
       <li><a href="/365daysofai/" class="active">#365DaysOfAI</a></li>
     </ul>
     <div class="nav-actions">
@@ -474,7 +475,7 @@ function indexPage(articles) {
     </div>
   </nav>
   <div class="mobile-nav" id="mobileNav">
-    <a href="/">Portfolio</a>
+    <a href="/">Portafolio</a>
     <a href="/365daysofai/" class="active">#365DaysOfAI</a>
   </div>
 
