@@ -271,6 +271,26 @@ nav {
 .article-body th { background: var(--bg-card); color: var(--text-heading); }
 .article-body .katex-display { overflow-x: auto; padding: .5rem 0; }
 
+/* ── Share bar ── */
+.share-bar {
+  max-width: 820px; margin: 0 auto;
+  padding: 1.25rem 1.5rem;
+  border-top: 1px solid var(--border);
+  display: flex; align-items: center; gap: .75rem; flex-wrap: wrap;
+}
+.share-label {
+  font-family: 'Fira Code', monospace; font-size: .8rem;
+  color: var(--text-muted); margin-right: .25rem;
+}
+.share-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 36px; height: 36px; border-radius: 50%;
+  background: var(--accent-tint); border: 1px solid var(--accent);
+  color: var(--accent); font-size: .9rem;
+  text-decoration: none; cursor: pointer; transition: all .2s;
+}
+.share-btn:hover { background: var(--accent-tint2); transform: translateY(-2px); }
+
 .article-nav {
   max-width: 820px; margin: 0 auto; padding: 2rem 1.5rem;
   border-top: 1px solid var(--border);
@@ -334,6 +354,12 @@ function articlePage(article, bodyHtml, prev, next) {
   const short = shortTitle(article.title);
   const title = escHtml(short);
 
+  const BASE    = 'https://IngFabianRodriguez.github.io';
+  const fullUrl = `${BASE}/365daysofai/${article.slug}/`;
+  const encUrl  = encodeURIComponent(fullUrl);
+  const encText = encodeURIComponent(`${short} | #365DaysOfAI por Fabián Rodríguez`);
+  const encSubj = encodeURIComponent(`Día ${day}/365: ${short}`);
+
   const prevDay = prev ? (dayNum(prev.title) ?? '?') : null;
   const nextDay = next ? (dayNum(next.title) ?? '?') : null;
   const prevLink = prev
@@ -389,6 +415,29 @@ function articlePage(article, bodyHtml, prev, next) {
     ${bodyHtml}
   </article>
 
+  <div class="share-bar">
+    <span class="share-label">Compartir:</span>
+    <a class="share-btn" href="https://wa.me/?text=${encText}%20${encUrl}"
+       target="_blank" rel="noopener" aria-label="WhatsApp">
+      <i class="fa-brands fa-whatsapp"></i>
+    </a>
+    <a class="share-btn" href="https://www.linkedin.com/sharing/share-offsite/?url=${encUrl}"
+       target="_blank" rel="noopener" aria-label="LinkedIn">
+      <i class="fa-brands fa-linkedin-in"></i>
+    </a>
+    <a class="share-btn" href="https://x.com/intent/post?text=${encText}&url=${encUrl}&hashtags=365DaysOfAI,IA"
+       target="_blank" rel="noopener" aria-label="X / Twitter">
+      <i class="fa-brands fa-x-twitter"></i>
+    </a>
+    <a class="share-btn" href="mailto:?subject=${encSubj}&body=${encText}%0A%0A${encUrl}"
+       aria-label="Correo electrónico">
+      <i class="fa-solid fa-envelope"></i>
+    </a>
+    <button class="share-btn" onclick="copyLink(this,'${fullUrl}')" aria-label="Copiar enlace">
+      <i class="fa-solid fa-link"></i>
+    </button>
+  </div>
+
   <nav class="article-nav" aria-label="Navegación entre artículos">
     ${prevLink}
     <a href="/365daysofai/">↑ Todos los artículos</a>
@@ -412,6 +461,12 @@ function articlePage(article, bodyHtml, prev, next) {
       });
     });
     ${THEME_JS}
+    function copyLink(btn, url) {
+      navigator.clipboard.writeText(url).then(() => {
+        btn.innerHTML = '<i class="fa-solid fa-check"></i>';
+        setTimeout(() => { btn.innerHTML = '<i class="fa-solid fa-link"></i>'; }, 1500);
+      });
+    }
     // Proteger artículo futuro si alguien entra directo por URL
     (function() {
       var pub = ${pub ? `"${pub}"` : 'null'};
@@ -508,6 +563,8 @@ function indexPage(articles) {
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 async function main() {
+  const incremental = process.argv.includes('--incremental');
+
   console.log('📚 Fetching articles from Notion...');
   const articles = await getArticles();
   console.log(`   Found ${articles.length} articles\n`);
@@ -519,11 +576,19 @@ async function main() {
   console.log('✅ Generated blog/index.html');
 
   // Generate each article page
-  let ok = 0, fail = 0;
+  let ok = 0, skipped = 0, fail = 0;
   for (let i = 0; i < articles.length; i++) {
     const article = articles[i];
     const prev    = articles[i - 1] ?? null;
     const next    = articles[i + 1] ?? null;
+
+    const outFile = path.join(BLOG_DIR, article.slug, 'index.html');
+
+    if (incremental && fs.existsSync(outFile)) {
+      console.log(`   [${String(i + 1).padStart(3)}/${articles.length}] ${article.title.slice(0, 55)}... ⏭ skip`);
+      skipped++;
+      continue;
+    }
 
     process.stdout.write(`   [${String(i + 1).padStart(3)}/${articles.length}] ${article.title.slice(0, 55)}...`);
 
@@ -533,7 +598,7 @@ async function main() {
 
       const dir = path.join(BLOG_DIR, article.slug);
       ensureDir(dir);
-      fs.writeFileSync(path.join(dir, 'index.html'), html, 'utf8');
+      fs.writeFileSync(outFile, html, 'utf8');
 
       console.log(' ✓');
       ok++;
@@ -568,7 +633,7 @@ async function main() {
     }));
   fs.writeFileSync(path.join(BLOG_DIR, 'articles.json'), JSON.stringify(manifest, null, 2));
 
-  console.log(`\n🎉 Done! ${ok} generated, ${fail} failed.`);
+  console.log(`\n🎉 Done! ${ok} generated, ${skipped} skipped, ${fail} failed.`);
   console.log('   Blog available at: /365daysofai/');
 }
 
