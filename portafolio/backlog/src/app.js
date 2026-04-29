@@ -54,6 +54,7 @@ export function initApp() {
       flex-direction: column;
       flex: 1;
       overflow: hidden;
+      min-width: 0;
     }
     .board {
       display: flex;
@@ -73,20 +74,52 @@ export function initApp() {
       background: var(--bg-card);
       border-radius: 3px;
     }
+
+    /* ─── Tablet (≤1024px): sidebar narrower ─── */
+    @media (max-width: 1024px) {
+      sprint-sidebar {
+        width: 220px !important;
+        min-width: 220px !important;
+      }
+    }
+
+    /* ─── Mobile (≤768px): sidebar collapses to top bar ─── */
     @media (max-width: 768px) {
       .main-container {
         flex-direction: column;
+        height: auto;
+        overflow: visible;
       }
       sprint-sidebar {
-        width: 100%;
-        min-width: unset;
+        width: 100% !important;
+        min-width: unset !important;
         height: auto;
-        max-height: 200px;
-        border-right: none;
+        max-height: none;
+        border-right: none !important;
         border-bottom: 1px solid #313244;
+        flex-shrink: 0;
+      }
+      .sidebar-body {
+        max-height: 300px;
+        overflow-y: auto;
+      }
+      .content-area {
+        overflow: visible;
+        min-height: 0;
       }
       .board {
-        min-width: 280px;
+        flex-direction: column;
+        padding: 12px 16px;
+        overflow-x: unset;
+        min-height: 0;
+      }
+    }
+
+    /* ─── Small mobile (≤480px): everything stacked ─── */
+    @media (max-width: 480px) {
+      .board {
+        padding: 8px 12px;
+        gap: 12px;
       }
     }
   `

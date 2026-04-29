@@ -176,6 +176,15 @@ export class TaskColumn extends HTMLElement {
           min-width: 300px;
           max-width: 400px;
         }
+
+        /* Mobile: full width columns, stacked */
+        @media (max-width: 768px) {
+          :host {
+            min-width: unset;
+            max-width: unset;
+            width: 100%;
+          }
+        }
         .column {
           background: #181825;
           border-radius: 12px;

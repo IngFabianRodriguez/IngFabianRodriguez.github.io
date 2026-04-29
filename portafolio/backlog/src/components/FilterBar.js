@@ -104,6 +104,15 @@ export class FilterBar extends HTMLElement {
         .results-count strong {
           color: #cdd6f4;
         }
+        @media (max-width: 768px) {
+          :host { padding: 10px 16px; }
+          .filter-bar { gap: 8px; }
+          .search-input { min-width: 120px; }
+        }
+        @media (max-width: 480px) {
+          .filter-bar { gap: 6px; }
+          .search-input, .filter-select { padding: 6px 8px; font-size: 12px; }
+        }
       </style>
       
       <div class="filter-bar">

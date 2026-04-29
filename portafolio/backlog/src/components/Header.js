@@ -101,11 +101,17 @@ export class Header extends HTMLElement {
         }
         .btn-export:hover { background: #45475a; }
         @media (max-width: 768px) {
-          .header { flex-wrap: wrap; padding: 12px 16px; }
+          .header { flex-wrap: wrap; padding: 10px 16px; gap: 10px; }
+          .title-area { width: 100%; }
           .stats { gap: 10px; }
           .stat-value { font-size: 15px; }
           .progress-bar { width: 70px; }
           .btn-export { display: none; }
+          .header-actions { width: 100%; justify-content: flex-end; }
+        }
+        @media (max-width: 480px) {
+          .stats { flex-wrap: wrap; gap: 6px; }
+          .header { padding: 8px 12px; }
         }
       </style>
       <div class="header">

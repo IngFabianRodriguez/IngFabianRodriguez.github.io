@@ -47,6 +47,19 @@ export class SprintSidebar extends HTMLElement {
           height: 100%;
           overflow-y: auto;
           font-family: 'Segoe UI', system-ui, sans-serif;
+          flex-shrink: 0;
+        }
+
+        /* Mobile: full-width collapsible */
+        @media (max-width: 768px) {
+          :host {
+            width: 100% !important;
+            min-width: unset !important;
+            height: auto;
+            border-right: none !important;
+            border-bottom: 1px solid #313244;
+            overflow: visible;
+          }
         }
         .sidebar-header {
           padding: 14px 16px 10px;
