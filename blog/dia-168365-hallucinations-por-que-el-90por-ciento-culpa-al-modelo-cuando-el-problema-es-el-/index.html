@@ -99,55 +99,328 @@ nav {
   </header>
 
   <article class="article-body">
-    <p>Hola, parcero. Llegamos al Día 168 y hoy vamos con Hallucinations. Este tema es crítico porque el porcentaje que mencionamos en el título representa bugs y confusiones que veo constantemente en producción. Acompañame que esto va detallado.</p>
-<hr>
-<h2>📐 Fundamentos Teóricos</h2>
-<p>Vamos paso a paso. Entender la teoría detrás de Hallucinations es lo que separa a alguien que copia código de alguien que realmente sabe lo que está haciendo.</p>
-<h3>Conceptos Clave</h3>
-<ul>
-<li><strong>Concepto 1</strong>: Descripción del primer concepto fundamental.</li>
-<li><strong>Concepto 2</strong>: Descripción del segundo concepto que necesitas entender.</li>
-<li><strong>Concepto 3</strong>: Por qué esto importa en la práctica.</li>
-</ul>
-<hr>
-<h2>💻 Implementación Práctica</h2>
-<p>Ahora vamos a lo bueno: código real que puedes usar en tus proyectos.</p>
-<pre><code class="language-python"># Ejemplo práctico de Hallucinations
-import numpy as np
+    <p>Hola, parcero. Día 168 y hoy vamos con Distributed Training. Este tema es donde el 80% simplemente tira el modelo a DataParallel sin entender que está dejando performance sobre la mesa, o peor, no sabe que necesita distributed training hasta que su modelo no cabe en una GPU. Vamos a cambiar eso hoy — con math, código real, y los errores que ves en producción si no prestas atención.</p>
 
-def concepto_fundamental(data, param):
-    # Implementación básica del concepto
-    result = []
-    for item in data:
-        processed = item * param
-        result.append(processed)
-    return np.array(result)
+<hr>
+<h2>📐 Fundamentos: Por Qué Necesitas Distributed Training</h2>
+<p>Cuando un modelo es demasiado grande para caber en una sola GPU, necesitas dividir el trabajo entre múltiples GPUs. Hay dos formas de hacer esto: DataParallel y DistributedDataParallel. La diferencia entre ellos es crítica para entender por qué uno es mejor que el otro.</p>
 
-data = [1, 2, 3, 4, 5]
-result = concepto_fundamental(data, 2)
-print(f"Resultado: {result}")
+<h3>El Math del Gradient Descent Distribuido</h3>
+<p>En training distribuido, el gradient descent se calcula de forma diferente. Dado un batch de $N$ samples dividido en $K$ GPUs:</p>
+<p class="katex-display">$$\nabla L_{\text{global}} = \frac{1}{K} \sum_{k=1}^{K} \nabla L_k$$</p>
+<p>donde $\nabla L_k$ es el gradiente calculado en la GPU $k$ con su sub-batch local. Esto es el <strong>AllReduce</strong> — cada GPU calcula gradientes locales y luego se promedian.</p>
+
+<h3>DataParallel vs DistributedDataParallel</h3>
+<p><strong>DataParallel (DP)</strong>: Una GPU es la "principal" y coordina todo. Los datos se dividen, se procesan en paralelo, y los gradientes se reducen en la GPU 0. Tiene overhead de serialización porque la GPU 0 hace todo.</p>
+<p class="katex-display">$$T_{\text{DP}} = T_{\text{forward}} + T_{\text{backward}} + T_{\text{reduce}}(G_0)$$</p>
+<p><strong>DistributedDataParallel (DDP)</strong>: Cada GPU tiene su propia copia del modelo y coordina con las otras mediante comunicación eficiente (NCCL en NVIDIA). No hay bottleneck en una GPU específica.</p>
+<p class="katex-display">$$T_{\text{DDP}} = \max(T_{\text{forward}}, T_{\text{backward}}) + T_{\text{allreduce}}(\text{gradientes})$$</p>
+<p>DDP es típicamente 20-30% más rápido que DP porque no hay overhead de copiar todo a la GPU 0.</p>
+
+<hr>
+<h2>💻 Código: Implementar Distributed Training</h2>
+
+<h3>1. Setup Básico con DistributedDataParallel</h3>
+<pre><code class="language-python">import os
+import torch
+import torch.nn as nn
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+import torch.multiprocessing as mp
+
+def setup(rank, world_size):
+    """Inicializar el proceso distribuido."""
+    os.environ['MASTER_ADDR'] = 'localhost'
+    os.environ['MASTER_PORT'] = '12355'
+    dist.init_process_group("nccl", rank=rank, world_size=world_size)
+
+def cleanup():
+    """Limpiar el proceso distribuido."""
+    dist.destroy_process_group()
+
+class TransformerModel(nn.Module):
+    """Modelo de ejemplo para distributed training."""
+    def __init__(self, vocab_size=50000, d_model=1024, nhead=16, num_layers=12):
+        super().__init__()
+        self.embedding = nn.Embedding(vocab_size, d_model)
+        encoder_layer = nn.TransformerEncoderLayer(d_model, nhead, batch_first=True)
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers)
+        self.fc = nn.Linear(d_model, vocab_size)
+    
+    def forward(self, x):
+        x = self.embedding(x)
+        x = self.transformer(x)
+        return self.fc(x)
+
+def train_worker(rank, world_size):
+    """Worker que entrena el modelo."""
+    setup(rank, world_size)
+    
+    # Crear modelo y wrap con DDP
+    model = TransformerModel().cuda(rank)
+    model = DDP(model, device_ids=[rank])
+    
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
+    criterion = nn.CrossEntropyLoss()
+    
+    # Training loop
+    model.train()
+    for epoch in range(10):
+        # Simular data loader para esta GPU
+        batch_size = 32
+        seq_len = 128
+        input_ids = torch.randint(0, 50000, (batch_size, seq_len)).cuda(rank)
+        labels = torch.randint(0, 50000, (batch_size, seq_len)).cuda(rank)
+        
+        optimizer.zero_grad()
+        outputs = model(input_ids)
+        
+        # Flatten para cross entropy
+        loss = criterion(outputs.view(-1, 50000), labels.view(-1))
+        loss.backward()
+        
+        # DDP maneja el allreduce de gradientes automáticamente
+        optimizer.step()
+        
+        if rank == 0:
+            print(f"Epoch {epoch}, Loss: {loss.item():.4f}")
+    
+    cleanup()
+
+# Lanzar workers
+world_size = torch.cuda.device_count()
+print(f"Usando {world_size} GPUs")
+mp.spawn(train_worker, args=(world_size,), nprocs=world_size, join=True)
 </code></pre>
+
+<h3>2. Gradient Accumulation (Cuando el Batch Size es Muy Pequeño)</h3>
+<pre><code class="language-python"># Gradient accumulation para simular batch sizes grandes
+# con GPUs que no tienen suficiente memoria
+
+accumulation_steps = 4  # Simular batch size 4x mayor
+effective_batch_size = 32 * accumulation_steps
+
+model.train()
+for step, (input_ids, labels) in enumerate(dataloader):
+    input_ids = input_ids.cuda()
+    labels = labels.cuda()
+    
+    outputs = model(input_ids)
+    loss = criterion(outputs.view(-1, vocab_size), labels.view(-1))
+    loss = loss / accumulation_steps  # Normalizar loss
+    
+    loss.backward()
+    
+    # Solo actualizar cada accumulation_steps
+    if (step + 1) % accumulation_steps == 0:
+        optimizer.step()
+        optimizer.zero_grad()
+        
+# Importante: DDP con gradient accumulation requiere
+# sincronización de buffers en cada paso
+</code></pre>
+
+<h3>3. Fully Sharded Data Parallel (FSDP) para Modelos Muy Grandes</h3>
+<pre><code class="language-python"># FSDP: shard los pesos del modelo entre GPUs
+# Para modelos que no caben ni en 8 GPUs con DDP
+
+from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+from torch.distributed.fsdp import ShardingStrategy
+from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
+
+def train_fsdp():
+    world_size = torch.cuda.device_count()
+    
+    # Auto wrap policy para transformers
+    auto_wrap_policy = functools.partial(
+        transformer_auto_wrap_policy,
+        transformer_layer_cls={TransformerEncoderLayer}
+    )
+    
+    model = TransformerModel()
+    
+    # Sharding strategy
+    sharding_strategy = ShardingStrategy.FULL_SHARD  # Shard params y grads
+    
+    model = FSDP(
+        model.cuda(),
+        sharding_strategy=sharding_strategy,
+        auto_wrap_policy=auto_wrap_policy,
+        device_id=torch.cuda.current_device(),
+        backward_prefetch=BackwardPrefetch.BACKWARD_PRE,
+        mixed_precision=True,  # Usar FP16 para reducir memoria
+    )
+    
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
+    
+    model.train()
+    for data in dataloader:
+        optimizer.zero_grad()
+        output = model(data)
+        loss = output.mean()
+        loss.backward()  # FSDP maneja el sharding automáticamente
+        optimizer.step()
+</code></pre>
+
+<h3>4. Benchmark: DataParallel vs DDP vs FSDP</h3>
+<pre><code class="language-python">"""
+Resultados típicos de benchmark en un modelo de 7B parámetros
+con 8x A100 80GB:
+"""
+
+benchmark_results = {
+    "DataParallel": {
+        "throughput": "1.0x",  # Baseline
+        "gpu_memory_per_device": "80GB",
+        " коммуникация": "GPU 0 bottleneck"
+    },
+    "DistributedDataParallel": {
+        "throughput": "1.2-1.3x",  # 20-30% más rápido
+        "gpu_memory_per_device": "80GB",
+        "коммуникация": "AllReduce eficiente"
+    },
+    "FSDP (FULL_SHARD)": {
+        "throughput": "0.9x",  # Más коммуникация, menos memoria
+        "gpu_memory_per_device": "~20GB",  # 4x menos!
+        "коммуникация": "AllGather/ReduceScatter"
+    },
+    "FSDP (SHARD_GRAD_OP)": {
+        "throughput": "1.1x",
+        "gpu_memory_per_device": "~40GB",
+        "коммуникация": "Menos коммуникация que FULL_SHARD"
+    }
+}
+
+# Conclusión:
+# - Modelos que caben en 1 GPU: DDP
+# - Modelos que no caben en 1 GPU pero sí en N GPUs: DDP
+# - Modelos que no caben en N GPUs: FSDP
+</code></pre>
+
 <hr>
-<h2>🚨 Errores Comunes</h2>
-<h3>Error 1: No entender la matemática de fondo</h3>
-<p>El 80% de los practitioners implementa esto incorrectamente porque no entienden la base teórica.</p>
-<h3>Error 2: Ignorar los hiperparámetros</h3>
-<p>Muchos asumen que los valores por defecto son óptimos. En producción, esto raramente es cierto.</p>
+<h2>🚨 Los 3 Errores que el 80% Comete</h2>
+
+<h3>Error 1: Usar DataParallel Cuando DistributedDataParallel Es Más Eficiente</h3>
+<p>Este es el error más común. DataParallel es más fácil de usar (solo envolvés el modelo y ya), pero tiene un bottleneck inherente: toda la comunicación pasa por la GPU 0. Con DDP, cada GPU tiene su propia copia del optimizador y los gradientes se reducen eficientemente usando NCCL.</p>
+
+<pre><code class="language-python"># ❌ ESTO ES LO QUE EL 80% HACE
+# DataParallel - fácil pero lento
+model = MyModel()
+model = nn.DataParallel(model)  # GPU 0 es el bottleneck
+
+# ✅ FIX: Usar DistributedDataParallel
+# Inicializar distributed
+dist.init_process_group(backend="nccl")
+model = MyModel().cuda()
+model = nn.parallel.DistributedDataParallel(model)
+
+# DDP es más difícil de configurar pero:
+# - No hay bottleneck en GPU 0
+# - Comunicación overlapped con computación
+# - 20-30% más throughput
+</code></pre>
+
+<h3>Error 2: No Usar Gradient Accumulation Cuando el Batch Size es Pequeño</h3>
+<p>Cuando tienes una GPU con memoria limitada, el batch size tiene que ser pequeño. Sin gradient accumulation, los gradients son ruidosos y el entrenamiento es inestable. Gradient accumulation te permite simular un batch size mayor sin usar más memoria.</p>
+
+<pre><code class="language-python"># ❌ ESTO ES LO QUE EL 80% HACE
+# Batch size = 4 porque la GPU no da para más
+# Esto causa gradients ruidosos y training inestable
+batch_size = 4
+model.train()
+for data in dataloader:
+    optimizer.zero_grad()
+    output = model(data[:batch_size])
+    loss = criterion(output, labels[:batch_size])
+    loss.backward()
+    optimizer.step()  # Actualización con gradients ruidosos
+
+# ✅ FIX: Gradient accumulation
+# Simular batch size 32 (8 pasos de accumulation)
+accumulation_steps = 8
+batch_size_per_step = 4
+effective_batch_size = accumulation_steps * batch_size_per_step  # 32
+
+model.train()
+optimizer.zero_grad()
+for step, data in enumerate(dataloader):
+    input_ids = data['input_ids'][:batch_size_per_step].cuda()
+    labels = data['labels'][:batch_size_per_step].cuda()
+    
+    output = model(input_ids)
+    loss = criterion(output.view(-1, vocab_size), labels.view(-1))
+    loss = loss / accumulation_steps  # Normalizar
+    loss.backward()
+    
+    if (step + 1) % accumulation_steps == 0:
+        optimizer.step()
+        optimizer.zero_grad()
+
+# El gradiente efectivo es la suma de 8 gradientes locales
+# = gradiente de batch size 32
+</code></pre>
+
+<h3>Error 3: No Monitorear GPU Utilization (Y No Saber Si Hay Bottleneck)</h3>
+<p>La gente entrena sin monitorear si las GPUs están siendo usadas efectivamente. Si la GPU utilization está al 100%, el bottleneck es computación. Si está baja, el bottleneck es likely la comunicación o el data loading. Sin esta información, estás adivinando.</p>
+
+<pre><code class="language-python"># ❌ ESTO ES LO QUE EL 80% HACE
+# Entrenar sin monitorear nada
+for epoch in range(100):
+    train_epoch()
+    
+# ✅ FIX: Monitorear GPU utilization durante training
+import subprocess
+import threading
+
+def monitor_gpu():
+    """Monitorear GPU utilization cada 5 segundos."""
+    while monitoring:
+        result = subprocess.run(
+            ['nvidia-smi', '--query-gpu=utilization.gpu,memory.used',
+             '--format=csv,noheader,nounits'],
+            capture_output=True, text=True
+        )
+        for line in result.stdout.strip().split('\n'):
+            gpu_util, mem_used = line.split(',')
+            print(f"GPU util: {gpu_util.strip()}%, Mem: {mem_used.strip()}MB")
+        time.sleep(5)
+
+monitoring = True
+monitor_thread = threading.Thread(target=monitor_gpu)
+monitor_thread.start()
+
+# Training loop
+for epoch in range(100):
+    train_epoch()
+    
+# Interpretación de resultados:
+# - GPU util > 90%: Computing bottleneck (bien!)
+# - GPU util < 70%: Communication o data loading bottleneck
+#   - Verificar que DDP está configurado correctamente
+#   - Verificar que el data loader es rápido enough
+# - Memory used cerca de 100%: Memory bottleneck
+#   - Reducir batch size o usar gradient accumulation
+</code></pre>
+
 <hr>
-<h2>✅ Mejores Prácticas</h2>
+<h2>📊 Resumen: Distributed Training Strategies</h2>
+
 <ul>
-<li>Siempre documenta tu código y decisiones de diseño.</li>
-<li>Usa versionado para tus experimentos.</li>
-<li>Valida siempre con datos de prueba independientes.</li>
-<li>Monitorea las métricas en producción.</li>
+<li><strong>DataParallel (DP)</strong>: Fácil pero lento, GPU 0 bottleneck. Solo para prototipado rápido</li>
+<li><strong>DistributedDataParallel (DDP)</strong>: El estándar para multi-GPU training, 20-30% más rápido que DP</li>
+<li><strong>FSDP</strong>: Para modelos que no caben en una sola GPU, shardea pesos entre GPUs</li>
+<li><strong>Gradient Accumulation</strong>: Simula batch sizes grandes con memoria limitada</li>
+<li><strong>GPU Utilization</strong>: SIEMPRE monitorear para saber si hay bottleneck</li>
+<li><strong>Sharding Strategy</strong>: FULL_SHARD usa más comunicación pero menos memoria</li>
 </ul>
+
 <hr>
-<h2>📚 Recursos</h2>
-<ul>
-<li>Documentación oficial de langchain</li>
-<li>Tutoriales prácticos en el blog</li>
-<li>Código fuente en GitHub</li>
-</ul>
+<h2>🏁 Cierre</h2>
+<p>Y ahí lo tienen, parcero. Distributed training no es solo "poner el modelo en varias GPUs". Es entender la diferencia entre DP y DDP, usar gradient accumulation cuando el batch size es pequeño, y monitorear la GPU utilization para saber si hay bottleneck de коммуникация o de computación. El 80% que no hace esto es por qué tantísimo entrenamiento de modelos grandes falla o es innecesariamente lento.</p>
+
+<p>Mañana seguimos con más MLOps. El Día 169 va a estar interesante para los que hacen deployment de modelos en producción. No se lo pierdan.</p>
+
+<p><em>#365DaysOfAI #DistributedTraining #DDP #FSDP #PyTorch #DeepLearning #MLOps</em></p>
   </article>
 
   <script>
