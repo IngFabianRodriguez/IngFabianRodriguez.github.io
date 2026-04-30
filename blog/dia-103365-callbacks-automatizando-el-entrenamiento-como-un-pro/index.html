@@ -118,62 +118,500 @@ nav {
   </header>
 
   <article class="article-body">
-    <h1>Callbacks - Automatizando El Entrenamiento Como Un Pro</h1>
-<p>Hágale pues, parcero. Llegamos al Día 103 y hoy toca hablar de callbacks. Después de más de 10 años rompiendo redes neuronales en producción, te digo que esto es más jugoso de lo que parece. Dejá el café, acomodate, porque esto es más jugoso de lo que parece.</p>
+<h2>🎯 ¿Qué Son los Callbacks?</h2>
+<p>Hágale pues, parcero. Vamos al grano: un <strong>callback</strong> es una función que se ejecuta en puntos específicos del ciclo de entrenamiento de tu modelo. Piénsalo como ese amigo que te avisa "ey, lleva 50 epochs y el loss sigue bajando, no pare" — pero automatizado. Sin callbacks, estarías pegado a la pantalla como cobrador de lotería esperando a que termine el entrenamiento para saber si todo salió bien o si botaste 12 horas de GPU por la ventana.</p>
+<p>En PyTorch puro, el entrenamiento es un loop manual:</p>
+<pre><code class="language-python">for epoch in range(num_epochs):
+    model.train()
+    for batch in dataloader:
+        optimizer.zero_grad()
+        outputs = model(batch['x'])
+        loss = criterion(outputs, batch['y'])
+        loss.backward()
+        optimizer.step()</code></pre>
+<p>¿Dónde caben los callbacks ahí? Exactamente: <strong>no caben</strong>. Ese loop no tiene puntos de extensión. Por eso existen frameworks como Lightning o implementaciones custom que injectan callbacks en cada fase. Sin ellos, tareas críticas como Early Stopping o guardar el mejor modelo se vuelven código spaghetti que nadie quiere mantener.</p>
 <hr>
-<h2>🎯 ¿Qué Es Callbacks?</h2>
-<p>En este artículo exploramos Callbacks en profundidad, con ejemplos prácticos y código.</p>
-<h3>Conceptos clave:</h3>
-<ul>
-<li><strong>Definición</strong>: Callbacks es fundamental en deep learning</li>
-<li><strong>Aplicación</strong>: Se usa en arquitecturas modernas de redes neuronales</li>
-<li><strong>Por qué importa</strong>: Sin esto, muchos modelos no podrían entrenar eficientemente</li>
-</ul>
+<h2>📐 La Matemática Detrás de Early Stopping</h2>
+<p>Early Stopping resuelve un problema concreto: <em>overfitting</em>. La idea es monitorear una métrica de validación y parar cuando deja de mejorar. La formalización es sencilla pero poderosa:</p>
+<p>Dada una métrica $M$ (ej. validación loss) evaluada después de cada epoch, definimos:</p>
+<p>$$\text{patience} = k$$</p>
+<p>El entrenamiento se detiene cuando:</p>
+<p>$$\forall i \in \{1, \ldots, k\}:\quad M_{\text{epoch}(t-i)} \geq M_{\text{epoch}(t)}$$</p>
+<p>Es decir, si durante $k$ epochs consecutivos la métrica no mejora respecto al mínimo histórico, paramos. La pregunta的问题是: ¿qué valor de $k$ usar? Si $k=1$, paras al primer sign of overfitting — pero también puedes parar antes de tiempo si tienes ruido en validation. Un $k$ entre 5 y 10 suele funcionar bien para la mayoría de casos. En producción, he visto a compañeros con $k=1$ parando en epoch 3 porque el validation loss tuvo un tiny bump. Eso no es overfitting, eso es ruido.</p>
 <hr>
-<h2>📐 La Matemática Detrás De Callbacks</h2>
-<p>La matemática que hace posible la magia de Callbacks:</p>
+<h2>🚀 Implementación Completa en PyTorch</h2>
+<p>Vamos a lo que importa: código real de 90+ líneas que implementa un sistema de callbacks completo. Esto no es tutorial básico — esto es lo que necesitas en producción:</p>
 <pre><code class="language-python">import torch
 import torch.nn as nn
+from torch.utils.data import DataLoader, TensorDataset
+from pathlib import Path
+import copy
+from dataclasses import dataclass, field
+from typing import Optional, Dict, Any, List, Callable
 
-# Ejemplo de Callbacks
-x = torch.randn(32, 64)
-print(f'Input: {x.shape}')
-</code></pre>
-<hr>
-<h2>🚀 Implementación En PyTorch</h2>
-<pre><code class="language-python"># Implementación de Callbacks
-class CallbacksBlock(nn.Module):
+# ─────────────────────────────────────────────
+# 1. Sistema de Callbacks Base
+# ─────────────────────────────────────────────
+
+@dataclass
+class TrainerState:
+    """Estado compartido entre todos los callbacks."""
+    epoch: int = 0
+    global_step: int = 0
+    best_metric: float = float('inf')
+    best_metric_mode: str = 'min'  # 'min' o 'max'
+    current_metric: float = float('inf')
+    model: Optional[nn.Module] = None
+    optimizer: Optional[torch.optim.Optimizer] = None
+    metrics_history: Dict[str, List[float]] = field(default_factory=dict)
+
+
+class Callback:
+    """Clase base para todos los callbacks."""
+    def on_train_begin(self, state: TrainerState):
+        pass
+
+    def on_train_end(self, state: TrainerState):
+        pass
+
+    def on_epoch_begin(self, state: TrainerState):
+        pass
+
+    def on_epoch_end(self, state: TrainerState):
+        pass
+
+    def on_batch_begin(self, state: TrainerState):
+        pass
+
+    def on_batch_end(self, state: TrainerState):
+        pass
+
+
+# ─────────────────────────────────────────────
+# 2. EarlyStopping Callback
+# ─────────────────────────────────────────────
+
+class EarlyStoppingCallback(Callback):
+    """
+    Detiene el entrenamiento cuando la métrica de validación
+    deja de mejorar después de `patience` epochs.
+    """
+    def __init__(self, patience: int = 5, min_delta: float = 0.0,
+                 metric: str = 'val_loss', mode: str = 'min'):
+        self.patience = patience
+        self.min_delta = min_delta  # mejora mínima para considerar que sí mejoró
+        self.metric = metric
+        self.mode = mode
+        self.counter = 0
+        self.best_value = float('inf') if mode == 'min' else float('-inf')
+        self.should_stop = False
+
+    def on_epoch_end(self, state: TrainerState):
+        current = state.metrics_history.get(self.metric, [])
+        if not current:
+            return
+
+        current_value = current[-1]
+
+        # ¿Mejoró?
+        if self.mode == 'min':
+            improved = current_value < (self.best_value - self.min_delta)
+        else:
+            improved = current_value > (self.best_value + self.min_delta)
+
+        if improved:
+            self.best_value = current_value
+            self.counter = 0
+            print(f"  ↳ {self.metric} mejoró a {current_value:.4f}, reseteo counter")
+        else:
+            self.counter += 1
+            print(f"  ↳ Sin mejora ({self.counter}/{self.patience})")
+            if self.counter >= self.patience:
+                self.should_stop = True
+                print(f"  ⚠️ Early stopping activado tras {self.counter} epochs sin mejorar")
+
+
+# ─────────────────────────────────────────────
+# 3. ModelCheckpoint Callback
+# ─────────────────────────────────────────────
+
+class ModelCheckpointCallback(Callback):
+    """
+    Guarda el modelo cuando la métrica mejora.
+    Incluye optimizer state para poder resumir el entrenamiento.
+    """
+    def __init__(self, filepath: str, metric: str = 'val_loss',
+                 mode: str = 'min', save_best_only: bool = True,
+                 save_optimizer: bool = True):
+        self.filepath = Path(filepath)
+        self.metric = metric
+        self.mode = mode
+        self.save_best_only = save_best_only
+        self.save_optimizer = save_optimizer
+        self.best_value = float('inf') if mode == 'min' else float('-inf')
+
+    def on_epoch_end(self, state: TrainerState):
+        current = state.metrics_history.get(self.metric, [])
+        if not current:
+            return
+
+        current_value = current[-1]
+
+        # ¿Es el mejor?
+        if self.mode == 'min':
+            is_best = current_value < self.best_value
+        else:
+            is_best = current_value > self.best_value
+
+        if is_best:
+            self.best_value = current_value
+            self._save_checkpoint(state, current_value)
+        elif not self.save_best_only:
+            # Guardar cada epoch (¡cuidado con el disco!)
+            self._save_checkpoint(state, current_value, suffix=f"_epoch{state.epoch}")
+
+    def _save_checkpoint(self, state: TrainerState, metric_value: float,
+                        suffix: str = "_best"):
+        self.filepath.parent.mkdir(parents=True, exist_ok=True)
+        filename = f"{self.filepath.stem}{suffix}{self.filepath.suffix}"
+        save_path = self.filepath.parent / filename
+
+        checkpoint = {
+            'epoch': state.epoch,
+            'model_state_dict': state.model.state_dict(),
+            'metric': metric_value,
+        }
+
+        if self.save_optimizer and state.optimizer is not None:
+            checkpoint['optimizer_state_dict'] = state.optimizer.state_dict()
+
+        torch.save(checkpoint, save_path)
+        print(f"  💾 Checkpoint guardado en {save_path}")
+
+
+# ─────────────────────────────────────────────
+# 4. ProgressBarCallback (sin tqdm — tqdm es opcional)
+# ─────────────────────────────────────────────
+
+class ProgressBarCallback(Callback):
+    """Muestra progreso del entrenamiento."""
+    def __init__(self, total_epochs: int):
+        self.total_epochs = total_epochs
+
+    def on_epoch_begin(self, state: TrainerState):
+        epoch_display = state.epoch + 1
+        bar_len = 30
+        filled = int(bar_len * epoch_display / self.total_epochs)
+        bar = '█' * filled + '░' * (bar_len - filled)
+        print(f"\nEpoch {epoch_display}/{self.total_epochs} [{bar}]", end='', flush=True)
+
+    def on_epoch_end(self, state: TrainerState):
+        metrics_str = ' | '.join([
+            f"{k}: {v[-1]:.4f}"
+            for k, v in state.metrics_history.items()
+            if v
+        ])
+        print(f" | {metrics_str}")
+
+
+# ─────────────────────────────────────────────
+# 5. Custom Callback — Logging a Dict Estructurado
+# ─────────────────────────────────────────────
+
+class MetricsLoggerCallback(Callback):
+    """Loggea métricas a un diccionario para luego visualizarlas."""
     def __init__(self):
-        super().__init__()
-        # Capas del bloque
-    
-    def forward(self, x):
-        return x
+        self.all_metrics: Dict[str, List[float]] = {}
 
-# Uso
-model = CallbacksBlock()
-output = model(x)
-print(f"Output shape: {output.shape}")
+    def on_epoch_end(self, state: TrainerState):
+        for name, values in state.metrics_history.items():
+            if name not in self.all_metrics:
+                self.all_metrics[name] = []
+            self.all_metrics[name].append(values[-1])
+
+    def get_metrics(self) -> Dict[str, List[float]]:
+        return self.all_metrics
+
+
+# ─────────────────────────────────────────────
+# 6. LRSchedulerCallback (StepLR ejemplo)
+# ─────────────────────────────────────────────
+
+class LRSchedulerCallback(Callback):
+    """Ajusta el learning rate según un scheduler."""
+    def __init__(self, scheduler):
+        self.scheduler = scheduler
+
+    def on_epoch_end(self, state: TrainerState):
+        old_lr = self.scheduler.get_last_lr()[0]
+        self.scheduler.step()
+        new_lr = self.scheduler.get_last_lr()[0]
+        if abs(new_lr - old_lr) > 1e-6:
+            print(f"  📉 LR: {old_lr:.2e} → {new_lr:.2e}")
+
+
+# ─────────────────────────────────────────────
+# 7. Trainer con Callbacks (integración completa)
+# ─────────────────────────────────────────────
+
+class Trainer:
+    def __init__(self, model: nn.Module, optimizer: torch.optim.Optimizer,
+                 criterion: nn.Module, device: str = 'cuda'):
+        self.model = model.to(device)
+        self.optimizer = optimizer
+        self.criterion = criterion
+        self.device = device
+        self.callbacks: List[Callback] = []
+        self.state = TrainerState()
+
+    def register_callback(self, callback: Callback):
+        self.callbacks.append(callback)
+
+    def _trigger(self, method_name: str):
+        for cb in self.callbacks:
+            getattr(cb, method_name)(self.state)
+
+    def fit(self, train_loader: DataLoader, val_loader: DataLoader,
+            epochs: int = 10):
+        self.state.best_metric = float('inf')
+        self.state.model = self.model
+        self.state.optimizer = self.optimizer
+
+        self._trigger('on_train_begin')
+
+        for epoch in range(epochs):
+            self.state.epoch = epoch
+            self.state.metrics_history = {k: [] for k in
+                list(self.state.metrics_history.keys())}
+
+            self._trigger('on_epoch_begin')
+
+            # ── Entrenamiento ──
+            self.model.train()
+            train_loss = 0.0
+            for batch_idx, batch in enumerate(train_loader):
+                self.state.global_step += 1
+                self._trigger('on_batch_begin')
+
+                x, y = batch[0].to(self.device), batch[1].to(self.device)
+                self.optimizer.zero_grad()
+                outputs = self.model(x)
+                loss = self.criterion(outputs, y)
+                loss.backward()
+                self.optimizer.step()
+
+                train_loss += loss.item()
+                self._trigger('on_batch_end')
+
+            avg_train_loss = train_loss / len(train_loader)
+            self.state.metrics_history.setdefault('train_loss', []).append(
+                avg_train_loss)
+
+            # ── Validación ──
+            self.model.eval()
+            val_loss = 0.0
+            with torch.no_grad():
+                for batch in val_loader:
+                    x, y = batch[0].to(self.device), batch[1].to(self.device)
+                    outputs = self.model(x)
+                    loss = self.criterion(outputs, y)
+                    val_loss += loss.item()
+
+            avg_val_loss = val_loss / len(val_loader)
+            self.state.metrics_history.setdefault('val_loss', []).append(
+                avg_val_loss)
+
+            self._trigger('on_epoch_end')
+
+            # Revisar si algún callback pidió detener
+            for cb in self.callbacks:
+                if isinstance(cb, EarlyStoppingCallback) and cb.should_stop:
+                    print("🛑 Entrenamiento detenido por Early Stopping")
+                    self._trigger('on_train_end')
+                    return
+
+        self._trigger('on_train_end')
+        print("✅ Entrenamiento completado")
+
+
+# ─────────────────────────────────────────────
+# 8. Uso — Ejemplo Completo
+# ─────────────────────────────────────────────
+
+if __name__ == "__main__":
+    # Dataset dummy
+    torch.manual_seed(42)
+    X_train = torch.randn(1000, 20)
+    y_train = torch.randint(0, 3, (1000,))
+    X_val = torch.randn(200, 20)
+    y_val = torch.randint(0, 3, (200,))
+
+    train_ds = TensorDataset(X_train, y_train)
+    val_ds = TensorDataset(X_val, y_val)
+    train_loader = DataLoader(train_ds, batch_size=32, shuffle=True)
+    val_loader = DataLoader(val_ds, batch_size=32)
+
+    # Modelo simple
+    model = nn.Sequential(
+        nn.Linear(20, 64),
+        nn.ReLU(),
+        nn.Dropout(0.3),
+        nn.Linear(64, 32),
+        nn.ReLU(),
+        nn.Linear(32, 3)
+    )
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+    criterion = nn.CrossEntropyLoss()
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10,
+                                                  gamma=0.5)
+
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    trainer = Trainer(model, optimizer, criterion, device)
+
+    # Registrar callbacks
+    trainer.register_callback(ProgressBarCallback(total_epochs=20))
+    trainer.register_callback(
+        ModelCheckpointCallback(
+            filepath="./checkpoints/best_model.pt",
+            metric='val_loss',
+            mode='min',
+            save_best_only=True,
+            save_optimizer=True  # ✅ CRÍTICO: guardar optimizer state
+        )
+    )
+    trainer.register_callback(
+        EarlyStoppingCallback(patience=7, min_delta=1e-4,
+                               metric='val_loss', mode='min')
+    )
+    trainer.register_callback(LRSchedulerCallback(scheduler))
+    logger = MetricsLoggerCallback()
+    trainer.register_callback(logger)
+
+    # Entrenar
+    trainer.fit(train_loader, val_loader, epochs=20)
+
+    # Ver métricas guardadas
+    print("\n📊 Métricas finales:")
+    for name, values in logger.get_metrics().items():
+        print(f"  {name}: {values[-1]:.4f}")</code></pre>
+<hr>
+<h2>⚠️ Los 3 Errores Más Comunes (y Sus Arreglos)</h2>
+<h3>Error 1: Patience Demasiado Baja — Para Prematuramente</h3>
+<p><strong>El problema:</strong> Muchos:setopt people usan <code>patience=2</code> o incluso <code>patience=1</code> y esperan que el modelo entrene completo. En la vida real, el validation loss no baja de forma monótona — tiene ruido. Una fluctuación de 0.001 en el loss puede disparar el counter y parar el entrenamiento en epoch 5 de 100.</p>
+<p><strong>El código malo:</strong></p>
+<pre><code class="language-python"># ❌ PATIENCE = 1 ES RECETA PARA DESASTRE
+early_stop = EarlyStoppingCallback(patience=1, metric='val_loss')
+# Si en epoch 2 el val_loss sube 0.0001 por ruido, para en epoch 2.
+</code></pre>
+<p><strong>La solución:</strong></p>
+<pre><code class="language-python"># ✅ Patience de 5-10 más un min_delta razonable
+early_stop = EarlyStoppingCallback(
+    patience=7,          # 7 epochs sin mejora antes de parar
+    min_delta=1e-4,      # mejoras menores a 0.0001 no cuentan
+    metric='val_loss',
+    mode='min'
+)
+</code></pre>
+<h3>Error 2: Guardar Checkpoint Cada Epoch — Llena el Disco</h3>
+<p><strong>El problema:</strong> <code>save_best_only=False</code> sin filtro parece inofensivo hasta que tienes 500GB en checkpoints de un modelo que pesaba 50MB. He visto servidores llenos por esto. Un modelo de 100MB × 100 epochs = 10GB en checkpoints. Pero además: si guardas cada epoch, ¿cuál abres después? Es un desastre de organización.</p>
+<p><strong>El código malo:</strong></p>
+<pre><code class="language-python"># ❌ GUARDA CADA EPOCH — DISCO LLENO EN UNA SEMANA
+checkpoint = ModelCheckpointCallback(
+    filepath="./checkpoints/modelo.pt",
+    save_best_only=False  # ¡CADA EPOCH SE GUARDA!
+)
+</code></pre>
+<p><strong>La solución:</strong></p>
+<pre><code class="language-python"># ✅ SOLO GUARDAR EL MEJOR
+checkpoint = ModelCheckpointCallback(
+    filepath="./checkpoints/best_model.pt",
+    metric='val_loss',
+    mode='min',
+    save_best_only=True,  # Solo sobreescribe si mejora
+    save_optimizer=True   # Incluye optimizer state
+)
+</code></pre>
+<h3>Error 3: No Guardar el Optimizer State — Checkpoint Inútil</h3>
+<p><strong>El problema:</strong> Guardar solo <code>model.state_dict()</code> parece suficiente hasta que intentas retomar el entrenamiento. Sin el estado del optimizer (momentum, learning rate history, etc.), reiniciar desde ese checkpoint produce un modelo que se comporta diferente. Peor aún: si usas learning rate scheduling con warmup, retomar sin el optimizer state es básicamente entrenar de nuevo pero peor.</p>
+<p><strong>El código malo:</strong></p>
+<pre><code class="language-python"># ❌ SOLO GUARDA EL MODELO — OPTIMIZER STATE SE PIERDE
+torch.save({
+    'model_state_dict': model.state_dict(),
+    'epoch': epoch,
+}, filepath)
+# Para resuming: el LR está en default, momentum en 0, etc.
+</code></pre>
+<p><strong>La solución:</strong></p>
+<pre><code class="language-python"># ✅ GUARDAR MODELO + OPTIMIZER + SCHEDULER STATE
+checkpoint = {
+    'epoch': epoch,
+    'model_state_dict': model.state_dict(),
+    'optimizer_state_dict': optimizer.state_dict(),
+    'scheduler_state_dict': scheduler.state_dict(),
+    'best_val_loss': best_val_loss,
+}
+torch.save(checkpoint, filepath)
+
+# Para cargar y continuar:
+# checkpoint = torch.load(filepath)
+# model.load_state_dict(checkpoint['model_state_dict'])
+# optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+# scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+# epoch = checkpoint['epoch']
 </code></pre>
 <hr>
-<h2>⚠️ Errores Comunes Y Cómo Evitarlos</h2>
-<h3>Error 1: No entender el orden de operaciones</h3>
-<p><strong>El problema</strong>: El orden en que se aplican las operaciones con Callbacks afecta el resultado.</p>
-<p><strong>La solución</strong>: Siempre verifica la dimensión y el orden de las operaciones.</p>
-<h3>Error 2: Olvidar el modo de evaluación</h3>
-<p><strong>El problema</strong>: Callbacks puede comportarse diferente en entrenamiento vs inferencia.</p>
-<p><strong>La solución</strong>: Usa model.eval() durante inferencia y model.train() durante entrenamiento.</p>
+<h2>Integración con PyTorch Lightning</h2>
+<p>Si ya usas <strong>PyTorch Lightning</strong>, todo esto viene integrado. Un LightningModule tiene un hook system built-in:</p>
+<pre><code class="language-python">from pytorch_lightning import LightningModule, Trainer
+from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
+
+class MiModelo(LightningModule):
+    def training_step(self, batch, batch_idx):
+        x, y = batch
+        y_hat = self(x)
+        loss = nn.functional.cross_entropy(y_hat, y)
+        self.log('train_loss', loss)
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        x, y = batch
+        y_hat = self(x)
+        loss = nn.functional.cross_entropy(y_hat, y)
+        self.log('val_loss', loss)
+
+model = MiModelo()
+trainer = Trainer(
+    max_epochs=100,
+    callbacks=[
+        EarlyStopping(monitor='val_loss', patience=7, mode='min'),
+        ModelCheckpoint(dirpath='./checkpoints/', monitor='val_loss',
+                        save_top_k=3, mode='min'),
+    ]
+)
+trainer.fit(model, train_dataloader, val_dataloader)</code></pre>
+<p>Lightning también soporta callbacks personalizados implementando la clase <code>Callback</code> de Lightning, con métodos como <code>on_epoch_end</code>, <code>on_train_begin</code>, etc. — exactamente el mismo patrón que construimos arriba, pero abstraído.</p>
 <hr>
 <h2>💡 Tips Para Producción</h2>
 <ul>
-<li>Monitorea las métricas relevantes durante el entrenamiento</li>
-<li>Usa Callbacks de acuerdo a la arquitectura de tu red</li>
-<li>No todas las técnicas sirven para todos los problemas</li>
+<li><strong>Siempre guarda optimizer state</strong> — no lo olvides, te va a salvar cuando el job de GPU se caiga a las 3am</li>
+<li><strong>Usa min_delta &gt; 0</strong> en EarlyStopping para ignorar ruido en validación</li>
+<li><strong>Patience entre 5-10</strong> — con datasets pequeños puede necesitar más, con large-scale menos</li>
+<li><strong>Checkpoint naming</strong>: incluye epoch y métrica en el nombre del archivo para debugging fácil</li>
+<li><strong>Multiple callbacks</strong>: el orden importa. ProgressBar → LRScheduler → EarlyStopping → ModelCheckpoint suele funcionar bien</li>
 </ul>
 <hr>
-<p><em>¡Eso es todo por hoy! Nos vemos mañana en el Día 104.</em></p>
-
-  </article>
+<h2>📊 Resumen</h2>
+<p>Los callbacks son el sistema nervioso del entrenamiento moderno. Sin ellos:</p>
+<ul>
+<li>No hay forma limpia de implementar Early Stopping</li>
+<li>Guardar checkpoints se vuelve código espagueti</li>
+<li>El logging de métricas es manual y propenso a errores</li>
+</ul>
+<p>Con un buen sistema de callbacks — ya sea built-in de Lightning o tu propia implementación como la de arriba — el entrenamiento se convierte en un proceso reproducible y automatizado. Puedes irte a dormir tranquilo sabiendo que si el modelo empieza a sobreajustar, el EarlyStopping lo para; si encuentra un mejor checkpoint, lo guarda; y si algo sale mal, tienes el optimizer state para retomar.</p>
+<p>Eso es todo por hoy, parcero. Mañana en el Día 104 hablamos de <strong>Data Augmentation</strong> — crear datos de la nada para que tu red aprenda más y mejor. ¡Hasta entonces!</p>
+<p><em>💻 #365DaysOfAI — Día 103 por Fabián Rodríguez</em></p>
+</article>
 
   <script>
     document.getElementById('themeToggle').addEventListener('click', function() {
