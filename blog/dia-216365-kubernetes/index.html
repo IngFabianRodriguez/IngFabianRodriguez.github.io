@@ -118,56 +118,293 @@ nav {
   </header>
 
   <article class="article-body">
-    <h1>Quantization - Modelos Livianos Con Precision Reducida</h1>
+    <h1>Data Validation Con Great Expectations — El Quality Guard Que Tu Pipeline Necesita</h1>
 
-<p>Hagale pues, parcero. Hoy es el Dia 216 y hablamos de Quantization, la tecnica para hacer modelos mas pequenos y rapidos sin perder demasiada precision. Cafe.</p>
+<p>Hagale pues, compa. Llegamos al Día 216 y hoy vamos a hablar de algo que en Colombia decimos cuando alguien no cuida lo que tiene: "como el que pierde el que no sabe lo que tiene". Eso pasa mucho en ML cuando entrenamos modelos con datos de baja calidad sin siquiera saberlo. Hoy: Great Expectations, el guardián de calidad que tu pipeline necesita. Dejala ahí la开口, que esto está interesante.</p>
+
 <hr>
-<h2>🎯 Que Es La Quantization?</h2>
-<p>Quantization convierte los pesos de un modelo de precision completa (float32) a precision reducida (int8, float16, etc). Esto reduce dramáticamente el tamano del modelo y acelera la inferencia.</p>
-<h3>Tipos de quantization:</h3>
+<h2>🎯 Qué Es Great Expectations?</h2>
+<p>Great Expectations (GX) es una biblioteca Python open-source para validar, documentar y profilear datos. Básicamente, le dices a tus datos "espero que luzcan así", y GX te avisa cuando no es el caso. Es como tener un filtro de calidad automático en tu pipeline de datos.</p>
+
+<h3>Conceptos fundamentales:</h3>
 <ul>
-<li><strong>FP16</strong>: Media precision, buena compatibilidad</li>
-<li><strong>INT8</strong>: 8 bits, reduccion 4x en tamano</li>
-<li><strong>INT4</strong>: 4 bits, reduccion 8x, mayor perdida</li>
-<li><strong>Dynamic vs Static</strong>: Post-entrenamiento vs durante entrenamiento</li>
+<li><strong>Expectation</strong>: Una aserción sobre tus datos (ej: "esta columna no puede ser null", "este valor debe estar entre 0 y 100")</li>
+<li><strong>Expectation Suite</strong>: Colección de expectations que aplicas a un dataset</li>
+<li><strong>Checkpoint</strong>: Objeto que ejecuta una suite contra datos específicos y genera un resultado</li>
+<li><strong>Data Docs</strong>: Documentación automática en HTML con los resultados de la validación</li>
+<li><strong>Profiler</strong>: Analiza tus datos y sugiere expectations automáticamente basadas en lo que ve</li>
 </ul>
-<hr>
-<h2>📐 Quantization En PyTorch</h2>
-<pre><code>import torch
-import torch.quantization
 
-# Post-Training Quantization (dynamic)
-model_int8 = torch.quantization.quantize_dynamic(
-    model, {torch.nn.Linear}, dtype=torch.qint8
+<hr>
+<h2>📐 La Matemática De La Validación De Datos</h2>
+<p>Una expectation es esencialmente una función booleana sobre tu dataset:</p>
+
+<p><strong>Expectation(data) → {True, False, None (error)}</strong></p>
+
+<p>Cuando la expectativa falla, no solo obtienes un True/False — obtienes un resultado rico con:</p>
+<ul>
+<li>El número de filas que cumplieron vs fallaron</li>
+<li>Las filas específicas que fallaron (si pides detail)</li>
+<li>El tipo de falla (¿null? ¿out of range? ¿type mismatch?)</li>
+<li>La excepción capturada si hubo error en la validación</li>
+</ul>
+
+<p>La matemática de los checks más comunes:</p>
+
+<pre><code># Column presence: todas las columnas en la lista existen
+expect_columns_to_match_set(df, column_set) → bool
+
+# Null check: porcentaje de nulos menor a threshold
+expect_column_values_to_not_be_null(df, col, mostly=0.95) → dict con success, partial_unexpected_list
+
+# Range check: valores dentro de min/max
+expect_column_values_to_be_between(df, col, min_value=0, max_value=100) → dict
+
+# Uniqueness: sin duplicados
+expect_column_values_to_be_unique(df, col) → bool
+
+# Distribution: distribución aproximadamente normal
+expect_column_stdev_to_be_between(df, col, min_stdev=0.5, max_stdev=10.0) → bool
+</code></pre>
+
+<hr>
+<h2>🚀 Implementando Data Validation Con Great Expectations</h2>
+
+<h3>1. Configuración Inicial y Primer Expectation Suite</h3>
+
+<pre><code>import great_expectations as gx
+from great_expectations.dataset import PandasDataset
+
+# Crear o abrir un Data Context (el manage principal de GX)
+context = gx.get_context()
+
+# Crear un Expectation Suite
+expectation_suite = context.add_expectation_suite(
+    expectation_suite_name="customer_data_quality"
 )
 
-# Dynamic quantization simple
-model_dynamic = torch.quantization.quantize_dynamic(
-    model,  # modelo original
-    {torch.nn.Linear, torch.nn.LSTM},  # capas a quantizar
-    dtype=torch.qint8
+# Crear expectations sobre un DataFrame
+df = pd.read_parquet("data/customer_data.parquet")
+
+# Expectation Suite básica
+suite = expectation_suite.add_expectation(
+    expectation_type="expect_column_values_to_not_be_null",
+    kwargs={"column": "customer_id", "mostly": 1.0}
+)
+
+suite.add_expectation(
+    expectation_type="expect_column_values_to_be_between",
+    kwargs={
+        "column": "account_age_days",
+        "min_value": 0,
+        "max_value": 36500  # ~100 años max
+    }
+)
+
+suite.add_expectation(
+    expectation_type="expect_column_distributions_to_be_match",
+    kwargs={
+        "column": "credit_score",
+        "distribution": "norm",
+        "params": {"mean": 650, "stddev": 50}
+    }
+)
+
+# Guardar la suite
+context.save_expectation_suite(expectation_suite)
+</code></pre>
+
+<h3>2. Profiling Automático: Dejar Que GX Descubra Tus Datos</h3>
+
+<pre><code>from great_expectations.profile import PandasProfiler
+
+# El profiler analiza el DataFrame y sugiere expectations basadas en lo que ve
+profiler = PandasProfiler(df)
+
+# Genera un Expectation Suite con expectativas basadas en los datos reales
+suggested_suite = profiler.build_suite()
+
+# Esto sugiere expectations como:
+# - expect_column_mean_to_be_between (basado en el mean real)
+# - expect_column_min_to_be_greater_than (basado en el min real)
+# - expect_column_values_to_be_in_set (para columnas categóricas)
+# - expect_column_stdev_to_be_between (basado en la desviación real)
+
+# Muy útil como punto de partida antes de definir expectativas de negocio
+</code></pre>
+
+<h3>3. Checkpoints: Ejecutar Validación En Tu Pipeline</h3>
+
+<pre><code># Crear un Checkpoint que ejecuta la suite contra datos reales
+checkpoint = context.add_checkpoint(
+    name="customer_data_checkpoint",
+    run_name_template="%Y%m%d-%H%M%S-customer-validation",
+    expectation_suite_name="customer_data_quality",
+    batch_request={
+        "datasource_name": "files_datasource",
+        "data_asset_name": "customer_data.parquet",
+    }
+)
+
+# Ejecutar el checkpoint
+results = checkpoint.run()
+
+# results es un dict con:
+# - success: True/False
+# - run_id: timestamp de la ejecución
+# - validation_results: detalles de cada expectation
+# - actions_results: qué pasó (ej: Data Docs actualizado, alerta enviada)
+
+if not results["success"]:
+    print("⚠️ VALIDACIÓN FALLIDA")
+    for result in results["results"]:
+        if not result["success"]:
+            print(f"  ❌ {result['expectation_config']['expectation_type']}: {result['result']}")
+</code></pre>
+
+<h3>4. Integración En ML Pipeline (Airflow/Kubernetes)</h3>
+
+<pre><code># snippet_airflow.py - Integración con Apache Airflow
+from airflow.operators.python import PythonOperator
+from great_expectations.checkpoint import SimpleCheckpoint
+
+def validate_training_data(**context):
+    """
+    Se ejecuta antes de cada entrenamiento.
+    Si falla la validación, no inicia el training.
+    """
+    context_gx = gx.get_context()
+    
+    checkpoint = SimpleCheckpoint(
+        name="training_data_checkpoint",
+        data_context=context_gx,
+        expectation_suite_name="training_data_quality",
+        batch_request={
+            "datasource_name": "s3_datasource",
+            "data_asset_name": "training_data.parquet",
+        },
+        action_list=[
+            {"name": "store_validation_result", "action": {"class_name": "StoreValidationResultAction"}},
+            {"name": "update_data_docs", "action": {"class_name": "UpdateDataDocsAction"}},
+            {"name": "send_slack_notification_on_failure", 
+             "action": {"class_name": "SlackNotificationAction", 
+                       "slack_webhook": "{{ var.value.slack_webhook }}"}},
+        ]
+    )
+    
+    result = checkpoint.run()
+    
+    if not result["success"]:
+        raise ValueError(f"Data validation failed: {result}")
+    
+    return result
+
+# En tu DAG de Airflow:
+# validate_data >> train_model >> evaluate_model >> deploy_model
+</code></pre>
+
+<hr>
+<h2>⚠️ Los 3 Errores Más Costosos</h2>
+
+<h3>Error 1: Entrenar Con Datos De Baja Calidad Sin Saberlo</h3>
+<p><strong>El problema</strong>: Coges un dataset de 1 millón de filas, lo metes a tu modelo, entrenas por 3 días, y al final descubres que el 15% de las filas tenían <code>account_balance = -999999</code> (valor placeholder para missing). Tu modelo aprendió un patrón que no existe. O peor: el 30% de tus labels estaban invertidos por un bug en el ETL de la semana pasada. En Colombia: "el que no checks data, después llora".</p>
+
+<p><strong>El fix</strong>: Implementar data validation ANTES del entrenamiento. No después. La regla es simple: si la validación falla, el pipeline de entrenamiento no inicia. GX te permite definir expectations de negocio (no solo técnicas) y fail-fast cuando algo está mal.</p>
+
+<pre><code># ANTES de procesar para entrenamiento:
+validation_result = checkpoint.run()
+
+# Expectation de ejemplo: "espero que credit_score tenga distribución normal"
+# y que el 95% de valores estén entre 300 y 850
+
+# Si esto falla, no se ejecuta el entrenamiento
+assert validation_result["success"], "Datos no cumplen calidad minima"
+</code></pre>
+
+<h3>Error 2: No Validar El Schema De Datos Nuevos</h3>
+<p><strong>El problema</strong>: El equipo上游 cambia el schema de la tabla source (agrega una columna, renombra otra, cambia un tipo de int a float) y tu pipeline de ML sigue funcionando tranquilamente pero ahora tiene columnas que no esperaba o tipos que no coinciden. El modelo entrena con datos malformados y produce predicciones silenciosamente degrade. En Colombia: "del agua mansa me libró Dios, pero del agua que no se ve".</p>
+
+<p><strong>El fix</strong>: GX tiene expectations específicas para schema validation:</p>
+
+<pre><code># Validar que el schema es exactamente lo que esperas
+suite.add_expectation(
+    expectation_type="expect_table_columns_to_match_ordered_list",
+    kwargs={
+        "column_list": ["customer_id", "account_age_days", "credit_score", 
+                        "transaction_count_30d", "label"]
+    }
+)
+
+# Validar tipos de datos
+suite.add_expectation(
+    expectation_type="expect_column_values_to_be_of_type",
+    kwargs={"column": "customer_id", "type_": "int64"}
+)
+
+suite.add_expectation(
+    expectation_type="expect_column_values_to_be_of_type",
+    kwargs={"column": "credit_score", "type_": "float64"}
+)
+
+# Validar que no hay columnas inesperadas
+suite.add_expectation(
+    expectation_type="expect_table_columns_to_not_match_ordered_list",
+    kwargs={
+        "column_list": ["_meta_timestamp", "processing_id", "uuid_extra"]
+        # estas columnas NO deberían existir (son de之前的ETL)
+    }
 )
 </code></pre>
-<hr>
-<h2>🚀 Quantization-Aware Training</h2>
-<pre><code># QAT (Quantization Aware Training)
-model.train()
-model.qconfig = torch.quantization.get_default_qat_qconfig('fbgemm')
-torch.quantization.prepare_qat(model, inplace=True)
 
-# Entrenar normalmente...
-train(model)
+<h3>Error 3: Data Validation Como One-Time Check En Vez De Continuous Monitoring</h3>
+<p><strong>El problema</strong>: Hiciste data validation al inicio del proyecto, pasó, y nunca más se ejecutó. El dataset de producción cambia semanalmente sin que nadie lo sepa. Un día tu modelo empieza a degrade y no entiendes por qué — hasta que descubres que hace 3 semanas el equipo de ingeniería cambió el sistema de tracking y ahora todas las fechas vienen en formato UNIX en vez de ISO. La validación one-time es como ir al médico solo una vez en la vida. En Colombia: "quien se enferma por falta de médico, su culpa es".</p>
 
-# Convertir a quantized
-model_int8 = torch.quantization.convert(model.eval(), inplace=False)
+<p><strong>El fix</strong>: La validación debe ser continua, no esporádica. Esto significa:</p>
+<ul>
+<li><strong>En pre-training</strong>: Ejecutar checkpoint antes de cada entrenamiento</li>
+<li><strong>En pre-inference</strong>: Validar features antes de pasarlas al modelo</li>
+<li><strong>Monitoreo en producción</strong>: Data Observability tools (Monte Carlo, Great Expectations Cloud, Dataplex) que detectan drift y anomalías</li>
+<li><strong>Alertas automáticas</strong>: Slack/email cuando una validación falla</li>
+</ul>
+
+<pre><code># Ejemplo: validación continua en un job schedule
+schedule interval='0 6 * * *'  # diario a las 6am
+
+def daily_data_quality_check():
+    """
+    Se ejecuta diariamente.
+    Valida el dataset nuevo.
+    Si falla, alerta a Slack y NO envía a producción.
+    """
+    result = checkpoint.run()
+    
+    # Generar Data Docs con resultados
+    context.build_data_docs()
+    
+    # Enviar notificación a Slack
+    if not result["success"]:
+        send_slack_alert(
+            channel="#ml-alerts",
+            message=f"⚠️ Data Quality Check Falló: {result['run_id']}"
+        )
+        return False
+    
+    send_slack_alert(
+        channel="#ml-alerts", 
+        message=f"✅ Data Quality Check Pasó: {result['run_id']}"
+    )
+    return True
 </code></pre>
+
 <hr>
-<h2>⚠️ Errores Comunes</h2>
-<h3>Error 1: Quantization Muy Agresiva</h3>
-<p><strong>El problema</strong>: INT4 o INT2 causan degradacion severa.</p>
-<p><strong>La solucion</strong>: Usa INT8 para la mayoria de casos, FP16 si hay problemas de precision.</p>
-<hr>
-<p><em>Eso es todo! Nos vemos en el Dia 217.</em></p>
+<h2>🏁 Resumen y Cierre</h2>
+<p>Hagale pues, como decimos en Colombia: "mejor prevenir que lamentar". La validación de datos no es opcional ni es un "nice to have" — es el fundamento sobre el cual construyes modelos confiables. Great Expectations te da las herramientas para definir expectativas claras, ejecutarlas automáticamente y documentar los resultados.</p>
+
+<p>La regla de oro: si no validaste los datos, no entrenaste el modelo. Y si no monitoreas los datos continuamente, no sabes cuándo tu modelo empezó a degrade.</p>
+
+<p>No seas como el que pierde el que no sabe lo que tiene. Valida, monitorea, y duerme tranquilo.</p>
+
+<p><em>Eso es todo, parcero. Mañana en el Día 217 seguimos con más temas de MLOps. Dejala ahí la curiosidad.</em></p>
   </article>
 
   <script>
