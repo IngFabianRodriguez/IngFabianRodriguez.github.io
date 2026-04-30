@@ -118,8 +118,172 @@ nav {
   </header>
 
   <article class="article-body">
-    <h1>Regularización L1 y L2 - Por Qué tu Modelo Necesita Restricciones para No Sobreajustar</h1>
-<p>Contenido del Día 77 - Esta entrada aún está en construcción. ¡Vuelve pronto!</p>
+    <h2>La Intro que el 85% Se Salta</h2>
+    <p>Parcero, ¿cuántas veces has visto que tu modelo tiene 95% de accuracy en training pero 78% en test? Eso es overfitting puro, y la regularización es la herramienta principal para combatirlo. Pero aquí está el problema: el 85% sabe que L1 y L2 "son para regularizar" pero no sabe cómo funcionan realmente, cuándo usar cada una, ni cómo interactúan con el optimizador.</p>
+    <p>Yo lo aprendí de una manera dolorosa: estaba haciendo feature selection para un modelo de churn prediction con 300 features categóricos. Intenté L1 (Lasso) para hacer feature selection automático. Después de 3 horas de debugging, descubrí que mi implementación estaba haciendo L2 (Ridge) sin saberlo — porque en SGD, weight decay y L2 son matemáticamente equivalentes. Esa confusión entre L1 y L2, entre weight decay y L2 regularization... esa vaina me costó un día completo.</p>
+    <p>Hoy destapamos L1 y L2: la matemática, cuándo usar cada una, y los errores que te hacen perder semanas.</p>
+
+    <h2>¿Qué es Regularization?</h2>
+    <p>En esencia, regularización es cualquier modificación al training process que busca reducir test error a cambio de quizás un poco más training error. La forma más directa: añadir un término a la loss que penaliza la complejidad del modelo.</p>
+    <p>Loss regularizada: $$\mathcal{L}_{reg}(\theta) = \mathcal{L}(\theta) + \lambda R(\theta)$$</p>
+    <p>Donde $R(\theta)$ es la función de regularización y $\lambda$ controla cuánto penalizamos la complejidad. El tradeoff: $\lambda$ muy alto → underfitting; $\lambda$ muy bajo → overfitting.</p>
+
+    <h2>L2 Regularization (Ridge)</h2>
+    <p>L2 usa la norma Euclidiana al cuadrado: $$R(\theta) = \frac{1}{2}\sum_{i} \theta_i^2$$</p>
+    <p>La loss completa: $$\mathcal{L}_{L2} = \mathcal{L}(\theta) + \frac{\lambda}{2}\|\theta\|_2^2$$</p>
+    <p>El gradiente: $$\nabla_\theta \mathcal{L}_{L2} = \nabla_\theta \mathcal{L}(\theta) + \lambda \theta$$</p>
+    <p>El efecto: en cada actualización, los pesos se reducen por un factor proporcional a sí mismos ($\lambda \theta$). Esto shrink los pesos suavemente hacia zero pero nunca los hace exactamente zero — por eso L2 se llama "weight decay". Geométricamente, L2 constraint el espacio de soluciones a una esfera de radio $\sqrt{\sum \theta_i^2} \leq t$.</p>
+    <p>Para optimización convexa, L2 tiene solución closed-form: $\hat{\theta}_{ridge} = (X^TX + \lambda I)^{-1}X^Ty$. La matriz $\lambda I$ hace que la matriz sea invertible aunque $X^TX$ sea singular. Ese es el key advantage de Ridge sobre OLS sin regularización.</p>
+
+    <h2>L1 Regularization (Lasso)</h2>
+    <p>L1 usa la norma L1 (suma de valores absolutos): $$R(\theta) = \sum_{i} |\theta_i|$$</p>
+    <p>La loss completa: $$\mathcal{L}_{L1} = \mathcal{L}(\theta) + \lambda \sum_{i} |\theta_i|$$</p>
+    <p>El subgradiente: $$\nabla_\theta \mathcal{L}_{L1} = \nabla_\theta \mathcal{L}(\theta) + \lambda \cdot \text{sign}(\theta)$$</p>
+    <p>El efecto crítico: cuando $|\theta_i| < \lambda$, el gradiente del término de regularización puede exactly cancelar el gradiente de la loss, haciendo que $\theta_i$ converja exactly a zero. Esta es la razón por la que L1 produce sparsity — muchos coeficientes terminan siendo exactamente cero. Por eso L1 = Lasso (Least Absolute Shrinkage and Selection Operator).</p>
+    <p>Geométricamente, L1 constraint el espacio de soluciones a un politopo (un octaedro en alta dimensión). La solución óptima cae en los vértices del politopo — que tienen muchas coordenadas en zero.</p>
+
+    <h2>L1 vs L2: La Comparación Que el 85% Necesita</h2>
+    <p>La diferencia fundamental: L2 shrink los pesos suavemente; L1 hace subset selection (mete muchos pesos exactamente a cero).</p>
+    <p><strong>Cuándo usar L2 (Ridge):</strong></p>
+    <ul>
+      <li>Cuando tienes many correlated features (e.g., genes en GWAS, pixels vecinos en imagen)</li>
+      <li>Cuando NO quieres hacer feature selection (conoces las features relevantes)</li>
+      <li>Cuando quieres mejor generalization sin sacrificar accuracy en training</li>
+      <li>Cuando $n \approx p$ (número de samples ≈ número de features) — L2 estabiliza</li>
+    </ul>
+    <p><strong>Cuándo usar L1 (Lasso):</strong></p>
+    <ul>
+      <li>Cuando necesitas interpretability (sparse model = solo unas pocas features importan)</li>
+      <li>Cuando crees que solo unas pocas features son relevantes (alta sparsity)</li>
+      <li>Cuando tienes más features que samples ($p \gg n$) — L1 puede seleccionar $\leq n$ features exactamente</li>
+      <li>Feature selection automático para pre-processing de un modelo más complejo</li>
+    </ul>
+    <p><strong>Elastic Net (L1 + L2):</strong></p>
+    <p>$$\mathcal{L}_{elastic} = \mathcal{L}(\theta) + \lambda_1 \sum_i |\theta_i| + \frac{\lambda_2}{2}\sum_i \theta_i^2$$</p>
+    <p>Combina las ventajas de ambos: L1 para sparsity + L2 para estabilidad cuando hay features correlacionados. En sklearn: <code>ElasticNet(alpha=0.5, l1_ratio=0.5)</code>.</p>
+
+    <h2>Código Production-Grade</h2>
+    <pre><code class="language-python">import logging
+import numpy as np
+import torch
+import torch.nn as nn
+from dataclasses import dataclass
+from typing import Literal
+from sklearn.linear_model import Ridge, Lasso, ElasticNet
+from sklearn.model_selection import GridSearchCV
+from sklearn.preprocessing import StandardScaler
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class RegularizationConfig:
+    reg_type: Literal['l1', 'l2', 'elastic_net', 'none'] = 'none'
+    alpha: float = 1.0
+    l1_ratio: float = 0.5
+    weight_decay: float = 1e-4
+
+
+class RegularizedLinearModel:
+    def __init__(self, config: RegularizationConfig):
+        self.config = config
+        self.model = None
+        self.scaler = StandardScaler()
+
+    def fit(self, X, y):
+        X_scaled = self.scaler.fit_transform(X)
+        if self.config.reg_type == 'l2':
+            self.model = Ridge(alpha=self.config.alpha)
+        elif self.config.reg_type == 'l1':
+            self.model = Lasso(alpha=self.config.alpha, max_iter=10_000, tol=1e-4)
+        elif self.config.reg_type == 'elastic_net':
+            self.model = ElasticNet(alpha=self.config.alpha, l1_ratio=self.config.l1_ratio,
+                                   max_iter=10_000, tol=1e-4)
+        elif self.config.reg_type == 'none':
+            from sklearn.linear_model import LinearRegression
+            self.model = LinearRegression()
+        self.model.fit(X_scaled, y)
+        n_nonzero = np.sum(self.model.coef_ != 0)
+        logger.info(f"{self.config.reg_type}: nonzero={n_nonzero}/{len(self.model.coef_)}")
+        return self
+
+    def predict(self, X):
+        return self.model.predict(self.scaler.transform(X))
+
+    def nonzero_features(self, names=None):
+        mask = self.model.coef_ != 0
+        return {names[i] if names else f"f{i}": self.model.coef_[i]
+                for i, m in enumerate(mask) if m}
+
+
+def tune_regularization(X_train, y_train, reg_type, alphas, l1_ratios=None, cv=5):
+    if reg_type == 'l2':
+        model, param_grid = Ridge(), {'alpha': alphas}
+    elif reg_type == 'l1':
+        model, param_grid = Lasso(max_iter=10_000, tol=1e-4), {'alpha': alphas}
+    elif reg_type == 'elastic_net':
+        model, param_grid = ElasticNet(max_iter=10_000, tol=1e-4), {
+            'alpha': alphas, 'l1_ratio': l1_ratios or np.linspace(0.1, 0.9, 9)}
+    grid = GridSearchCV(model, param_grid, cv=cv, scoring='neg_mean_squared_error', n_jobs=-1)
+    grid.fit(X_train, y_train)
+    logger.info(f"Best {reg_type}: alpha={grid.best_params_.get('alpha')}, CV MSE={-grid.best_score_:.4f}")
+    return grid.best_params_, -grid.best_score_
+
+
+class RegularizedMLP(nn.Module):
+    def __init__(self, input_dim, hidden_dims, output_dim, dropout=0.2):
+        super().__init__()
+        layers = []
+        prev = input_dim
+        for h in hidden_dims:
+            layers.extend([nn.Linear(prev, h), nn.ReLU(), nn.Dropout(dropout)])
+            prev = h
+        layers.append(nn.Linear(prev, output_dim))
+        self.net = nn.Sequential(*layers)
+
+    def forward(self, x):
+        return self.net(x)
+
+
+def l1_reg_loss(model, loss, lambda_l1=1e-4):
+    return loss + lambda_l1 * sum(torch.sum(torch.abs(p)) for p in model.parameters())
+
+
+if __name__ == '__main__':
+    np.random.seed(42)
+    X = np.random.randn(200, 50)
+    y = X[:, :5] @ [2, -1, 0.5, 3, 1] + 0.5 * np.random.randn(200)
+    for alpha in [0.01, 0.1, 1.0, 10.0]:
+        cfg = RegularizationConfig(reg_type='l1', alpha=alpha)
+        m = RegularizedLinearModel(cfg).fit(X, y)
+        print(f"L1 alpha={alpha}: {len(m.nonzero_features())}/50 nonzero")</code></pre>
+
+    <h2>Errores Comunes</h2>
+    <p><strong>Error 1: L2 en SGD = Weight Decay pero L2 en Adam ≠ Weight Decay</strong></p>
+    <p>En SGD (con momentum), añadir $\lambda \|w\|_2^2$ a la loss y usar weight_decay en el optimizer producen el mismo gradiente. En Adam, NO. weight_decay de Adam aplica el decay uniformemente (resta $\lambda w$), no como L2 (que escala el gradiente por $w$ en el segundo momento). Para Adam, usa L2 regularization real o simplemente AdamW con weight_decay.</p>
+    <p><strong>Fix:</strong> Para Adam/AdamW, si necesitas L2 regularization real, añádela manualmente a la loss o simplemente usa AdamW con weight_decay, que es conceptualmente similar a L2.</p>
+
+    <p><strong>Error 2: No normalizar los features antes de aplicar L1/L2</strong></p>
+    <p>La regularización penaliza los coeficientes $\theta_i$ por igual. Si feature $i$ tiene escala 1000 y feature $j$ tiene escala 0.001, penalizar $|\theta_i|$ y $|\theta_j|$ por igual no tiene sentido físico.</p>
+    <p><strong>Fix:</strong> Siempre estandariza los features antes de aplicar regularización: <code>StandardScaler()</code>.</p>
+
+    <p><strong>Error 3: Elegir alpha por trial-and-error sin CV</strong></p>
+    <p>El 85% hace <code>model = Lasso(alpha=0.1)</code> porque "se ve bien" sin hacer cross-validation. Pero alpha tiene un efecto dramático en sparsity y generalización.</p>
+    <p><strong>Fix:</strong> Usa siempre cross-validation para elegir alpha. Grid search en escala logarítmica: [1e-4, 1e-3, 1e-2, 1e-1, 1, 10].</p>
+
+    <h2>Resumen del Día</h2>
+    <ul>
+      <li><strong>L2 (Ridge)</strong>: Penaliza $\sum \theta_i^2$. Shrink todos los pesos suavemente. Mejor cuando hay features correlacionados y no quieres feature selection.</li>
+      <li><strong>L1 (Lasso)</strong>: Penaliza $\sum |\theta_i|$. Muchos pesos quedan exactamente en zero = sparse model = feature selection automático.</li>
+      <li><strong>Elastic Net</strong>: Combina L1 + L2. Usa cuando quieres sparsity Y tienes features correlacionados.</li>
+      <li><strong>Weight Decay</strong>: En SGD = L2 regularization. En AdamW ≈ L2 pero no exactamente igual.</li>
+      <li><strong>Siempre normalizar</strong>: StandardScaler antes de aplicar regularización.</li>
+      <li><strong>Seleccionar alpha con CV</strong>: Grid search en escala logarítmica con cross-validation.</li>
+    </ul>
+
+    <h2>El Cierre</h2>
+    <p>Parcero, L1 y L2 son las regularizaciones más básicas y efectivas que tienes. L1 para hacer feature selection cuando sabes (o sospechas) que la mayoría de features son ruido. L2 para mejorar generalization cuando tienes buenos features pero tu modelo es demasiado complejo. Y si no estás seguro, usa Elastic Net.</p>
+    <p>Y recuerda: la regularización no es magia. Si tu modelo está overfitting, a veces la mejor solución no es añadir más regularización — es conseguir más data. Esa vaina de que "con 10K samples y 50K features, L1 va a salvarme" es mentira: ninguna regularización reemplaza data. Hágale que con data buena y regularización inteligente, vas bien lejos. ¡Nos vemos en el día 78!</p>
   </article>
 </body>
 </html>

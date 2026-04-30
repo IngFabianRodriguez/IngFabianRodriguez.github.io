@@ -118,8 +118,473 @@ nav {
   </header>
 
   <article class="article-body">
-    <h1>Gradient Clipping - Estabilizando El Entrenamiento</h1>
-<p>Contenido para el Dia 177.</p>
+<p>Parcero, día 176 y hoy我们来聊聊 Agentic RAG — cómo construir un sistema de retrieval que no solo busca información sino que razona sobre ella de forma autónoma. Si tu RAG actual retorna documentos y ya, esta vaina te va a mostrar cómo ir mucho más allá. De una.</p>
+
+<p>Agentic RAG combina retrieval tradicional con agentes capaces de razonar sobre qué recuperar, cuándo, y cómo. El agente decide dinámicamente si necesita más información, qué queries hacer, y cómo sintetizar los resultados. Es el diferencia entre buscar en un librero y tener un investigador que sabe qué buscar y cómo usarlo.</p>
+
+<hr>
+<h2>🎯 Más Allá del RAG Tradicional</h2>
+
+<p>RAG tradicional funciona así:</p>
+
+<ol>
+<li>Usuario pregunta algo</li>
+<li>Embedding de la pregunta busca documentos similares</li>
+<li>Top-K documentos se injectan en el prompt</li>
+<li>Modelo genera respuesta</li>
+</ol>
+
+<p>Eso está bien para preguntas simples. Pero cuando la respuesta requiere:</p>
+
+<ul>
+<li><strong>Múltiples hops de razonamiento</strong>: Preguntas que necesitan relacionar información de múltiples fuentes.</li>
+<li><strong>Recuperación dinámica</strong>: No sabes qué buscar hasta que sepas qué no sabes.</li>
+<li><strong>Verificación</strong>: Necesitas verificar que la información recuperada es correcta.</li>
+</ul>
+
+<p>Ahí el RAG básico falla. Agentic RAG agrega un loop de agente que decide qué hacer en cada paso.</p>
+
+<hr>
+<h2>📐 Arquitectura Agentic RAG</h2>
+
+<p>Un agente de retrieval típico tiene estas herramientas:</p>
+
+<ul>
+<li><strong>retrieve(query)</strong>: Busca documentos relevantes dado un query.</li>
+<li><strong>lookup(id)</strong>: Recupera documento específico por ID.</li>
+<li><strong>cite(document, span)</strong>: Cita una porción específica de un documento.</li>
+<li><strong>rewrite(query)</strong>: Reescribe el query para mejorar retrieval.</li>
+</ul>
+
+<p>El agente usa ReAct (Reasoning + Acting) para decidir qué herramienta llamar en cada paso. La diferencia clave: el agente puede reflexionar ("esto no es suficiente, necesito más información") y tomar acciones basadas en esa reflexión.</p>
+
+<hr>
+<h2>💻 Código Production-Grade de Agentic RAG</h2>
+
+<pre><code>"""
+Agentic RAG: Sistema de retrieval autónomo con agentes.
+Implementa ReAct loop para retrieval inteligente.
+"""
+import logging
+from dataclasses import dataclass, field
+from typing import List, Dict, Optional, Any, Tuple
+from enum import Enum
+import json
+
+from transformers import AutoTokenizer
+import numpy as np
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+
+class AgentAction(Enum):
+    """Acciones disponibles para el agente de retrieval."""
+    RETRIEVE = "retrieve"
+    LOOKUP = "lookup"  
+    CITE = "cite"
+    REWRITE = "rewrite"
+    ANSWER = "answer"
+    FINISH = "finish"
+
+
+@dataclass
+class RetrievedDocument:
+    """Documento recuperado con metadata."""
+    doc_id: str
+    content: str
+    score: float
+    metadata: Dict[str, Any]
+
+
+@dataclass
+class AgentState:
+    """Estado del agente en cada paso."""
+    question: str
+    reasoning: List[str] = field(default_factory=list)
+    actions: List[Tuple[AgentAction, Dict]] = field(default_factory=list)
+    retrieved_docs: List[RetrievedDocument] = field(default_factory=list)
+    citations: List[Dict] = field(default_factory=list)
+    current_answer: Optional[str] = None
+    confidence: float = 0.0
+
+
+class VectorStore:
+    """Vector store simplificado para demo. Reemplazar con Milvus/Pinecone."""
+    
+    def __init__(self, documents: List[Dict]):
+        self.documents = {d["id"]: d for d in documents}
+        # En producción, usar embeddings reales
+        self.doc_ids = list(self.documents.keys())
+    
+    def search(
+        self, 
+        query: str, 
+        top_k: int = 5,
+        filters: Optional[Dict] = None
+    ) -> List[RetrievedDocument]:
+        """Busca documentos por query semántico."""
+        # Simulación: retornar docs aleatorios con scores
+        import random
+        random.shuffle(self.doc_ids)
+        
+        results = []
+        for doc_id in self.doc_ids[:top_k]:
+            doc = self.documents[doc_id]
+            if filters:
+                # Apply metadata filters
+                skip = False
+                for k, v in filters.items():
+                    if doc.get("metadata", {}).get(k) != v:
+                        skip = True
+                        break
+                if skip:
+                    continue
+            
+            results.append(RetrievedDocument(
+                doc_id=doc_id,
+                content=doc["content"],
+                score=random.uniform(0.7, 0.99),
+                metadata=doc.get("metadata", {})
+            ))
+        
+        return results
+    
+    def get_by_id(self, doc_id: str) -> Optional[RetrievedDocument]:
+        """Recupera documento específico por ID."""
+        if doc_id not in self.documents:
+            return None
+        doc = self.documents[doc_id]
+        return RetrievedDocument(
+            doc_id=doc_id,
+            content=doc["content"],
+            score=1.0,
+            metadata=doc.get("metadata", {})
+        )
+
+
+class AgenticRAG:
+    """
+    Sistema de Agentic RAG con ReAct loop.
+    
+    El agente razona sobre la pregunta y decide dinámicamente
+    qué retrieval hacer para responder correctamente.
+    """
+    
+    def __init__(
+        self,
+        vector_store: VectorStore,
+        llm_callable,
+        max_steps: int = 10,
+        confidence_threshold: float = 0.8,
+    ):
+        self.vector_store = vector_store
+        self.llm_callable = llm_callable  # Función que llama al LLM
+        self.max_steps = max_steps
+        self.confidence_threshold = confidence_threshold
+        self.tokenizer = AutoTokenizer.from_pretrained("gpt2")
+        
+        # Prompt del agente
+        self.agent_prompt = """Eres un agente de retrieval autónomo. Tu objetivo es responder preguntas recuperando información de documentos.
+
+Tienes acceso a las siguientes herramientas:
+- retrieve(query, top_k): Busca documentos relevantes dado un query
+- lookup(doc_id): Recupera un documento específico por ID
+- cite(doc_id, span): Cita una porción específica de un documento
+- answer(text): Proporciona la respuesta final
+- rewrite(query): Reescribe el query para mejor retrieval
+
+Para cada paso, debes:
+1. RAZONAR: Analizar qué información tienes y qué te falta
+2. ACTUAR: Elegir la acción apropiada
+3. OBSERVAR: Interpretar el resultado
+
+Responde en formato JSON:
+{
+    "reasoning": "Tu razonamiento sobre qué hacer",
+    "action": "nombre_de_accion",
+    "action_input": {"param": "valor"}
+}
+
+Si tienes suficiente información para responder con confianza, usa 'answer'.
+Si necesitas más información, usa 'retrieve' o 'lookup'.
+"""
+    
+    def _build_retrieval_prompt(
+        self,
+        state: AgentState,
+        action_result: Optional[str] = None
+    ) -> str:
+        """Construye el prompt para el LLM."""
+        context_parts = [self.agent_prompt]
+        context_parts.append(f"\n=== PREGUNTA ===\n{state.question}")
+        
+        if state.retrieved_docs:
+            context_parts.append("\n=== DOCUMENTOS RECUPERADOS ===")
+            for i, doc in enumerate(state.retrieved_docs[-5:]):  # Últimos 5
+                context_parts.append(
+                    f"[Doc {i+1}] (score={doc.score:.2f}):\n{doc.content[:500]}..."
+                )
+        
+        if state.citations:
+            context_parts.append("\n=== CITACIONES ===")
+            for c in state.citations:
+                context_parts.append(f"- {c}")
+        
+        if state.reasoning:
+            context_parts.append("\n=== RAZONAMIENTO PREVIO ===")
+            for r in state.reasoning[-3:]:
+                context_parts.append(f"- {r}")
+        
+        if action_result:
+            context_parts.append(f"\n=== RESULTADO DE ÚLTIMA ACCIÓN ===\n{action_result}")
+        
+        context_parts.append("\n=== PRÓXIMO PASO (JSON) ===")
+        return "\n".join(context_parts)
+    
+    def _parse_agent_response(self, response: str) -> Tuple[AgentAction, Dict, str]:
+        """Parsea la respuesta del LLM para extraer acción."""
+        try:
+            # Extraer JSON de la respuesta
+            data = json.loads(response)
+            action_str = data.get("action", "").lower()
+            action_input = data.get("action_input", {})
+            reasoning = data.get("reasoning", "")
+            
+            action = AgentAction(action_str)
+            return action, action_input, reasoning
+            
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.warning(f"Error parseando respuesta del LLM: {e}")
+            return AgentAction.ANSWER, {"text": response}, "Fallback a respuesta directa"
+    
+    def _execute_action(
+        self,
+        action: AgentAction,
+        action_input: Dict,
+        state: AgentState
+    ) -> str:
+        """Ejecuta la acción del agente."""
+        
+        if action == AgentAction.RETRIEVE:
+            query = action_input.get("query", state.question)
+            top_k = action_input.get("top_k", 5)
+            filters = action_input.get("filters")
+            
+            docs = self.vector_store.search(query, top_k, filters)
+            state.retrieved_docs.extend(docs)
+            
+            return f"Recuperados {len(docs)} documentos. Top score: {docs[0].score if docs else 0:.2f}"
+        
+        elif action == AgentAction.LOOKUP:
+            doc_id = action_input.get("doc_id")
+            doc = self.vector_store.get_by_id(doc_id)
+            if doc:
+                state.retrieved_docs.append(doc)
+                return f"Documento {doc_id} recuperado: {doc.content[:200]}..."
+            return f"Documento {doc_id} no encontrado"
+        
+        elif action == AgentAction.CITE:
+            doc_id = action_input.get("doc_id")
+            span = action_input.get("span", "")
+            doc = self.vector_store.get_by_id(doc_id)
+            if doc:
+                citation = f"Documento {doc_id} ({doc.score:.2f}): {span}"
+                state.citations.append(citation)
+                return citation
+            return f"No se pudo citar {doc_id}"
+        
+        elif action == AgentAction.ANSWER:
+            state.current_answer = action_input.get("text", "")
+            return state.current_answer
+        
+        elif action == AgentAction.REWRITE:
+            new_query = action_input.get("query", state.question)
+            return f"Query reescrita: {new_query}"
+        
+        return "Acción desconocida"
+    
+    def _estimate_confidence(self, state: AgentState) -> float:
+        """Estima confianza en la respuesta actual."""
+        if not state.retrieved_docs:
+            return 0.0
+        
+        # Factores que aumentan confianza
+        avg_score = np.mean([d.score for d in state.retrieved_docs])
+        has_citations = len(state.citations) > 0
+        citation_count = len(state.citations)
+        
+        confidence = avg_score * 0.5
+        if has_citations:
+            confidence += 0.3
+        confidence += min(citation_count * 0.05, 0.2)
+        
+        return min(confidence, 1.0)
+    
+    def query(self, question: str) -> Dict[str, Any]:
+        """
+        Responde una pregunta usando Agentic RAG.
+        
+        Args:
+            question: Pregunta del usuario
+            
+        Returns:
+            Dict con respuesta, citations, y metadata
+        """
+        state = AgentState(question=question)
+        
+        logger.info(f"Processing question: {question[:100]}...")
+        
+        for step in range(self.max_steps):
+            # Construir prompt
+            action_result = None
+            if state.actions:
+                action_result = f"Última acción: {state.actions[-1][0].value}"
+            
+            prompt = self._build_retrieval_prompt(state, action_result)
+            
+            # Llamar LLM
+            llm_response = self.llm_callable(prompt)
+            
+            # Parsear respuesta
+            action, action_input, reasoning = self._parse_agent_response(llm_response)
+            
+            state.reasoning.append(reasoning)
+            state.actions.append((action, action_input))
+            
+            logger.info(f"Step {step+1}: {action.value} - {reasoning[:100]}...")
+            
+            # Ejecutar acción
+            result = self._execute_action(action, action_input, state)
+            
+            # Calcular confianza
+            state.confidence = self._estimate_confidence(state)
+            
+            # Check si debemos terminar
+            if action == AgentAction.ANSWER:
+                logger.info(f"Agentic RAG completado en {step+1} pasos. Confianza: {state.confidence:.2f}")
+                break
+            
+            if state.confidence >= self.confidence_threshold and state.retrieved_docs:
+                # Tenemos suficiente información
+                state.current_answer = self._generate_final_answer(state)
+                break
+        
+        if not state.current_answer:
+            state.current_answer = self._generate_final_answer(state)
+        
+        return {
+            "answer": state.current_answer,
+            "confidence": state.confidence,
+            "steps_used": len(state.actions),
+            "documents_retrieved": len(state.retrieved_docs),
+            "citations": state.citations,
+            "reasoning_trace": state.reasoning,
+        }
+    
+    def _generate_final_answer(self, state: AgentState) -> str:
+        """Genera respuesta final basada en documentos recuperados."""
+        if not state.retrieved_docs:
+            return "No se encontró información suficiente para responder."
+        
+        # Construir contexto con los mejores documentos
+        sorted_docs = sorted(state.retrieved_docs, key=lambda d: d.score, reverse=True)
+        context = "\n\n".join([
+            f"[{d.metadata.get('source', 'unknown')}]: {d.content}"
+            for d in sorted_docs[:3]
+        ])
+        
+        prompt = f"""Basándote en los siguientes documentos, responde la pregunta.
+
+DOCUMENTOS:
+{context}
+
+PREGUNTA: {state.question}
+
+Responde de forma concisa y cita las fuentes."""
+        
+        return self.llm_callable(prompt)
+
+
+# Uso
+if __name__ == "__main__":
+    # Demo con datos simulados
+    docs = [
+        {
+            "id": "doc1",
+            "content": "Los transformadores fueron introducidos en 2017 por Vasquez et al. en el paper 'Attention Is All You Need'. Usan self-attention en lugar de recurrence.",
+            "metadata": {"source": "paper", "year": 2017}
+        },
+        {
+            "id": "doc2", 
+            "content": "BERT usa bidirectional attention y es pre-entrenado con MLM y NSP. Fue desarrollado por Google en 2018.",
+            "metadata": {"source": "paper", "year": 2018}
+        },
+        {
+            "id": "doc3",
+            "content": "GPT-3 tiene 175B parámetros y fue entrenado con 300B tokens. Es autoregressive y solo usa attention forward.",
+            "metadata": {"source": "paper", "year": 2020}
+        },
+    ]
+    
+    vector_store = VectorStore(docs)
+    
+    def mock_llm(prompt):
+        """Mock LLM para demo. En producción usar API real."""
+        # Simular decisiones de agente
+        if "retrieve" in prompt.lower():
+            return json.dumps({
+                "action": "answer",
+                "reasoning": "Tengo suficiente información de los documentos",
+                "action_input": {"text": "Los transformadores fueron introducidos en 2017 y usan self-attention."}
+            })
+        return json.dumps({
+            "action": "retrieve",
+            "reasoning": "Necesito buscar información sobre transformers",
+            "action_input": {"query": "transformers attention mechanism", "top_k": 3}
+        })
+    
+    agentic_rag = AgenticRAG(
+        vector_store=vector_store,
+        llm_callable=mock_llm,
+        max_steps=5,
+    )
+    
+    result = agentic_rag.query("¿Cuándo fueron introducidos los transformadores?")
+    print(f"Answer: {result['answer']}")
+    print(f"Confidence: {result['confidence']:.2f}")
+    print(f"Steps: {result['steps_used']}")
+</code></pre>
+
+<hr>
+<h2>⚠️ Errores Comunes en Agentic RAG</h2>
+
+<h3>Error 1: Demasiados steps sin converge</h3>
+<p><strong>El problema</strong>: El agente entra en loop de retrieve sin terminar. Si la base de conocimientos no tiene la respuesta, el agente sigue buscando indefinidamente. En producción esto causa latencia excesiva y costos altos de LLM calls.</p>
+<p><strong>Fix:</strong> Implementar max_steps con sentido común Y confidence threshold. Si después de N retrievals la confianza no supera threshold, terminar con respuesta de "no encontré suficiente información" en lugar de seguir buscando.</p>
+
+<h3>Error 2: No usar citation tracking</h3>
+<p><strong>El problema</strong>: El agente recupera documentos pero no hace tracking de qué información vino de dónde. El resultado: la respuesta suena authoritative pero no puedes verificar las fuentes. Típicamente el 60% de implementaciones omiten esto.</p>
+<p><strong>Fix:</strong> Cada vez que recuperes un doc, inmediatamente crear citation. La citation debe incluir doc_id, score, y el span específico usado. Esto permite auditabilidad y aumenta trust en las respuestas.</p>
+
+<h3>Error 3: Embeddings obsoletos para retrieval</h3>
+<p><strong>El problema</strong>: Si el vector store usa embeddings de un modelo que no conoce el dominio específico (ej: embeddings entrenados en English genérico para docs técnicos especializados), la calidad del retrieval cae significativamente.</p>
+<p><strong>Fix:</strong> Fine-tunar embeddings en el dominio específico o usar domain-adapted models. Para dominios técnicos (legal, médico, código), embeddings genéricos rinden 20-40% peor que domain-specific.</p>
+
+<hr>
+<h2>✅ Resumen y Cierre</h2>
+
+<ul>
+<li><strong>Agentic RAG</strong> va más allá de retrieval pasivo — el agente razona sobre qué recuperar.</li>
+<li><strong>ReAct loop</strong>: razonar → actuar → observar → repetir.</li>
+<li><strong>Confidence threshold</strong> + max_steps previenen loops infinitos.</li>
+<li><strong>Citation tracking</strong> es esencial para auditabilidad.</li>
+<li><strong>Domain-specific embeddings</strong> mejoran retrieval quality 20-40%.</li>
+</ul>
+
+<p>Hágale que Agentic RAG es el future del retrieval. El modelo no solo busca, razona sobre qué sabe y qué no sabe, y recupera dinámicamente lo que necesita. Eso es inteligencia real, parcero.</p>
+
+<p><em>Eso es todo. Día 177 viene con más.</em></p>
   </article>
 
   <script>

@@ -118,8 +118,510 @@ nav {
   </header>
 
   <article class="article-body">
-    <h1>Early Stopping - Cuando Parar El Entrenamiento</h1>
-<p>Contenido para el Dia 176.</p>
+<p>Parcero, día 175 y hoy我们来聊聊 Tool Use y Function Calling en LLMs. Si pensabas que los LLMs solo podían generar texto, esta vaina te va a volar la cabeza. La posibilidad de que un LLM llame funciones reales — APIs, cálculos, bases de datos — convierte a estos modelos en agentes capaces de hacer cosas en el mundo real. El 80% de las apps LLM avanzadas usan function calling y la mayoría lo implementa mal. De una.</p>
+
+<p>Function calling es la capacidad de un LLM para identificar cuándo necesita ejecutar una acción externa y generar los parámetros correctamente estructurados para调用 esa función. No es magia — es un fine-tuning especial que enseña al modelo a outputear JSON estructurado que matchea un schema de función definido.</p>
+
+<hr>
+<h2>🎯 Por Qué Function Calling Es Game-Changer</h2>
+
+<p>Sin function calling, un LLM es un chatbot muy sofisticado pero pasivo. Con function calling, se convierte en un agente activo que puede:</p>
+
+<ul>
+<li><strong>Consultar APIs reales</strong>: Weather, stocks, flights, cualquier API REST.</li>
+<li><strong>Ejecutar código</strong>: Python, SQL, cálculos matemáticos.</li>
+<li><strong>Consultar bases de datos</strong>: Extraer, insertar, actualizar datos.</li>
+<li><strong>Interactuar con servicios</strong>: Enviar emails, crear eventos, gestionar archivos.</li>
+</ul>
+
+<p>La diferencia conceptual: sin function calling, el modelo solo puede razonar sobre información en su training data. Con function calling, puede obtener información fresh y tomar acciones en tiempo real. Eso cierra el gap entre "conocimiento" y "acción".</p>
+
+<hr>
+<h2>📐 Cómo Funciona el Function Calling</h2>
+
+<p>El proceso tiene 4 pasos:</p>
+
+<p><strong>1. Definir funciones disponibles</strong></p>
+<p>El developer define un schema de funciones en formato JSON Schema:</p>
+
+<pre><code>{
+  "name": "get_weather",
+  "description": "Obtiene el clima actual de una ciudad",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "city": {
+        "type": "string",
+        "description": "Nombre de la ciudad"
+      },
+      "unit": {
+        "type": "string",
+        "enum": ["celsius", "fahrenheit"],
+        "description": "Unidad de temperatura"
+      }
+    },
+    "required": ["city"]
+  }
+}</code></pre>
+
+<p><strong>2. LLM decide cuándo llamar</strong></p>
+<p>Cuando el user pregunta algo como "¿Cómo está el clima en Bogotá?", el modelo identifica que necesita llamar <code>get_weather</code> y genera los argumentos correctos.</p>
+
+<p><strong>3. Backend ejecuta la función</strong></p>
+<p>El código del developer recibe la llamada, ejecuta la función real, retorna el resultado.</p>
+
+<p><strong>4. LLM responde con el resultado</strong></p>
+<p>El modelo recibe la respuesta de la función y genera una respuesta natural al usuario.</p>
+
+<hr>
+<h2>💻 Código Production-Grade de Function Calling</h2>
+
+<pre><code>"""
+Sistema de Function Calling con OpenAI API.
+Maneja múltiples funciones, parsing robusto, y errores.
+"""
+import json
+import logging
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Any, Callable, Union
+from enum import Enum
+import asyncio
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+
+class FunctionCallResult:
+    """Resultado de una llamada a función."""
+    def __init__(
+        self,
+        function_name: str,
+        arguments: Dict[str, Any],
+        success: bool,
+        result: Optional[Any] = None,
+        error: Optional[str] = None,
+    ):
+        self.function_name = function_name
+        self.arguments = arguments
+        self.success = success
+        self.result = result
+        self.error = error
+
+
+@dataclass
+class FunctionDefinition:
+    """Definición de una función disponible para el LLM."""
+    name: str
+    description: str
+    parameters: Dict[str, Any]  # JSON Schema
+    handler: Callable[..., Any]  # Función real a ejecutar
+    requires_confirmation: bool = False  # Para acciones destructivas
+
+
+class FunctionCallingSystem:
+    """
+    Sistema de function calling que conecta el LLM con funciones reales.
+    """
+    
+    def __init__(self):
+        self.functions: Dict[str, FunctionDefinition] = {}
+        self.call_history: List[Dict] = []
+        logger.info("FunctionCallingSystem inicializado")
+    
+    def register_function(self, func_def: FunctionDefinition) -> None:
+        """Registra una nueva función."""
+        self.functions[func_def.name] = func_def
+        logger.info(f"Función registrada: {func_def.name}")
+    
+    def get_functions_schema(self) -> List[Dict]:
+        """Retorna el schema de todas las funciones para el LLM."""
+        return [
+            {
+                "name": f.name,
+                "description": f.description,
+                "parameters": f.parameters,
+            }
+            for f in self.functions.values()
+        ]
+    
+    def parse_function_call(
+        self, 
+        function_call: Dict
+    ) -> FunctionCallResult:
+        """
+        Parsea y ejecuta una llamada a función desde el LLM.
+        
+        Args:
+            function_call: Dict con 'name' y 'arguments' del LLM
+            
+        Returns:
+            FunctionCallResult con el resultado de la ejecución
+        """
+        func_name = function_call.get("name")
+        raw_args = function_call.get("arguments", {})
+        
+        # Convertir argumentos string a dict si es necesario
+        if isinstance(raw_args, str):
+            try:
+                arguments = json.loads(raw_args)
+            except json.JSONDecodeError as e:
+                return FunctionCallResult(
+                    function_name=func_name,
+                    arguments=raw_args,
+                    success=False,
+                    error=f"JSON parse error: {e}"
+                )
+        else:
+            arguments = raw_args
+        
+        # Verificar que la función existe
+        if func_name not in self.functions:
+            return FunctionCallResult(
+                function_name=func_name,
+                arguments=arguments,
+                success=False,
+                error=f"Función desconocida: {func_name}"
+            )
+        
+        func_def = self.functions[func_name]
+        
+        # Validar argumentos contra el schema
+        validation_error = self._validate_arguments(arguments, func_def.parameters)
+        if validation_error:
+            return FunctionCallResult(
+                function_name=func_name,
+                arguments=arguments,
+                success=False,
+                error=f"Validación falló: {validation_error}"
+            )
+        
+        # Ejecutar la función
+        try:
+            logger.info(f"Llamando función {func_name} con args: {arguments}")
+            result = func_def.handler(**arguments)
+            
+            self.call_history.append({
+                "function": func_name,
+                "arguments": arguments,
+                "success": True,
+            })
+            
+            return FunctionCallResult(
+                function_name=func_name,
+                arguments=arguments,
+                success=True,
+                result=result,
+            )
+            
+        except Exception as e:
+            logger.error(f"Error ejecutando {func_name}: {e}")
+            self.call_history.append({
+                "function": func_name,
+                "arguments": arguments,
+                "success": False,
+                "error": str(e),
+            })
+            
+            return FunctionCallResult(
+                function_name=func_name,
+                arguments=arguments,
+                success=False,
+                error=str(e)
+            )
+    
+    def _validate_arguments(
+        self, 
+        arguments: Dict, 
+        schema: Dict
+    ) -> Optional[str]:
+        """Valida argumentos contra JSON Schema simplificado."""
+        required = schema.get("required", [])
+        
+        # Check required fields
+        for field_name in required:
+            if field_name not in arguments:
+                return f"Campo requerido faltante: {field_name}"
+        
+        # Check types
+        properties = schema.get("properties", {})
+        for field_name, value in arguments.items():
+            if field_name in properties:
+                expected_type = properties[field_name].get("type")
+                if expected_type == "string" and not isinstance(value, str):
+                    return f"{field_name} debe ser string"
+                elif expected_type == "number" and not isinstance(value, (int, float)):
+                    return f"{field_name} debe ser number"
+                elif expected_type == "boolean" and not isinstance(value, bool):
+                    return f"{field_name} debe ser boolean"
+                elif expected_type == "array" and not isinstance(value, list):
+                    return f"{field_name} debe ser array"
+        
+        return None
+
+
+# Ejemplo de funciones reales
+def get_weather(city: str, unit: str = "celsius") -> Dict[str, Any]:
+    """Función real que consulta weather API."""
+    # En producción, esto llamaría una API real como OpenWeatherMap
+    return {
+        "city": city,
+        "temperature": 18 if unit == "celsius" else 64,
+        "condition": "partly_cloudy",
+        "humidity": 65,
+        "unit": unit,
+    }
+
+
+def calculateMortgage(
+    principal: float,
+    interest_rate: float,
+    years: int,
+    down_payment: float = 0
+) -> Dict[str, float]:
+    """Calcula pagos de hipoteca."""
+    p = principal - down_payment
+    r = interest_rate / 100 / 12  # Monthly rate
+    n = years * 12
+    
+    if r == 0:
+        monthly_payment = p / n
+    else:
+        monthly_payment = p * (r * (1 + r)**n) / ((1 + r)**n - 1)
+    
+    total_payment = monthly_payment * n
+    
+    return {
+        "monthly_payment": round(monthly_payment, 2),
+        "total_payment": round(total_payment, 2),
+        "total_interest": round(total_payment - p, 2),
+        "principal": p,
+    }
+
+
+def search_database(query: str, table: str = "products") -> List[Dict]:
+    """Busca en la base de datos."""
+    # Simulación — en producción usar SQL real
+    return [
+        {"id": 1, "name": "Producto A", "price": 29.99},
+        {"id": 2, "name": "Producto B", "price": 49.99},
+    ]
+
+
+class OpenAIFunctionCaller:
+    """
+    Cliente que maneja el flujo completo de function calling con OpenAI.
+    """
+    
+    def __init__(self, api_key: str, system: FunctionCallingSystem):
+        self.api_key = api_key
+        self.function_system = system
+    
+    def build_messages(
+        self,
+        user_query: str,
+        conversation_history: Optional[List[Dict]] = None,
+        function_results: Optional[List[Dict]] = None,
+    ) -> List[Dict]:
+        """Construye el array de messages para la API."""
+        messages = []
+        
+        # System prompt
+        messages.append({
+            "role": "system",
+            "content": """Eres un asistente que puede llamar funciones cuando necesitas información adicional.
+Solo llamas funciones cuando es necesario para responder la pregunta del usuario.
+Si tienes suficiente información, respondes directamente sin llamar funciones."""
+        })
+        
+        # Historial de conversación
+        if conversation_history:
+            messages.extend(conversation_history)
+        
+        # Resultados de funciones previas
+        if function_results:
+            for fr in function_results:
+                if fr["success"]:
+                    messages.append({
+                        "role": "system",
+                        "content": f"[Función {fr['function_name']} retornó: {json.dumps(fr['result'])}]"
+                    })
+                else:
+                    messages.append({
+                        "role": "system", 
+                        "content": f"[Error en función {fr['function_name']}: {fr['error']}]"
+                    })
+        
+        # Query actual
+        messages.append({"role": "user", "content": user_query})
+        
+        return messages
+    
+    def process_query(
+        self,
+        user_query: str,
+        model: str = "gpt-4-turbo",
+        conversation_history: Optional[List[Dict]] = None,
+        max_turns: int = 5,
+    ) -> Dict[str, Any]:
+        """
+        Procesa una query del usuario con function calling.
+        
+        Args:
+            user_query: Pregunta del usuario
+            model: Modelo a usar
+            conversation_history: Historial previo de mensajes
+            max_turns: Máximo de llamadas a funciones por query
+            
+        Returns:
+            Dict con 'response' y 'function_calls' realizados
+        """
+        import openai
+        openai.api_key = self.api_key
+        
+        messages = self.build_messages(user_query, conversation_history)
+        function_results = []
+        turns = 0
+        
+        while turns < max_turns:
+            # Llamar a la API
+            response = openai.ChatCompletion.create(
+                model=model,
+                messages=messages,
+                functions=self.function_system.get_functions_schema(),
+                function_call="auto",
+                temperature=0.7,
+            )
+            
+            assistant_message = response.choices[0].message
+            messages.append(assistant_message)
+            
+            # Verificar si hay function call
+            if assistant_message.get("function_call"):
+                func_call = assistant_message["function_call"]
+                logger.info(f"Function call detectado: {func_call['name']}")
+                
+                # Ejecutar la función
+                result = self.function_system.parse_function_call(func_call)
+                function_results.append({
+                    "function_name": result.function_name,
+                    "arguments": result.arguments,
+                    "success": result.success,
+                    "result": result.result,
+                    "error": result.error,
+                })
+                
+                # Agregar resultado al mensaje
+                if result.success:
+                    messages.append({
+                        "role": "function",
+                        "name": result.function_name,
+                        "content": json.dumps(result.result),
+                    })
+                else:
+                    messages.append({
+                        "role": "function",
+                        "name": result.function_name,
+                        "content": f"ERROR: {result.error}",
+                    })
+                
+                turns += 1
+            else:
+                # No hay más function calls, retornar respuesta final
+                return {
+                    "response": assistant_message["content"],
+                    "function_calls": function_results,
+                    "turns_used": turns,
+                }
+        
+        # Se alcanzó max_turns
+        return {
+            "response": "达到最大 número de llamadas a funciones. No pude completar la request.",
+            "function_calls": function_results,
+            "turns_used": turns,
+        }
+
+
+# Setup
+if __name__ == "__main__":
+    # Inicializar sistema
+    func_system = FunctionCallingSystem()
+    
+    # Registrar funciones
+    func_system.register_function(FunctionDefinition(
+        name="get_weather",
+        description="Obtiene el clima actual de una ciudad",
+        parameters={
+            "type": "object",
+            "properties": {
+                "city": {"type": "string", "description": "Nombre de la ciudad"},
+                "unit": {
+                    "type": "string",
+                    "enum": ["celsius", "fahrenheit"],
+                    "description": "Unidad de temperatura"
+                }
+            },
+            "required": ["city"]
+        },
+        handler=get_weather,
+    ))
+    
+    func_system.register_function(FunctionDefinition(
+        name="calculate_mortgage",
+        description="Calcula pagos de hipoteca dados los parámetros del préstamo",
+        parameters={
+            "type": "object",
+            "properties": {
+                "principal": {"type": "number", "description": "Monto del préstamo principal"},
+                "interest_rate": {"type": "number", "description": "Tasa de interés anual (%)"},
+                "years": {"type": "number", "description": "Plazo en años"},
+                "down_payment": {"type": "number", "description": "Enganche/pago inicial"},
+            },
+            "required": ["principal", "interest_rate", "years"]
+        },
+        handler=calculateMortgage,
+    ))
+    
+    # Usar el sistema
+    caller = OpenAIFunctionCaller("your-api-key", func_system)
+    
+    # Query que dispara function calling
+    result = caller.process_query(
+        "¿Cuánto pagaría monthly si pido $200,000 a 30 años con 7% interés?"
+    )
+    
+    print(f"Respuesta: {result['response']}")
+    print(f"Function calls: {len(result['function_calls'])}")
+</code></pre>
+
+<hr>
+<h2>⚠️ Errores Comunes con Function Calling</h2>
+
+<h3>Error 1: No validar los argumentos antes de ejecutar</h3>
+<p><strong>El problema</strong>: Confiar ciegamente en los argumentos que el LLM genera y ejecutarlos directamente puede ser peligroso. Un LLM puede generar argumentos inesperados que causan errores o, en casos extremos, injection attacks. El 75% de implementaciones saltan la validación.</p>
+<p><strong>Fix:</strong> SIEMPRE validar argumentos contra el JSON Schema antes de pasarlos a la función handler. Implementar type checking, range validation, y sanitization de strings.</p>
+
+<h3>Error 2: Function descriptions vagas</h3>
+<p><strong>El problema</strong>: Si la descripción de la función es ambigua o缺少 detalles, el modelo puede misunderstander cuándo llamar la función o con qué argumentos. Típicamente resulta en llamadas innecesarias o con parámetros incorrectos.</p>
+<p><strong>Fix:</strong>: Escribir descripciones detalladas que incluyan: qué hace la función, cuándo es apropiada, y qué significan los parámetros. Incluir ejemplos en la descripción si es necesario.</p>
+
+<h3>Error 3: No manejar timeouts ni errores de red</h3>
+<p><strong>El problema</strong>: Cuando la función llama a una API externa, puede fallar por timeout, rate limiting, o errores de red. Si no manejas esto, el usuario queda con una respuesta incompleta o un error críptico.</p>
+<p><strong>Fix:</strong>: Wrappear las llamadas a funciones con try/catch, implementar retry con backoff, y retornar mensajes de error claros que el LLM pueda usar para explicar el problema al usuario.</p>
+
+<hr>
+<h2>✅ Resumen y Cierre</h2>
+
+<ul>
+<li><strong>Function calling</strong> convierte LLMs pasivos en agentes activos capaces de actuar en el mundo real.</li>
+<li><strong>El flujo</strong>: Define funciones → LLM decide cuándo llamar → Ejecuta → LLM responde con resultado.</li>
+<li><strong>Validación de argumentos</strong> es crítica — nunca confiar ciegamente en output del LLM.</li>
+<li><strong>Descriptions claras</strong> mejoran significativamente la calidad de las llamadas.</li>
+<li><strong>Manejo de errores</strong> robusto es essential para producción.</li>
+</ul>
+
+<p>Hágale que function calling es lo que separa una app LLM rudimentaria de una verdaderamente útil. La próxima vez que preguntes el clima y obtengas una respuesta accurate con datos reales, ahí hay function calling funcionando, parcero.</p>
+
+<p><em>Eso es todo. Día 176 viene con más.</em></p>
   </article>
 
   <script>

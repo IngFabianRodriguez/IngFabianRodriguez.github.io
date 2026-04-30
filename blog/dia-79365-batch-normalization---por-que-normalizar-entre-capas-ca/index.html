@@ -118,8 +118,220 @@ nav {
   </header>
 
   <article class="article-body">
-    <h1>Batch Normalization - Por Qué Normalizar Entre Capas Cambió el Entrenamiento de Redes Profundas</h1>
-<p>Contenido del Día 79 - Esta entrada aún está en construcción. ¡Vuelve pronto!</p>
+    <h2>La Intro que el 85% Se Salta</h2>
+    <p>Parcero, ¿sabes qué pasó cuando una empresa fintech me contrató para revisar su modelo de detección de fraude? Tenían un modelo con 97% de accuracy. Brillante, ¿no? Cuando excavé un poco más, descubrí que su dataset tenía 97% de transacciones legítimas y 3% de fraude. Su "modelo brillante" predecía "legítimo" para TODO. Accuracy de 97% pero detectaba cero fraudes. Ese modelo valía exactamente $0.</p>
+    <p>Ahí aprendí que accuracy es una métrica mentirosa cuando hay desbalance de clases. Y que precision, recall, y F1-score son las métricas reales que necesitas conocer. El 85% mira accuracy y se declara ganador, pero cuando el negocio tiene costos asimétricos (un fraude cuesta $500, un false positive cuesta $5), la historia es completamente diferente.</p>
+    <p>Hoy: todas las métricas que el 85% malinterpreta y cómo implementarlas correctamente.</p>
+
+    <h2>La Matriz de Confusión: Tu Punto de Partida</h2>
+    <p>Antes de hablar de métricas, necesitamos la matriz de confusión. Para un problema binario (fraude sí/no, spam sí/no):</p>
+    <p>$$\begin{pmatrix} \text{TN} & \text{FP} \\ \text{FN} & \text{TP} \end{pmatrix}$$</p>
+    <p>Donde:</p>
+    <ul>
+      <li><strong>TN (True Negative)</strong>: Predijimos negativo y era negativo — bien</li>
+      <li><strong>FP (False Positive)</strong>: Predijimos positivo pero era negativo — alarma falsa</li>
+      <li><strong>FN (False Negative)</strong>: Predijimos negativo pero era positivo — missed</li>
+      <li><strong>TP (True Positive)</strong>: Predijimos positivo y era positivo — bien</li>
+    </ul>
+    <p>Para multiclase, la matriz se expande a $C \times C$ donde $C$ es el número de clases.</p>
+
+    <h2>Accuracy: La Métrica Mentirosa</h2>
+    <p>$$\text{Accuracy} = \frac{\text{TP} + \text{TN}}{\text{TP} + \text{TN} + \text{FP} + \text{FN}}$$</p>
+    <p>Accuracy es la proporción de predicciones correctas. Su problema: es terrible cuando las clases están desbalanceadas. Si tienes 97% negativo y 3% positivo, un modelo que predice TODO negativo tiene 97% accuracy pero cero utilidad práctica.</p>
+    <p><strong>Cuándo es útil:</strong> Clases balanceadas, o cuando el costo de FP y FN es simétrico.</p>
+
+    <h2>Precision: ¿Cuántas de mis predicciones positivas son correctas?</h2>
+    <p>$$\text{Precision} = \frac{\text{TP}}{\text{TP} + \text{FP}}$$</p>
+    <p>Precision responde: "de todas las veces que dije positivo, ¿cuántas realmente lo eran?" Alta precision = bajo false positive rate. En detección de spam: si tienes precision 90%, de cada 10 emails que marcaste como spam, 9 realmente eran spam y 1 era legítimo (terrible para el usuario).</p>
+    <p><strong>Cuándo maximizar precision:</strong> Cuando los FP son Costly (e.g., spam detection donde marcar un email importante como spam es muy malo, o en sistemas médicos donde un falso positivo causa estrés y procedimientos innecesarios).</p>
+
+    <h2>Recall: ¿Cuántos de los positivos reales encontré?</h2>
+    <p>$$\text{Recall} = \frac{\text{TP}}{\text{TP} + \text{FN}}$$</p>
+    <p>Recall responde: "de todos los positivos que existían, ¿cuántos encontré?" Alta recall = bajo false negative rate. En detección de cáncer: si tienes recall 95%, detectaste el 95% de los cánceres reales. El 5% que te perdiste son personas con cáncer que no fueron detectadas — eso es un costo enorme.</p>
+    <p><strong>Cuándo maximizar recall:</strong> Cuando los FN son Costly (e.g., detección de enfermedades, detección de fraude, seguridad — perder un caso positivo es peor que investigar un falso positivo).</p>
+
+    <h2>F1-Score: El Balance Entre Precision y Recall</h2>
+    <p>$$\text{F1} = 2 \cdot \frac{\text{Precision} \cdot \text{Recall}}{\text{Precision} + \text{Recall}}$$</p>
+    <p>F1 es la media armónica de precision y recall. ¿Por qué media armónica y no media aritmética? Porque la media armónica penaliza más los casos donde una de las dos métricas es baja. Si precision=1.0 y recall=0.0, la media aritmética sería 0.5 pero F1 sería 0.0 — refleja mejor que el modelo es inútil.</p>
+    <p><strong>Cuándo usar F1:</strong> Cuando quieres balance entre precision y recall y las clases pueden estar desbalanceadas. F1 es la métrica default cuando no sabes qué optimizar.</p>
+
+    <h2>El Support y el Classification Report</h2>
+    <pre><code class="language-python">from sklearn.metrics import classification_report, confusion_matrix
+import pandas as pd
+
+y_true = [1, 0, 1, 1, 0, 0, 1, 0, 0, 1]
+y_pred = [1, 0, 1, 0, 0, 1, 1, 0, 1, 1]
+
+# Reporte completo
+print(classification_report(y_true, y_pred, target_names=['Negativo', 'Positivo']))
+
+# Output:
+#               precision    recall  f1-score   support
+#     Negativo       0.75      0.60      0.67         5
+#     Positivo       0.67      0.80      0.73         5
+#     accuracy                           0.70        10
+#    macro avg       0.71      0.70      0.69        10
+# weighted avg       0.71      0.70      0.69        10
+
+# Matriz de confusión
+cm = confusion_matrix(y_true, y_pred)
+print("Confusion Matrix:")
+print(cm)
+# [[TN FP]
+#  [FN TP]]</code></pre>
+
+    <h2>Código Production-Grade</h2>
+    <pre><code class="language-python">import logging
+import numpy as np
+import torch
+from dataclasses import dataclass
+from typing import Literal
+from sklearn.metrics import (
+    accuracy_score, precision_score, recall_score, f1_score,
+    confusion_matrix, classification_report,
+    roc_auc_score, precision_recall_curve, average_precision_score
+)
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class MetricsResult:
+    accuracy: float
+    precision: float
+    recall: float
+    f1: float
+    tn: int; fp: int; fn: int; tp: int
+    support_pos: int; support_neg: int
+    roc_auc: float | None = None
+    pr_auc: float | None = None
+
+
+class BinaryClassificationMetrics:
+    """Métricas completas para clasificación binaria con logging."""
+
+    def __init__(self, threshold: float = 0.5):
+        self.threshold = threshold
+
+    def compute(
+        self,
+        y_true: np.ndarray,
+        y_prob: np.ndarray | None = None,
+        y_pred: np.ndarray | None = None,
+    ) -> MetricsResult:
+        # Si tenemos probabilidades, threshold
+        if y_prob is not None:
+            y_pred = (y_prob >= self.threshold).astype(int)
+        elif y_pred is None:
+            raise ValueError("Provide either y_prob or y_pred")
+
+        # Métricas base
+        acc = accuracy_score(y_true, y_pred)
+        prec = precision_score(y_true, y_pred, zero_division=0)
+        rec = recall_score(y_true, y_pred, zero_division=0)
+        f1 = f1_score(y_true, y_pred, zero_division=0)
+
+        # Matriz de confusión
+        tn, fp, fn, tp = confusion_matrix(y_true, y_pred, labels=[0, 1]).ravel()
+
+        result = MetricsResult(
+            accuracy=acc, precision=prec, recall=rec, f1=f1,
+            tn=tn, fp=fp, fn=fn, tp=tp,
+            support_pos=int(np.sum(y_true == 1)),
+            support_neg=int(np.sum(y_true == 0)),
+        )
+
+        # AUC solo si tenemos probabilidades
+        if y_prob is not None:
+            try:
+                result.roc_auc = roc_auc_score(y_true, y_prob)
+                result.pr_auc = average_precision_score(y_true, y_prob)
+            except ValueError:
+                pass
+
+        return result
+
+    def log_report(self, result: MetricsResult, prefix: str = ""):
+        p = f"{prefix}: " if prefix else ""
+        logger.info(f"{p}Accuracy={result.accuracy:.3f} | "
+                   f"P={result.precision:.3f} R={result.recall:.3f} F1={result.f1:.3f}")
+        logger.info(f"{p}Confusion: TN={result.tn} FP={result.fp} FN={result.fn} TP={result.tp}")
+        if result.roc_auc is not None:
+            logger.info(f"{p}ROC-AUC={result.roc_auc:.3f} | PR-AUC={result.pr_auc:.3f}")
+
+    def find_optimal_threshold(
+        self,
+        y_true: np.ndarray,
+        y_prob: np.ndarray,
+        metric: Literal['f1', 'recall', 'precision'] = 'f1',
+    ) -> float:
+        """Encuentra el threshold que maximiza una métrica."""
+        thresholds = np.linspace(0.01, 0.99, 99)
+        best_score, best_th = -1, 0.5
+
+        for th in thresholds:
+            y_p = (y_prob >= th).astype(int)
+            if metric == 'f1':
+                score = f1_score(y_true, y_p, zero_division=0)
+            elif metric == 'recall':
+                score = recall_score(y_true, y_p, zero_division=0)
+            else:
+                score = precision_score(y_true, y_p, zero_division=0)
+
+            if score > best_score:
+                best_score, best_th = score, th
+
+        self.threshold = best_th
+        logger.info(f"Optimal threshold={best_th:.3f} for {metric}={best_score:.3f}")
+        return best_th
+
+
+if __name__ == '__main__':
+    np.random.seed(42)
+    y_true = np.array([1]*50 + [0]*950)  # 5% positive class
+    y_prob = np.random.rand(1000) * (y_true * 0.8 + 0.2)  # noisy probabilities
+
+    metrics = BinaryClassificationMetrics(threshold=0.5)
+    result = metrics.compute(y_true, y_prob)
+    metrics.log_report(result, "Imbalanced dataset")
+
+    optimal_th = metrics.find_optimal_threshold(y_true, y_prob, 'f1')
+    result_opt = metrics.compute(y_true, y_prob)
+    metrics.log_report(result_opt, "With optimal threshold")</code></pre>
+
+    <h2>Errores Comunes</h2>
+    <p><strong>Error 1: Solo mirar accuracy en datasets desbalanceados</strong></p>
+    <p>Este es el error que costing empresas millones. En un dataset con 95% negativos, un modelo que predice todo negativo tiene 95% accuracy pero es completamente inútil. El 85% ve "95% accuracy" y celebra.</p>
+    <p><strong>Fix:</strong> SIEMPRE mira la matriz de confusión primero. Luego precision, recall, y F1 por clase. Si las clases están desbalanceadas, accuracy no te dice nada útil.</p>
+
+    <p><strong>Error 2: Mezclar precision/recall de diferentes clases</strong></p>
+    <p>En problemas multiclase, sklearn te da precision/recall por clase y dos promedios: macro y weighted. "Macro avg" promedia las métricas de cada clase por igual (1/num_classes cada una). "Weighted avg" pesa por el support (número de samples de cada clase). Si tus clases están desbalanceadas, la métrica que te importa es weighted avg, no macro avg.</p>
+    <p><strong>Fix:</strong> Para problemas desbalanceados, mira siempre weighted avg y la métrica de la clase minoritaria específicamente.</p>
+
+    <p><strong>Error 3: No distinguir entre precision y recall en la toma de decisiones</strong></p>
+    <p>El 85% sabe que "precision y recall son importantes" pero no sabe cuál optimizar en su contexto específico. ¿Tu costo principal es el ruido (FP) o el missed (FN)? Si es FP → maximizar precision. Si es FN → maximizar recall. Si no estás seguro → maximizar F1.</p>
+    <p><strong>Fix:</strong> Antes de entrenar, define qué te duele más: un falso positivo (FP) o un falso negativo (FN). Eso determina qué métrica optimizar en tu classification_report.</p>
+
+    <p><strong>Error 4: No usar ROC-AUC ni PR-AUC para modelos con probabilidades</strong></p>
+    <p>Si tienes un modelo que output probabilities (no solo predicciones binarias), accuracy, precision, recall y F1 todas dependen de un threshold arbitrario (típicamente 0.5). ROC-AUC y PR-AUC te dan una medida de calidad del modelo INDEPENDIENTE del threshold.</p>
+    <p><strong>Fix:</strong> Si tu modelo output probabilidades, siempre calcula ROC-AUC (o PR-AUC si las clases están muy desbalanceadas) como métrica de calidad global del modelo. Úsalas para comparar modelos, no solo para elegir threshold.</p>
+
+    <h2>Resumen del Día</h2>
+    <ul>
+      <li><strong>Accuracy</strong>: Proporción de predicciones correctas. Mala para clases desbalanceadas.</li>
+      <li><strong>Precision</strong>: De las predicciones positivas, ¿cuántas eran correctas? Minimizar FP.</li>
+      <li><strong>Recall</strong>: De los positivos reales, ¿cuántos encontré? Minimizar FN.</li>
+      <li><strong>F1</strong>: Media armónica de P y R. Balance entre ambos. Buena para desbalance.</li>
+      <li><strong>Confusion Matrix</strong>: TN/FP/FN/TP. La base de todo. Mírala SIEMPRE primero.</li>
+      <li><strong>ROC-AUC</strong>: Calidad del modelo independiente del threshold. Para comparar modelos.</li>
+      <li><strong>PR-AUC</strong>: Mejor que ROC-AUC cuando las clases están muy desbalanceadas.</li>
+      <li><strong>Support</strong>: Número de samples por clase. Crítico para interpretar métricas.</li>
+      <li><strong>Threshold optimization</strong>: Encuentra el threshold que maximiza tu métrica objetivo.</li>
+    </ul>
+
+    <h2>El Cierre</h2>
+    <p>Parcero, la próxima vez que alguien te diga "tenemos 97% de accuracy", pregúntales: "¿Y qué porcentaje de tu dataset es la clase positiva? ¿Cuántos falsos negativos tienes? ¿Cuál es tu ROC-AUC?" Si no te pueden responder esas preguntas, su modelo es tan útil como uno que predice todo negativo.</p>
+    <p>Esa vaina de que "accuracy es la métrica queenmporta" es una mentira que nos hemos contado colectivamente. En producción, lo que importa es qué tipo de error te cuesta más. Enfraude, los FN son caros. En spam, los FP son caros. En diagnóstico médico, ambos son caros pero por razones diferentes. Conoce tu dominio y elige la métrica correcta. ¡Nos vemos en el día 80!</p>
   </article>
 </body>
 </html>

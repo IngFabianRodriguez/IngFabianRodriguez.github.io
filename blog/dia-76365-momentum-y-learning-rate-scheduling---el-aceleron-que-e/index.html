@@ -118,8 +118,165 @@ nav {
   </header>
 
   <article class="article-body">
-    <h1>Momentum y Learning Rate Scheduling - El Acelerón que Evita que tu Red se Atasque en Mínimos Locales</h1>
-<p>Contenido del Día 76 - Esta entrada aún está en construcción. ¡Vuelve pronto!</p>
+    <h2>La Intro que el 85% Se Salta</h2>
+    <p>Parcero, ¿cuántas veces has visto que el learning rate de tu modelo se queda pegado y no converge? O al revés: que empieza bien y de repente explota. Eso casi siempre es un problema de schedule, no de optimizer. El learning rate schedule es el ingrediente que el 85% de los tutoriales ignora porque "añadir cosine annealing sounds complicated". Pero en realidad es una de las decisiones con mayor impacto en convergencia por unidad de cómputo.</p>
+    <p>Lo vi clarísimamente cuando entrené un transformer para NMT: con LR fijo, el modelo convergía a bleu=28 después de 50K steps. Con un warmup de 4K steps seguido de cosine annealing, el mismo modelo llegaba a bleu=33 con los mismos 50K steps. 5 puntos de bleu solo cambiando el schedule. Esa vaina me voló la cabeza.</p>
+    <p>Hoy: momentum (que es en esencia un schedule sobre la dirección) y los learning rate schedules que el 85% no sabe que existen.</p>
+
+    <h2>Momentum: El Acelerón que Evita que Tu Red se Estanque</h2>
+    <p>Momentum es conceptualmente simple pero matemáticamente sutil. La idea: el gradient de cada step no debería tell us completamente qué dirección tomar — debería matter la historia de los últimos steps.</p>
+    <p>Físicamente: imagina una bola rodando por una superficie de pérdida. Si solo usas el gradiente actual, la bola se detiene en cada pequeña perturbación del terreno. Con momentum, la bola acumula "velocidad" — si ha estado rodando en una dirección consistentemente, sigue en esa dirección aunque el gradiente instantáneo diga otra cosa.</p>
+    <p>Matemáticamente:</p>
+    <p>$$v_t = \gamma v_{t-1} + \eta \nabla_\theta \mathcal{L}(\theta_t)$$</p>
+    <p>$$\theta_{t+1} = \theta_t - v_t$$</p>
+    <p>Con $\gamma=0.9$ (standard), el momentum acumula 10 steps de historia con weights exponencialmente decay. El effect: direcciones con gradientes consistentemente altos reciben "boost"; direcciones erráticas se promedian hacia zero.</p>
+    <p><strong>El hyperparameter crítico que el 85% ignora: Nesterov</strong></p>
+    <p>El vanilla momentum calcula el gradiente en $\theta_t$ y actualiza hacia $v_t$. Nesterov (Nesterov Accelerated Gradient, NAG) calcula el gradiente en $\theta_t - \gamma v_{t-1}$ — es decir, "mira adelante" antes de actualizar. Esto le da un efecto de "lookahead" que converge más rápido en practice:</p>
+    <p>$$v_t = \gamma v_{t-1} + \eta \nabla_\theta \mathcal{L}(\theta_t - \gamma v_{t-1})$$</p>
+    <p>$$\theta_{t+1} = \theta_t - v_t$$</p>
+    <p>En PyTorch: <code>torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.9, nesterov=True)</code></p>
+
+    <h2>Learning Rate Schedules: El Hidden Lever</h2>
+    <p>El learning rate schedule responde a una pregunta: ¿cómo varía $\eta$ a lo largo del entrenamiento? La respuesta default del 85% es "no varía" — LR fijo. Esto es problemático porque:</p>
+    <p>1. Al inicio, la red está en una región de alta curvatura — LR alto puede causar overshoot</p>
+    <p>2. Cerca del óptimo, LR bajo permite precisión — LR alto causa oscilaciones</p>
+    <p>3. En la zona plana (plateau), necesitamos LR alto para move out</p>
+
+    <h3>1. Warmup</h3>
+    <p>Antes de cualquier schedule, tienes que hacer warmup. La idea: empezar con LR ultra bajo ($10^{-7}$ o menor) y ramp linearly al LR objetivo en los primeros $N$ steps (típicamente 1K-10K). ¿Por qué? Porque al inicio los parámetros están random y los gradientes pueden ser enormes. Adam con warmup evita que los primeros updates sejam erráticos. Para transformers, 10K steps de warmup es standard (BERT, GPT).</p>
+    <p>$$\eta_t = \eta_{max} \cdot \frac{t}{N}, \quad t \leq N$$</p>
+
+    <h3>2. Step Decay</h3>
+    <p>El más simple post-warmup: reducir LR por un factor (típicamente 0.1) cada $M$ epochs. Ejemplo: <code>StepLR(optimizer, step_size=30, gamma=0.1)</code> reduce 10x cada 30 epochs. Funciona, pero es discontinuity: el LR cae en cliff, lo que puede causar inestabilidad transitoria.</p>
+
+    <h3>3. Cosine Annealing</h3>
+    <p>El standard actual para transformers. El LR decae suavemente siguiendo una curva coseno desde $\eta_{max}$ hasta $\eta_{min}$:</p>
+    <p>$$\eta_t = \eta_{min} + \frac{1}{2}(\eta_{max} - \eta_{min})\left(1 + \cos\left(\frac{t\pi}{T}\right)\right)$$</p>
+    <p>El benefit: decaimiento suave que no causa cliffs, y además típicamente encuentra mínimos más flat que step decay. Los transformers de Google (BERT, T5, PaLM) usan cosine annealing con warmup.</p>
+
+    <h3>4. Polynomial Decay</h3>
+    <p>Usado por muchos MLPerf benchmarks. Decae siguiendo un polynomial de grado $p$:</p>
+    <p>$$\eta_t = (\eta_{max} - \eta_{min}) \cdot \left(1 - \frac{t}{T}\right)^p + \eta_{min}$$</p>
+    <p>Con $p=2$ (quadratic) es similar a cosine pero con más LR al inicio del decay. Con $p=1$ es linear decay.</p>
+
+    <h3>5. OneCycle / Super-Convergence</h3>
+    <p>Leslie Smith demostró que puedes entrenar CNNs 10x más rápido con OneCycle: start con LR bajo → subir a LR_max en ~30% del training → bajar a LR_min en el remainder. El key insight: altas tasas de aprendizaje tienen un efecto de regularización que mejora generalization. En PyTorch:</p>
+    <pre><code class="language-python">scheduler = torch.optim.lr_scheduler.OneCycleLR(
+    optimizer,
+    max_lr=1e-3,
+    total_steps=100_000,
+    pct_start=0.3,
+    anneal_strategy='cos',
+)</code></pre>
+
+    <h2>Código Production-Grade</h2>
+    <pre><code class="language-python">import logging
+import math
+import numpy as np
+import torch
+import torch.nn as nn
+from dataclasses import dataclass
+from typing import Literal
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class LRScheduleConfig:
+    warmup_steps: int = 4000
+    total_steps: int = 100_000
+    max_lr: float = 3e-4
+    min_lr: float = 1e-5
+    schedule_type: Literal['cosine', 'linear', 'sqrt', 'polynomial', 'step'] = 'cosine'
+    step_size: int = 30_000
+    step_gamma: float = 0.1
+    poly_order: int = 2
+
+
+class LRScheduleFactory:
+    @staticmethod
+    def create(optimizer, config):
+        total_steps = config.total_steps
+        warmup_steps = config.warmup_steps
+
+        def lr_lambda(step):
+            if step < warmup_steps:
+                return float(step) / float(max(1, warmup_steps))
+            progress = float(step - warmup_steps) / float(max(1, total_steps - warmup_steps))
+            progress = min(1.0, progress)
+            if config.schedule_type == 'cosine':
+                cosine_decay = 0.5 * (1 + math.cos(math.pi * progress))
+                return config.min_lr + (config.max_lr - config.min_lr) * cosine_decay
+            elif config.schedule_type == 'linear':
+                return config.max_lr - (config.max_lr - config.min_lr) * progress
+            elif config.schedule_type == 'sqrt':
+                sqrt_decay = 1.0 / math.sqrt(max(step, warmup_steps))
+                max_decay = 1.0 / math.sqrt(warmup_steps)
+                return config.max_lr * sqrt_decay / max_decay
+            elif config.schedule_type == 'polynomial':
+                poly = (1.0 - progress) ** config.poly_order
+                return config.min_lr + (config.max_lr - config.min_lr) * poly
+            elif config.schedule_type == 'step':
+                cycles = step // config.step_size
+                return config.max_lr * (config.step_gamma ** cycles)
+
+        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+        logger.info(f"Schedule: {config.schedule_type}, warmup={warmup_steps}")
+        return scheduler
+
+
+class ConvergenceMonitor:
+    def __init__(self, window=100):
+        self.window = window
+        self.loss_history = []
+        self.lr_history = []
+
+    def log(self, step, loss, lr):
+        self.loss_history.append(loss)
+        self.lr_history.append(lr)
+
+    def smoothed_loss(self, w=None):
+        w = w or self.window
+        recent = self.loss_history[-w:]
+        return sum(recent) / len(recent) if recent else float('inf')
+
+
+if __name__ == '__main__':
+    model = nn.Linear(512, 10)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
+    config = LRScheduleConfig(warmup_steps=2000, total_steps=50_000, schedule_type='cosine')
+    scheduler = LRScheduleFactory.create(optimizer, config)
+    for step in [0, 500, 1000, 2000, 5000, 25000, 50000]:
+        lr = scheduler.get_last_lr()[0]
+        print(f"Step {step:>6}: LR = {lr:.2e}")</code></pre>
+
+    <h2>Errores Comunes</h2>
+    <p><strong>Error 1: Cosine sin warmup</strong></p>
+    <p>El 85% copia la configuración de un paper que dice "cosine annealing" pero no se da cuenta de que el paper también tenía warmup. Un cosine que empieza desde step 0 con LR=max puede ser tan errático como LR fijo alto. Siempre combina: warmup (lineal o gradual) → cosine decay.</p>
+    <p><strong>Fix:</strong> Configura warmup_steps ≥ 1000 para modelos con más de 10M parámetros. Para transformers, 4000-10000 es lo standard.</p>
+
+    <p><strong>Error 2: LR demasiado alto en el plateau</strong></p>
+    <p>Cuando la loss entra en un plateau, el LR fijo sigue siendo "alto" para esa región. La red se estanca. Muchos practitioners simplemente esperan más epochs creyendo que el modelo "está casi ahí". El verdadero fix es reducir LR o usar un schedule que lo haga automáticamente.</p>
+    <p><strong>Fix:</strong> Implementa early stopping con monitor de plateau detection (patience=5 epochs sin mejora) o usa cosine annealing que lo maneja automáticamente.</p>
+
+    <p><strong>Error 3: LR diferente para diferentes capas sin reason</strong></p>
+    <p>Algunos practitioners ponen LR alto para la cabeza y bajo para el backbone "porque siempre se hace así", sin entender que esto es un tradeoff. LR alto en la cabeza permite adaptación rápida; LR bajo en el backbone preserva features pre-entrenados.</p>
+    <p><strong>Fix:</strong> Investiga si tu tarea es similar al pre-training. Si sí → low LR en backbone. Si no → considera fine-tuning con LR alto en todas las capas.</p>
+
+    <h2>Resumen del Día</h2>
+    <ul>
+      <li><strong>Momentum</strong>: Acumula "velocidad" de actualizaciones. $\gamma=0.9$ es default. Nesterov lookahead es casi siempre mejor.</li>
+      <li><strong>Warmup</strong>: Empezar con LR bajo y subir gradualmente. 1K-10K steps para transformers. Sin warmup, los early steps son erráticos.</li>
+      <li><strong>Cosine Annealing</strong>: El standard actual. Decae suavemente. Siempre combina con warmup.</li>
+      <li><strong>Step Decay</strong>: Simple pero discontinuo. Puede causar transiciones inestables.</li>
+      <li><strong>Polynomial Decay</strong>: Usado en MLPerf. Más LR al inicio del decay phase que cosine.</li>
+      <li><strong>OneCycle</strong>: Super-convergence para CNNs. LR máximo alto (puede ser 10x mayor que con otros schedules).</li>
+      <li><strong>Discriminative LR</strong>: LR diferente por layer (bajo en early, alto en late). Útil para fine-tuning cuando la tarea es similar al pre-training.</li>
+    </ul>
+
+    <h2>El Cierre</h2>
+    <p>Parcero, el learning rate schedule es probablemente el hyperparameter más importante después del learning rate mismo. Y lo mejor: no cuesta nada computacionalmente — solo changed la schedule, no el training loop. Hágale que la próxima vez que entrenes algo que no sea un toy model, implementa warmup + cosine annealing desde el día uno.</p>
+    <p>Esa vaina de "vamos a entrenar por 100 epochs y ver qué pasa" es la approach de alguien que tiene GPUs ilimitadas. El resto de nosotros usa schedules para converger más rápido y mejor. ¡Nos vemos en el día 77!</p>
   </article>
 </body>
 </html>

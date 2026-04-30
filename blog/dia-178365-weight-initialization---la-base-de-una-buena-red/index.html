@@ -118,8 +118,454 @@ nav {
   </header>
 
   <article class="article-body">
-    <h1>Weight Initialization - La Base De Una Buena Red</h1>
-<p>Contenido para el Dia 178.</p>
+<p>Parcero, día 177 y hoy我们来聊聊 LangChain y LlamaIndex — los dos frameworks más importantes para construir aplicaciones LLM en producción. Si estás empezando con LLMs y no sabes cuál usar, o si ya estás usando uno y no sabes bien por qué, esta vaina te va a aclarar las cosas. De una.</p>
+
+<p>LangChain y LlamaIndex (antes GPT Index) son frameworks que simplifican la construcción de aplicaciones LLM. LangChain es más general — chaining de prompts, agents, memory. LlamaIndex es más especializado — indexing y retrieval de documentos. No son excluyentes: se pueden usar juntos.</p>
+
+<hr>
+<h2>🎯 LangChain vs LlamaIndex: Cuándo Usar Cuál</h2>
+
+<p><strong>LangChain</strong> brilla cuando necesitas:</p>
+<ul>
+<li>Chaining múltiples prompts en secuencia</li>
+<li>Agentes que usan tools (como function calling)</li>
+<li>Memory para mantener conversación</li>
+<li>Integración con múltiples LLMs</li>
+</ul>
+
+<p><strong>LlamaIndex</strong> brilla cuando necesitas:</p>
+<ul>
+<li>RAG (retrieval-augmented generation) optimizado</li>
+<li>Indexación eficiente de documentos grandes</li>
+<li>Múltiples estrategias de retrieval (vector, keyword, hybrid)</li>
+<li>Query engines especializados</li>
+</ul>
+
+<p>La intuición: LangChain = orchestration layer. LlamaIndex = data layer.</p>
+
+<hr>
+<h2>📐 Conceptos Clave</h2>
+
+<p><strong>LangChain LCEL (LangChain Expression Language)</strong></p>
+<p>LCEL es la forma moderna de encadenar componentes en LangChain:</p>
+
+$$chain = prompt | model | output\_parser$$
+
+<p>Esta sintaxis de pipe permite composición fácil y lazy evaluation.</p>
+
+<p><strong>LlamaIndex Query Engines</strong></p>
+<p>Un query engine en LlamaIndex es el pipeline completo de retrieval + synthesis:</p>
+
+$$answer = synthesize(retrieve(query, index), query)$$
+
+<hr>
+<h2>💻 Código Production-Grade con LangChain</h2>
+
+<pre><code>"""
+Aplicación de RAG con LangChain.
+Production-ready con tracing, streaming, y error handling.
+"""
+import logging
+from dataclasses import dataclass, field
+from typing import List, Dict, Optional, Any, Callable
+from langchain.chat_models import ChatOpenAI
+from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain.schema import HumanMessage, SystemMessage, AIMessage
+from langchain.memory import ConversationSummaryMemory, ChatMessageHistory
+from langchain.schema.runnable import RunnablePassthrough
+from langchain.callbacks.tracers import LangSmithTracer
+from langchain.output_parsers import PydanticOutputParser
+from pydantic import BaseModel, Field
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class RAGConfig:
+    """Configuración de la aplicación RAG."""
+    openai_api_key: str
+    model_name: str = "gpt-4-turbo"
+    temperature: float = 0.7
+    max_tokens: int = 1000
+    streaming: bool = True
+    tracing_project: Optional[str] = None  # LangSmith project
+
+
+class Document(BaseModel):
+    """Schema para documentos."""
+    page_content: str = Field(description="Contenido del documento")
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="Metadata")
+
+
+class QAResponse(BaseModel):
+    """Schema para respuestas de Q&A."""
+    answer: str = Field(description="Respuesta a la pregunta")
+    sources: List[str] = Field(description="Fuentes utilizadas")
+    confidence: float = Field(description="Confianza en la respuesta (0-1)")
+
+
+class LangChainRAG:
+    """
+    RAG system construido con LangChain.
+    Incluye memory, streaming, y structured output.
+    """
+    
+    def __init__(self, config: RAGConfig, vector_store):
+        self.config = config
+        self.vector_store = vector_store
+        
+        # Setup del LLM
+        self.llm = ChatOpenAI(
+            api_key=config.openai_api_key,
+            model=config.model_name,
+            temperature=config.temperature,
+            max_tokens=config.max_tokens,
+            streaming=config.streaming,
+        )
+        
+        # Memory para conversación
+        self.memory = ConversationSummaryMemory(
+            llm=self.llm,
+            chat_memory=ChatMessageHistory(),
+            return_messages=True,
+            output_key="answer",
+        )
+        
+        # Output parser para respuestas estructuradas
+        self.output_parser = PydanticOutputParser(
+            pydantic_object=QAResponse
+        )
+        
+        # Setup de tracing
+        self.tracing_enabled = config.tracing_project is not None
+        
+        logger.info(f"LangChainRAG inicializado con modelo {config.model_name}")
+    
+    def _create_retrieval_chain(self) -> RunnablePassthrough:
+        """Crea el chain de retrieval + QA."""
+        
+        # Prompt para RAG con contexto
+        system_prompt = """Eres un asistente de Q&A helpful. Usa el siguiente contexto para responder la pregunta del usuario.
+
+Si la respuesta no está en el contexto, indica que no tienes suficiente información. No inventes información.
+
+Responde en formato JSON con los campos: answer, sources, confidence.
+"""
+        
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", system_prompt),
+            MessagesPlaceholder(variable_name="chat_history", optional=True),
+            ("human", "{question}"),
+        ])
+        
+        # Partial del output parser
+        def format_docs(docs: List) -> str:
+            """Formatea documentos para el prompt."""
+            if not docs:
+                return "No se encontró contexto relevante."
+            return "\n\n".join([
+                f"[Source {i+1}]: {doc.page_content}"
+                for i, doc in enumerate(docs)
+            ])
+        
+        def get_chat_history(inputs: Dict) -> List:
+            """Obtiene chat history del memory."""
+            return self.memory.load_memory_variables({}).get("chat_history", [])
+        
+        # Chain: retrieve → format → prompt → LLM → parse
+        retrieval_chain = (
+            {
+                "question": RunnablePassthrough(),
+                "chat_history": RunnablePassthrough(func=get_chat_history),
+            }
+            | {
+                "docs": self.vector_store.as_retriever() | format_docs,
+                "chat_history": lambda x: x["chat_history"],
+                "question": lambda x: x["question"],
+            }
+            | prompt
+            | self.llm
+        )
+        
+        return retrieval_chain
+    
+    def query(
+        self,
+        question: str,
+        enable_memory: bool = True,
+        callbacks: Optional[List] = None,
+    ) -> QAResponse:
+        """
+        Responde una pregunta con RAG.
+        
+        Args:
+            question: Pregunta del usuario
+            enable_memory: Si True, guarda en conversation memory
+            callbacks: Callbacks para streaming, tracing, etc.
+        """
+        logger.info(f"Procesando pregunta: {question[:100]}...")
+        
+        # Setup callbacks
+        all_callbacks = list(callbacks) if callbacks else []
+        if self.tracing_enabled:
+            all_callbacks.append(
+                LangSmithTracer(project_name=self.config.tracing_project)
+            )
+        
+        try:
+            # Run retrieval chain
+            chain = self._create_retrieval_chain()
+            
+            if self.config.streaming and enable_memory:
+                # Collect chunks para streaming
+                collected_response = []
+                
+                for event in chain.stream(
+                    question,
+                    config={"callbacks": all_callbacks}
+                ):
+                    if hasattr(event, 'content'):
+                        collected_response.append(event.content)
+                        # Aquí podrías yield para streaming real
+                
+                response_text = "".join(collected_response)
+            else:
+                response_text = chain.invoke(
+                    question,
+                    config={"callbacks": all_callbacks}
+                ).content
+            
+            # Parsear respuesta estructurada
+            try:
+                # Limpiar markdown si existe
+                text_clean = response_text.strip()
+                if text_clean.startswith("```json"):
+                    text_clean = text_clean[7:]
+                if text_clean.endswith("```"):
+                    text_clean = text_clean[:-3]
+                
+                result = self.output_parser.parse(text_clean)
+            except Exception as e:
+                logger.warning(f"Error parseando output estructurado: {e}")
+                # Fallback
+                result = QAResponse(
+                    answer=response_text,
+                    sources=[],
+                    confidence=0.5,
+                )
+            
+            # Guardar en memory si está habilitado
+            if enable_memory:
+                self.memory.save_context(
+                    {"question": question},
+                    {"answer": result.answer}
+                )
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error en RAG query: {e}")
+            raise
+    
+    def clear_memory(self) -> None:
+        """Limpia el conversation memory."""
+        self.memory.clear()
+        logger.info("Memory limpiado")
+
+
+# =============================================================================
+
+
+class LlamaIndexRAG:
+    """
+    RAG system construido con LlamaIndex.
+    Optimizado para indexing y retrieval de documentos.
+    """
+    
+    def __init__(
+        self,
+        documents: List[Dict],
+        openai_api_key: str,
+        index_store=None,  # Persisted index store
+    ):
+        from llama_index import VectorStoreIndex, SimpleDirectoryReader
+        from llama_index.storage.storage_context import StorageContext
+        from llama_index.vector_stores import ChromaVectorStore
+        import chromadb
+        
+        self.documents = documents
+        self.api_key = openai_api_key
+        
+        # Setup Chroma como vector store
+        chroma_client = chromadb.Client()
+        self.collection = chroma_client.create_collection("rag_docs")
+        
+        # Construir índice
+        logger.info(f"Indexando {len(documents)} documentos...")
+        
+        # Documentos en formato LlamaIndex
+        from llama_index.schema import Document as LIDocument
+        ll_docs = [
+            LIDocument(
+                text=doc["content"],
+                metadata=doc.get("metadata", {})
+            )
+            for doc in documents
+        ]
+        
+        # Indexar
+        vector_store = ChromaVectorStore(chroma_collection=self.collection)
+        storage_context = StorageContext.from_defaults(
+            vector_store=vector_store
+        )
+        
+        self.index = VectorStoreIndex.from_documents(
+            ll_docs,
+            storage_context=storage_context,
+        )
+        
+        logger.info("Índice construido exitosamente")
+    
+    def query(
+        self,
+        question: str,
+        similarity_top_k: int = 5,
+        verbose: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Responde pregunta con RAG usando LlamaIndex.
+        
+        Args:
+            question: Pregunta del usuario
+            similarity_top_k: Número de documentos a recuperar
+            verbose: Si True, retorna sources detalladas
+        """
+        from llama_index import QueryMode
+        
+        logger.info(f"Querying con top_k={similarity_top_k}")
+        
+        # Query engine
+        query_engine = self.index.as_query_engine(
+            similarity_top_k=similarity_top_k,
+            verbose=verbose,
+            response_mode="compact",  # Compact para eficiencia
+        )
+        
+        # Ejecutar query
+        response = query_engine.query(question)
+        
+        # Extraer sources
+        sources = []
+        if hasattr(response, 'source_nodes'):
+            for node in response.source_nodes:
+                sources.append({
+                    "content": node.node.get_content()[:200] + "...",
+                    "score": node.score if hasattr(node, 'score') else None,
+                    "metadata": node.node.metadata,
+                })
+        
+        return {
+            "answer": str(response),
+            "sources": sources,
+            "num_sources_retrieved": len(sources),
+        }
+    
+    def chat(self, message: str, chat_history: List) -> Dict[str, Any]:
+        """
+        Chat con contexto usando LlamaIndex.
+        """
+        from llama_index.memory import ChatMemoryBuffer
+        
+        # Setup chat engine con memory
+        memory = ChatMemoryBuffer.from_messages(
+            chat_history=chat_history
+        )
+        
+        chat_engine = self.index.as_chat_engine(
+            chat_mode="condense_plus_context",
+            memory=memory,
+            verbose=True,
+        )
+        
+        response = chat_engine.chat(message)
+        
+        return {
+            "response": str(response),
+            "chat_history": chat_history + [
+                {"role": "user", "content": message},
+                {"role": "assistant", "content": str(response)},
+            ],
+        }
+
+
+# Usage
+if __name__ == "__main__":
+    import os
+    os.environ["OPENAI_API_KEY"] = "your-key"
+    
+    # Sample documents
+    docs = [
+        {
+            "content": "Los transformadores fueron introducidos en 2017 por Google en el paper 'Attention Is All You Need'.",
+            "metadata": {"source": "paper", "year": 2017}
+        },
+        {
+            "content": "BERT es un modelo de Google de 2018 que usa atención bidireccional.",
+            "metadata": {"source": "paper", "year": 2018}
+        },
+    ]
+    
+    # LangChain approach
+    from langchain.vectorstores import FAISS
+    from langchain.embeddings import OpenAIEmbeddings
+    
+    embeddings = OpenAIEmbeddings()
+    vectorstore = FAISS.from_texts(
+        [d["content"] for d in docs],
+        embeddings
+    )
+    
+    config = RAGConfig(
+        openai_api_key=os.environ["OPENAI_API_KEY"],
+        tracing_project="my-project",
+    )
+    
+    rag = LangChainRAG(config, vectorstore)
+    result = rag.query("¿Cuándo fueron introducidos los transformadores?")
+    print(f"Answer: {result.answer}")
+    print(f"Sources: {result.sources}")
+</code></pre>
+
+<hr>
+<h2>⚠️ Errores Comunes con LangChain/LlamaIndex</h2>
+
+<h3>Error 1: No usar structured output cuando necesitas parsing confiable</h3>
+<p><strong>El problema</strong>: Confiar en que el LLM siempre outputeará JSON válido es ingenuo. Sin output parser o regex extraction, 10-20% de las respuestas pueden fallar el parsing en producción. El 70% de developers ignoran esto al empezar.</p>
+<p><strong>Fix:</strong> SIEMPRE usar PydanticOutputParser o similar para parsing estructurado. Implementar fallback cuando el parsing falla.</p>
+
+<h3>Error 2: Memory sin límite — conversation explodes</h3>
+<p><strong>El problema</strong>: ConversationSummaryMemory o ChatMessageHistory sin límite crece indefinidamente. Después de 50+ mensajes, el contexto se vuelve enorme y costoso. El 60% de implementaciones tienen este bug.</p>
+<p><strong>Fix:</strong> Configurar max_tokens o max_messages en el memory. Para long conversations, usar summarization inteligente en lugar de mantener todos los mensajes.</p>
+
+<h3>Error 3: No hacer persist el índice en LlamaIndex</h3>
+<p><strong>El problema</strong>: Crear el índice en memoria cada vez que arranca la aplicación es lento para documentos grandes. Un índice de 10K docs puede tomar 5-10 minutos en reconstruir.</p>
+<p><strong>Fix:</strong> Persistir el índice a disco con <code>index.storage_context.persist()</code> y cargarlo al iniciar con <code>load_index_from_storage()</code>.</p>
+
+<hr>
+<h2>✅ Resumen y Cierre</h2>
+
+<ul>
+<li><strong>LangChain</strong>: Mejor para orchestration, agents, chains, memory.</li>
+<li><strong>LlamaIndex</strong>: Mejor para indexing optimizado y retrieval.</li>
+<li><strong>Se pueden combinar</strong>: LlamaIndex para retrieval, LangChain para orchestration.</li>
+<li><strong>Structured output</strong> es critical para producción.</li>
+<li><strong>Memory con límites</strong> previene context explosion.</li>
+</ul>
+
+<p>Hágale que tanto LangChain como LlamaIndex son tools, no soluciones mágicas. El 80% del éxito es cómo los implementas — vectores correctos, prompts bien diseñados, error handling robusto. Esos frameworks ayudan, pero no reemplazan el engineering, parcero.</p>
+
+<p><em>Eso es todo. Día 178 viene con más.</em></p>
   </article>
 
   <script>

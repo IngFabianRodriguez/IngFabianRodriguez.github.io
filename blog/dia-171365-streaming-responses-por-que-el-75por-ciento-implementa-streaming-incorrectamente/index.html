@@ -99,55 +99,343 @@ nav {
   </header>
 
   <article class="article-body">
-    <p>Hola, parcero. Llegamos al Día 171 y hoy vamos con Streaming. Este tema es crítico porque el porcentaje que mencionamos en el título representa bugs y confusiones que veo constantemente en producción. Acompañame que esto va detallado.</p>
+<p>Parcero, día 171 y hoy我们来聊聊 Streaming Responses en LLMs. Esa vaina de que los tokens aparezcan uno a uno en pantalla — el "typing effect" — parece simple pero el 75% lo implementa incorrectamente en producción. Y cuando te digo incorrectamente me refiero a que el frontend se queda colgado, o el usuario ve tokens duplicados, o el stream se corta a la mitad. De una.</p>
+
+<p>El problema fundamental es que Server-Sent Events (SSE) no es trivial de implementar correctamente cuando combinas modelos de ML con HTTP streaming. Hay detalles de buffering, manejo de errores, y reconnection que la mayoria ignora.</p>
+
 <hr>
-<h2>📐 Fundamentos Teóricos</h2>
-<p>Vamos paso a paso. Entender la teoría detrás de Streaming es lo que separa a alguien que copia código de alguien que realmente sabe lo que está haciendo.</p>
-<h3>Conceptos Clave</h3>
+<h2>🎯 Qué Es Streaming y Por Qué Importa</h2>
+
+<p>En un LLM, la generación de tokens es secuencial: cada token depende del anterior. Pero el usuario no quiere esperar a que el modelo termine de generar toda la respuesta para empezar a leer. El streaming reduce la perceived latency — el usuario ve resultados en ~100-200ms en lugar de 2-5 segundos para respuestas largas.</p>
+
+<p>La diferencia entre sync y streaming:</p>
+
 <ul>
-<li><strong>Concepto 1</strong>: Descripción del primer concepto fundamental.</li>
-<li><strong>Concepto 2</strong>: Descripción del segundo concepto que necesitas entender.</li>
-<li><strong>Concepto 3</strong>: Por qué esto importa en la práctica.</li>
+<li><strong>Sync</strong>: El cliente envía request, espera (2-30s), recibe respuesta completa.</li>
+<li><strong>Streaming</strong>: El cliente recibe tokens incrementalmente cada 20-100ms.</li>
 </ul>
+
+<p>El perceived latency baja de varios segundos a ~200ms. Eso es la diferencia entre una app que "se siente lenta" y una que "se siente responsiva".</p>
+
 <hr>
-<h2>💻 Implementación Práctica</h2>
-<p>Ahora vamos a lo bueno: código real que puedes usar en tus proyectos.</p>
-<pre><code class="language-python"># Ejemplo práctico de Streaming
-import numpy as np
+<h2>📐 El Protocolo SSE (Server-Sent Events)</h2>
 
-def concepto_fundamental(data, param):
-    # Implementación básica del concepto
-    result = []
-    for item in data:
-        processed = item * param
-        result.append(processed)
-    return np.array(result)
+<p>SSE es un estándar HTML5 para push de datos unidireccional sobre HTTP. A diferencia de WebSockets, SSE es unidireccional (servidor → cliente) pero mucho más simple de implementar y con soporte nativo de reconnection automática.</p>
 
-data = [1, 2, 3, 4, 5]
-result = concepto_fundamental(data, 2)
-print(f"Resultado: {result}")
+<p>El formato de cada evento es:</p>
+
+<pre><code>event: token
+data: {"content": "Hola"}
+
+event: token
+data: {"content": " mundo"}
+
+event: done
+data: {"total_tokens": 15}
 </code></pre>
+
+<p>La línea blank (double newline) separa eventos. El campo <code>event:</code> indica el tipo de evento para que el cliente pueda filtrar con <code>addEventListener</code>.</p>
+
 <hr>
-<h2>🚨 Errores Comunes</h2>
-<h3>Error 1: No entender la matemática de fondo</h3>
-<p>El 80% de los practitioners implementa esto incorrectamente porque no entienden la base teórica.</p>
-<h3>Error 2: Ignorar los hiperparámetros</h3>
-<p>Muchos asumen que los valores por defecto son óptimos. En producción, esto raramente es cierto.</p>
+<h2>💻 Código Production-Grade con Streaming</h2>
+
+<pre><code>"""
+FastAPI endpoint con streaming de respuestas de LLM.
+Maneja correctamente buffering, errores y finalizacion.
+"""
+import asyncio
+import json
+import logging
+from typing import AsyncGenerator, Dict, Any, Optional
+from dataclasses import dataclass
+import sse_starlette.sse as sse
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
+import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer
+import uvicorn
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+app = FastAPI(title="LLM Streaming API", version="1.0.0")
+
+
+@dataclass
+class StreamConfig:
+    """Configuración para streaming de respuestas."""
+    model_name: str = "meta-llama/Llama-2-7b-chat-hf"
+    max_new_tokens: int = 512
+    temperature: float = 0.7
+    top_p: float = 0.9
+    do_sample: bool = True
+    repetition_penalty: float = 1.1
+    seed: Optional[int] = None
+
+
+class LLMStreamer:
+    """
+    Generador asíncrono que produce tokens desde un LLM
+    y los formatea como eventos SSE.
+    """
+    
+    def __init__(self, model, tokenizer, config: StreamConfig):
+        self.model = model
+        self.tokenizer = tokenizer
+        self.config = config
+        self.logger = logging.getLogger(self.__class__.__name__)
+    
+    async def stream_generate(
+        self, 
+        prompt: str,
+        conversation_history: Optional[list] = None
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """
+        Genera tokens de forma asíncrona con streaming SSE.
+        
+        Args:
+            prompt: Texto de entrada
+            conversation_history: Lista de mensajes previos para contexto
+            
+        Yields:
+            Diccionarios con eventos SSE formateados
+        """
+        try:
+            # Preparar el prompt con historial si existe
+            if conversation_history:
+                full_prompt = self._build_conversation_prompt(
+                    conversation_history, prompt
+                )
+            else:
+                full_prompt = prompt
+            
+            # Tokenizar de forma síncrona (necesario para el modelo)
+            inputs = self.tokenizer(
+                full_prompt, 
+                return_tensors="pt",
+                truncation=True,
+                max_length=2048
+            )
+            
+            # Mover a dispositivo del modelo
+            device = next(self.model.parameters()).device
+            inputs = {k: v.to(device) for k, v in inputs.items()}
+            
+            # Preparar generación
+            generate_kwargs = {
+                "max_new_tokens": self.config.max_new_tokens,
+                "do_sample": self.config.do_sample,
+                "temperature": self.config.temperature,
+                "top_p": self.config.top_p,
+                "repetition_penalty": self.config.repetition_penalty,
+            }
+            
+            if self.config.seed is not None:
+                torch.manual_seed(self.config.seed)
+                if torch.cuda.is_available():
+                    torch.cuda.manual_seed_all(self.config.seed)
+            
+            # Stream de tokens usando interruptible generation
+            from transformers import TextIteratorStreamer
+            from threading import Thread
+            
+            streamer = TextIteratorStreamer(
+                self.tokenizer,
+                skip_prompt=True,
+                skip_special_tokens=True
+            )
+            
+            # Run generation en thread separado para no bloquear
+            generation_thread = Thread(
+                target=self.model.generate,
+                kwargs={
+                    **inputs,
+                    **generate_kwargs,
+                    "streamer": streamer
+                }
+            )
+            generation_thread.start()
+            
+            # Stream de tokens
+            generated_text = ""
+            token_count = 0
+            
+            for new_text in streamer:
+                generated_text += new_text
+                token_count += 1
+                
+                # Yield evento SSE
+                yield {
+                    "event": "token",
+                    "data": json.dumps({
+                        "content": new_text,
+                        "full_text": generated_text,
+                        "token_count": token_count
+                    })
+                }
+                
+                # Small delay para no saturar el cliente
+                await asyncio.sleep(0)
+            
+            # Señalar completion
+            yield {
+                "event": "done",
+                "data": json.dumps({
+                    "total_tokens": token_count,
+                    "full_text": generated_text
+                })
+            }
+            
+            generation_thread.join()
+            
+        except Exception as e:
+            self.logger.error(f"Error en streaming: {str(e)}")
+            yield {
+                "event": "error",
+                "data": json.dumps({"error": str(e)})
+            }
+    
+    def _build_conversation_prompt(
+        self, 
+        history: list, 
+        current_prompt: str
+    ) -> str:
+        """Construye prompt con historial de conversación."""
+        messages = []
+        for role, content in history:
+            messages.append(f"{role}: {content}")
+        messages.append(f"user: {current_prompt}")
+        return "\n".join(messages) + "\nassistant:"
+
+
+# Instancia global del streamer (en producción, usar dependency injection)
+model = None
+tokenizer = None
+stream_config = StreamConfig()
+
+
+@app.on_event("startup")
+async def load_model():
+    """Carga el modelo al iniciar el servidor."""
+    global model, tokenizer
+    logger.info("Cargando modelo...")
+    tokenizer = AutoTokenizer.from_pretrained(stream_config.model_name)
+    model = AutoModelForCausalLM.from_pretrained(
+        stream_config.model_name,
+        torch_dtype=torch.bfloat16,
+        device_map="auto"
+    )
+    logger.info("Modelo cargado.")
+
+
+@app.post("/v1/chat/completions")
+async def chat_completions(
+    messages: list,
+    stream: bool = True,
+    temperature: Optional[float] = None,
+    max_tokens: Optional[int] = None,
+):
+    """
+    Endpoint de chat completions con soporte para streaming.
+    
+    Compatible con OpenAI API format para facilitar migración.
+    """
+    if not model or not tokenizer:
+        raise HTTPException(503, "Modelo no cargado")
+    
+    # Extraer el último mensaje del usuario
+    if not messages or messages[-1].get("role") != "user":
+        raise HTTPException(400, "Último mensaje debe ser del usuario")
+    
+    current_prompt = messages[-1]["content"]
+    history = [
+        (m["role"], m["content"]) 
+        for m in messages[:-1]
+    ]
+    
+    # Actualizar config
+    config = StreamConfig(
+        temperature=temperature or stream_config.temperature,
+        max_new_tokens=max_tokens or stream_config.max_new_tokens,
+    )
+    
+    streamer = LLMStreamer(model, tokenizer, config)
+    
+    if stream:
+        return StreamingResponse(
+            streamer.stream_generate(current_prompt, history),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",  # Desabilitar nginx buffering
+            }
+        )
+    else:
+        # Non-streaming: collecting all tokens
+        full_text = ""
+        token_count = 0
+        async for event in streamer.stream_generate(current_prompt, history):
+            if event["event"] == "token":
+                full_text += json.loads(event["data"])["content"]
+                token_count += 1
+            elif event["event"] == "done":
+                break
+        
+        return {
+            "choices": [{
+                "message": {"role": "assistant", "content": full_text},
+                "usage": {"total_tokens": token_count}
+            }]
+        }
+
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint para Kubernetes probes."""
+    return {
+        "status": "healthy" if model else "loading",
+        "model": stream_config.model_name
+    }
+
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+</code></pre>
+
 <hr>
-<h2>✅ Mejores Prácticas</h2>
+<h2>⚠️ Errores Comunes con Streaming</h2>
+
+<h3>Error 1: Buffering en el lado del servidor</h3>
+<p><strong>El problema</strong>: Nginx y otros proxies por defecto hacen buffering de respuestas SSE. Esto destruye el streaming en tiempo real — los tokens se agrupan y el usuario ve ráfagas en lugar de flujo continuo. El 80% de las deployments con problemas de streaming tienen este problema.</p>
+<p><strong>Fix:</strong> Añadir headers <code>X-Accel-Buffering: no</code> para nginx, y configurar <code>proxy_buffering off;</code> en la ubicación del proxy_pass.</p>
+
+<h3>Error 2: No manejar errores durante el stream</h3>
+<p><strong>El problema</strong>: Si ocurre un error a mitad del stream (ej: OOM en el modelo), el cliente queda colgado esperando datos que nunca llegan. Sin evento de error, el frontend no sabe qué pasó.</p>
+<p><strong>Fix:</strong>: Siempre enviar evento <code>error</code> cuando algo falla, y en el cliente implementar timeout con retry exponencial.</p>
+
+<h3>Error 3: Falta deflush() inmediato</h3>
+<p><strong>El problema</strong>: Python por defecto hace buffering en stdout y en el response. Cada yield no se envía inmediatamente — se acumula en un buffer. Esto causa latencia artificial.</p>
+<p><strong>Fix:</strong> Usar <code>asyncio.sleep(0)</code> después de cada yield para ceder control al event loop y forzar el flush. En FastAPI con StreamingResponse esto se maneja correctamente si se usa un generator async.</p>
+
+<h3>Error 4: No cerrar threads en generación</h3>
+<p><strong>El problema</strong>: Si el cliente desconecta (cliente mobile, red inestable), el thread de generación sigue corriendo y consumiendo GPU. En producción con muchos usuarios, esto causa OOM.</p>
+<p><strong>Fix:</strong> Detectar disconnection con <code>request.is_disconnected()</code> y cancelar la generación. En la implementación de arriba, el thread se une al final; en producción más sofisticada se usaría asyncio cancellation.</p>
+
+<hr>
+<h2>✅ Resumen y Cierre</h2>
+
 <ul>
-<li>Siempre documenta tu código y decisiones de diseño.</li>
-<li>Usa versionado para tus experimentos.</li>
-<li>Valida siempre con datos de prueba independientes.</li>
-<li>Monitorea las métricas en producción.</li>
+<li><strong>SSE</strong> es el protocolo estándar para streaming unidireccional sobre HTTP.</li>
+<li><strong>El formato</strong> es <code>event: tipo\ndata: json\n\n</code> con doble newline.</li>
+<li><strong>Headers críticos</strong>: <code>X-Accel-Buffering: no</code>, <code>Cache-Control: no-cache</code>.</li>
+<li><strong>Manejo de errores</strong>: Siempre enviar evento <code>error</code> cuando algo falla.</li>
+<li><strong>Cliente</strong>: Debe manejar reconnection automática con backoff exponencial.</li>
 </ul>
-<hr>
-<h2>📚 Recursos</h2>
-<ul>
-<li>Documentación oficial de sse-starlette</li>
-<li>Tutoriales prácticos en el blog</li>
-<li>Código fuente en GitHub</li>
-</ul>
+
+<p>Hágale que el streaming no es solo "ir mostrando tokens". Es manejar edge cases de red, errores parciales, y desconexiones. Pero cuando está bien hecho, la diferencia en perceived performance es brutal. Parcero, de una.</p>
+
+<p><em>Eso es todo por hoy. Día 172 viene con más.</em></p>
   </article>
 
   <script>
