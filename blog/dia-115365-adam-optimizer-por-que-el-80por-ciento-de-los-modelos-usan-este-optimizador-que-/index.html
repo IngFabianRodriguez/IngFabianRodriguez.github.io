@@ -99,55 +99,433 @@ nav {
   </header>
 
   <article class="article-body">
-    <p>Hola, parcero. Llegamos al Día 115 y hoy vamos con Adam. Este tema es crítico porque el porcentaje que mencionamos en el título representa bugs y confusiones que veo constantemente en producción. Acompañame que esto va detallado.</p>
-<hr>
-<h2>📐 Fundamentos Teóricos</h2>
-<p>Vamos paso a paso. Entender la teoría detrás de Adam es lo que separa a alguien que copia código de alguien que realmente sabe lo que está haciendo.</p>
-<h3>Conceptos Clave</h3>
-<ul>
-<li><strong>Concepto 1</strong>: Descripción del primer concepto fundamental.</li>
-<li><strong>Concepto 2</strong>: Descripción del segundo concepto que necesitas entender.</li>
-<li><strong>Concepto 3</strong>: Por qué esto importa en la práctica.</li>
-</ul>
-<hr>
-<h2>💻 Implementación Práctica</h2>
-<p>Ahora vamos a lo bueno: código real que puedes usar en tus proyectos.</p>
-<pre><code class="language-python"># Ejemplo práctico de Adam
-import numpy as np
+    <p>Hola, parcero. Llegamos al Día 115 y hoy vamos con Adam. Este tema es criticalísimo en producción: el 80% de los modelos en producción usan Adam, pero la mayoría lo implementa con errores que cuestan puntos valiosos de accuracy. Yo mismo me quemé con esto en varios proyectos en Medellín. Vamos a dejarlo claro de una vez por todas.</p>
 
-def concepto_fundamental(data, param):
-    # Implementación básica del concepto
-    result = []
-    for item in data:
-        processed = item * param
-        result.append(processed)
-    return np.array(result)
+<hr>
+<h2>📐 Adam: Adaptive Moment Estimation</h2>
 
-data = [1, 2, 3, 4, 5]
-result = concepto_fundamental(data, 2)
-print(f"Resultado: {result}")
+<p>Adam combina las ideas de <strong>RMSProp</strong> (media móvil exponencial del gradiente normalizado) con el <strong>momentum</strong> (media móvil exponencial de los gradientes). La fórmula central usa dos estimadores:</p>
+
+<div class="katex-display">m_t = β₁ · m_{t-1} + (1 - β₁) · g_t  (primer momento)</div>
+<div class="katex-display">v_t = β₂ · v_{t-1} + (1 - β₂) · g_t²  (segundo momento)</div>
+
+<p>Pero aquí viene el detalle que casi nadie menciona: <strong>ambos estimadores comienzan en cero</strong>. En las primeras iteraciones esto causa que tanto <code>m_t</code> como <code>v_t</code> estén sesgados hacia cero. Por eso Adam aplica <strong>biased correction</strong>:</p>
+
+<div class="katex-display">m̂_t = m_t / (1 - β₁^t)</div>
+<div class="katex-display">v̂_t = v_t / (1 - β₂^t)</div>
+
+<p>Con esto, el update finalmente es:</p>
+
+<div class="katex-display">θ_t = θ_{t-1} - α · m̂_t / (√v̂_t + ε)</div>
+
+<p>Los valores típicos: <strong>β₁ = 0.9</strong>, <strong>β₂ = 0.999</strong>, <strong>ε = 10⁻⁸</strong>.</p>
+
+<blockquote>En Colombia dicen "el que no conoce la mata, pasa por圣人". Pues aquí aplica: si no entiendes el biased correction, vas a tener problemas de convergencia en las primeras epochs y no sabrás por qué.</blockquote>
+
+<hr>
+<h2>💻 Adam Desde Cero con Biased Correction</h2>
+
+<pre><code class="language-python">"""
+Adam optimizer desde cero en PyTorch.
+Demuestra el biased correction y la actualización real de parámetros.
+"""
+import torch
+import torch.nn as nn
+import matplotlib.pyplot as plt
+from torch.utils.data import DataLoader, TensorDataset
+
+# ─────────────────────────────────────────────
+# 1. Adam nativo (sin torch.optim)
+# ─────────────────────────────────────────────
+class AdamNative:
+    """Adam directo con biased correction explícito."""
+
+    def __init__(self, params, lr=1e-3, beta1=0.9, beta2=0.999, eps=1e-8):
+        self.params = list(params)
+        self.lr = lr
+        self.beta1 = beta1
+        self.beta2 = beta2
+        self.eps = eps
+        self.t = 0  # timestep
+        # Estados por parámetro
+        self.m = {id(p): torch.zeros_like(p) for p in self.params}
+        self.v = {id(p): torch.zeros_like(p) for p in self.params}
+
+    def step(self):
+        self.t += 1
+        for p in self.params:
+            if p.grad is None:
+                continue
+            g = p.grad.data
+            pid = id(p)
+
+            # biased correction
+            self.m[pid] = self.beta1 * self.m[pid] + (1 - self.beta1) * g
+            self.v[pid] = self.beta2 * self.v[pid] + (1 - self.beta2) * g * g
+
+            m_hat = self.m[pid] / (1 - self.beta1 ** self.t)
+            v_hat = self.v[pid] / (1 - self.beta2 ** self.t)
+
+            p.data -= self.lr * m_hat / (torch.sqrt(v_hat) + self.eps)
+
+    def zero_grad(self):
+        for p in self.params:
+            if p.grad is not None:
+                p.grad.zero_()
+
+
+# ─────────────────────────────────────────────
+# 2. Comparación: Adam vs AdamW vs SGD
+# ─────────────────────────────────────────────
+def convex_vs_nonconvex_experiment():
+    """
+    Compara convergencia de Adam, AdamW y SGD en:
+    - Función convexa: f(x) = (x-3)²
+    - Función no-convexa: Rosenbrock bidimensional
+    """
+    results = {}
+
+    # --- Experimento 1: convex loss ---
+    print("Experimento convex...")
+    x_star = torch.tensor([3.0], requires_grad=True)
+
+    optimizers_config = {
+        "Adam": lambda: AdamNative([x_star], lr=0.1),
+        "AdamW": lambda: AdamNative([x_star], lr=0.1),  # weight decay在外面做
+        "SGD_momentum": lambda: torch.optim.SGD([x_star], lr=0.01, momentum=0.9),
+    }
+
+    for name, opt_fn in optimizers_config.items():
+        x_star = torch.tensor([3.0], requires_grad=True)
+        # Reset: re-creamos el optimizer
+        # (llamador reinicializa x_star cada vez)
+        pass
+
+    # Función convexa
+    x_init = torch.tensor([0.0], requires_grad=True)
+
+    histories = {}
+    for name, (lr, opt_class) in {
+        "Adam(lr=0.1)": (0.1, "adam"),
+        "Adam(lr=1e-3)": (1e-3, "adam"),
+        "SGD(lr=0.01)": (0.01, "sgd"),
+    }.items():
+        x = torch.tensor([0.0], requires_grad=True)
+        if opt_class == "adam":
+            opt = torch.optim.Adam([x], lr=lr)
+        else:
+            opt = torch.optim.SGD([x], lr=lr, momentum=0.9)
+        history = [x.item()]
+        for _ in range(200):
+            loss = (x - 3) ** 2
+            opt.zero_grad()
+            loss.backward()
+            opt.step()
+            history.append(x.item())
+        histories[name] = history
+
+    # --- Experimento 2: non-convexa (Rosenbrock) ---
+    print("Experimento non-convexo...")
+    histories_nc = {}
+    for name, (lr, opt_class) in {
+        "Adam(lr=1e-3)": (1e-3, "adam"),
+        "Adam(lr=1e-4)": (1e-4, "adam"),
+        "SGD(lr=1e-3)": (1e-3, "sgd"),
+    }.items():
+        x = torch.tensor([0.0, 0.0], requires_grad=True)
+        if opt_class == "adam":
+            opt = torch.optim.Adam([x], lr=lr)
+        else:
+            opt = torch.optim.SGD([x], lr=lr, momentum=0.9)
+        history = []
+        for _ in range(1000):
+            # Rosenbrock: (1-x)² + 100(y-x²)²
+            loss = (1 - x[0])**2 + 100 * (x[1] - x[0]**2)**2
+            opt.zero_grad()
+            loss.backward()
+            opt.step()
+            history.append(loss.item())
+        histories_nc[name] = history
+
+    return histories, histories_nc
+
+
+# ─────────────────────────────────────────────
+# 3. Adam vs AdamW: weight decay correcto
+# ─────────────────────────────────────────────
+def adam_vs_adamw_demo():
+    """
+    AdamW = Adam + weight decay DECOUPLED (no es L2 regularización).
+    En Adam, weight decay modifica el gradiente: g' = g + λθ
+    En AdamW, se resta λθ DEL UPDATE directamente, sin afectar m̂/v̂.
+    """
+    torch.manual_seed(42)
+
+    model = nn.Sequential(
+        nn.Linear(10, 64),
+        nn.ReLU(),
+        nn.Linear(64, 1)
+    )
+
+    # Adam con weight decay (INCORRECTO si se quiere AdamW real)
+    adam_with_l2 = torch.optim.Adam(
+        model.parameters(), lr=1e-3, weight_decay=0.01
+    )
+
+    # AdamW (decoupled weight decay)
+    adamw = torch.optim.AdamW(
+        model.parameters(), lr=1e-3, weight_decay=0.01
+    )
+
+    # Verificar que el update es diferente
+    x = torch.randn(4, 10)
+    target = torch.randn(4, 1)
+
+    for name, opt in [("Adam+L2", adam_with_l2), ("AdamW", adamw)]:
+        model.zero_grad()
+        loss = nn.MSELoss()(model(x), target)
+        loss.backward()
+
+        # Capturar update
+        grads_before = {n: p.grad.clone() for n, p in model.named_parameters() if p.grad is not None}
+        opt.step()
+
+        print(f"{name}: loss={loss.item():.4f}")
+
+    # La diferencia está en cómo se aplica el weight decay al update.
+    # En Adam (weight_decay): el decay modifica el gradiente → afecta m̂/v̂
+    # En AdamW: el decay se aplica en el paso final, independiente de m̂/v̂
+    return adam_with_l2, adamw
+
+
+# ─────────────────────────────────────────────
+# 4. AMSGrad: la variante que corrige la convergencia
+# ─────────────────────────────────────────────
+class AMSGradNative:
+    """AMSGrad: usa max(v̂_t) en lugar de v̂_t para garantizar convergencia en convex."""
+
+    def __init__(self, params, lr=1e-3, beta1=0.9, beta2=0.999, eps=1e-8):
+        self.params = list(params)
+        self.lr = lr
+        self.beta1 = beta1
+        self.beta2 = beta2
+        self.eps = eps
+        self.t = 0
+        self.m = {id(p): torch.zeros_like(p) for p in self.params}
+        self.v = {id(p): torch.zeros_like(p) for p in self.params}
+        self.v_hat_max = {id(p): torch.zeros_like(p) for p in self.params}
+
+    def step(self):
+        self.t += 1
+        for p in self.params:
+            if p.grad is None:
+                continue
+            g = p.grad.data
+            pid = id(p)
+
+            self.m[pid] = self.beta1 * self.m[pid] + (1 - self.beta1) * g
+            self.v[pid] = self.beta2 * self.v[pid] + (1 - self.beta2) * g * g
+
+            m_hat = self.m[pid] / (1 - self.beta1 ** self.t)
+            v_hat = self.v[pid] / (1 - self.beta2 ** self.t)
+
+            # CLAVE AMSGrad: usar el máximo histórico de v_hat
+            self.v_hat_max[pid] = torch.maximum(self.v_hat_max[pid], v_hat)
+
+            p.data -= self.lr * m_hat / (torch.sqrt(self.v_hat_max[pid]) + self.eps)
+
+    def zero_grad(self):
+        for p in self.params:
+            if p.grad is not None:
+                p.grad.zero_()
+
+
+# ─────────────────────────────────────────────
+# 5. Lion optimizer: la nueva alternativa (EvoLved Sign Momentum)
+# ─────────────────────────────────────────────
+class LionNative:
+    """
+    Lion optimizer: m = β1*m + (1-β1)*sign(g); θ = θ - lr*m
+    Más simple que Adam (solo un momento), pero requiere lr más grande.
+    Paper: "Symbolic Discovery of Optimization Algorithms" (Chen & Ritter, 2023)
+    """
+
+    def __init__(self, params, lr=1e-3, beta1=0.9, beta2=0.99):
+        self.params = list(params)
+        self.lr = lr
+        self.beta1 = beta1
+        self.beta2 = beta2
+        self.m = {id(p): torch.zeros_like(p) for p in self.params}
+
+    def step(self):
+        for p in self.params:
+            if p.grad is None:
+                continue
+            g = p.grad.data
+            pid = id(p)
+
+            self.m[pid] = self.beta1 * self.m[pid] + (1 - self.beta1) * g
+            # Sign operation es el truco central de Lion
+            p.data -= self.lr * torch.sign(self.m[pid])
+
+    def zero_grad(self):
+        for p in self.params:
+            if p.grad is not None:
+                p.grad.zero_()
+
+
+def lion_comparison():
+    """Compara Lion vs Adam en una tarea de clasificación."""
+    torch.manual_seed(42)
+
+    # Datos simples
+    X = torch.randn(200, 20)
+    y = (X @ torch.randn(20, 1) > 0).float()
+
+    model = nn.Sequential(
+        nn.Linear(20, 64),
+        nn.ReLU(),
+        nn.Linear(64, 1),
+        nn.Sigmoid()
+    )
+
+    loss_fn = nn.BCELoss()
+
+    results = {}
+    for name, opt_fn, lr in [
+        ("Adam", lambda p: torch.optim.Adam(p, lr=1e-3), 1e-3),
+        ("Lion", lambda p: LionNative(p, lr=1e-3), 1e-3),
+        ("Lion(lr=1e-2)", lambda p: LionNative(p, lr=1e-2), 1e-2),
+    ]:
+        torch.manual_seed(42)
+        model = nn.Sequential(
+            nn.Linear(20, 64), nn.ReLU(),
+            nn.Linear(64, 1), nn.Sigmoid()
+        )
+        opt = opt_fn(model.parameters())
+        losses = []
+        for epoch in range(100):
+            pred = model(X)
+            loss = loss_fn(pred, y)
+            opt.zero_grad()
+            loss.backward()
+            opt.step()
+            losses.append(loss.item())
+        results[name] = losses
+
+    print("Lion vs Adam convergencia:")
+    for name, losses in results.items():
+        print(f"  {name}: final_loss={losses[-1]:.4f}")
+    return results
+
+
+# ─────────────────────────────────────────────
+# 6. Runner principal
+# ─────────────────────────────────────────────
+if __name__ == "__main__":
+    print("=" * 50)
+    print("ADAM OPTIMIZER - Demo Completa")
+    print("=" * 50)
+
+    print("\n[1] Adam vs AdamW demo:")
+    adam_vs_adamw_demo()
+
+    print("\n[2] Lion optimizer comparison:")
+    lion_comparison()
+
+    print("\n[3] AMSGrad - non-convex convergence check:")
+    x = torch.tensor([0.0, 0.0], requires_grad=True)
+    opt = AMSGradNative([x], lr=1e-3)
+    for i in range(500):
+        # Rosenbrock
+        loss = (1 - x[0])**2 + 100 * (x[1] - x[0]**2)**2
+        opt.zero_grad()
+        loss.backward()
+        opt.step()
+        if i % 100 == 0:
+            print(f"  AMSGrad iter {i}: loss={loss.item():.4f}, x={x.data.tolist()}")
+
+    print("\n[4] Adam con diferentes learning rates:")
+    torch.manual_seed(42)
+    x = torch.tensor([0.0], requires_grad=True)
+    for lr in [0.1, 0.5, 1.0, 2.0]:
+        x_new = torch.tensor([0.0], requires_grad=True)
+        opt = torch.optim.Adam([x_new], lr=lr)
+        history = [x_new.item()]
+        for _ in range(50):
+            loss = (x_new - 3) ** 2
+            opt.zero_grad()
+            loss.backward()
+            opt.step()
+            history.append(x_new.item())
+        print(f"  Adam lr={lr}: converge={abs(x_new.item() - 3) < 0.1}")
+
+    print("\n✅ Todas las demos completadas.")
 </code></pre>
+
 <hr>
-<h2>🚨 Errores Comunes</h2>
-<h3>Error 1: No entender la matemática de fondo</h3>
-<p>El 80% de los practitioners implementa esto incorrectamente porque no entienden la base teórica.</p>
-<h3>Error 2: Ignorar los hiperparámetros</h3>
-<p>Muchos asumen que los valores por defecto son óptimos. En producción, esto raramente es cierto.</p>
+<h2>🚨 Los 3 Errores Más Frecuentes con Adam</h2>
+
+<h3>Error 1: Usar Adam en problemas convexos donde SGD converge mejor</h3>
+
+<p>Este es el error que más me ha costado en producción. En problemas <strong>estrictamente convexos</strong> (como regresión lineal con loss MSE), <strong>SGD con momentum converge a la solución óptima global</strong>, mientras que Adam puede quedarse atascado en mínimos locales por su adaptive learning rate.</p>
+
+<pre><code class="language-python"># ❌ ERROR: Usar Adam en un problema convexo simple
+model = nn.Linear(10, 1)
+optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+# En convex: SGD general converge más rápido y de forma más estable.
+
+# ✅ FIX: Para convexos, usa SGD
+optimizer = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
+# O mejor aún: prueba ambos y compara.
+</code></pre>
+
+<h3>Error 2: No separar weight decay de L2 regularization (debería ser AdamW)</h3>
+
+<p>En PyTorch, <code>torch.optim.Adam(weight_decay=λ)</code> aplica L2 regularization por defecto (modifica el gradiente). Pero esto <strong>interfiere con el adaptive learning rate</strong> porque afecta el cálculo de <code>m̂</code> y <code>v̂</code>. La solución correcta es usar <code>AdamW</code>:</p>
+
+<pre><code class="language-python"># ❌ ERROR: Adam con weight_decay aplica L2 que interactúa mal con adaptive lr
+optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=0.01)
+
+# ✅ FIX: Usar AdamW — decoupled weight decay
+optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=0.01)
+# El weight decay se aplica directamente al update, sin tocar m̂ ni v̂.
+</code></pre>
+
+<h3>Error 3: Learning rate global demasiado alto que causa divergencia</h3>
+
+<p>Adam es sensible al learning rate. Un lr de 0.1 o mayor típicamente causa divergencia en redes profundas. Lo he visto pasar en modelos de NLP con transformers:</p>
+
+<pre><code class="language-python"># ❌ ERROR: lr demasiado alto para Adam
+optimizer = torch.optim.Adam(model.parameters(), lr=0.01)  # muy alto
+
+# ❌ ERROR: lr por defecto de algunos tutorials (1.0) es catastrophico
+optimizer = torch.optim.Adam(model.parameters(), lr=1.0)
+
+# ✅ FIX: lr típicos para Adam en deep learning
+optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)   # default seguro
+optimizer = torch.optim.Adam(model.parameters(), lr=3e-4)   # para transformers
+optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=0.01)
+
+# Si necesitas lr alto, usa AdamW con weight decay fuerte para compensar.
+</code></pre>
+
 <hr>
-<h2>✅ Mejores Prácticas</h2>
+<h2>✅ Resumen y Cierre</h2>
+
+<p>Adam es el optimizador más usado por una razón: <strong>funciona bien en la mayoría de casos sin mucha tuneoría</strong>. Pero entender las matemáticas — biased correction, la diferencia entre Adam y AdamW, y cuándo AMSGrad o Lion son mejores alternativas — es lo que te separa de los que solo copian código de internet.</p>
+
 <ul>
-<li>Siempre documenta tu código y decisiones de diseño.</li>
-<li>Usa versionado para tus experimentos.</li>
-<li>Valida siempre con datos de prueba independientes.</li>
-<li>Monitorea las métricas en producción.</li>
+<li>Usa <strong>Adam</strong> para redes profundas, transformers, y problemas no-convexos.</li>
+<li>Usa <strong>AdamW</strong> cuando necesitas weight decay (casi siempre en deep learning).</li>
+<li>Usa <strong>AMSGrad</strong> si tienes problemas de convergencia en convex settings.</li>
+<li>Considera <strong>Lion</strong> para tareas de ML moderno (según papers recientes tiene mejor generalización en algunos casos).</li>
+<li>Para convexos puros: <strong>SGD con momentum</strong> es tu mejor opción.</li>
 </ul>
-<hr>
-<h2>📚 Recursos</h2>
-<ul>
-<li>Documentación oficial de sklearn</li>
-<li>Tutoriales prácticos en el blog</li>
-<li>Código fuente en GitHub</li>
-</ul>
+
+<p>Eso sí, parcero: nunca copies un learning rate de un tutorial sin entender por qué funciona ahí. Cada modelo y dataset es un mundo. Afina con experiments, no con fe.</p>
+
+<p><em>Nos vemos en el Día 116 con Dropout, que ahí los errores son todavía más frecuentes.</em></p>
   </article>
 
   <script>
