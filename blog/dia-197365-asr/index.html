@@ -118,54 +118,254 @@ nav {
   </header>
 
   <article class="article-body">
-    <h1>GloVe - Vectores Globales De Palabras</h1>
-<p>Hagale pues, parcero. Dia 197 y hoy hablamos de GloVe, Global Vectors, otro enfoque para crear embeddings de palabras. Dejala elcafe.</p>
+<h1>Clustering para Embeddings — K-means vs DBSCAN</h1>
+<p>Hagale pues, parcero. Hoy es el Día 197 y vamos a meternos en el mundo del clustering para embeddings. Cuando tienes miles o millones de vectores de palabras, imágenes o cualquier cosa que puedas embeddear, necesitas organizarlos. ¿Cómo agrupas cosas similares sin que un humano tenga que label todo? Eso es lo que vemos hoy, con código PyTorch real y los errores que el 80% de la gente comete. Sirvete un tintico y vamos pa'llá.</p>
 <hr>
-<h2>🎯 Que Es GloVe?</h2>
-<p>GloVe (Global Vectors) combina las ventajas de count-based methods y prediction-based methods. Usa estadisticas globales de co-ocurrencia para crear embeddings densos.</p>
-<h3>Ventajas sobre Word2Vec:</h3>
+<h2>🎯 Por Qué Clustering en High-Dimensional Spaces?</h2>
+<p>Los embeddings viven en espacios de alta dimensionalidad — 768, 1024, 1536 dimensiones no son raros. En estos espacios pasan cosas extrañas:</p>
 <ul>
-<li><strong>Global statistics</strong>: Usa toda la corpora para calcular co-ocurrencias</li>
-<li><strong>Menos parametros</strong>: Mas eficiente en datos pequenos</li>
-<li><strong>Mejor en analogias</strong>: Excelente en tareas de analogia</li>
+<li><strong>Maldición de la dimensionalidad</strong>: La distancia euclidiana pierde смысл cuando hay demasiadas dimensiones</li>
+<li><strong>Distancia coseno al rescate</strong>: El coseno del ángulo entre vectores funciona mejor que la distancia L2</li>
+<li><strong>Clusters no esféricos</strong>: K-means asume clusters esféricos, pero la realidad es más compleja</li>
 </ul>
+<p>La métrica que usas importa. En embeddings, casi siempre es mejor usar <code>cosine_similarity</code> o <code>1 - cosine_distance</code> en vez de distancias euclidianas.</p>
 <hr>
-<h2>📐 Usando GloVe Pre-entrenado</h2>
-<pre><code class="language-python">import numpy as np
+<h2>📐 La Matemática del Clustering</h2>
+<h3>K-means: Minimizar Inercia</h3>
+<p>K-means busca minimizar la suma de distancias cuadráticas intra-cluster:</p>
+<p>$$J = \sum_{i=1}^{k} \sum_{x \in C_i} \| x - \mu_i \|^2$$</p>
+<p>Donde $\mu_i$ es el centroide del cluster $C_i$. El algoritmo alterna entre asignar puntos al cluster más cercano y recalcular centroides hasta convergencia.</p>
+<h3>DBSCAN: Densidad de Puntos</h3>
+<p>DBSCAN define clusters como regiones densas separadas por regiones de baja densidad. Dos parámetros:</p>
+<ul>
+<li>$\epsilon$ (eps): Radio de vecindad</li>
+<li>MinPts: Mínimo de puntos para considerar un core point</li>
+</ul>
+<p>$$N_\epsilon(p) = \{ q \in D \mid d(p,q) \leq \epsilon \}$$</p>
+<p>Un punto es <strong>core point</strong> si tiene al menos MinPts puntos en su $\epsilon$-vecindad. Puntos que no son core points pero son alcanzables desde uno son <strong>border points</strong>. El resto son <strong>noise</strong>.</p>
+<h3>HDBSCAN: Hierarchical DBSCAN</h3>
+<p>HDBSCAN construye un dendrograma de densidades y corta en el nivel óptimo automáticamente:</p>
+<p>$$\lambda = \frac{1}{d(m_i, m_j)}$$</p>
+<p>Donde $d$ es la distancia y $\lambda$ es la "inversa de la distancia" o persistencia del cluster.</p>
+<hr>
+<h2>🚀 Implementación en PyTorch</h2>
+<h3>K-means para Embeddings</h3>
+<pre><code class="language-python">import torch
+import torch.nn.functional as F
+from sklearn.cluster import KMeans
+import numpy as np
 
-# Cargar embeddings GloVe
-def load_glove(path):
-    embeddings = {}
-    with open(path, 'r') as f:
-        for line in f:
-            values = line.split()
-            word = values[0]
-            vector = np.asarray(values[1:], dtype='float32')
-            embeddings[word] = vector
-    return embeddings
+def kmeans_clustering(embeddings, n_clusters, device='cuda'):
+    """
+    K-means clustering para embeddings.
+    
+    Args:
+        embeddings: Tensor de forma (N, D) con N embeddings de D dimensiones
+        n_clusters: Número de clusters desired
+    Returns:
+        labels: Tensor de forma (N,) con el cluster asignado a cada embedding
+        centroids: Tensor de forma (n_clusters, D) con los centroides
+    """
+    # Normalizar embeddings para usar cosine similarity
+    embeddings_norm = F.normalize(embeddings, p=2, dim=1)
+    
+    # Convertir a numpy para sklearn (más eficiente para K-means)
+    embeddings_np = embeddings_norm.cpu().numpy()
+    
+    kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+    labels = kmeans.fit_predict(embeddings_np)
+    centroids = torch.tensor(kmeans.cluster_centers_, device=device)
+    
+    return torch.tensor(labels), centroids
 
-glove = load_glove("glove.6B.100d.txt")
-word = "machine"
-vector = glove.get(word)
-print(f"Vector shape: {vector.shape}")
+
+# Ejemplo: clusterizar embeddings de palabras
+embeddings = torch.randn(10000, 768, device='cuda')  # 10k embeddings, 768 dims
+n_clusters = 50
+
+labels, centroids = kmeans_clustering(embeddings, n_clusters)
+print(f"Forma de labels: {labels.shape}")
+print(f"Forma de centroids: {centroids.shape}")
+print(f"Puntos por cluster (primeros 5): {labels[:100].bincount()[:5]}")
+</code></pre>
+<h3>DBSCAN para Embeddings</h3>
+<pre><code class="language-python">from sklearn.cluster import DBSCAN
+from sklearn.metrics.pairwise import cosine_similarity
+
+def dbscan_clustering(embeddings, eps=0.5, min_samples=5, device='cuda'):
+    """
+    DBSCAN clustering para embeddings.
+    Detecta automáticamente outliers (noise points).
+    
+    Args:
+        embeddings: Tensor de forma (N, D)
+        eps: Radio máximo para considerar vecinos (para cosine distance, 0.5-0.8 es común)
+        min_samples: Puntos mínimos para un cluster
+    Returns:
+        labels: -1 para noise, 0, 1, 2... para clusters
+        n_clusters: Número de clusters descubiertos
+    """
+    # Normalizar para cosine similarity
+    embeddings_norm = F.normalize(embeddings, p=2, dim=1)
+    embeddings_np = embeddings_norm.cpu().numpy()
+    
+    # Para cosine similarity: eps en [0, 2], donde 0 = mismo vector
+    # sklearn usa distance, así que convertimos: distance = 1 - cosine_similarity
+    # Un eps de 0.5 significa que aceptamos pares con similarity >= 0.5
+    cos_eps = 1 - eps  # Convertir de similarity threshold a distance threshold
+    
+    db = DBSCAN(eps=cos_eps, min_samples=min_samples, metric='cosine', n_jobs=-1)
+    labels = db.fit_predict(embeddings_np)
+    
+    n_clusters = len(set(labels)) - (1 if -1 in labels else 0)
+    n_noise = list(labels).count(-1)
+    
+    return torch.tensor(labels), n_clusters, n_noise
+
+
+# Ejemplo práctico
+embeddings = torch.randn(10000, 768, device='cuda')
+labels, n_clusters, n_noise = dbscan_clustering(
+    embeddings, 
+    eps=0.7,  # Accept vectors with cosine similarity >= 0.7
+    min_samples=10
+)
+print(f"Clusters encontrados: {n_clusters}")
+print(f"Puntos de ruido (noise): {n_noise} ({100*n_noise/len(labels):.1f}%)")
+print(f"Etiquetas únicas: {torch.unique(labels)}")
+</code></pre>
+<h3>HDBSCAN para Mejor Detección de Clusters</h3>
+<pre><code class="language-python">import hdbscan
+
+def hdbscan_clustering(embeddings, min_cluster_size=15, device='cuda'):
+    """
+    HDBSCAN - versión jerárquica de DBSCAN.
+    Mejor para datos con clusters de diferentes densidades.
+    """
+    embeddings_norm = F.normalize(embeddings, p=2, dim=1)
+    embeddings_np = embeddings_norm.cpu().numpy()
+    
+    clusterer = hdbscan.HDBSCAN(
+        min_cluster_size=min_cluster_size,
+        metric='cosine',  # Importante: cosine para embeddings
+        cluster_selection_method='eom'  # Excess of Mass
+    )
+    labels = clusterer.fit_predict(embeddings_np)
+    
+    n_clusters = len(set(labels)) - (1 if -1 in labels else 0)
+    
+    # Persistencia: cuánto tiempo sobrevive cada cluster
+    persistences = clusterer.cluster_persistence_
+    
+    return torch.tensor(labels), n_clusters, persistences
+
+
+# Ejemplo
+labels, n_clusters, persistences = hdbscan_clustering(embeddings, min_cluster_size=20)
+print(f"Clusters: {n_clusters}")
+print(f"Persistencias por cluster: {persistences}")
+</code></pre>
+<h3>Silhouette Analysis para Elegir k</h3>
+<pre><code class="language-python">from sklearn.metrics import silhouette_score
+import matplotlib.pyplot as plt
+
+def find_optimal_k(embeddings, k_range=range(5, 50, 5), device='cuda'):
+    """
+    Encuentra el k óptimo usando silhouette score.
+    Mayor silhouette = mejores clusters definidos.
+    
+    Silhouette score: [-1, 1]
+    - Cerca de 1: clusters bien separados
+    - Cerca de 0: clusters sobrepuestos
+    - Cerca de -1: clustering incorrecto
+    """
+    embeddings_norm = F.normalize(embeddings, p=2, dim=1)
+    embeddings_np = embeddings_norm.cpu().numpy()
+    
+    results = []
+    for k in k_range:
+        kmeans = KMeans(n_clusters=k, random_state=42, n_init=10)
+        labels = kmeans.fit_predict(embeddings_np)
+        
+        if len(set(labels)) > 1:  # Necesitamos al menos 2 clusters
+            score = silhouette_score(embeddings_np, labels, metric='cosine')
+        else:
+            score = -1
+        results.append((k, score))
+        print(f"k={k}: silhouette={score:.4f}")
+    
+    # Mejor k
+    best_k, best_score = max(results, key=lambda x: x[1])
+    print(f"\nMejor k: {best_k} con silhouette={best_score:.4f}")
+    return results
+
+
+# Uso
+embeddings = torch.randn(5000, 768)
+results = find_optimal_k(embeddings, k_range=range(10, 100, 10))
 </code></pre>
 <hr>
-<h2>🚀 GloVe vs Word2Vec</h2>
-<pre><code class="language-python"># Ambos capturan semantics...
-# Pero GloVe usa informacion global de co-occurrence
-# Word2Vec usa contexto local (ventana)
+<h2>⚠️ Errores Comunes (y Sus Soluciones)</h2>
+<h3>Error 1: Usar K-means Cuando DBSCAN Es Mejor para Datos con Noise</h3>
+<p><strong>El problema</strong>: K-means fuerza todos los puntos a algún cluster. Si tienes outliers o ruido, los asigna al cluster más cercano distorsionando los centroides. En datos reales, siempre hay ruido.</p>
+<pre><code class="language-python"># MAL: K-means ignora que hay noise
+kmeans = KMeans(n_clusters=10)
+labels = kmeans.fit_predict(embeddings)  # Todos los puntos en algún cluster
 
-# GloVe es mejor para:
-# - Analogias (king - man + woman ≈ queen)
-# - Tasas pequenas de datos
+# BIEN: DBSCAN detecta noise y no lo fuerza
+db = DBSCAN(eps=0.7, min_samples=10, metric='cosine')
+labels = db.fit_predict(embeddings)  # -1 = noise points
+noise_mask = labels == -1
+print(f"Tienes {noise_mask.sum()} puntos de ruido")
 </code></pre>
+<p><strong>La solución</strong>: Analiza la distribución de labels. Si muchos puntos son ruido esperado, usa DBSCAN o HDBSCAN. Si sabes que no hay ruido y necesitas exactamente k clusters, usa K-means.</p>
+<h3>Error 2: No Normalizar Embeddings Antes de Clustering</h3>
+<p><strong>El problema</strong>: Embeddings de modelos como BERT o Sentence-BERT tienen información tanto en la dirección como en la magnitud. Sin normalización, puntos con mayor norma dominan las distancias.</p>
+<pre><code class="language-python"># MAL: Sin normalizar
+distances = torch.cdist(embeddings, centroids)  # La magnitud afecta
+
+# BIEN: Normalizar L2 primero
+embeddings_norm = F.normalize(embeddings, p=2, dim=1)
+centroids_norm = F.normalize(centroids, p=2, dim=1)
+distances = 1 - torch.mm(embeddings_norm, centroids_norm.T)  # Cosine distance
+</code></pre>
+<p><strong>La solución</strong>: Siempre normaliza con <code>F.normalize(x, p=2, dim=1)</code> antes de clustering. Esto convierte la similaridad coseno en la distancia dominante.</p>
+<h3>Error 3: Elegir Número de Clusters Arbitrariamente sin Silhouette Analysis</h3>
+<p><strong>El problema</strong>: Escoger k=10 porque "se ve bien" o "siempre uso 10" lleva a clusters subóptimos. Puede que tengas 5 o 20 clusters naturales en tus datos.</p>
+<pre><code class="language-python"># MAL: Arbitrario
+kmeans = KMeans(n_clusters=10)  # Por qué 10?
+
+# BIEN: Análisis de silueta
+silhouette_scores = []
+for k in range(5, 50, 5):
+    labels = KMeans(n_clusters=k).fit_predict(embeddings_np)
+    score = silhouette_score(embeddings_np, labels, metric='cosine')
+    silhouette_scores.append((k, score))
+
+best_k = max(silhouette_scores, key=lambda x: x[1])[0]
+print(f"k óptimo: {best_k}")
+</code></pre>
+<p><strong>La solución</strong>: Usa silhouette analysis, elbow method, o gap statistic para elegir k datadriven. No adivines.</p>
 <hr>
-<h2>⚠️ Errores Comunes</h2>
-<h3>Error 1: Ignorar tokens Desconocidos</h3>
-<p><strong>El problema</strong>: Palabras OOV dan error.</p>
-<p><strong>La solucion</strong>: Inicializa con ceros o usa fallback.</p>
+<h2>📊 Comparación de Algoritmos</h2>
+<ul>
+<li><strong>K-means</strong>: Rápido, escala bien, asume clusters esféricos, sensible a outliers, requiere especificar k</li>
+<li><strong>DBSCAN</strong>: Detecta noise automáticamente, encuentra clusters de forma arbitraria, no requiere k, sensible a eps</li>
+<li><strong>HDBSCAN</strong>: Como DBSCAN pero automático, maneja diferentes densidades, más robusto, más lento</li>
+</ul>
+<p>Para embeddings de texto o imágenes, HDBSCAN suele dar los mejores resultados porque no sabes cuántos "temas" o "categorías" tienes realmente.</p>
 <hr>
-<p><em>Eso es todo! Nos vemos en el Dia 198.</em></p>
+<h2>🎯 Resumen y Cierre</h2>
+<p>Hoy cubrimos clustering para embeddings: K-means, DBSCAN y HDBSCAN. Remember:</p>
+<ul>
+<li>Siempre normaliza embeddings antes de clustering</li>
+<li>Usa cosine similarity como métrica, no euclidiana</li>
+<li>DBSCAN/HDBSCAN para datos con ruido o cuando no sabes cuántos clusters hay</li>
+<li>K-means cuando sabes exactamente cuántos grupos buscas y no hay ruido</li>
+<li>Silhouette analysis para elegir k de forma data-driven</li>
+</ul>
+<p>El clustering es la base para unsupervised learning con embeddings. Topic modeling, image clustering, document organization — todo esto usa variaciones de lo que vimos hoy.</p>
+<p><em>Eso es todo por hoy, parcero. Día 197 completado. Nos vemos en el 198 con más machine learning. ¡Abrazo!</em></p>
   </article>
 
   <script>
