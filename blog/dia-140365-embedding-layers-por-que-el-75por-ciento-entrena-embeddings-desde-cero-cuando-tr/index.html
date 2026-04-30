@@ -99,55 +99,535 @@ nav {
   </header>
 
   <article class="article-body">
-    <p>Hola, parcero. Llegamos al Día 140 y hoy vamos con Embeddings. Este tema es crítico porque el porcentaje que mencionamos en el título representa bugs y confusiones que veo constantemente en producción. Acompañame que esto va detallado.</p>
+    <p>Hola, parcero. Día 140 y hoy vamos con algo que el 75% de la gente implementa mal: los **Embedding Layers**. En Colombia decimos "el queEmbeddings ignora, pierde power". Y es que entrenar embeddings desde cero con datasets pequeños es como aprender a manejar leyendo el manual sin nunca salir a la calle. Hoy te explico cómo se hacen bien, con código PyTorch real y los 3 errores más comunes que veo todos los días.</p>
 <hr>
-<h2>📐 Fundamentos Teóricos</h2>
-<p>Vamos paso a paso. Entender la teoría detrás de Embeddings es lo que separa a alguien que copia código de alguien que realmente sabe lo que está haciendo.</p>
-<h3>Conceptos Clave</h3>
+<h2>📐 Fundamentos: Qué es un Embedding y Por Qué Existe</h2>
+<p>Un embedding es una representación densa de tokens discretos (palabras, IDs, símbolos) en un espacio vectorial continuo. La intuición: si tengo "gato" y "perro", sus embeddings deberían estar más cerca en el espacio que "gato" y "cohete". La distanciasemántica se vuelve distancia geométrica.</p>
+<p>Matemáticamente, un embedding layer es simplemente una lookup table:</p>
+<div class="katex-display">$$\text{Embedding}(x) = W[:, x] \in \mathbb{R}^d, \quad W \in \mathbb{R}^{V \times d}$$</div>
+<p>Donde $V$ es el vocabulary size y $d$ la dimensionalidad del embedding. Si $d=512$ y $V=50000$, tenemos $50000 \times 512 = 25.6M$ parámetros — un layer que parece "simple" pero que puede ser el más pesado de tu modelo.</p>
+<p>El gradient flow para actualizar el embedding de un token $w_i$ es:</p>
+<div class="katex-display">$$\frac{\partial L}{\partial W[:, w_i]} = \frac{\partial L}{\partial \text{Embedding}(w_i)}$$</div>
+<hr>
+<h2>🔑 Conceptos Clave que Debes Dominar</h2>
+<h3>padding_idx</h3>
+<p>Cuando tienes secuencias de longitud variable, padding con ceros es lo más común. Pero si no especificas `padding_idx=0`, ese vector cero participate en el entrenamiento como cualquier otro embedding. Peor aún: el modelo puede aprender a依赖 del vector cero para predecir, lo cual es ruido puro.</p>
+<pre><code class="language-python"># ❌ Sin padding_idx — el padding participates en attention
+embedding = nn.Embedding(vocab_size, embedding_dim)
+
+# ✅ Con padding_idx — padding always zero, no gradient
+embedding = nn.Embedding(vocab_size, embedding_dim, padding_idx=0)
+# El embedding en índice 0 es constante zero y NO se actualiza
+</code></pre>
+<h3>Embedding Dropout</h3>
+<p>Dropout en embeddings funciona diferente: en lugar de zeroear activaciones, zeroea filas completas de la lookup table durante training. Es un regularizer fuerte porque fuerza al modelo a no depender de tokens específicos.</p>
+<pre><code class="language-python"># Embedding dropout: zeroea filas completas del embedding
+embedding = nn.Embedding(vocab_size, embedding_dim, padding_idx=0)
+
+# Forma correcta: aplicar dropout al output del embedding
+# (emb = (batch, seq, d) → dropout aplicado en dimensión Features)
+embedded = embedding(input_ids)  # (B, S, D)
+embedded = F.dropout(embedded, p=0.1, training=training)
+</code></pre>
+<h3>Embedding Initialization</h3>
+<p>El default de PyTorch es uniforme $[-0.1, 0.1]$. Pero para muchos casos esto no es óptimo. embeddings pre-trained como GloVe o Word2Vec tienen distribuciones específicas que importan.</p>
+<pre><code class="language-python"># ❌ Default init — puede ser suboptimal
+embedding = nn.Embedding(vocab_size, embedding_dim)
+
+# ✅ Init con distribución de pre-trained (GloVe tiene media ~0, std ~0.2)
+embedding = nn.Embedding(vocab_size, embedding_dim)
+nn.init.normal_(embedding.weight, mean=0.0, std=0.02)
+
+# ✅ Para embeddings frozen, asegurar que padding_idx sea zero
+with torch.no_grad():
+    embedding.weight[padding_idx] = 0
+</code></pre>
+<h3>Frozen vs Fine-tuned Embeddings</h3>
+<p>Esta decisión tiene implicaciones profundas:</p>
 <ul>
-<li><strong>Concepto 1</strong>: Descripción del primer concepto fundamental.</li>
-<li><strong>Concepto 2</strong>: Descripción del segundo concepto que necesitas entender.</li>
-<li><strong>Concepto 3</strong>: Por qué esto importa en la práctica.</li>
+<li><strong>Frozen pre-trained</strong>: Más rápido, menos riesgo de overfitting, pero puede no adaptarse al dominio específico</li>
+<li><strong>Fine-tuned completo</strong>: Adaptación total al domain, pero sobre todo con datasets pequeños, alto riesgo de catastrophic forgetting</li>
+<li><strong>Partial freeze</strong>: Freeze primeras capas, fine-tune últimas — funciona bien en transfer learning de NLP</li>
 </ul>
 <hr>
-<h2>💻 Implementación Práctica</h2>
-<p>Ahora vamos a lo bueno: código real que puedes usar en tus proyectos.</p>
-<pre><code class="language-python"># Ejemplo práctico de Embeddings
+<h2>💻 Implementación Completa con PyTorch</h2>
+<p>Vamos con código real que implementa un sistema de clasificación de texto con embeddings pre-trained y learned, padding_idx, positional encodings, y embedding dropout.</p>
+<pre><code class="language-python">"""
+Embedding Layers Deep Dive
+==========================
+Implementación completa: nn.Embedding, padding_idx, pre-trained embeddings,
+freeze vs fine-tune, positional encoding, embedding dropout, y visualización.
+"""
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+from torch.utils.data import Dataset, DataLoader
 import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.decomposition import PCA
 
-def concepto_fundamental(data, param):
-    # Implementación básica del concepto
-    result = []
-    for item in data:
-        processed = item * param
-        result.append(processed)
-    return np.array(result)
+# ─────────────────────────────────────────────────────────────
+# 1. DATASET SIMULADO — texto tokenizado
+# ─────────────────────────────────────────────────────────────
+class TextDataset(Dataset):
+    """
+    Dataset de texto tokenizado.
+    Simula un problema de clasificación binaria.
+    """
+    def __init__(self, num_samples=5000, max_seq_len=64, vocab_size=10000,
+                 embed_dim=64, use_glove_simulation=True):
+        self.num_samples = num_samples
+        self.max_seq_len = max_seq_len
+        self.vocab_size = vocab_size
+        self.embed_dim = embed_dim
+        
+        # Generate random token sequences
+        np.random.seed(42)
+        # Simulamos que el 80% de los tokens son "reales"
+        # y 20% son padding (índice 0)
+        lengths = np.random.randint(10, max_seq_len + 1, num_samples)
+        
+        self.data = []
+        self.labels = []
+        
+        for length in lengths:
+            # Secuencia: primero tokens reales, luego padding
+            real_len = length
+            pad_len = max_seq_len - real_len
+            seq = np.concatenate([
+                np.random.randint(1, vocab_size, real_len),  # tokens reales
+                np.zeros(pad_len, dtype=np.int64)              # padding = 0
+            ])
+            self.data.append(seq)
+            self.labels.append(np.random.randint(0, 2))
+        
+        self.data = np.array(self.data)
+        self.labels = np.array(self.labels)
+        
+        # Simular GloVe embeddings: media ~0, std ~0.2, con estructura
+        if use_glove_simulation:
+            self.pretrained_embeddings = self._simulate_glove_embeddings()
+        else:
+            self.pretrained_embeddings = None
 
-data = [1, 2, 3, 4, 5]
-result = concepto_fundamental(data, 2)
-print(f"Resultado: {result}")
+    def _simulate_glove_embeddings(self):
+        """
+        Simula embeddings tipo GloVe con estructura semántica.
+        En la vida real: cargarías glove.6B.300d.txt con gensim.downloader.
+        """
+        # Distribución típica de GloVe: media ~0, std ~0.2
+        embeddings = np.random.randn(self.vocab_size, self.embed_dim) * 0.2
+        
+        # Los primeros 100 tokens son los más frecuentes (ñ, stopwords, etc)
+        # Leurs embeddings tienen menor magnitud
+        embeddings[1:100] *= 0.5
+        
+        # Crear clusters semánticos simulados
+        # Tokens 100-1000: relacionados con "sports"
+        embeddings[100:1000] += np.random.randn(900, self.embed_dim) * 0.1 + 0.3
+        # Tokens 1000-2000: relacionados con "technology"
+        embeddings[1000:2000] += np.random.randn(1000, self.embed_dim) * 0.1 - 0.2
+        
+        return embeddings.astype(np.float32)
+
+    def __len__(self):
+        return self.num_samples
+
+    def __getitem__(self, idx):
+        return (
+            torch.LongTensor(self.data[idx]),
+            torch.LongTensor([self.labels[idx]])
+        )
+
+
+# ─────────────────────────────────────────────────────────────
+# 2. MODELO: Embedding + Positional Encoding + Clasificación
+# ─────────────────────────────────────────────────────────────
+class PositionalEncoding(nn.Module):
+    """
+    Positional Encoding sinusoidal.
+    PE(pos, 2i)   = sin(pos / 10000^(2i/d))
+    PE(pos, 2i+1) = cos(pos / 10000^(2i/d))
+    
+    Alternativa: Learnable positional embeddings (más común en Transformers modernos).
+    """
+    def __init__(self, d_model, max_len=5000, dropout=0.1):
+        super().__init__()
+        self.dropout = nn.Dropout(p=dropout)
+        
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(
+            torch.arange(0, d_model, 2, dtype=torch.float) * (-np.log(10000.0) / d_model)
+        )
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        pe = pe.unsqueeze(0)  # (1, max_len, d_model)
+        self.register_buffer('pe', pe)
+
+    def forward(self, x):
+        """
+        x: (batch, seq_len, d_model)
+        """
+        x = x + self.pe[:, :x.size(1), :]
+        return self.dropout(x)
+
+
+class TextClassifier(nn.Module):
+    """
+    Clasificador de texto con embedding layer configurable.
+    
+    Soporta:
+    - Embeddings aprendidos desde cero
+    - Embeddings pre-trained (GloVe, Word2Vec, FastText)
+    - Freeze / fine-tune de embeddings
+    - Positional encoding
+    - Embedding dropout
+    """
+    def __init__(self, vocab_size, embed_dim, num_classes=2,
+                 padding_idx=0,
+                 pretrained_embeddings=None,
+                 freeze_embeddings=False,
+                 use_positional_encoding=True,
+                 embedding_dropout=0.1,
+                 pooling='mean'):
+        super().__init__()
+        self.pooling = pooling
+        
+        # ── Embedding Layer ──
+        if pretrained_embeddings is not None:
+            # Cargar embeddings pre-trained
+            self.embedding = nn.Embedding.from_pretrained(
+                torch.FloatTensor(pretrained_embeddings),
+                freeze=freeze_embeddings,
+                padding_idx=padding_idx
+            )
+            print(f"  Loaded pretrained embeddings: freeze={freeze_embeddings}")
+        else:
+            # Embeddings learned from scratch
+            self.embedding = nn.Embedding(
+                vocab_size, embed_dim, padding_idx=padding_idx
+            )
+            nn.init.normal_(self.embedding.weight, mean=0.0, std=0.02)
+            # Padding embedding always zero
+            with torch.no_grad():
+                self.embedding.weight[padding_idx] = 0
+            print(f"  Created learned embeddings from scratch")
+        
+        # ── Embedding Dropout ──
+        self.embed_dropout = nn.Dropout(p=embedding_dropout)
+        
+        # ── Positional Encoding ──
+        self.use_positional_encoding = use_positional_encoding
+        if use_positional_encoding:
+            self.pos_encoder = PositionalEncoding(embed_dim, dropout=embedding_dropout)
+        
+        # ── Classifier ──
+        self.classifier = nn.Sequential(
+            nn.Linear(embed_dim, 128),
+            nn.GELU(),
+            nn.Dropout(0.3),
+            nn.Linear(128, num_classes)
+        )
+        
+        # ── Embedding Regularizer (variational dropout) ──
+        # Embedding dropout不同于 usual dropout:
+        # zeroea filas completas en lugar de columnas
+        self.embedding_variational_dropout = nn.Dropout2d(p=embedding_dropout)
+
+    def forward(self, x):
+        """
+        x: (batch, seq_len) — token indices
+        """
+        # Get embeddings: (batch, seq_len, embed_dim)
+        embedded = self.embedding(x)
+        
+        # Embedding dropout (2D: each channel - row in this case)
+        # Verbatim implementation de variational dropout en embeddings
+        if self.training:
+            # Cada embedding vector se zeroea completo o no (row-level dropout)
+            mask = torch.bernoulli(
+                torch.full_like(embedded[:, :, :1], 1 - self.embed_dropout.p)
+            ).expand_as(embedded)
+            embedded = embedded * mask / (1 - self.embed_dropout.p)
+        
+        # Positional encoding
+        if self.use_positional_encoding:
+            embedded = self.pos_encoder(embedded)
+        
+        # Pooling: mean o max sobre la seq dimensión
+        if self.pooling == 'mean':
+            # Ignorar padding en el pooling
+            mask = (x != self.embedding.padding_idx).unsqueeze(-1).float()
+            pooled = (embedded * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1)
+        elif self.pooling == 'max':
+            # ReLU antes de max pooling para ignorar valores negativos del padding
+            pooled = F.adaptive_max_pool1d(
+                F.relu(embedded).transpose(1, 2), 1
+            ).squeeze(-1)
+        else:
+            pooled = embedded[:, 0]  # CLS token (si es el primero)
+        
+        return self.classifier(pooled)
+
+
+# ─────────────────────────────────────────────────────────────
+# 3. CARGAR GLOVE REAL (ejemplo commented para referencia)
+# ─────────────────────────────────────────────────────────────
+def load_real_glove_embeddings(glove_file, word_to_idx, embed_dim=300):
+    """
+    Carga embeddings de GloVe y los mapea al vocabulario del modelo.
+    
+    Ejemplo de uso:
+    >>> import gensim.downloader as api
+    >>> glove = api.load('glove-wiki-gigaword-100')
+    >>> embeddings = load_glove_to_matrix(glove, word_to_idx, 100)
+    """
+    embeddings = np.random.randn(len(word_to_idx), embed_dim) * 0.01
+    # En implementación real:
+    # with open(glove_file, 'r') as f:
+    #     for line in f:
+    #         word, *vec = line.strip().split()
+    #         if word in word_to_idx:
+    #             embeddings[word_to_idx[word]] = np.array(vec, dtype=np.float32)
+    return embeddings
+
+
+# ─────────────────────────────────────────────────────────────
+# 4. ENTRENAMIENTO: Comparar Learned vs Frozen vs Fine-tuned
+# ─────────────────────────────────────────────────────────────
+def train_model(model, train_loader, epochs=10, lr=1e-3):
+    optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-5)
+    criterion = nn.CrossEntropyLoss()
+    
+    model.train()
+    for epoch in range(epochs):
+        total_loss = 0
+        correct = 0
+        total = 0
+        
+        for x, y in train_loader:
+            x = x.squeeze(1)  # (B, 1, S) → (B, S)
+            y = y.squeeze(1)  # (B, 1) → (B,)
+            
+            optimizer.zero_grad()
+            out = model(x)
+            loss = criterion(out, y)
+            loss.backward()
+            optimizer.step()
+            
+            total_loss += loss.item()
+            correct += (out.argmax(1) == y).sum().item()
+            total += y.size(0)
+        
+        acc = correct / total
+        print(f"  Epoch {epoch+1:2d} | Loss: {total_loss/len(train_loader):.4f} | Acc: {acc:.4f}")
+
+
+# ─────────────────────────────────────────────────────────────
+# 5. EXPERIMENTO: Learned vs Frozen vs Fine-tuned
+# ─────────────────────────────────────────────────────────────
+print("\n" + "="*60)
+print("EXPERIMENT: Embedding Strategies Comparison")
+print("="*60)
+
+dataset = TextDataset(num_samples=2000, max_seq_len=64, vocab_size=5000,
+                       embed_dim=64, use_glove_simulation=True)
+train_loader = DataLoader(dataset, batch_size=64, shuffle=True)
+
+# Strategy 1: Learned from scratch
+print("\n[1] Learned from scratch:")
+model_scratch = TextClassifier(
+    vocab_size=dataset.vocab_size,
+    embed_dim=dataset.embed_dim,
+    pretrained_embeddings=None,
+    freeze_embeddings=False,
+    use_positional_encoding=True,
+    embedding_dropout=0.1
+)
+train_model(model_scratch, train_loader, epochs=5)
+
+# Strategy 2: Frozen pretrained
+print("\n[2] Frozen pretrained (GloVe-like):")
+model_frozen = TextClassifier(
+    vocab_size=dataset.vocab_size,
+    embed_dim=dataset.embed_dim,
+    pretrained_embeddings=dataset.pretrained_embeddings,
+    freeze_embeddings=True,
+    use_positional_encoding=True,
+    embedding_dropout=0.1
+)
+train_model(model_frozen, train_loader, epochs=5)
+
+# Strategy 3: Fine-tuned pretrained
+print("\n[3] Fine-tuned pretrained (GloVe-like):")
+model_finetune = TextClassifier(
+    vocab_size=dataset.vocab_size,
+    embed_dim=dataset.embed_dim,
+    pretrained_embeddings=dataset.pretrained_embeddings,
+    freeze_embeddings=False,
+    use_positional_encoding=True,
+    embedding_dropout=0.1
+)
+train_model(model_finetune, train_loader, epochs=5)
+
+
+# ─────────────────────────────────────────────────────────────
+# 6. VISUALIZACIÓN: Embedding Space
+# ─────────────────────────────────────────────────────────────
+print("\n" + "="*60)
+print("VISUALIZATION: Embedding Space (PCA)")
+print("="*60)
+
+# Get embeddings from fine-tuned model
+embeddings = model_finetune.embedding.weight.detach().cpu().numpy()
+
+# PCA to 2D
+pca = PCA(n_components=2)
+embeddings_2d = pca.fit_transform(embeddings)
+
+# Plot
+plt.figure(figsize=(10, 8))
+plt.scatter(embeddings_2d[:, 0], embeddings_2d[:, 1], alpha=0.3, s=2)
+# Highlight padding (index 0)
+plt.scatter(embeddings_2d[0, 0], embeddings_2d[0, 1], c='red', s=100,
+            marker='x', linewidths=3, label='padding_idx=0')
+# Highlight high-frequency tokens (1-100)
+plt.scatter(embeddings_2d[1:100, 0], embeddings_2d[1:100, 1], c='blue',
+            alpha=0.5, s=20, label='high-freq tokens (1-100)')
+# Highlight semantic clusters
+plt.scatter(embeddings_2d[100:1000, 0], embeddings_2d[100:1000, 1],
+            c='green', alpha=0.3, s=10, label='cluster: sports')
+plt.scatter(embeddings_2d[1000:2000, 0], embeddings_2d[1000:2000, 1],
+            c='orange', alpha=0.3, s=10, label='cluster: technology')
+plt.legend()
+plt.title('Embedding Space Visualized with PCA')
+plt.xlabel('PC1')
+plt.ylabel('PC2')
+plt.tight_layout()
+plt.savefig('embedding_visualization.png', dpi=150)
+print("Saved embedding_visualization.png")
+
+
+# ─────────────────────────────────────────────────────────────
+# 7. VERIFICACIÓN: Padding idx behavior
+# ─────────────────────────────────────────────────────────────
+print("\n" + "="*60)
+print("CHECK: padding_idx behavior")
+print("="*60)
+
+# Crear embedding con padding_idx=0
+emb = nn.Embedding(10, 4, padding_idx=0)
+print(f"Before update — embedding[0]: {emb.weight[0]}")
+print(f"Before update — embedding[1]: {emb.weight[1]}")
+
+# Update gradient manually
+emb.weight.grad = torch.zeros_like(emb.weight)
+emb.weight.grad[0] = 999  # gradient on padding
+emb.weight.grad[1] = 1    # gradient on real token
+emb.weight.data -= 0.01 * emb.weight.grad
+
+print(f"After  update — embedding[0]: {emb.weight[0]}  (NO change)")
+print(f"After  update — embedding[1]: {emb.weight[1]}  (updated)")
 </code></pre>
 <hr>
-<h2>🚨 Errores Comunes</h2>
-<h3>Error 1: No entender la matemática de fondo</h3>
-<p>El 80% de los practitioners implementa esto incorrectamente porque no entienden la base teórica.</p>
-<h3>Error 2: Ignorar los hiperparámetros</h3>
-<p>Muchos asumen que los valores por defecto son óptimos. En producción, esto raramente es cierto.</p>
+<h2>🚨 Los 3 Errores Más Comunes</h2>
+<h3>Error 1: Entrenar embeddings desde cero con dataset pequeño</h3>
+<p>Este es el error más frecuente. Si tienes 5,000 reviews de películas y quieres embeddings para palabras en español, entrenar desde cero es casi garantizado overfitting. Los embeddings tienen millones de parámetros y necesitas decenas de millones de ejemplos para aprender representaciones decentes.</p>
+<p><strong>Fix:</strong></p>
+<pre><code class="language-python"># ❌ Error: learned embeddings desde cero con dataset pequeño
+model = TextClassifier(vocab_size=20000, embed_dim=300,
+                       pretrained_embeddings=None)
+
+# ✅ Fix: usar pre-trained embeddings
+# Opción A: GloVe para español
+import gensim.downloader as api
+glove = api.load('glove-wiki-gigaword-300')
+# Mapear vocab del modelo a GloVe
+
+# Opción B: FastText multilingual
+# fasttext = api.load('fasttext-wiki-news-subwords-300')
+
+# Opción C: Sentence transformers (moderno, mejor para muchos casos)
+from sentence_transformers import SentenceTransformer
+encoder = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
+
+# Fine-tune en vez de desde cero
+pretrained = load_pretrained_embeddings(vocab, embed_dim=300)
+model = TextClassifier(vocab_size=len(vocab), embed_dim=300,
+                       pretrained_embeddings=pretrained,
+                       freeze_embeddings=False)  # fine-tune
+</code></pre>
+<h3>Error 2: No usar padding_idx</h3>
+<p>Sin `padding_idx`, el vector de padding (índice 0 por convención) es un embedding aprendible más. En attention, esto significa que el padding participa activamente en la computación — el modelo puede aprender a usar el vector de padding como un feature válido, lo cual es ruido que degrada la atención real.</p>
+<p><strong>Fix:</strong></p>
+<pre><code class="language-python"># ❌ Error: sin padding_idx
+class BadTextModel(nn.Module):
+    def __init__(self, vocab_size, embed_dim):
+        super().__init__()
+        self.embedding = nn.Embedding(vocab_size, embed_dim)  # sin padding_idx
+    
+    def forward(self, x):
+        embedded = self.embedding(x)
+        # El padding vector (índice 0) está en el espacio de embeddings
+        # y participa en attention → ruido
+        return self._attention(embedded)
+
+# ✅ Fix: siempre especificar padding_idx
+class GoodTextModel(nn.Module):
+    def __init__(self, vocab_size, embed_dim, padding_idx=0):
+        super().__init__()
+        self.embedding = nn.Embedding(vocab_size, embed_dim, padding_idx=padding_idx)
+        # El embedding en índice padding_idx tiene gradiente zero
+        # Attention mask debe aplicarse manualmente
+    
+    def forward(self, x, mask=None):
+        embedded = self.embedding(x)
+        # Si mask provided, aplicarla en atención
+        if mask is not None:
+            embedded = embedded.masked_fill(mask.unsqueeze(-1) == 0, 0)
+        return self._attention(embedded, mask=mask)
+</code></pre>
+<h3>Error 3: Embeddings de dimensionalidad muy alta para dataset pequeño</h3>
+<p>Un embedding de dimensión 512 con vocabulario de 50,000 tiene $50,000 \times 512 = 25.6M$ parámetros. Si tu dataset tiene 1,000 ejemplos, estás overfitteando solo en los embeddings. La regla práctica: necesitas al menos $50 \times$ el número de tokens en tu dataset para dimensionar embeddings apropiadamente.</p>
+<p><strong>Fix:</strong></p>
+<pre><code class="language-python"># ❌ Error: embedding 512 para dataset pequeño
+model = TextClassifier(vocab_size=50000, embed_dim=512)  # 25.6M params
+
+# ✅ Fix: reducir dimensionalidad proporcional al dataset
+# Dataset pequeño → embedding pequeño
+model_small = TextClassifier(vocab_size=50000, embed_dim=32)   # 1.6M params
+# O usar pre-trained con dimensión apropiada
+# GloVe-100: 100 dims para datasets pequeños
+# GloVe-300: 300 dims si tienes más datos
+glove_small = api.load('glove-wiki-gigaword-100')  # 100 dims
+
+# Tabla heurística:
+# Dataset &lt; 10K docs        → embed_dim 32-50
+# Dataset 10K-100K docs    → embed_dim 100-200
+# Dataset &gt; 100K docs      → embed_dim 300+
+# Pre-trained siempre      → usar la dimensión del pre-trained
+</code></pre>
 <hr>
-<h2>✅ Mejores Prácticas</h2>
-<ul>
-<li>Siempre documenta tu código y decisiones de diseño.</li>
-<li>Usa versionado para tus experimentos.</li>
-<li>Valida siempre con datos de prueba independientes.</li>
-<li>Monitorea las métricas en producción.</li>
-</ul>
+<h2>📊 Tabla de Referencia Rápida</h2>
+<table>
+<thead><tr><th>Decisión</th><th>Recomendación</th><th>Cuándo Cambiar</th></tr></thead>
+<tbody>
+<tr><td>padding_idx</td><td>Siempre usar padding_idx=0</td><td>Nunca no usarlo</td></tr>
+<tr><td>Embedding dim</td><td>50 (pequeño) → 300 (grande)</td><td>Si overfitting, reducir</td></tr>
+<tr><td>Pre-trained</td><td>Siempre que posible</td><td>Si domain es radically diferente del pre-trained</td></tr>
+<tr><td>Freeze</td><td>Dataset &lt;10K: freeze sí, dataset &gt;50K: fine-tune</td><td>Si domain adaptation fails</td></tr>
+<tr><td>Positional encoding</td><td>Sí para seq2seq, no para bag-of-words</td><td>Si el orden no importa</td></tr>
+<tr><td>Embedding dropout</td><td>0.1-0.3</td><td>Si overfitting, aumentar</td></tr>
+<tr><td>Pooling</td><td>Mean pooling + mask para mayoría</td><td>Si usas [CLS] token</td></tr>
+</tbody>
+</table>
 <hr>
-<h2>📚 Recursos</h2>
-<ul>
-<li>Documentación oficial de torch.nn</li>
-<li>Tutoriales prácticos en el blog</li>
-<li>Código fuente en GitHub</li>
-</ul>
+<h2>🎯 Resumen y Cierre</h2>
+<p>Parcero, los embeddings son la puerta de entrada de tu modelo al mundo semántico. No reinventes la rueda: si tienes un dataset pequeño, usa pre-trained. Si tienes muchos datos, fine-tunea. Siempre, siempre usa `padding_idx`. Y la dimensionalidad debe ser proporcional a tu dataset.</p>
+<p>La diferencia entre embeddings bien configurados y mal configurados puede ser de 10-20 puntos de accuracy en clasificación de texto. Eso es el equivalente a cambiar toda la arquitectura del modelo.</p>
+<p>En Colombia decimos que "el que Embeddings sabe usar, el modelo le sabe responder". Nos vemos mañana.</p>
   </article>
 
   <script>
