@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="InstructGPT - Instruyendo Al Modelo | #365DaysOfAI por Fabian Rodriguez">
-  <title>InstructGPT - Instruyendo Al Modelo | #365DaysOfAI</title>
+  <meta name="description" content="Anomaly Detection en Production — Detectando Cuando Tu Modelo Falla | #365DaysOfAI por Fabian Rodriguez">
+  <title>Anomaly Detection en Production — Detectando Cuando Tu Modelo Falla | #365DaysOfAI</title>
   
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
@@ -110,51 +110,312 @@ nav {
 
   <header class="article-hero">
     <div class="day-badge">Dia 213 / 365 &nbsp;·&nbsp; #365DaysOfAI</div>
-    <h1 class="article-title">InstructGPT - Instruyendo Al Modelo</h1>
+    <h1 class="article-title">Anomaly Detection en Production — Detectando Cuando Tu Modelo Falla</h1>
     <div class="article-meta">
       <time class="article-date">01 de agosto de 2026</time>
-      <div class="tags"><span class="tag">instructgpt</span><span class="tag">instruction-tuning</span><span class="tag">alignment</span><span class="tag">openai</span></div>
+      <div class="tags"><span class="tag">anomaly-detection</span><span class="tag">mlops</span><span class="tag">monitoring</span><span class="tag">drift-detection</span></div>
     </div>
   </header>
 
   <article class="article-body">
-    <h1>InstructGPT - Instruyendo Al Modelo</h1>
-<p>Hagale pues, parcero. Dia 213 y hoy hablamos de InstructGPT, como instruir a los LLMs. Dejala el cafe.</p>
-<hr>
-<h2>🎯 Que Es InstructGPT?</h2>
-<p>InstructGPT aplica RLHF para alinear GPT-3 con instrucciones humanas. Es 100x mas siguiendo instrucciones que GPT-3 bruto.</p>
-<h3>El proceso:</h3>
-<ul>
-<li><strong>1. Fine-tune supervised</strong>: Demostraciones de calidad</li>
-<li><strong>2. Reward model</strong>: Humanos rankean outputs</li>
-<li><strong>3. PPO fine-tune</strong>: Optimizar para humanos</li>
-</ul>
-<hr>
-<h2>📐 Comparacion Instruct vs GPT-3</h2>
-<pre><code class="language-python"># GPT-3 (zero-shot)
-prompt = "Explain quantum computing"
-# Genera texto relacionado pero no necesariamente util
+    <h1>Anomaly Detection en Production</h1>
+    <p>Hagale pues, parcero. Aquí andamos en el Día 213 y hoy vamos a hablar de algo que el 90% de los equipos ignoran hasta que el modelo ya está fallando en producción: <strong>anomaly detection</strong> y monitoring de modelos ML. Usted ha entrenado su modelo, lo deployó, y ahora ¿cómo sabe que está funcionando correctamente? Spoiler: no es mirando el log una vez al día. Café y vamos pa'llá.</p>
 
-# InstructGPT (con instrucciones)
-prompt = "Explain quantum computing in simple terms for a 10 year old"
-# Genera respuesta mucho mas util y alineada
-</code></pre>
-<hr>
-<h2>🚀 Impacto</h2>
-<pre><code class="language-python"># InstructGPT = ChatGPT (before GPT-4)
-# La técnica de RLHF se convirtió en standard
-# para alinear LLMs
+    <hr>
 
-# InstructGPT paper: "Training language models to follow 
-# instructions with human feedback"
+    <h2>🎯 ¿Por Qué Monitorear Modelos en Producción?</h2>
+    <p>Un modelo de ML no es software tradicional. No "crashea" de forma obvious — se degrada silenciosamente. Los datos cambian, el mundo cambia, y su modelo que ayer era preciso hoy puede estar dando predicciones incorrectas. Esto se llama <strong>model drift</strong>, y hay dos tipos principales:</p>
+
+    <ul>
+      <li><strong>Data Drift</strong>: La distribución de los datos de entrada cambia respecto al training set. Por ejemplo, si su modelo de crédito fue entrenado con datos pre-pandemia y ahora recibe datos de inflación post-pandemia.</li>
+      <li><strong>Concept Drift</strong>: La relación entre X e Y cambia. El modelo aprendió que "ingresos altos = bajo riesgo", pero la economía cambió y ahora ingresos altos con inflación alta pueden ser riesgo alto.</li>
+    </ul>
+
+    <h3>📊 La Matemática del Drift</h3>
+    <p>Para detectar data drift cuantitativamente, usamos el <strong>Population Stability Index (PSI)</strong>:</p>
+
+    <pre><code class="language-python">import numpy as np
+import pandas as pd
+
+def calculate_psi(expected: np.ndarray, actual: np.ndarray, buckets: int = 10) -> float:
+    """
+    Calcula el Population Stability Index (PSI)
+    PSI < 0.1: No hay cambio significativo
+    PSI 0.1 - 0.2: Cambio moderado, monitorear
+    PSI > 0.2: Cambio significativo, requiere acción
+    """
+    # Crear bins basados en la distribución esperada
+    breakpoints = np.percentile(expected, np.linspace(0, 100, buckets + 1))
+    
+    # Calcular percentages en cada bin para ambas distribuciones
+    expected_perc = np.histogram(expected, breakpoints)[0] / len(expected)
+    actual_perc = np.histogram(actual, breakpoints)[0] / len(actual)
+    
+    # Evitar división por zero
+    expected_perc = np.where(expected_perc == 0, 0.0001, expected_perc)
+    actual_perc = np.where(actual_perc == 0, 0.0001, actual_perc)
+    
+    # Calcular PSI
+    psi = np.sum((actual_perc - expected_perc) * np.log(actual_perc / expected_perc))
+    
+    return psi
+
+# Ejemplo: Comparar distribución de features entre training y producción
+train_income = np.random.normal(50000, 15000, 10000)
+prod_income = np.random.normal(52000, 18000, 10000)  # Diferente distribución
+
+psi_value = calculate_psi(train_income, prod_income)
+print(f"PSI: {psi_value:.4f}")  # Si PSI > 0.2, hay drift significativo
 </code></pre>
-<hr>
-<h2>⚠️ Errores Comunes</h2>
-<h3>Error 1: Sobre-optimizacion</h3>
-<p><strong>El problema</strong>: Modelo too focused on reward model.</p>
-<p><strong>La solucion</strong>: KL divergence penalty.</p>
-<hr>
-<p><em>Eso es todo! Nos vemos en el Dia 214.</em></p>
+
+    <hr>
+
+    <h2>📐 Concept Drift Detection</h2>
+    <p>Para concept drift, no basta con comparar distribuciones de entrada — necesitamos comparar las predicciones del modelo con los resultados reales (cuando estén disponibles). La técnica más común es el <strong>Drift Detection Method (DDM)</strong>:</p>
+
+    <pre><code class="language-python">from dataclasses import dataclass
+from typing import Optional
+import math
+
+@dataclass
+class DriftDetector:
+    """Detector de concept drift usando DDM (Drift Detection Method)"""
+    warning_level: float = 2.0  # n_std for warning
+    drift_level: float = 3.0    # n_std for drift
+    min_instances: int = 30     # Mínimo de instancias antes de detectar
+    
+    # Internal state
+    total: int = 0
+    error_count: int = 0
+    mean_error: float = 0.0
+    variance: float = 0.0
+    
+    def add_result(self, is_error: bool) -> Optional[str]:
+        """Añadir resultado de predicción: is_error=True si la predicción fue incorrecta"""
+        self.total += 1
+        prev_mean = self.mean_error
+        
+        if is_error:
+            self.error_count += 1
+        
+        # Actualizar media y varianza usando Welford's online algorithm
+        self.mean_error += (int(is_error) - self.mean_error) / self.total
+        if self.total > 1:
+            self.variance += (int(is_error) - prev_mean) * (int(is_error) - self.mean_error)
+        
+        # No detectar hasta tener suficientes instancias
+        if self.total < self.min_instances:
+            return None
+        
+        std = math.sqrt(self.variance / self.total)
+        threshold = self.mean_error + self.drift_level * std
+        warning_threshold = self.mean_error + self.warning_level * std
+        
+        if self.total % 100 == 0:
+            print(f"Instances: {self.total}, Error Rate: {self.mean_error:.4f}, Std: {std:.4f}")
+        
+        if self.mean_error > threshold:
+            return "DRIFT"
+        elif self.mean_error > warning_threshold:
+            return "WARNING"
+        
+        return None
+
+# Uso
+detector = DriftDetector()
+
+# Simular algunos resultados (is_error=True = wrong prediction)
+import random
+for i in range(500):
+    # Después de 300 instancias, simulamos concept drift
+    if i > 300:
+        is_error = random.random() < 0.15  # Error rate sube a 15%
+    else:
+        is_error = random.random() < 0.05   # Error rate normal ~5%
+    
+    result = detector.add_result(is_error)
+    if result:
+        print(f"ALERT at instance {i}: {result}")
+</code></pre>
+
+    <hr>
+
+    <h2>🚀 Monitoring Dashboard Setup</h2>
+    <p>Ahora que tenemos las métricas, necesitamos un dashboard para visualizar todo esto. La arquitectura típica involucra Prometheus + Grafana o soluciones cloud como AWS CloudWatch, Azure Application Insights:</p>
+
+    <pre><code class="language-python">from prometheus_client import Counter, Gauge, Histogram, start_http_server
+import random
+
+# Métricas Prometheus
+PREDICTION_LATENCY = Histogram(
+    'model_prediction_latency_seconds',
+    'Tiempo de inferencia del modelo',
+    buckets=[0.01, 0.05, 0.1, 0.5, 1.0, 2.0]
+)
+
+PREDICTION_COUNT = Counter(
+    'model_predictions_total',
+    'Total de predicciones',
+    ['model_version', 'status']
+)
+
+FEATURE_DRIFT_GAUGE = Gauge(
+    'feature_drift_psi',
+    'PSI por feature',
+    ['feature_name']
+)
+
+CONCEPT_DRIFT_STATUS = Gauge(
+    'concept_drift_status',
+    'Estado de concept drift (0=stable, 1=warning, 2=drift)',
+    ['model_name']
+)
+
+def make_prediction_with_monitoring(model, features: dict) -> dict:
+    """Hace predicción con monitoreo completo"""
+    import time
+    
+    # Medir latencia
+    start = time.time()
+    prediction = model.predict(features)
+    latency = time.time() - start
+    
+    PREDICTION_LATENCY.observe(latency)
+    PREDICTION_COUNT.labels(model_version=MODEL_VERSION, status='success').inc()
+    
+    # Actualizar métricas de drift
+    for feature_name, expected_dist in FEATURE_STATS.items():
+        actual_dist = features[feature_name]
+        psi = calculate_psi(expected_dist, actual_dist)
+        FEATURE_DRIFT_GAUGE.labels(feature_name=feature_name).set(psi)
+    
+    # Detectar concept drift
+    drift_status = concept_detector.add_result(prediction['is_correct'])
+    if drift_status == 'DRIFT':
+        CONCEPT_DRIFT_STATUS.labels(model_name=MODEL_NAME).set(2)
+        # Trigger alert!
+        send_alert(f"Concept drift detectado en {MODEL_NAME}")
+    elif drift_status == 'WARNING':
+        CONCEPT_DRIFT_STATUS.labels(model_name=MODEL_NAME).set(1)
+    
+    return prediction
+
+# Iniciar servidor de métricas en puerto 8000
+if __name__ == '__main__':
+    start_http_server(8000)
+    print("Monitoring server started on :8000")
+</code></pre>
+
+    <hr>
+
+    <h2>⚠️ Errores Comunes</h2>
+
+    <h3>Error 1: No Monitorear Modelos en Producción</h3>
+    <p><strong>El problema</strong>: El equipo deploya el modelo y asume que todo está bien porque no hay errores en los logs. Los modelos degradan silenciosamente y cuando se dan cuenta, semanas de datos están contaminados con malas predicciones.</p>
+    <p><strong>La solución</strong>: Implementar monitoring desde day one. Minimum viable monitoring incluye: prediction volume, prediction distribution, feature drift (PSI), y cuando haya ground truth disponible, error rate y accuracy.</p>
+
+    <pre><code class="language-python"># Checklist mínimo de monitoreo para cualquier modelo en producción:
+MONITORING_CHECKLIST = {
+    "prediction_volume": "Alert si el volumen de predicciones cae abruptamente",
+    "feature_drift_psi": "Alert si PSI > 0.2 en cualquier feature",
+    "prediction_distribution": "Alert si las predicciones cambian drásticamente",
+    "latency_p99": "Alert si latencia > threshold acceptable",
+    "error_rate": "Alert si tasa de errores > baseline + 3σ",
+}
+</code></pre>
+
+    <h3>Error 2: No Detectar Data Drift Antes de Que Impacte Predictions</h3>
+    <p><strong>El problema</strong>: El equipo solo monitorea la precisión del modelo, pero la precisión solo se puede calcular cuando se tiene ground truth — que puede llegar días o semanas después. Para cuando se detecta que el modelo está fallando, ya ha estado fallando por mucho tiempo.</p>
+    <p><strong>La solución</strong>: Monitorear feature distributions con PSI desde el día uno. Data drift aparece antes que concept drift y antes de que la precisión se degrade visiblemente. Es una señal temprana.</p>
+
+    <pre><code class="language-python"># Pipeline de drift detection automático
+class DriftMonitor:
+    def __init__(self, reference_data: pd.DataFrame, alert_threshold: float = 0.2):
+        self.reference_stats = {
+            col: {
+                'mean': reference_data[col].mean(),
+                'std': reference_data[col].std(),
+                'percentiles': np.percentile(reference_data[col], np.linspace(0, 100, 11))
+            }
+            for col in reference_data.select_dtypes(include=[np.number]).columns
+        }
+        self.alert_threshold = alert_threshold
+    
+    def check_drift(self, current_data: pd.DataFrame) -> dict:
+        alerts = {}
+        for col, stats in self.reference_stats.items():
+            if col not in current_data.columns:
+                continue
+            current_values = current_data[col].values
+            psi = calculate_psi(stats['percentiles'], current_values, buckets=10)
+            if psi > self.alert_threshold:
+                alerts[col] = {
+                    'psi': psi,
+                    'severity': 'HIGH' if psi > 0.25 else 'MEDIUM',
+                    'action': 'Retrain model recommended'
+                }
+        return alerts
+</code></pre>
+
+    <h3>Error 3: Alerts Sin Threshold Properly Tunneados — Alert Fatigue</h3>
+    <p><strong>El problema</strong>: El equipo configura alerts con thresholds demasiado sensitivos o sin contexto histórico. Resultado: 50 alertas por hora, la mayoría falsas. Después de unos días, todos ignoran los alerts — incluyendo los reales.</p>
+    <p><strong>La solución</strong>: Usar baseline estadístico en lugar de thresholds fijos. Los thresholds deben basarse en la distribución histórica, no en valores arbitrarios. Implementar alert deduplication y severity levels.</p>
+
+    <pre><code class="language-python">class SmartAlertManager:
+    """Gestor de alertas con umbrales dinámicos basados en historial"""
+    
+    def __init__(self, metric_name: str, lookback_days: int = 30):
+        self.metric_name = metric_name
+        self.lookback_days = lookback_days
+        self.baseline_mean = None
+        self.baseline_std = None
+        self.alert_cooldown = {}  # Para evitar alert storms
+    
+    def update_baseline(self, historical_values: list):
+        """Actualizar baseline con datos históricos"""
+        self.baseline_mean = np.mean(historical_values)
+        self.baseline_std = np.std(historical_values)
+        # Usar 3-sigma rule para alertas
+        self.upper_threshold = self.baseline_mean + 3 * self.baseline_std
+        self.warning_threshold = self.baseline_mean + 2 * self.baseline_std
+    
+    def should_alert(self, current_value: float, cooldown_minutes: int = 30) -> tuple:
+        """Determina si debe generar alerta, evitando fatigue"""
+        if self.baseline_mean is None:
+            return False, "No baseline established"
+        
+        # Check cooldown
+        import time
+        current_time = time.time()
+        last_alert = self.alert_cooldown.get('last_alert_time', 0)
+        if current_time - last_alert < cooldown_minutes * 60:
+            return False, "In cooldown period"
+        
+        if current_value > self.upper_threshold:
+            self.alert_cooldown['last_alert_time'] = current_time
+            return True, f"DRIFT: {current_value:.4f} > {self.upper_threshold:.4f} (μ={self.baseline_mean:.4f}, σ={self.baseline_std:.4f})"
+        elif current_value > self.warning_threshold:
+            return True, f"WARNING: {current_value:.4f} > {self.warning_threshold:.4f}"
+        
+        return False, "Within normal range"
+</code></pre>
+
+    <hr>
+
+    <h2>🏁 Resumen</h2>
+    <p>El monitoring de modelos ML no es opcional — es parte del ciclo de vida del modelo. Los puntos clave:</p>
+
+    <ul>
+      <li><strong>PSI</strong> para cuantificar data drift entre training y producción</li>
+      <li><strong>DDM</strong> para detectar concept drift comparando error rates a lo largo del tiempo</li>
+      <li>Dashboard con Prometheus + Grafana (o cloud equivalent) para visualización en tiempo real</li>
+      <li>Thresholds basados en historial estadístico, no valores arbitrarios</li>
+      <li>Alert fatigue es real: implementar cooldown y severity levels</li>
+    </ul>
+
+    <p>En producción, su modelo de ML es un ser vivo que cambia con el tiempo. Monitorearlo no es una tarea del data scientist — es una responsabilidad del equipo de MLops. Y recuerde: lo que no se mide, no se mejora.</p>
+
+    <p><em>Eso es todo por el Día 213. Nos vemos en el 214, cuando hablaremos de ML Pipelines con Prefect, Luigi y Dagster. ¡Hagámoslo!</em></p>
   </article>
 
   <script>
