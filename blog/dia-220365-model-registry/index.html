@@ -110,79 +110,674 @@ nav {
 
   <header class="article-hero">
     <div class="day-badge">Dia 220 / 365 &nbsp;·&nbsp; #365DaysOfAI</div>
-    <h1 class="article-title">RAG - Retrieval-Augmented Generation</h1>
+    <h1 class="article-title">A/B Testing para ML — El Experimento que Decide si tu Modelo va a Producción o No</h1>
     <div class="article-meta">
       <time class="article-date">08 de agosto de 2026</time>
-      <div class="tags"><span class="tag">rag</span><span class="tag">retrieval</span><span class="tag">llm</span><span class="tag">knowledge-base</span></div>
+      <div class="tags"><span class="tag">a-b-testing</span><span class="tag">experimentation</span><span class="tag">statistics</span><span class="tag">mlops</span><span class="tag">multi-armed-bandits</span></div>
     </div>
   </header>
 
   <article class="article-body">
-    <h1>RAG - Retrieval-Augmented Generation</h1>
+    <h1>A/B Testing para ML</h1>
 
-<p>Hagale pues, parcero. Hoy es el Dia 220 y hablamos de RAG, Retrieval-Augmented Generation, combinando busqueda y generacion. Cafe.</p>
+<p>Hagale pues, parcero. Día 220 y hoy llegamos a uno de los temas más importantes y más mal hechos en la industria: A/B testing para modelos de ML. ¿Cuántas veces has visto que alguien dice "ya tenemos suficientes datos, paremos el test"? ¿O que hacen el experimento y no separan bien los grupos? Hermano, si tu modelo llegó a producción sin un A/B test bien hecho, básicamente estás tirando un dado. Hoy aprendemos a hacer esto correctamente. Café listo.</p>
+
 <hr>
-<h2>🎯 Que Es RAG?</h2>
-<p>RAG (Retrieval-Augmented Generation) combina un sistema de recuperacion de informacion con un modelo de lenguaje generativo. Esto permite que los LLMs accedan a informacion actualizada sin re-entrenamiento.</p>
-<h3>Componentes:</h3>
+<h2>🎯 Por Que A/B Testing Es Crítico Para ML</h2>
+
+<p>En software tradicional, un bug te afecta a todos los usuarios. En ML, un modelo puede funcionar de maravilla para algunos segmentos y terrible para otros. A/B testing te permite:</p>
+
 <ul>
-<li><strong>Retriever</strong>: Encuentra documentos relevantes</li>
-<li><strong>Vector Store</strong>: Base de datos de embeddings</li>
-<li><strong>Generator</strong>: Modelo de lenguaje que produce respuestas</li>
-<li><strong>Orchestrator</strong>: Coordina retrieval y generacion</li>
+<li><strong>Validar impacto real</strong>: No es lo mismo accuracy en validation que performance en producción con tráfico real.</li>
+<li><strong>Detectar efectos negativos</strong>: Un modelo puede optimizar una métrica pero degradar otra (ej: clickbait optimizado para clicks pero con peor retention).</li>
+<li><strong>Reducir riesgo de deployment</strong>: Puedes empezar con 5% del tráfico antes de pasar al 100%.</li>
+<li><strong>Calcular ROI real</strong>: Si el modelo nuevo no mejora el negocio, no importa que tenga mejor accuracy.</li>
 </ul>
+
 <hr>
-<h2>📐 Implementacion Basica De RAG</h2>
-<pre><code>from langchain.vectorstores import Chroma
-from langchain.embeddings import OpenAIEmbeddings
+<h2>📊 La Matemática del A/B Testing</h2>
 
-# Crear vector store
-vectorstore = Chroma.from_documents(documents, OpenAIEmbeddings())
+<h3>Statistical Significance</h3>
 
-# Retrieval
-def retrieve(query, k=3):
-    return vectorstore.similarity_search(query, k=k)
+<p>La base de todo es el test de hipótesis. Definimos:</p>
 
-# Generacion con contexto
-def generate_with_rag(question):
-    docs = retrieve(question)
-    context = "\n".join([doc.page_content for doc in docs])
+<ul>
+<li><strong>H₀ (Null Hypothesis)</strong>: No hay diferencia entre el modelo A (control) y el modelo B (treatment)</li>
+<li><strong>H₁ (Alternative Hypothesis)</strong>: Hay diferencia significativa entre A y B</li>
+</ul>
+
+<p>El statistical significance se mide con el p-value:</p>
+
+$$p = P(\text{observar datos tan extremos} | H_0 \text{ es cierta})$$
+
+<p>Si $p < \alpha$ (típicamente 0.05), rechazamos H₀ y declaramos que hay diferencia significativa.</p>
+
+<h3>Sample Size Calculation</h3>
+
+<p>Esta es la parte que la mayoría hace mal. No puedes parar el test cuando "se sienta bien". Necesitas calcular el tamaño de muestra antes.</p>
+
+<pre><code># sample_size_calculation.py
+import numpy as np
+from scipy import stats
+
+def calculate_sample_size(
+    baseline_conversion_rate: float,  # Tasa actual (ej: 3.2%)
+    minimum_detectable_effect: float,   # MDE relativo (ej: 0.20 = 20% de mejora)
+    alpha: float = 0.05,               # Significance level
+    power: float = 0.80                # Statistical power
+) -> int:
+    """
+    Calcula el tamaño de muestra necesario para un A/B test.
     
-    prompt = f"""
-Contexto:
-{context}
-
-Pregunta: {question}
-
-Responde basado en el contexto dado.
-"""
-    return llm(prompt)
-</code></pre>
-<hr>
-<h2>🚀 RAG Pipeline Completo</h2>
-<pre><code>class RAGPipeline:
-    def __init__(self, retriever, generator):
-        self.retriever = retriever
-        self.generator = generator
+    La fórmula viene de la aproximación normal para testing de proporciones:
     
-    def __call__(self, query):
-        # 1. Retrieve relevant documents
-        docs = self.retriever.get_relevant_documents(query)
-        context = "\n".join([doc.page_content for doc in docs])
-        
-        # 2. Build prompt with context
-        prompt = f"Context: {context}\n\nQuestion: {query}\n\nAnswer:"
-        
-        # 3. Generate answer
-        return self.generator.generate(prompt)
-</code></pre>
+    n = (Z_α/2 + Z_β)² * (p₁(1-p₁) + p₂(1-p₂)) / (p₁ - p₂)²
+    
+    Donde:
+    - Z_α/2 es el valor crítico para el nivel de significancia
+    - Z_β es el valor crítico para la potencia
+    - p₁ es la tasa base (control)
+    - p₂ es la tasa esperada con el tratamiento
+    """
+    # Tasa esperada en el grupo de tratamiento
+    p1 = baseline_conversion_rate
+    p2 = p1 * (1 + minimum_detectable_effect)
+    
+    # Efecto absoluto
+    delta = abs(p2 - p1)
+    
+    # Z-scores para alpha y power
+    z_alpha = stats.norm.ppf(1 - alpha / 2)  # Two-tailed
+    z_beta = stats.norm.ppf(power)
+    
+    # Varianza combinada bajo H0 (asumiendo p1 = p2)
+    p_pooled = (p1 + p2) / 2
+    variance = 2 * p_pooled * (1 - p_pooled)
+    
+    # Tamaño de muestra por grupo
+    n = (variance * (z_alpha + z_beta) ** 2) / (delta ** 2)
+    
+    return int(np.ceil(n))
+
+# Ejemplo práctico
+baseline = 0.032  # 3.2% de conversión
+mde = 0.20        # queremos detectar 20% de mejora relativa
+sample_size = calculate_sample_size(baseline, mde)
+
+print(f"Necesitas {sample_size:,} usuarios por grupo")
+print(f"Total del experimento: {sample_size * 2:,} usuarios")</code></pre>
+
+<h3>Math Behind the Formula</h3>
+
+<p>La sample size derivation:</p>
+
+$$n = \frac{2\sigma^2 (Z_{\alpha/2} + Z_{\beta})^2}{\delta^2}$$
+
+<p>Donde $\sigma^2 = p(1-p)$ para una proporción y $\delta$ es el minimum detectable effect. Esto se puede simplificar a:</p>
+
+<pre><code>#验证 con scipy
+from scipy.stats import norm
+
+def validate_sample_size():
+    """
+    Verifica que nuestra implementación es correcta
+    comparando con formulas estándar de la industria.
+    """
+    baseline = 0.032
+    mde = 0.20
+    alpha = 0.05
+    power = 0.80
+    
+    p1 = baseline
+    p2 = p1 * (1 + mde)
+    delta = abs(p2 - p1)
+    
+    z_alpha = norm.ppf(0.975)  # Two-tailed, 95% CI
+    z_beta = norm.ppf(0.80)
+    
+    # Pooled proportion
+    p_bar = (p1 + p2) / 2
+    
+    # Standard error under null
+    se_null = np.sqrt(2 * p_bar * (1 - p_bar))
+    
+    # Standard error under alternative
+    se_alt = np.sqrt(p1 * (1 - p1) + p2 * (1 - p2))
+    
+    # Sample size using pooled variance
+    n_pooled = 2 * ((z_alpha + z_beta) ** 2) * p_bar * (1 - p_bar) / (delta ** 2)
+    
+    # Sample size using unpooled variance
+    n_unpooled = ((z_alpha + z_beta) ** 2) * (p1*(1-p1) + p2*(1-p2)) / (delta ** 2)
+    
+    print(f"Pooled approach: n = {int(np.ceil(n_pooled))} per group")
+    print(f"Unpooled approach: n = {int(np.ceil(n_unpooled))} per group")
+    
+    return int(np.ceil(n_pooled))</code></pre>
+
 <hr>
-<h2>⚠️ Errores Comunes</h2>
-<h3>Error 1: Retrieval Irrelevante</h3>
-<p><strong>El problema</strong>: Documentos no relacionados contaminan la respuesta.</p>
-<p><strong>La solucion</strong>: Implementa reranking o filtrado por threshold.</p>
+<h2>🚀 Implementando un Framework de A/B Testing</h2>
+
+<pre><code># ab_test_framework.py
+import numpy as np
+from scipy import stats
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Optional, Callable
+
+@dataclass
+class ABTestResult:
+    """Resultado de un A/B test"""
+    control_conversion: float
+    treatment_conversion: float
+    absolute_lift: float
+    relative_lift: float
+    p_value: float
+    confidence_interval: tuple
+    is_significant: bool
+    sample_size_reached: int
+    recommended_action: str
+
+class ABTest:
+    def __init__(
+        self,
+        test_name: str,
+        control_name: str = "A",
+        treatment_name: str = "B",
+        alpha: float = 0.05,
+        power: float = 0.80,
+        minimum_detectable_effect: float = 0.05
+    ):
+        self.test_name = test_name
+        self.control_name = control_name
+        self.treatment_name = treatment_name
+        self.alpha = alpha
+        self.power = power
+        self.mde = minimum_detectable_effect
+        
+        # Data collectors
+        self.control_data = []
+        self.treatment_data = []
+        
+        # Calculated sample size
+        self.required_sample_size = None
+        
+    def calculate_sample_size(self, baseline_rate: float):
+        """Calcula sample size necesario"""
+        p1 = baseline_rate
+        p2 = p1 * (1 + self.mde)
+        delta = abs(p2 - p1)
+        
+        z_alpha = stats.norm.ppf(1 - self.alpha / 2)
+        z_beta = stats.norm.ppf(self.power)
+        p_bar = (p1 + p2) / 2
+        
+        n = 2 * ((z_alpha + z_beta) ** 2) * p_bar * (1 - p_bar) / (delta ** 2)
+        self.required_sample_size = int(np.ceil(n))
+        
+        print(f"Required sample size per group: {self.required_sample_size:,}")
+        return self.required_sample_size
+    
+    def assign_user(self, user_id: str) -> str:
+        """Asigna usuario a control o treatment usando hash determinista"""
+        hash_value = hash(user_id) % 100
+        return self.treatment_name if hash_value < 50 else self.control_name
+    
+    def record_outcome(
+        self,
+        user_id: str,
+        conversion: bool,
+        revenue: float = 0.0,
+        metadata: Optional[dict] = None
+    ):
+        """Registra el resultado de una asignación"""
+        group = self.assign_user(user_id)
+        
+        record = {
+            'user_id': user_id,
+            'conversion': conversion,
+            'revenue': revenue,
+            'timestamp': datetime.now(),
+            'metadata': metadata or {}
+        }
+        
+        if group == self.treatment_name:
+            self.treatment_data.append(record)
+        else:
+            self.control_data.append(record)
+    
+    def analyze(self) -> ABTestResult:
+        """Analiza los resultados del test"""
+        # Extract conversions
+        control_conversions = [r['conversion'] for r in self.control_data]
+        treatment_conversions = [r['conversion'] for r in self.treatment_data]
+        
+        n_control = len(control_conversions)
+        n_treatment = len(treatment_conversions)
+        
+        # Calculate rates
+        control_rate = np.mean(control_conversions)
+        treatment_rate = np.mean(treatment_conversions)
+        
+        # Calculate lift
+        absolute_lift = treatment_rate - control_rate
+        relative_lift = absolute_lift / control_rate if control_rate > 0 else 0
+        
+        # Z-test for proportions
+        p_pooled = (sum(control_conversions) + sum(treatment_conversions)) / (n_control + n_treatment)
+        se = np.sqrt(p_pooled * (1 - p_pooled) * (1/n_control + 1/n_treatment))
+        
+        z_stat = absolute_lift / se
+        p_value = 2 * (1 - stats.norm.cdf(abs(z_stat)))  # Two-tailed
+        
+        # Confidence interval (95%)
+        se_diff = np.sqrt(
+            (control_rate * (1 - control_rate) / n_control) +
+            (treatment_rate * (1 - treatment_rate) / n_treatment)
+        )
+        ci_lower = absolute_lift - 1.96 * se_diff
+        ci_upper = absolute_lift + 1.96 * se_diff
+        
+        # Determine significance
+        is_significant = p_value < self.alpha
+        sample_reached = min(n_control, n_treatment)
+        
+        # Recommendation
+        if self.required_sample_size and sample_reached < self.required_sample_size:
+            action = f"⚠️ CONTINUAR: Sample size no alcanzado ({sample_reached:,} < {self.required_sample_size:,})"
+        elif is_significant and absolute_lift > 0:
+            action = "✅ DESPLEGAR: Treatment supera significativamente al control"
+        elif is_significant and absolute_lift < 0:
+            action = "❌ NO DESPLEGAR: Treatment es significativamente peor"
+        else:
+            action = "⚪ INCONCLUSIVO: No hay diferencia significativa"
+        
+        return ABTestResult(
+            control_conversion=control_rate,
+            treatment_conversion=treatment_rate,
+            absolute_lift=absolute_lift,
+            relative_lift=relative_lift,
+            p_value=p_value,
+            confidence_interval=(ci_lower, ci_upper),
+            is_significant=is_significant,
+            sample_size_reached=sample_reached,
+            recommended_action=action
+        )</code></pre>
+
 <hr>
-<p><em>Eso es todo! Nos vemos en el Dia 221.</em></p>
+<h2>⚠️ Los 3 Errores Críticos</h2>
+
+<h3>Error 1: No Calcular Sample Size y Parar el Test Cuando "Se Siente Listo"</h3>
+
+<p><strong>El problema</strong>: Haces el test por 2 días, miras los números cada hora, y cuando vez que B está ganando, paras el test y despliegas. Esto se llama "peeking" y hace que tu error Type I se dispare.</p>
+
+<p><strong>La matemática</strong>: Si revisas los resultados 100 veces durante el test, la probabilidad de encontrar un falso positivo aumenta dramáticamente. La fórmula del family-wise error rate:</p>
+
+$$FWER = 1 - (1 - \alpha)^k$$
+
+<p>Donde $k$ es el número de veces que miras. Si miras 100 veces con $\alpha = 0.05$, tu FWER real es $1 - (0.95)^{100} \approx 99.4\%$. Casi seguro de encontrar algo que no existe.</p>
+
+<p><strong>La solución</strong>: Calcula el sample size ANTES de empezar. No mires los resultados hasta tener la potencia estadística necesaria. Usa sequential testing si necesitas flexibilidad.</p>
+
+<pre><code># sequential_testing.py - Evitar peeking
+import numpy as np
+from scipy import stats
+
+class SequentialTester:
+    """
+    Implementación simplificada de sequential testing (AGIE)
+    Permite parar antes sininflar el error Type I.
+    
+    La idea: usar adjusted boundaries en lugar de boundaries fijos.
+    """
+    
+    def __init__(self, alpha: float = 0.05, power: float = 0.80):
+        self.alpha = alpha
+        self.power = power
+        self.results = []
+        
+    def add_observation(self, control_outcome: int, treatment_outcome: int):
+        """Añade una observación (batch de usuarios)"""
+        self.results.append({
+            'control': control_outcome,
+            'treatment': treatment_outcome
+        })
+    
+    def should_stop_early(self) -> tuple:
+        """
+        Determina si podemos parar el test.
+        Retorna (should_stop, decision, p_value)
+        """
+        cumulative_control = sum(r['control'] for r in self.results)
+        cumulative_treatment = sum(r['treatment'] for r in self.results)
+        n = len(self.results)
+        
+        # Simple z-test
+        p1 = cumulative_control / n
+        p2 = cumulative_treatment / n
+        p_pool = (cumulative_control + cumulative_treatment) / (2*n)
+        
+        se = np.sqrt(2 * p_pool * (1 - p_pool) / n)
+        z = (p2 - p1) / se if se > 0 else 0
+        p_value = 2 * (1 - stats.norm.cdf(abs(z)))
+        
+        # Adjusted boundaries para sequential testing (muy simplificado)
+        # En producción usaríamos paquete como "seq设计"
+        adjusted_alpha = self.alpha / (1 + 0.5 * (n - 1))  # O'Brien-Fleming simplificado
+        
+        should_stop = p_value < adjusted_alpha
+        
+        return should_stop, "STOP" if should_stop else "CONTINUE", p_value</code></pre>
+
+<h3>Error 2: No Asegurar que los Grupos Son Realmente Random</h3>
+
+<p><strong>El problema</strong>: Asignas usuarios a grupos con <code>user_id % 2</code> pero resulta que los primeros 1000 usuarios son todos power users del grupo A. O peor: un bug en el código hace que ciertos usuarios siempre caigan en el mismo grupo.</p>
+
+<p><strong>La matemática</strong>: La asignación debe ser independiente del usuario. Si hay correlación entre el usuario y el grupo, tienes confounding. El test de chi-cuadrado verifica independencia:</p>
+
+$$\chi^2 = \sum \frac{(O - E)^2}{E}$$
+
+<p>Donde $O$ es el observed count y $E$ es el expected count bajo independencia.</p>
+
+<p><strong>La solución</strong>: Hashing criptográfico + verificación de balance post-hoc.</p>
+
+<pre><code># randomization_verification.py
+import hashlib
+from collections import Counter
+from scipy.stats import chi2_contingency
+
+class RandomizedAssignment:
+    def __init__(self, salt: str):
+        self.salt = salt.encode()
+    
+    def assign(self, user_id: str, num_variants: int = 2) -> int:
+        """
+        Asignación pseudo-aleatoria usando HMAC.
+        Esto es determinista: mismo user_id + salt = mismo grupo.
+        """
+        h = hashlib.hmac.new(self.salt, user_id.encode(), hashlib.sha256)
+        hash_int = int(h.hexdigest(), 16)
+        return hash_int % num_variants
+    
+    def verify_randomization(self, assignments: list, expected_ratio: float = 0.5) -> dict:
+        """
+        Verifica que la asignación fue realmente random.
+        """
+        counts = Counter(assignments)
+        n = len(assignments)
+        
+        # Chi-square test for uniformity
+        observed = [counts.get(i, 0) for i in range(max(counts.keys()) + 1)]
+        expected = [n * expected_ratio] * len(observed)
+        
+        chi2, p_value = chi2_contingency([observed, expected])[:2]
+        
+        return {
+            'counts': dict(counts),
+            'chi2_statistic': chi2,
+            'p_value': p_value,
+            'is_balanced': p_value > 0.05,
+            'warning': None if p_value > 0.05 else "⚠️ Distribución significativamente desbalanceada!"
+        }
+
+# Ejemplo de uso
+assigner = RandomizedAssignment(salt="dia-220-ab-test-2026")
+users = [f"user_{i}" for i in range(10000)]
+assignments = [assigner.assign(u) for u in users]
+
+verification = assigner.verify_randomization(assignments)
+print(f"Asignaciones: {verification['counts']}")
+print(f"¿Balanceado? {verification['is_balanced']}")
+print(f"Chi2 p-value: {verification['p_value']:.4f}")</code></pre>
+
+<h3>Error 3: No Considerar Network Effect (Spillover)</h3>
+
+<p><strong>El problema</strong>: Tu experimento es sobre un sistema de recomendaciones. El usuario A ve recomendaciones del modelo nuevo, le gustan, y le cuenta a su amigo B que NO está en el test. Ahora B está indirectamente afectado por el tratamiento aunque esté en el control. Esto sesga los resultados.</p>
+
+<p><strong>La matemática</strong>: El spillover viola el Stable Unit Treatment Value Assumption (SUTVA), que asume que el resultado de un usuario depende SOLO de su propia asignación, no de otros. Cuando hay network effects:</p>
+
+$$Y_i(1) \neq Y_i(1) | T_j = 1 \text{ para algún } j \neq i$$
+
+<p>Esto significa que tu estimador de tratamiento tiene bias.</p>
+
+<p><strong>La solución</strong>: Cluster randomization o network-aware randomization.</p>
+
+<pre><code># network_clustering.py
+import networkx as nx
+from scipy import stats
+
+class ClusterRandomizedTest:
+    """
+    A/B test donde la unidad de asignación es un cluster (ej: ciudad, empresa)
+    en lugar de usuarios individuales. Esto controla el spillover.
+    """
+    
+    def __init__(self, graph: nx.Graph):
+        self.graph = graph
+        self.clusters = None
+    
+    def create_clusters(self, method: str = "louvain") -> list:
+        """
+        Crea clusters usando community detection.
+        Esto agrupa usuarios que interactúan entre sí.
+        """
+        if method == "louvain":
+            # Requiere python-louvain
+            import community
+            partition = community.best_partition(self.graph)
+            
+            # Agrupar por cluster
+            clusters = {}
+            for node, cluster_id in partition.items():
+                if cluster_id not in clusters:
+                    clusters[cluster_id] = []
+                clusters[cluster_id].append(node)
+            
+            self.clusters = list(clusters.values())
+        else:
+            # Fallback: clustering geográfico o temporal
+            self.clusters = [[node] for node in self.graph.nodes()]
+        
+        print(f"Creados {len(self.clusters)} clusters")
+        return self.clusters
+    
+    def assign_clusters(self) -> dict:
+        """
+        Asigna clusters completos a control o treatment.
+        """
+        import hashlib
+        
+        assignments = {}
+        for i, cluster in enumerate(self.clusters):
+            cluster_hash = hashlib.md5(str(cluster).encode()).hexdigest()
+            group = "treatment" if int(cluster_hash, 16) % 2 == 0 else "control"
+            
+            for node in cluster:
+                assignments[node] = group
+        
+        return assignments
+    
+    def analyze_clustered_test(self, results: dict) -> dict:
+        """
+        Analiza resultados usando cluster-level aggregates.
+        Esto es correcto para cluster randomization.
+        """
+        control_results = []
+        treatment_results = []
+        
+        for node, result in results.items():
+            cluster_assignment = self.assign_clusters()
+            group = cluster_assignment[node]
+            
+            if group == "control":
+                control_results.append(result)
+            else:
+                treatment_results.append(result)
+        
+        # Aggregate to cluster level first
+        # (simplificado - en producción harías proper cluster analysis)
+        
+        n_c = len(control_results)
+        n_t = len(treatment_results)
+        
+        mean_c = np.mean(control_results)
+        mean_t = np.mean(treatment_results)
+        
+        # Welch's t-test (no asumes varianzas iguales)
+        se = np.sqrt(np.var(control_results)/n_c + np.var(treatment_results)/n_t)
+        t_stat = (mean_t - mean_c) / se
+        df = ((np.var(control_results)/n_c + np.var(treatment_results)/n_t)**2) / \
+             ((np.var(control_results)/n_c)**2/(n_c-1) + (np.var(treatment_results)/n_t)**2/(n_t-1))
+        
+        p_value = 2 * (1 - stats.t.cdf(abs(t_stat), df))
+        
+        return {
+            'control_mean': mean_c,
+            'treatment_mean': mean_t,
+            'lift': (mean_t - mean_c) / mean_c,
+            'p_value': p_value,
+            'is_significant': p_value < 0.05
+        }</code></pre>
+
+<hr>
+<h2>🎰 Multi-Armed Bandits: La Alternativa Inteligente</h2>
+
+<p>El A/B test tradicional es ineficiente: mientras estás probando B, estás perdiendo dinero mostrando B (que puede ser peor). Multi-Armed Bandits (MAB) resuelven esto explotando mientras exploran.</p>
+
+<pre><code># multi_armed_bandit.py
+import numpy as np
+from scipy import stats
+
+class EpsilonGreedyBandit:
+    """
+    Epsilon-Greedy: Con probabilidad epsilon explora (prueba aleatorio),
+    con probabilidad 1-epsilon explota (usa el mejor conocido).
+    """
+    
+    def __init__(self, n_arms: int, epsilon: float = 0.1):
+        self.n_arms = n_arms
+        self.epsilon = epsilon
+        self.counts = np.zeros(n_arms)  # Intentos por brazo
+        self.values = np.zeros(n_arms)   # Reward estimado por brazo
+    
+    def select_arm(self) -> int:
+        """Selecciona qué brazo usar"""
+        if np.random.random() < self.epsilon:
+            # Exploración: random
+            return np.random.randint(self.n_arms)
+        else:
+            # Explotación: mejor brazo conocido
+            return np.argmax(self.values)
+    
+    def update(self, arm: int, reward: float):
+        """Actualiza estimado de reward para el brazo"""
+        self.counts[arm] += 1
+        n = self.counts[arm]
+        
+        # Incremental mean update
+        self.values[arm] += (reward - self.values[arm]) / n
+    
+    @property
+    def best_arm(self) -> int:
+        return np.argmax(self.values)
+
+
+class ThompsonSamplingBandit:
+    """
+    Thompson Sampling: Bayessian approach que modela incertidumbre.
+    Usa Beta distribution como prior para Bernoulli rewards.
+    """
+    
+    def __init__(self, n_arms: int, prior_alpha: float = 1.0, prior_beta: float = 1.0):
+        self.n_arms = n_arms
+        # Parameters for Beta distribution (successes + prior, failures + prior)
+        self.alpha = np.ones(n_arms) * prior_alpha
+        self.beta = np.ones(n_arms) * prior_beta
+    
+    def select_arm(self) -> int:
+        """Sample de la posterior y selecciona el brazo con mayor sample"""
+        samples = [np.random.beta(self.alpha[i], self.beta[i]) for i in range(self.n_arms)]
+        return np.argmax(samples)
+    
+    def update(self, arm: int, reward: float):
+        """Actualiza parámetros de la posterior"""
+        self.alpha[arm] += reward
+        self.beta[arm] += (1 - reward)
+    
+    def expected_ctr(self) -> np.ndarray:
+        """CTR esperado para cada brazo (media de la posterior)"""
+        return self.alpha / (self.alpha + self.beta)
+
+
+# Comparación: A/B Test vs Bandit
+def compare_approaches(n_steps: int = 10000, n_reps: int = 100):
+    """
+    Compara el regret acumulado de A/B test vs Thompson Sampling.
+    """
+    true_ctrs = [0.05, 0.07]  # CTR verdadero de cada brazo
+    
+    ab_test_regrets = []
+    bandit_regrets = []
+    
+    for _ in range(n_reps):
+        # A/B Test clásico
+        ab_results = {'A': [], 'B': []}
+        for i in range(n_steps):
+            arm = 'A' if i % 2 == 0 else 'B'
+            reward = 1 if np.random.random() < true_ctrs[arm == 'B'] else 0
+            ab_results[arm].append(reward)
+        
+        # Estimar regret: óptimo vs lo que obtuvimos
+        optimal = max(true_ctrs)
+        ab_ctr = sum(ab_results['A']) / len(ab_results['A']) * 0.5 + \
+                 sum(ab_results['B']) / len(ab_results['B']) * 0.5
+        ab_test_regrets.append(optimal - ab_ctr)
+        
+        # Thompson Sampling
+        bandit = ThompsonSamplingBandit(n_arms=2)
+        bandit_rewards = []
+        for i in range(n_steps):
+            arm = bandit.select_arm()
+            reward = 1 if np.random.random() < true_ctrs[arm] else 0
+            bandit.update(arm, reward)
+            bandit_rewards.append(reward)
+        
+        bandit_ctr = sum(bandit_rewards) / len(bandit_rewards)
+        bandit_regrets.append(optimal - bandit_ctr)
+    
+    print(f"A/B Test Regret medio: {np.mean(ab_test_regrets):.4f}")
+    print(f"Thompson Sampling Regret medio: {np.mean(bandit_regrets):.4f}")
+    print(f"Mejora relativa: {(np.mean(ab_test_regrets) - np.mean(bandit_regrets)) / np.mean(ab_test_regrets) * 100:.1f}%")</code></pre>
+
+<hr>
+<h2>📐 Cuando Usar A/B vs Canary vs Shadow</h2>
+
+<ul>
+<li><strong>A/B Test</strong>: Cuando necesitas medición rigurosa y tienes suficiente tráfico/timepo</li>
+<li><strong>Canary Deployment</strong>: Cuando quieres minimizar riesgo,rollout gradual (5% → 20% → 100%)</li>
+<li><strong>Shadow Mode</strong>: Cuando no puedes arriesgar usuarios, pruebas en paralelo sin afectar producción</li>
+<li><strong>Multi-Armed Bandit</strong>: Cuando optimizas continuamente y el costo de exploración es alto</li>
+</ul>
+
+<hr>
+<h2>🔧 Resumen y Cierre</h2>
+
+<p>Pues ahí lo tiene, parcero. A/B testing no es "mostrarle B a unos y A a otros y ver quién gana". Es una ciencia exacta que requiere:</p>
+
+<ul>
+<li><strong>Calcular sample size ANTES</strong>: No hacer peeking, no parar cuando "se siente bien"</li>
+<li><strong>Verificar randomization</strong>: Asegurar que los grupos son comparables</li>
+<li><strong>Considerar network effects</strong>: Si hay spillover, tu resultado está sesgado</li>
+<li><strong>Elegir la estrategia correcta</strong>: A/B test, canary, shadow, o bandit según el contexto</li>
+</ul>
+
+<p>La próxima vez que alguien te diga "ya sabemos que B es mejor porque lo vemos en el dashboard hace 3 horas", respóndele con calma: "¿Cuál era el sample size calculado? ¿Verificaste que los grupos estaban balanceados? ¿Consideraste el network effect?". Si no puede responder, el experimento no está listo.</p>
+
+<p>Eso es todo pues. Mañana día 221 seguimos con más. ¡Hasta entonces!</p>
+
+<hr>
+<p><em>Código del día en GitHub: <a href="#">365DaysOfAI/day-220-ab-testing</a></em></p>
+<p><em>#365DaysOfAI #ABTesting #Statistics #Experimentation #MultiArmedBandits</em></p>
   </article>
 
   <script>
