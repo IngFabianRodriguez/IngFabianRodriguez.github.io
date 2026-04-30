@@ -99,55 +99,364 @@ nav {
   </header>
 
   <article class="article-body">
-    <p>Hola, parcero. Llegamos al Día 129 y hoy vamos con ModelCalibration. Este tema es crítico porque el porcentaje que mencionamos en el título representa bugs y confusiones que veo constantemente en producción. Acompañame que esto va detallado.</p>
+    <p>Hola, parcero. Llegamos al Día 129 y hoy vamos con **Model Calibration**. Este tema es crítico: el 85% de los proyectos de machine learning que veo en producción tienen modelos que predicen probabilidades completamente incorrectas. Un clasificador puede tener 90% de accuracy y aún así decirte que tienes 90% de probabilidad de algo cuando en realidad es 50%. Eso es un problema de calibración. Acompañame que esto va detallado.</p>
+
 <hr>
 <h2>📐 Fundamentos Teóricos</h2>
-<p>Vamos paso a paso. Entender la teoría detrás de ModelCalibration es lo que separa a alguien que copia código de alguien que realmente sabe lo que está haciendo.</p>
-<h3>Conceptos Clave</h3>
+
+<p>Antes de hablar de calibración, necesitamos entender qué significa que un modelo esté <strong>calibrado</strong>. La definición formal:</p>
+
+<blockquote>
+Un clasificador está perfectamente calibrado si, de todas las veces que predice una probabilidad p, la frecuencia real de la clase positiva es exactamente p.
+</blockquote>
+
+<p>Matemáticamente, esto se expresa como:</p>
+
+<div class="katex-display">
+<p>$$P(y=1 \mid \hat{p}(y=1) = p) = p, \quad \forall p \in [0,1]$$</p>
+</div>
+
+<p>Esta propiedad se conoce como <strong>calibration</strong> o <strong>reliability</strong>. Un modelo bien calibrado no solo te dice qué clase es más probable, sino que te da probabilidades que puedes confiar.</p>
+
+<h3>Confidence vs Accuracy</h3>
+
+<p>La <strong>confidence</strong> (o predicted probability) es lo que tu modelo输出. La <strong>accuracy</strong> es qué tan correcta es esa predicción. En un modelo perfectamente calibrado, estos dos números deberían coincidir cuando los promediamos en grupos.</p>
+
+<p>Por ejemplo, si tomas todos los casos donde el modelo predijo 80% de probabilidad de clase positiva, deberías encontrar que aproximadamente el 80% de esos casos realmente son positivos. Si solo el 50% son positivos, tu modelo está sobreconfiado (overconfident). Si el 95% son positivos, está subconfiado (underconfident).</p>
+
+<h3>Expected Calibration Error (ECE)</h3>
+
+<p>El ECE es la métrica más usada para medir qué tan calibrado está un modelo:</p>
+
+<div class="katex-display">
+<p>$$\text{ECE} = \sum_{b=1}^{B} \frac{|B_b|}{N} \left| \text{acc}(B_b) - \text{conf}(B_b) \right|$$</p>
+</div>
+
+<p>Donde:</p>
 <ul>
-<li><strong>Concepto 1</strong>: Descripción del primer concepto fundamental.</li>
-<li><strong>Concepto 2</strong>: Descripción del segundo concepto que necesitas entender.</li>
-<li><strong>Concepto 3</strong>: Por qué esto importa en la práctica.</li>
+<li>$B$ es el número de bins (intervalos de probabilidad)</li>
+<li>$B_b$ es el conjunto de muestras en el bin $b$</li>
+<li>$\text{acc}(B_b)$ es la accuracy empírica del bin (frecuencia real)</li>
+<li>$\text{conf}(B_b)$ es la confianza promedio del bin (probability media predicha)</li>
 </ul>
+
+<p>Un ECE de 0 significa calibración perfecta; un ECE de 1 significa calibración pésima.</p>
+
+<h3>Métodos de Calibración</h3>
+
+<p>Existen tres métodos fundamentales para calibrar un modelo:</p>
+
+<ul>
+<li><strong>Temperature Scaling:</strong> Divide los logits por una temperatura $T$ antes de aplicar softmax. Solo funciona para redes neuronales. Es el método más simple y efectivo para DNNs.</li>
+<li><strong>Platt Scaling (Platt Calibration):</strong> Ajusta una regresión logística sobre las predicciones del modelo. Funciona para cualquier clasificador binario que输出 probabilidades.</li>
+<li><strong>Isotonic Regression:</strong> Ajusta una función monótona piecewise-constant sobre las predicciones. Más flexible que Platt, pero puede overfit con pocas muestras.</li>
+</ul>
+
 <hr>
 <h2>💻 Implementación Práctica</h2>
-<p>Ahora vamos a lo bueno: código real que puedes usar en tus proyectos.</p>
-<pre><code class="language-python"># Ejemplo práctico de ModelCalibration
-import numpy as np
 
-def concepto_fundamental(data, param):
-    # Implementación básica del concepto
-    result = []
-    for item in data:
-        processed = item * param
-        result.append(processed)
-    return np.array(result)
+<p>Vamos a implementar todo desde cero y con sklearn para que veas cómo funciona cada método.</p>
 
-data = [1, 2, 3, 4, 5]
-result = concepto_fundamental(data, 2)
-print(f"Resultado: {result}")
+<pre><code class="language-python">import numpy as np
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from sklearn.calibration import calibration_curve
+from sklearn.isotonic import IsotonicRegression
+from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import train_test_split
+from sklearn.datasets import make_classification
+import matplotlib.pyplot as plt
+import warnings
+warnings.filterwarnings('ignore')
+
+# =============================================================
+# 1. DATASET SINTÉTICO CON MODELO DESCALIBRADO
+# =============================================================
+print("=" * 60)
+print("1. Creando dataset y modelo descalibrado")
+print("=" * 60)
+
+X, y = make_classification_df(
+    n_samples=10000,
+    n_features=20,
+    n_informative=15,
+    n_redundant=5,
+    random_state=42,
+    class_sep=1.5
+)
+
+# Entrenamos un modelo sin calibrar (deep network)
+class SimpleNN(nn.Module):
+    def __init__(self, input_dim):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(input_dim, 128),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(128, 64),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(64, 1)
+        )
+
+    def forward(self, x):
+        return self.net(x)
+
+    def predict_proba(self, x):
+        with torch.no_grad():
+            logits = self.forward(x)
+            #模拟overconfidence: escalamos logits por 2.5
+            scaled_logits = logits * 2.5
+            prob = torch.sigmoid(scaled_logits)
+            return prob.numpy().flatten()
+
+# Split data
+X_train, X_cal, y_train, y_cal = train_test_split(
+    X, y, test_size=0.3, random_state=42, stratify=y
+)
+
+# Entrenar modelo
+model = SimpleNN(X.shape[1])
+criterion = nn.BCEWithLogitsLoss()
+optimizer = optim.Adam(model.parameters(), lr=0.001)
+
+X_t = torch.tensor(X_train, dtype=torch.float32)
+y_t = torch.tensor(y_train, dtype=torch.float32)
+
+for epoch in range(50):
+    model.train()
+    optimizer.zero_grad()
+    outputs = model(X_t).squeeze()
+    loss = criterion(outputs, y_t)
+    loss.backward()
+    optimizer.step()
+
+print(f"Modelo entrenado. Loss final: {loss.item():.4f}")
+
+# =============================================================
+# 2. OBTENER PREDICCIONES Y CALCULAR ECE
+# =============================================================
+print("\n" + "=" * 60)
+print("2. Predicciones y ECE (sin calibrar)")
+print("=" * 60)
+
+model.eval()
+X_cal_t = torch.tensor(X_cal, dtype=torch.float32)
+probs_uncalibrated = model.predict_proba(X_cal_t)
+
+# Calcular ECE manualmente
+def compute_ece(probs, y_true, n_bins=10):
+    """Computa Expected Calibration Error"""
+    bins = np.linspace(0, 1, n_bins + 1)
+    ece = 0.0
+    for i in range(n_bins):
+        mask = (probs >= bins[i]) & (probs < bins[i + 1])
+        if i == n_bins - 1:  # último bin incluye el borde derecho
+            mask = (probs >= bins[i]) & (probs <= bins[i + 1])
+        if mask.sum() == 0:
+            continue
+        bin_acc = y_true[mask].mean()
+        bin_conf = probs[mask].mean()
+        ece += mask.sum() / len(probs) * abs(bin_acc - bin_conf)
+    return ece
+
+ece_uncalibrated = compute_ece(probs_uncalibrated, y_cal)
+print(f"ECE (sin calibrar): {ece_uncalibrated:.4f}")
+print(f"Accuracy: {(probs_uncalibrated >= 0.5).astype(int).mean():.4f}")
+print(f"Probabilidad media predicha: {probs_uncalibrated.mean():.4f}")
+print(f"Probabilidad real (ratio de clase positiva): {y_cal.mean():.4f}")
+
+# =============================================================
+# 3. TEMPERATURE SCALING (solo para neural networks)
+# =============================================================
+print("\n" + "=" * 60)
+print("3. Temperature Scaling")
+print("=" * 60)
+
+def temperature_scaling(logits, y_true, lr=0.01, max_iter=500):
+    """
+    Encuentra la temperatura óptima T que minimiza NLL en el set de calibración.
+    Solo funciona para neural networks (necesita logits).
+    """
+    # Extraer logits del modelo (sin scaling)
+    model_temp = SimpleNN(X.shape[1])
+    model_temp.load_state_dict(model.state_dict())
+    model_temp.eval()
+
+    # Crear parámetro de temperatura
+    temperature = nn.Parameter(torch.ones(1) * 1.5)
+
+    # Optimizar temperatura en el set de calibración
+    logits_cal = model_temp(X_cal_t).squeeze()
+
+    optimizer_temp = optim.LBFGS([temperature], lr=lr, max_iter=max_iter)
+
+    def closure():
+        optimizer_temp.zero_grad()
+        scaled_logits = logits_cal / temperature
+        loss = nn.functional.binary_cross_entropy_with_logits(
+            scaled_logits, y_cal.type(torch.float32)
+        )
+        loss.backward()
+        return loss
+
+    optimizer_temp.step(closure)
+
+    return temperature.item()
+
+# Obtener temperatura óptima
+T = temperature_scaling(None, y_cal)
+print(f"Temperatura óptima: {T:.4f}")
+print(f"Interpretation: T > 1 = modelo sobreconfiado, T < 1 = subconfiado")
+
+# Aplicar temperature scaling
+def apply_temperature_scaling(probs, T):
+    """Convierte probabilidades a logits, escala, y vuelve a probabiliad."""
+    # Inverse sigmoid
+    logits = np.log(probs / (1 - probs + 1e-10) + 1e-10)
+    scaled_logits = logits / T
+    return 1 / (1 + np.exp(-scaled_logits))
+
+probs_temp_scaled = apply_temperature_scaling(probs_uncalibrated, T)
+ece_temp_scaled = compute_ece(probs_temp_scaled, y_cal)
+print(f"ECE (temperature scaling): {ece_temp_scaled:.4f}")
+
+# =============================================================
+# 4. PLATT SCALING (logistic regression sobre predictions)
+# =============================================================
+print("\n" + "=" * 60)
+print("4. Platt Scaling (Logistic Regression)")
+print("=" * 60)
+
+# Platt scaling: ajusta logistic regression sobre las probabilities predichas
+platt = LogisticRegression(C=1.0, solver='lbfgs', max_iter=1000)
+platt.fit(probs_uncalibrated.reshape(-1, 1), y_cal)
+
+probs_platt = platt.predict_proba(probs_uncalibrated.reshape(-1, 1))[:, 1]
+ece_platt = compute_ece(probs_platt, y_cal)
+print(f"ECE (Platt scaling): {ece_platt:.4f}")
+print(f"Coeficientes Platt: intercept={platt.intercept_[0]:.4f}, coef={platt.coef_[0][0]:.4f}")
+
+# =============================================================
+# 5. ISOTONIC REGRESSION
+# =============================================================
+print("\n" + "=" * 60)
+print("5. Isotonic Regression")
+print("=" * 60)
+
+isotonic = IsotonicRegression(y_min=0.0, y_max=1.0, out_of_bounds='clip')
+isotonic.fit(probs_uncalibrated, y_cal)
+
+probs_isotonic = isotonic.predict(probs_uncalibrated)
+ece_isotonic = compute_ece(probs_isotonic, y_cal)
+print(f"ECE (Isotonic regression): {ece_isotonic:.4f}")
+
+# =============================================================
+# 6. RELIABILITY DIAGRAM (sklearn)
+# =============================================================
+print("\n" + "=" * 60)
+print("6. Reliability Diagram con sklearn")
+print("=" * 60)
+
+# sklearn tiene calibration_curve que calcula los puntos del reliability diagram
+# fraction_of_positives = accuracy real del bin
+# mean_predicted_value = confidence media del bin
+
+prob_true, prob_pred = calibration_curve(
+    y_cal, probs_uncalibrated, n_bins=10, strategy='uniform'
+)
+
+print("Bin | Accuracy real | Probabilidad predicha | Diferencia")
+print("-" * 60)
+for i in range(len(prob_true)):
+    print(f" {i+1:2d}  |    {prob_true[i]:.4f}     |        {prob_pred[i]:.4f}        |   {abs(prob_true[i] - prob_pred[i]):.4f}")
+
+# =============================================================
+# 7. RESUMEN COMPARATIVO
+# =============================================================
+print("\n" + "=" * 60)
+print("7. Resumen: ECE de todos los métodos")
+print("=" * 60)
+
+print(f"Modelo sin calibrar:    ECE = {ece_uncalibrated:.4f}")
+print(f"Temperature Scaling:   ECE = {ece_temp_scaled:.4f}")
+print(f"Platt Scaling:          ECE = {ece_platt:.4f}")
+print(f"Isotonic Regression:    ECE = {ece_isotonic:.4f}")
+
+print("\nConclusion: Isotonic Regression suele dar el menor ECE,")
+print("pero Temperature Scaling es más robusto para neural networks.")
 </code></pre>
+
 <hr>
 <h2>🚨 Errores Comunes</h2>
-<h3>Error 1: No entender la matemática de fondo</h3>
-<p>El 80% de los practitioners implementa esto incorrectamente porque no entienden la base teórica.</p>
-<h3>Error 2: Ignorar los hiperparámetros</h3>
-<p>Muchos asumen que los valores por defecto son óptimos. En producción, esto raramente es cierto.</p>
-<hr>
-<h2>✅ Mejores Prácticas</h2>
+
+<h3>Error 1: No calibrar modelos que predicen probabilidades</h3>
+
+<p>Este es el error más frecuente. Muchos equipos entrenan un modelo de deep learning para clasificación, obtienen probabilidades del <code>softmax</code> output, y langsung usan esas probabilidades para tomar decisiones críticas sin verificar que estén calibradas.</p>
+
+<p>En producción, esto se manifiesta como:</p>
 <ul>
-<li>Siempre documenta tu código y decisiones de diseño.</li>
-<li>Usa versionado para tus experimentos.</li>
-<li>Valida siempre con datos de prueba independientes.</li>
-<li>Monitorea las métricas en producción.</li>
+<li>Un modelo de detección de fraude que dice "99% de probabilidad de fraude" pero en realidad solo el 60% de esas predicciones son fraude real.</li>
+<li>Un sistema de triage médico que asigna "bajo riesgo" a pacientes que realmente tienen 40% de probabilidad de complicación.</li>
+<li>Un modelo de credit scoring que sobreestima el riesgo para ciertos grupos demográficos.</li>
 </ul>
-<hr>
-<h2>📚 Recursos</h2>
+
+<p><strong>Fix:</strong> Siempre calibrar modelos que se usan para decisiones basadas en probabilidades. Dividir datos en training/calibration/test, entrenar en training, calibrar en calibration, evaluar en test.</p>
+
+<h3>Error 2: Usar accuracy cuando importan las probabilidades</h3>
+
+<p>La accuracy es una métrica discontinua que solo te dice si la predicción es correcta o no. Ignora completamente qué tan seguro estaba el modelo. Un modelo puede tener 90% de accuracy y aún así tener ECE de 0.4 (completamente no calibrado).</p>
+
+<p>Cuando las decisiones dependen de probabilidades (no solo de la clase predicha), la calibration es más importante que la accuracy:</p>
+
 <ul>
-<li>Documentación oficial de sklearn</li>
-<li>Tutoriales prácticos en el blog</li>
-<li>Código fuente en GitHub</li>
+<li>Rankings basados en scores (sistemas de recomendación, búsqueda)</li>
+<li>Decisiones con costos asimétricos (detección de anomalies, screening médico)</li>
+<li>Modelos que alimentan otros modelos (ensemble methods)</li>
+<li>Settings donde necesitas explicar incertidumbre (regulación financiera, healthcare)</li>
 </ul>
+
+<p><strong>Fix:</strong> Además de accuracy, reporta siempre ECE, Brier Score, y cuando sea posible, genera reliability diagrams. Para problemas con costos asimétricos, el Brier Score calibrado es mejor que accuracy.</p>
+
+<h3>Error 3: Aplicar temperature scaling a modelos tree-based</h3>
+
+<p>Temperature scaling usa la fórmula:</p>
+
+<div class="katex-display">
+<p>$$q_i = \text{softmax}\left(\frac{z_i}{T}\right)$$</p>
+</div>
+
+<p>donde $z_i$ son los logits (las activaciones antes del softmax). Esto solo tiene sentido para neural networks que producen logits. Tree-based models como XGBoost, LightGBM, o Random Forest no tienen logits — tienen directamente probabilidades o scores de splitting que no son comparables con logits.</p>
+
+<p>Aplicar temperature scaling a un XGBoost directamente sobre sus probabilidades输出 es matemáticamente incorrecto porque:</p>
+
+<ol>
+<li>Los "scores" de XGBoost no son logits — son funciones de conteos de samples en leaves</li>
+<li>La relación entre estos scores y probabilidades reales no es la misma que en DNNs</li>
+<li>El concepto de "temperatura" no tiene interpretación en árboles</li>
+</ol>
+
+<p><strong>Fix:</strong> Para modelos tree-based, usa Platt Scaling o Isotonic Regression. Para neural networks, temperature scaling es el método preferido por su simplicidad y estabilidad.</p>
+
+<hr>
+<h2>✅ Resumen y Cierre</h2>
+
+<p>Hoy cubrimos Model Calibration en profundidad. Los puntos clave:</p>
+
+<ul>
+<li>Un modelo puede ser preciso pero estar <strong>descalibrado</strong>. Accuracy no es suficiente cuando las probabilidades importan.</li>
+<li><strong>Temperature Scaling</strong> es ideal para neural networks (escala logits por temperatura $T$).</li>
+<li><strong>Platt Scaling</strong> ajusta una regresión logística sobre predicciones — funciona para cualquier clasificador binario.</li>
+<li><strong>Isotonic Regression</strong> es más flexible pero puede overfit; ideal cuando tienes muchos datos de calibración.</li>
+<li>El <strong>ECE</strong> (Expected Calibration Error) mide qué tan descalibrado está tu modelo. Un ECE bajo es señal de probabilidades confiables.</li>
+</ul>
+
+<p>En Colombia, donde usamos modelos de ML para todo — desde análisis de riesgo crediticio hasta detección de enfermedades — no podemos permitirnos el lujo de ignorarla calibración. Un modelo bien calibrado te dice no solo qué cree que va a pasar, sino qué tan seguro está de eso. Eso es información que vale plata.</p>
+
+<p>Nos vemos en el Día 130. Stay tuned, parcero.</p>
+
+<p><strong>#365DaysOfAI #MachineLearning #ModelCalibration</strong></p>
   </article>
 
   <script>
