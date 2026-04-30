@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="T5 - Text-To-Text Transfer Transformer | #365DaysOfAI por Fabian Rodriguez">
-  <title>T5 - Text-To-Text Transfer Transformer | #365DaysOfAI</title>
+  <meta name="description" content="Face Recognition — Siamese Networks, Triplet Loss, ArcFace y el verificador de identidad que usas diariamente | #365DaysOfAI por Fabian Rodriguez">
+  <title>Face Recognition — Siamese Networks, Triplet Loss y ArcFace | #365DaysOfAI</title>
   
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
@@ -110,58 +110,369 @@ nav {
 
   <header class="article-hero">
     <div class="day-badge">Dia 203 / 365 &nbsp;·&nbsp; #365DaysOfAI</div>
-    <h1 class="article-title">T5 - Text-To-Text Transfer Transformer</h1>
+    <h1 class="article-title">Face Recognition — Siamese Networks, Triplet Loss y ArcFace</h1>
     <div class="article-meta">
       <time class="article-date">22 de julio de 2026</time>
-      <div class="tags"><span class="tag">t5</span><span class="tag">text-to-text</span><span class="tag">transformers</span><span class="tag">nlp</span></div>
+      <div class="tags"><span class="tag">face-recognition</span><span class="tag">siamese-networks</span><span class="tag">triplet-loss</span><span class="tag">arcface</span><span class="tag">computer-vision</span></div>
     </div>
   </header>
 
   <article class="article-body">
-    <h1>T5 - Text-To-Text Transfer Transformer</h1>
-<p>Hagale pues, parcero. Dia 203 y hoy hablamos de T5, el modelo Text-to-Text de Google. Dejala el cafe.</p>
+    <h1>Face Recognition — Siamese Networks, Triplet Loss y ArcFace</h1>
+<p>Hagale pues, parcero. Dia 203 y hoy llegamos a un tema que usamos todos los días sin detenernos a pensar: el reconocimiento facial. Cada vez que desbloqueas el celular con la cara, o cuando el banco te valida con tu selfie, una red neuronal está trabajando tras bambalinas. Eso sí, no es magia — es arquitectura cuidadosa y una función de pérdida que hace toda la diferencia. Café en mano, que esto se pone interesante.</p>
+
 <hr>
-<h2>🎯 Que Es T5?</h2>
-<p>T5 (Text-To-Text Transfer Transformer) unifica todas las tareas de NLP como problemas de texto a texto. Traduccion, resumen, QA - todo es "input -> output text".</p>
-<h3>Caracteristicas:</h3>
+<h2>🎯 Face Verification vs Face Identification</h2>
+<p>Antes de meternos en código, aclaremos dos conceptos que se confusean bastante:</p>
 <ul>
-<li><strong>Unified</strong>: Todas las tareas son generacion de texto</li>
-<li><strong>Prefix</strong>: Anade prefijo para indicar la tarea</li>
-<li><strong>Encoder-Decoder</strong>: Arquitectura completa de Transformer</li>
+<li><strong>Face Verification</strong>: ¿Es esta persona quien dice ser? Ejemplo: desbloqueo facial del celular. Comparas una foto contra una referencia y respondes sí/no.</li>
+<li><strong>Face Identification</strong>: ¿Quién es esta persona en un grupo? Ejemplo: encontrar a alguien en una base de datos de 1 millón de caras.</li>
 </ul>
+<p>La verification es un problema 1:1, mientras que la identificación es 1:N. Esta distinción determina qué arquitectura y función de pérdida te conviene más.</p>
+
 <hr>
-<h2>📐 Usando T5</h2>
-<pre><code class="language-python">from transformers import T5Tokenizer, T5ForConditionalGeneration
+<h2>📐 Siamese Networks — Aprendiendo a Comparar</h2>
+<p>Una Siamese Network es elegante en su simplicidad: dos hermanos gemelos ( branches ) que procesan dos imágenes y producen embeddings. Si las imágenes son de la misma persona, los embeddings deben ser cercanos en el espacio; si son de personas distintas, deben estar lejos.</p>
 
-model = T5ForConditionalGeneration.from_pretrained('t5-small')
-tokenizer = T5Tokenizer.from_pretrained('t5-small')
+<pre><code class="language-python">import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
-# Resumen con T5
-prompt = "summarize: Machine learning is a subset of AI..."
-inputs = tokenizer(prompt, return_tensors='pt')
-outputs = model.generate(**inputs)
+class EmbeddingNetwork(nn.Module):
+    """Red que produce un embedding de dimension fija para cada cara."""
+    def __init__(self, embedding_dim=128):
+        super().__init__()
+        # Backbone simulado — en la vida real usarías ResNet o EfficientNet
+        self.conv1 = nn.Conv2d(3, 64, kernel_size=3, padding=1)
+        self.conv2 = nn.Conv2d(64, 128, kernel_size=3, padding=1)
+        self.conv3 = nn.Conv2d(128, 256, kernel_size=3, padding=1)
+        self.conv4 = nn.Conv2d(256, 512, kernel_size=3, padding=1)
+        
+        self.pool = nn.AdaptiveAvgPool2d((1, 1))
+        self.fc = nn.Linear(512, embedding_dim)
+        
+    def forward(self, x):
+        x = F.relu(self.conv1(x))
+        x = F.max_pool2d(x, 2)
+        x = F.relu(self.conv2(x))
+        x = F.max_pool2d(x, 2)
+        x = F.relu(self.conv3(x))
+        x = F.max_pool2d(x, 2)
+        x = F.relu(self.conv4(x))
+        x = self.pool(x)
+        x = x.view(x.size(0), -1)
+        x = self.fc(x)
+        # Normalizar para que similitud coseno funcione bien
+        return F.normalize(x, p=2, dim=1)
 
-summary = tokenizer.decode(outputs[0], skip_special_tokens=True)
-print(summary)
+
+class SiameseNetwork(nn.Module):
+    """Dos redes gemelas que producen embeddings para comparacion."""
+    def __init__(self, embedding_dim=128):
+        super().__init__()
+        self.embedding_net = EmbeddingNetwork(embedding_dim)
+        
+    def forward(self, x1, x2):
+        emb1 = self.embedding_net(x1)
+        emb2 = self.embedding_net(x2)
+        return emb1, emb2
+    
+    def get_embedding(self, x):
+        return self.embedding_net(x)
 </code></pre>
+
 <hr>
-<h2>🚀 Tareas Soportadas</h2>
-<pre><code class="language-python"># Traduccion
-prompt = "translate English to German: Hello world"
+<h2>🔢 Triplet Loss — La Función de Pérdida que Cambió Todo</h2>
+<p>Aquí es donde las cosas se ponen elegantes. El triplet loss fue introducido por Google en 2015 (FaceNet) y es el corazón de muchos sistemas de reconocimiento facial modernos.</p>
 
-# Pregunta y respuesta
-prompt = "question: Who invented Python? context: Python was created by Guido van Rossum"
+<p>Dado un tripleto (A, P, N):</p>
+<ul>
+<li><strong>A</strong> (Anchor): imagen de referencia de una persona</li>
+<li><strong>P</strong> (Positive): otra imagen de la misma persona que A</li>
+<li><strong>N</strong> (Negative): imagen de una persona diferente</li>
+</ul>
 
-# Clasificacion
-prompt = "classify: This movie is amazing sentiment:"
+<p>La idea es simple: la distancia entre A y P debe ser menor que la distancia entre A y N por un margen α.</p>
+
+<p><strong>Triplet Loss:</strong></p>
+<p>$$L = \max\left(0,\ \|f(A) - f(P)\|^2 - \|f(A) - f(N)\|^2 + \alpha\right)$$</p>
+
+<p>Donde $f$ es la red que produce embeddings y α es el margen (típicamente 0.2-0.5).</p>
+
+<pre><code class="language-python">class TripletLoss(nn.Module):
+    """Triplet loss con margen."""
+    def __init__(self, margin=0.2):
+        super().__init__()
+        self.margin = margin
+        
+    def forward(self, anchor, positive, negative):
+        # Distancia euclidiana al cuadrado
+        dist_pos = F.pairwise_distance(anchor, positive)
+        dist_neg = F.pairwise_distance(anchor, negative)
+        
+        # Triplet loss: cuando dist_pos - dist_neg + margin > 0, hay loss
+        losses = F.relu(dist_pos - dist_neg + self.margin)
+        return losses.mean()
+
+
+class OnlineTripletDataset:
+    """Genera triplets en tiempo real — mas eficiente que generar todos los triplets."""
+    def __init__(self, labels):
+        # labels: lista de etiquetas por imagen
+        self.labels = labels
+        self.labels_set = list(set(labels))
+        self.label_to_indices = {label: [i for i, l in enumerate(labels) if l == label] 
+                                  for label in self.labels_set}
+        
+    def __call__(self, batch_size):
+        """Genera un batch de triplets."""
+        n_labels = len(self.labels_set)
+        indices = [randint(0, n_labels - 1) for _ in range(batch_size)]
+        
+        triplets = []
+        for idx in indices:
+            label = self.labels_set[idx]
+            # Elegir anchor y positive random del mismo label
+            pos_indices = self.label_to_indices[label]
+            anc_idx, pos_idx = sample(pos_indices, 2)
+            
+            # Elegir negative de un label diferente
+            neg_label = choice([l for l in self.labels_set if l != label])
+            neg_idx = choice(self.label_to_indices[neg_label])
+            
+            triplets.append((anc_idx, pos_idx, neg_idx))
+        return triplets
 </code></pre>
+
+<hr>
+<h2>⚡ Hard Negative Mining — Entrenamiento Más Eficiente</h2>
+<p>Aquí viene un error común que slow down training: no usar hard negative mining. Si eliges los negativos al azar, la mayoría serán triviales (fáciles de distinguir) y la red no aprende nada nuevo.</p>
+
+<p><strong>Hard Negative Mining</strong>: Elegir los negativos que están más cerca del anchor (los más parecidos pero de personas diferentes). Esto fuerza a la red a aprender discriminaciones finas.</p>
+
+<pre><code class="language-python">def get_hard_negatives(anchor_embedding, all_embeddings, labels, anchor_label, top_k=3):
+    """Encuentra los k negativos mas cercanos (hard negatives)."""
+    # Calcular distancias con todos los embeddings
+    distances = F.pairwise_distance(anchor_embedding, all_embeddings)
+    
+    # Crear mascara para solo negativos (labels diferentes al anchor)
+    mask = (labels != anchor_label).float()
+    distances = distances + (1 - mask) * 1e9  # Poner distancia infinita a positivos
+    
+    # Obtener los top_k negativos mas cercanos
+    _, top_indices = torch.topk(distances, min(top_k, mask.sum().long().item()), largest=False)
+    return top_indices
+
+
+def train_with_hard_mining(model, images, labels, optimizer, margin=0.2):
+    """Un paso de entrenamiento con hard negative mining."""
+    embeddings = model.get_embedding(images)  # (batch, embedding_dim)
+    
+    batch_losses = []
+    for i in range(len(embeddings)):
+        anchor_emb = embeddings[i:i+1]
+        anchor_label = labels[i]
+        
+        # Encontrar hard negatives
+        hard_neg_indices = get_hard_negatives(anchor_emb, embeddings, labels, anchor_label)
+        
+        for neg_idx in hard_neg_indices:
+            # Obtener positive al azar (de la misma persona)
+            pos_candidates = torch.where(labels == anchor_label)[0]
+            pos_candidates = pos_candidates[pos_candidates != i]
+            if len(pos_candidates) == 0:
+                continue
+            pos_idx = choice(pos_candidates.tolist())
+            pos_emb = embeddings[pos_idx:pos_idx+1]
+            neg_emb = embeddings[neg_idx:neg_idx+1]
+            
+            # Calcular triplet loss
+            dist_pos = F.pairwise_distance(anchor_emb, pos_emb)
+            dist_neg = F.pairwise_distance(anchor_emb, neg_emb)
+            loss = F.relu(dist_pos - dist_neg + margin)
+            
+            if loss > 0:
+                batch_losses.append(loss)
+    
+    if batch_losses:
+        optimizer.zero_grad()
+        torch.stack(batch_losses).mean().backward()
+        optimizer.step()
+</code></pre>
+
+<hr>
+<h2>📊 ArcFace Loss — La Evolución Natural</h2>
+<p>ArcFace (2018) dio un salto conceptual: en lugar de aprender distancias, aprender ángulos en el espacio de embeddings. Esto es más robusto porque la normalización explícita hace que el modelo se enfoque en la dirección del embedding, no en su magnitud.</p>
+
+<p><strong>ArcFace additive angular margin loss:</strong></p>
+<p>$$L = -\log\frac{e^{s\cos(\theta_{y_i}+m)}}{e^{s\cos(\theta_{y_i}+m)} + \sum_{j \neq y_i} e^{s\cos(\theta_j)}}$$</p>
+
+<p>Donde:</p>
+<ul>
+<li>$\theta_j$ es el ángulo entre el embedding y el centroide de la clase $j$</li>
+<li>$m$ es el margen angular (típicamente 0.5 radians = ~28.6°)</li>
+<li>$s$ es la escala (típicamente 64)</li>
+</ul>
+
+<pre><code class="language-python">class ArcFaceLayer(nn.Module):
+    """ArcFace head para clasificacion con margen angular."""
+    def __init__(self, in_features, out_features, s=64.0, m=0.5):
+        super().__init__()
+        self.in_features = in_features
+        self.out_features = out_features
+        self.s = s  # scale
+        self.m = m  # angular margin
+        self.weight = nn.Parameter(torch.FloatTensor(out_features, in_features))
+        nn.init.xavier_uniform_(self.weight)
+        
+        # Para calculos intermedios
+        self.cos_m = math.cos(m)
+        self.sin_m = math.sin(m)
+        self.th = math.cos(math.pi - m)  # threshold
+        self.mm = math.sin(math.pi - m) * m
+        
+    def forward(self, embeddings, labels=None):
+        # Normalizar embeddings y weights
+        embeddings_norm = F.normalize(embeddings, p=2, dim=1)
+        weights_norm = F.normalize(self.weight, p=2, dim=1)
+        
+        # Coseno del angulo entre embedding y cada centroide
+        cos_theta = F.linear(embeddings_norm, weights_norm)
+        
+        if labels is None:
+            # Modo inference: devolver logits normalizados
+            return cos_theta * self.s
+        
+        # Modo entrenamiento: aplicar margen angular solo a la clase correcta
+        sin_theta = torch.sqrt(1.0 - torch.pow(cos_theta, 2))
+        
+        # cos(theta + m) = cos(theta)cos(m) - sin(theta)sin(m)
+        cos_theta_m = cos_theta * self.cos_m - sin_theta * self.sin_m
+        
+        # Para valores numericos estables cuando theta + m > pi
+        cos_theta_m = torch.where(cos_theta > self.th, cos_theta_m, cos_theta - self.mm)
+        
+        # One-hot encode labels
+        one_hot = torch.zeros_like(cos_theta)
+        one_hot.scatter_(1, labels.view(-1, 1), 1.0)
+        
+        # Aplicar margen solo a la clase verdadera
+        logits = one_hot * cos_theta_m + (1.0 - one_hot) * cos_theta
+        logits *= self.s
+        
+        return logits
+
+
+class ArcFaceModel(nn.Module):
+    """Modelo completo con ArcFace loss."""
+    def __init__(self, num_identities, embedding_dim=512, s=64.0, m=0.5):
+        super().__init__()
+        self.backbone = EmbeddingNetwork(embedding_dim)
+        self.arcface = ArcFaceLayer(embedding_dim, num_identities, s=s, m=m)
+        
+    def forward(self, x, labels=None):
+        embeddings = self.backbone(x)
+        logits = self.arcface(embeddings, labels)
+        return logits
+</code></pre>
+
+<hr>
+<h2>🔍 Inference — Verification en la Práctica</h2>
+<p>Para hacer verification (1:1), el proceso es directo: extraer embeddings de ambas imágenes y comparar. Aquí es crucial entender FAR (False Acceptance Rate) y FRR (False Rejection Rate) para calibrar el threshold.</p>
+
+<pre><code class="language-python">def verify_faces(model, img1, img2, threshold=0.5):
+    """Verifica si dos imagenes son de la misma persona."""
+    model.eval()
+    with torch.no_grad():
+        emb1 = model.get_embedding(img1.unsqueeze(0))
+        emb2 = model.get_embedding(img2.unsqueeze(0))
+        
+        # Similitud coseno (vectores ya normalizados)
+        similarity = F.cosine_similarity(emb1, emb2).item()
+        
+        is_same = similarity >= threshold
+        return is_same, similarity
+
+
+def find_best_threshold(model, validation_pairs, labels, thresholds=None):
+    """Encuentra el threshold optimo balanceando FAR y FRR."""
+    if thresholds is None:
+        thresholds = [i * 0.01 for i in range(100)]
+    
+    model.eval()
+    best_threshold = 0.5
+    best_accuracy = 0.0
+    
+    with torch.no_grad():
+        # Extraer todos los embeddings
+        all_embeddings = []
+        for img, _ in validation_pairs:
+            emb = model.get_embedding(img.unsqueeze(0))
+            all_embeddings.append(emb)
+        all_embeddings = torch.cat(all_embeddings, dim=0)
+        
+        for threshold in thresholds:
+            correct = 0
+            total = 0
+            
+            for i, (img, label) in enumerate(validation_pairs):
+                emb = all_embeddings[i]
+                
+                for j, (other_img, other_label) in enumerate(validation_pairs):
+                    if i >= j:
+                        continue
+                    
+                    other_emb = all_embeddings[j]
+                    similarity = F.cosine_similarity(emb, other_emb).item()
+                    
+                    predicted_same = similarity >= threshold
+                    actual_same = label == other_label
+                    
+                    if predicted_same == actual_same:
+                        correct += 1
+                    total += 1
+            
+            accuracy = correct / total if total > 0 else 0
+            if accuracy > best_accuracy:
+                best_accuracy = accuracy
+                best_threshold = threshold
+    
+    print(f"Mejor threshold: {best_threshold:.2f} con accuracy: {best_accuracy:.2%}")
+    return best_threshold
+</code></pre>
+
 <hr>
 <h2>⚠️ Errores Comunes</h2>
-<h3>Error 1: Prompt Mal Formado</h3>
-<p><strong>El problema</strong>: T5 es sensible al prefijo.</p>
-<p><strong>La solucion</strong>: Usa el prefijo exacto de la tarea.</p>
+
+<h3>Error 1: Usar Classification Loss en Vez de Triplet/ArcFace</h3>
+<p><strong>El problema</strong>: Si entrenas face recognition con una simple cross-entropy para clasificar N identities, el modelo aprende a separar las clases pero no aprende una métrica de similitud útil. Cuando ves una cara nueva (no vista en entrenamiento), no tienes forma de verificarla porque no hay manera de comparar embeddings.</p>
+<p><strong>La solución</strong>: Usa triplet loss o ArcFace loss. Ambos aprenden un espacio de embeddings donde la distancia es significativa para verificación. ArcFace es generalmente mejor porque la normalización explícita y el margen angular producen distribuciones más compactas y separables.</p>
+
 <hr>
-<p><em>Eso es todo! Nos vemos en el Dia 204.</em></p>
+
+<h3>Error 2: No Usar Hard Negative Mining</h3>
+<p><strong>El problema</strong>: Si generas triplets al azar (anchor, positive de la misma persona, negative de cualquier otra), la mayoría de los negatives serán "fáciles" — claramente diferentes del anchor. La red no necesita esforzarse para distinguirlos y el entrenamiento converge lentamente porque no aprende nada nuevo de casos triviales.</p>
+<p><strong>La solución</strong>: Implementa hard negative mining. Elige los negativos que están más cerca del anchor (los más parecidos pero de personas diferentes). Esto fuerza a la red a aprender discriminaciones más finas. Técnicas como Semi-Hard Negative Mining (del paper FaceNet original) o BMVC (Batch Hard) son estándares en la industria.</p>
+
+<hr>
+
+<h3>Error 3: Inference Sin Proper Threshold Tuning para FAR/FRR Tradeoff</h3>
+<p><strong>El problema</strong>: Poner un threshold arbitrario (como 0.5) sin entender FAR (False Acceptance Rate — aceptas impostores) y FRR (False Rejection Rate — rechazas personas legítimas). En seguridad alta (banco), quieres FRR bajo; en conveniencia (desbloqueo de celular), aceptas más FAR a cambio de menos FRR.</p>
+<p><strong>La solución</strong>: Calibra el threshold en tu validation set. Usa una curva ROC o calcula EER (Equal Error Rate, donde FAR = FRR). Para sistemas de producción, grafica FAR vs FRR para diferentes thresholds y elige según tu caso de uso — no hay un threshold universal.</p>
+
+<hr>
+<h2>📝 Resumen</h2>
+<ul>
+<li><strong>Verification vs Identification</strong>: 1:1 vs 1:N — arquitecturas diferentes</li>
+<li><strong>Siamese Network</strong>: Dos ramas gemelas que producen embeddings comparables</li>
+<li><strong>Triplet Loss</strong>: $L = \max(0, \|A-P\|^2 - \|A-N\|^2 + \alpha)$ — aprende distancias</li>
+<li><strong>ArcFace</strong>: Usa margen angular sobre cos(theta) — más robusto y estándar en producción</li>
+<li><strong>Hard Negative Mining</strong>: Elige negativos difíciles para acelerar entrenamiento</li>
+<li><strong>Threshold tuning</strong>: Calibra según FAR/FRR tradeoff de tu aplicación</li>
+</ul>
+
+<hr>
+<p><em>Eso es todo, parcero. Mañana en el Día 204 hablamos de detección de objetos — YOLO, Faster R-CNN y cómo encontrar cosas en imágenes. ¡Nos vemos!</em></p>
   </article>
 
   <script>
