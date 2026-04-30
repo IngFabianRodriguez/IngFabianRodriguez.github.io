@@ -99,55 +99,292 @@ nav {
   </header>
 
   <article class="article-body">
-    <p>Hola, parcero. Llegamos al Día 167 y hoy vamos con Retrieval. Este tema es crítico porque el porcentaje que mencionamos en el título representa bugs y confusiones que veo constantemente en producción. Acompañame que esto va detallado.</p>
+    <p>Hola, parcero. Día 167 y hoy vamos con ONNX y TorchScript. Este tema es donde el 80% simplemente exporta el modelo y reza para que funcione en producción, sin entender qué pasa por dentro ni cómo optimizarlo realmente. Vamos a cambiar eso hoy — con math, código real, y los errores que vas a encontrar en producción si no prestas atención.</p>
+
 <hr>
-<h2>📐 Fundamentos Teóricos</h2>
-<p>Vamos paso a paso. Entender la teoría detrás de Retrieval es lo que separa a alguien que copia código de alguien que realmente sabe lo que está haciendo.</p>
-<h3>Conceptos Clave</h3>
+<h2>📐 Fundamentos: Qué Es ONNX y Por Qué Debería Importarte</h2>
+<p>ONNX (Open Neural Network Exchange) es un formato interoperable para representar modelos de machine learning. La idea es simple: una vez que entrenas tu modelo en PyTorch, TensorFlow, o cualquier framework, lo exportas a ONNX y puedes deployarlo en cualquier plataforma sin necesidad de Python.</p>
+
+<h3>El Math de la Exportación a ONNX</h3>
+<p>Exportar un modelo a ONNX implica trazar las operaciones del grafo computacional. Dado un modelo $f(x; \theta)$ donde $\theta$ son los pesos, la exportación captura:</p>
+<p class="katex-display">$$\text{ONNX Graph} = \{\text{Input}, \text{Output}, \text{Nodes}, \text{Initializers}\}$$</p>
+<p>Cada nodo en el grafo ONNX representa una operación como <code>MatMul</code>, <code>Conv</code>, <code>Softmax</code>, etc. La exportación verifica que el grafo es válido y que puede ser ejecutado por el runtime de ONNX.</p>
+
+<h3>TorchScript vs ONNX: Cuándo Usar Cuál</h3>
+<p>TorchScript es la solución de PyTorch para serializar modelos. Es ideal cuando:</p>
 <ul>
-<li><strong>Concepto 1</strong>: Descripción del primer concepto fundamental.</li>
-<li><strong>Concepto 2</strong>: Descripción del segundo concepto que necesitas entender.</li>
-<li><strong>Concepto 3</strong>: Por qué esto importa en la práctica.</li>
+<li>Tu modelo es 100% PyTorch</li>
+<li>Quieres hacer inference en un servidor PyTorch</li>
+<li>Necesitas optimizar con <code>torch.compile</code></li>
 </ul>
+<p>ONNX es mejor cuando:</p>
+<ul>
+<li>Deploy en edge devices (iOS, Android, Raspberry Pi)</li>
+<li>Necesitas inference en Azure, AWS, o Google Cloud sin overhead de Python</li>
+<li>Quieres usar ONNX Runtime que puede ser 2-3x más rápido</li>
+<li>Interoperabilidad con modelos de otros frameworks</li>
+</ul>
+
 <hr>
-<h2>💻 Implementación Práctica</h2>
-<p>Ahora vamos a lo bueno: código real que puedes usar en tus proyectos.</p>
-<pre><code class="language-python"># Ejemplo práctico de Retrieval
+<h2>💻 Código: Exportar, Verificar y Optimizar</h2>
+
+<h3>1. Exportar un Modelo a ONNX</h3>
+<pre><code class="language-python">import torch
+import torch.nn as nn
+import onnx
+import onnxruntime as ort
 import numpy as np
 
-def concepto_fundamental(data, param):
-    # Implementación básica del concepto
-    result = []
-    for item in data:
-        processed = item * param
-        result.append(processed)
-    return np.array(result)
+# Definimos un modelo simple para demostración
+class SimpleTransformer(nn.Module):
+    def __init__(self, d_model=512, nhead=8, num_layers=6):
+        super().__init__()
+        self.embedding = nn.Embedding(10000, d_model)
+        self.transformer = nn.TransformerEncoder(
+            nn.TransformerEncoderLayer(d_model, nhead, batch_first=True),
+            num_layers
+        )
+        self.fc = nn.Linear(d_model, 10000)
+    
+    def forward(self, x):
+        x = self.embedding(x)
+        x = self.transformer(x)
+        x = self.fc(x)
+        return x
 
-data = [1, 2, 3, 4, 5]
-result = concepto_fundamental(data, 2)
-print(f"Resultado: {result}")
+# Crear modelo y exportar a ONNX
+model = SimpleTransformer()
+model.eval()
+
+# Input de ejemplo (batch_size=1, seq_len=128)
+example_input = torch.randint(0, 10000, (1, 128))
+
+# Exportar a ONNX
+torch.onnx.export(
+    model,
+    example_input,
+    "model.onnx",
+    input_names=["input_ids"],
+    output_names=["logits"],
+    dynamic_axes={
+        "input_ids": {0: "batch_size", 1: "seq_len"},
+        "logits": {0: "batch_size", 1: "seq_len"}
+    },
+    opset_version=17,  # Versión de operadores ONNX
+    do_constant_folding=True,  # Optimización: pliega constantes
+)
+
+print("Modelo exportado a ONNX exitosamente")
 </code></pre>
+
+<h3>2. Verificar el Modelo ONNX</h3>
+<pre><code class="language-python"># Verificar que el modelo ONNX es válido
+onnx_model = onnx.load("model.onnx")
+onnx.checker.check_model(onnx_model)
+print("✓ Modelo ONNX es válido")
+
+# Verificar que produce los mismos outputs que PyTorch
+# Esto es CRÍTICO y el 80% no lo hace
+
+# Inference en PyTorch
+with torch.no_grad():
+    pt_output = model(example_input)
+    pt_prediction = torch.argmax(pt_output, dim=-1)
+
+# Inference en ONNX Runtime
+ort_session = ort.InferenceSession("model.onnx")
+ort_inputs = {"input_ids": example_input.numpy().astype(np.int64)}
+ort_output = ort_session.run(None, ort_inputs)[0]
+ort_prediction = np.argmax(ort_output, axis=-1)
+
+# Comparar
+if np.allclose(pt_prediction.numpy(), ort_prediction, rtol=1e-3, atol=1e-3):
+    print("✓ PyTorch y ONNX producen los mismos resultados")
+else:
+    print("✗ ERROR: Los outputs no coinciden!")
+    print(f"PyTorch: {pt_prediction[:5]}")
+    print(f"ONNX:     {ort_prediction[:5]}")
+</code></pre>
+
+<h3>3. Optimizar con ONNX Runtime</h3>
+<pre><code class="language-python"># ONNX Runtime con optimizaciones
+from onnxruntime import SessionOptions, GraphOptimizationLevel
+
+# Configurar sesión optimizada
+sess_options = SessionOptions()
+sess_options.graph_optimization_level = GraphOptimizationLevel.ORT_ENABLE_ALL
+sess_options.intra_op_num_threads = 4  # Paralelismo intra-op
+sess_options.inter_op_num_threads = 4  # Paralelismo inter-op
+
+# Crear sesión optimizada
+ort_session = ort.InferenceSession(
+    "model.onnx",
+    sess_options,
+    providers=['CUDAExecutionProvider', 'CPUExecutionProvider']
+)
+
+# Benchmark: PyTorch vs ONNX Runtime
+import time
+
+n_runs = 100
+
+# PyTorch
+model.cuda()
+example_input_cuda = example_input.cuda()
+
+start = time.time()
+for _ in range(n_runs):
+    with torch.no_grad():
+        _ = model(example_input_cuda)
+pt_time = time.time() - start
+
+# ONNX Runtime (usando GPU si disponible)
+if 'CUDAExecutionProvider' in ort_session.get_providers():
+    ort_session.set_providers(['CUDAExecutionProvider'])
+    
+start = time.time()
+for _ in range(n_runs):
+    ort_output = ort_session.run(None, ort_inputs)[0]
+ort_time = time.time() - start
+
+print(f"PyTorch time:      {pt_time:.3f}s ({n_runs} runs)")
+print(f"ONNX Runtime time: {ort_time:.3f}s ({n_runs} runs)")
+print(f"Speedup:           {pt_time/ort_time:.2f}x")
+</code></pre>
+
+<h3>4. TorchScript: Exportación Alternativa</h3>
+<pre><code class="language-python"># TorchScript: otra forma de serializar modelos PyTorch
+# Método 1: torch.jit.trace (solo funciona con inputs fijos)
+traced_model = torch.jit.trace(model, example_input)
+traced_model.save("model_traced.pt")
+
+# Método 2: torch.jit.script (para modelos con control flow)
+@torch.jit.script
+def process_sequence(x):
+    return model(x)
+
+scripted_model = process_sequence(example_input)
+scripted_model.save("model_scripted.pt")
+
+# Cargar y usar
+loaded_model = torch.jit.load("model_traced.pt")
+with torch.no_grad():
+    output = loaded_model(example_input)
+
+print("TorchScript modelo cargado y funcionando")
+</code></pre>
+
 <hr>
-<h2>🚨 Errores Comunes</h2>
-<h3>Error 1: No entender la matemática de fondo</h3>
-<p>El 80% de los practitioners implementa esto incorrectamente porque no entienden la base teórica.</p>
-<h3>Error 2: Ignorar los hiperparámetros</h3>
-<p>Muchos asumen que los valores por defecto son óptimos. En producción, esto raramente es cierto.</p>
+<h2>🚨 Los 3 Errores que el 80% Comete</h2>
+
+<h3>Error 1: No Exportar a ONNX Cuando Necesitas Cross-Platform Deployment</h3>
+<p>Este es el error más común. La gente entrena en PyTorch y deploya PyTorch en producción, incluyendo el interpretador Python completo, Docker image gigante, y todos los overheads. ONNX existe para esto — para liberate tu modelo del Runtime de Python.</p>
+
+<pre><code class="language-python"># ❌ ESTO ES LO QUE EL 80% HACE
+# Deploy con Python + PyTorch = ~2GB de imagen Docker mínimo
+docker run -p 8000:8000 \
+    -v /path/to/model:/model \
+    my-pytorch-server
+
+# ✅ FIX: Exportar a ONNX y usar un runtime ligero
+# Imagen Docker típica con ONNX Runtime: ~200MB
+docker run -p 8000:8000 \
+    -v /path/to/model.onnx:/model/model.onnx \
+    onnxruntime-server
+
+# En el servidor ONNX:
+# from onnxruntime import InferenceSession
+# session = InferenceSession("/model/model.onnx")
+# result = session.run(None, {"input": input_data})
+</code></pre>
+
+<h3>Error 2: No Verificar Que el Modelo Exportado Produce los Mismos Outputs</h3>
+<p>Este error es crítico y causa bugs en producción que son muy difíciles de debuggear. El modelo exportado "funciona" pero produce resultados diferentes al original. En sistemas de producción esto puede causar que las predicciones cambien sutilmente — o drásticamente — sin que nadie se dé cuenta.</p>
+
+<pre><code class="language-python"># ❌ ESTO ES LO QUE EL 80% HACE
+torch.onnx.export(model, example_input, "model.onnx")
+#listo, a producción... sin verificar nada
+
+# ✅ FIX: Verificación rigurosa de equivalencia
+def verify_model_equivalence(pytorch_model, onnx_path, test_cases):
+    """Verifica que el modelo ONNX produce los mismos outputs que PyTorch."""
+    
+    ort_session = ort.InferenceSession(onnx_path)
+    
+    for i, (input_data, expected_output) in enumerate(test_cases):
+        # PyTorch
+        pytorch_model.eval()
+        with torch.no_grad():
+            pt_out = pytorch_model(input_data)
+        
+        # ONNX
+        ort_in = {"input_ids": input_data.numpy().astype(np.int64)}
+        ort_out = ort_session.run(None, ort_in)[0]
+        
+        # Verificar
+        if not np.allclose(pt_out.numpy(), ort_out, rtol=1e-3, atol=1e-3):
+            raise ValueError(f"Output mismatch on test case {i}")
+    
+    print("✓ Verificación completa: modelos equivalentes")
+    
+# Usar con múltiples test cases
+test_cases = [
+    (torch.randint(0, 10000, (1, 128)), None),
+    (torch.randint(0, 10000, (1, 256)), None),
+    (torch.randint(0, 10000, (2, 128)), None),  # batch size diferente
+]
+verify_model_equivalence(model, "model.onnx", test_cases)
+</code></pre>
+
+<h3>Error 3: No Usar ONNX Runtime Optimization</h3>
+<p>ONNX Runtime tiene optimizaciones que pueden hacer tu inference 2-3x más rápido. Pero por defecto no están habilitadas. La mayoría de la gente usa ONNX Runtime sin configurar las optimizaciones y se preguntan por qué no es más rápido que PyTorch.</p>
+
+<pre><code class="language-python"># ❌ ESTO ES LO QUE EL 80% HACE
+sess = ort.InferenceSession("model.onnx")  # Sin opciones = sin optimizaciones
+result = sess.run(None, {"input_ids": x})
+
+# ✅ FIX: Habilitar todas las optimizaciones
+from onnxruntime import SessionOptions, GraphOptimizationLevel
+
+sess_options = SessionOptions()
+sess_options.graph_optimization_level = GraphOptimizationLevel.ORT_ENABLE_ALL
+
+# Para inference en GPU:
+sess_options.provider_options = [
+    {"device_id": "0", "cudnn_conv_algo_search": "DEFAULT"}
+]
+
+sess = ort.InferenceSession("model.onnx", sess_options)
+
+# ONNX Runtime aplica automáticamente:
+# - Constant folding
+# - Node elimination
+# - Node fusion (fusionar ops adyacentes)
+# - Memory optimization
+# - Graph partitioning (dividir por dispositivo)
+
+print(f"Providers disponibles: {sess.get_providers()}")
+</code></pre>
+
 <hr>
-<h2>✅ Mejores Prácticas</h2>
+<h2>📊 Resumen: ONNX vs TorchScript</h2>
+
 <ul>
-<li>Siempre documenta tu código y decisiones de diseño.</li>
-<li>Usa versionado para tus experimentos.</li>
-<li>Valida siempre con datos de prueba independientes.</li>
-<li>Monitorea las métricas en producción.</li>
+<li><strong>ONNX</strong>: Formato interoperable, ideal para deployment cross-platform, ONNX Runtime ofrece 2-3x speedup</li>
+<li><strong>TorchScript</strong>: Serialización nativa de PyTorch, ideal para inference en entornos PyTorch</li>
+<li><strong>Verificación</strong>: SIEMPRE verificar que el modelo exportado produce los mismos outputs</li>
+<li><strong>Dynamic shapes</strong>: Usa <code>dynamic_axes</code> para manejar batch sizes y seq lengths variables</li>
+<li><strong>ONNX Runtime</strong>: Habilita todas las optimizaciones con <code>ORT_ENABLE_ALL</code></li>
+<li><strong>Opset version</strong>: Usa la versión más reciente que soporte tu target deployment</li>
 </ul>
+
 <hr>
-<h2>📚 Recursos</h2>
-<ul>
-<li>Documentación oficial de rank_bm25</li>
-<li>Tutoriales prácticos en el blog</li>
-<li>Código fuente en GitHub</li>
-</ul>
+<h2>🏁 Cierre</h2>
+<p>Y ahí lo tienen, parcero. ONNX y TorchScript no son solo "exportar y ya". Es entender cuándo usar cada uno, verificar que el modelo exportado funciona correctamente, y usar ONNX Runtime con las optimizaciones habilitadas para obtener el speedup real. El 80% que no hace esto es por qué tantos modelos "funcionan en mi laptop" pero fallan en producción.</p>
+
+<p>Mañana seguimos con distributed training — cómo entrenar modelos que no caben en una GPU. El Día 168 va a estar interesante para los que trabajan con modelos grandes. No se lo pierdan.</p>
+
+<p><em>#365DaysOfAI #ONNX #TorchScript #ModelSerialization #MLOps #DeepLearning</em></p>
   </article>
 
   <script>
