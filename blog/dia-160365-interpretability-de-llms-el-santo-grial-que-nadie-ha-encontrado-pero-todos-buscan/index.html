@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="LoRA - La técnica que el 70% usa sin entender rank y alpha en la adapters | #365DaysOfAI por Fabián Rodríguez">
-  <title>LoRA - La técnica que el 70% usa sin entender rank y alpha en la adapters | #365DaysOfAI</title>
+  <meta name="description" content="Interpretability de LLMs — El Santo Grial que nadie ha encontrado pero todos buscan | #365DaysOfAI por Fabián Rodríguez">
+  <title>Interpretability de LLMs — El Santo Grial que nadie ha encontrado pero todos buscan | #365DaysOfAI</title>
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
@@ -91,63 +91,774 @@ nav {
 
   <header class="article-hero">
     <div class="day-badge">Día 160 / 365 &nbsp;·&nbsp; #365DaysOfAI</div>
-    <h1 class="article-title">LoRA - La técnica que el 70% usa sin entender rank y alpha en la adapters</h1>
+    <h1 class="article-title">Interpretability de LLMs — El Santo Grial que nadie ha encontrado pero todos buscan</h1>
     <div class="article-meta">
       <time class="article-date">10 de may de 2026</time>
-      <div class="tags"><span class="tag">peft</span></div>
+      <div class="tags"><span class="tag">interpretability</span></div>
     </div>
   </header>
 
   <article class="article-body">
-    <p>Hola, parcero. Llegamos al Día 160 y hoy vamos con LoRA. Este tema es crítico porque el porcentaje que mencionamos en el título representa bugs y confusiones que veo constantemente en producción. Acompañame que esto va detallado.</p>
+    <p>Hola, parcero. Llegamos al Día 160 y hoy vamos con un tema que es el Santo Grial de la IA: Interpretability. Esa cosa que todos buscan pero nadie ha encontrado completo todavía. Vamos a ver qué tenemos hasta ahora, qué funciona, qué no, y por qué entender lo que pasa dentro de un modelo sigue siendo uno de los problemas más difíciles de ML.</p>
+    <p>En Colombia decimos que "el que no entiende tiene que aprender". Con los LLMs, a veces parece que el modelo tampoco entiende, pero igual responde. Vamos a desenredar esa madeja.</p>
 <hr>
-<h2>📐 Fundamentos Teóricos</h2>
-<p>Vamos paso a paso. Entender la teoría detrás de LoRA es lo que separa a alguien que copia código de alguien que realmente sabe lo que está haciendo.</p>
-<h3>Conceptos Clave</h3>
+<h2>🎯 ¿Qué es Interpretability de LLMs?</h2>
+<p>Interpretability es el campo que busca responder: <em>¿Por qué el modelo dice lo que dice?</em> No solo el output, sino el mecanismo. ¿Qué neuronas se activaron? ¿Qué patrones aprendió? ¿Dónde guarda el "conocimiento" sobre un tema específico?</p>
+<p>La diferencia entre un modelo interpretable y una black box es la diferencia entre debugging y guesswork. Cuando algo falla en un sistema interpretable, podés decir exactamente qué salió mal. Cuando algo falla en una black box, solo podés decir que "no funcionó".</p>
+<p>Para LLMs, esto es especialmente difícil porque:</p>
 <ul>
-<li><strong>Concepto 1</strong>: Descripción del primer concepto fundamental.</li>
-<li><strong>Concepto 2</strong>: Descripción del segundo concepto que necesitas entender.</li>
-<li><strong>Concepto 3</strong>: Por qué esto importa en la práctica.</li>
+<li><strong>Billones de parámetros</strong>: No podemos inspeccionar cada conexión</li>
+<li><strong>Emergent behaviors</strong>: Comportamientos que no fueron explícitamente entrenados aparecen</li>
+<li><strong>Knowledge distributed</strong>: El conocimiento no está en un lugar específico, está distribuido en patrones de activación</li>
+<li><strong>No ground truth</strong>: No sabemos "la respuesta correcta" de qué debería activarse</li>
 </ul>
 <hr>
+<h2>📐 Fundamentos Teóricos</h2>
+<h3>Activation Analysis</h3>
+<p>La forma más directa de ver qué está haciendo un modelo es mirando las activaciones. Cada token que pasa por el modelo produce un vector de activaciones en cada capa.</p>
+<p>Formalmente, para un token $t$ en la capa $l$:</p>
+<p$$\mathbf{a}_l(t) = \text{ReLU}(\mathbf{W}_l \mathbf{a}_{l-1}(t) + \mathbf{b}_l)$$</p>
+<p>donde $\mathbf{W}_l$ son los pesos y $\mathbf{b}_l$ el bias de la capa $l$.</p>
+<p>La idea de activation analysis es:</p>
+<ol>
+<li>Colectar activaciones para muchos tokens</li>
+<li>Buscar patrones: ¿qué neuronas se activan juntas?</li>
+<li>Conectar patrones con comportamiento observable</li>
+</ol>
+<h3>Probing Classifiers</h3>
+<p>Un probing classifier es un clasificador simple (lineal o shallow MLP) que se entrena para predecir alguna propiedad del input a partir de las activaciones del modelo.</p>
+<p>$$\hat{y} = \text{Classifier}(\mathbf{a}_l(t))$$</p>
+<p>Si el clasificador puede predecir la propiedad, entonces esa información está presente en las activaciones de capa $l$.</p>
+<p><strong>La matemática del probing:</strong></p>
+<p>Dada una propiedad $y$ que queremos saber si el modelo "conoce" (ej: el input es sobre fútbol o no), entrenamos:</p>
+<p$$\min_\theta \sum_i \text{CrossEntropy}(f_\theta(\mathbf{a}_l(t_i)), y_i)$$</p>
+<p>Si $f_\theta$ converge a accuracy alto, entonces la capa $l$ codifica esa información.</p>
+<h3>Feature Visualization</h3>
+<p>Feature visualization busca responder: ¿Qué input hace que una neurona específica se active强烈mente?</p>
+<p>Esto se hace vía optimización:</p>
+<p$$\text{input}^* = \arg\max_{\text{input}} \text{Activation}(neuron | \text{input})$$</p>
+<p>Usamos gradient descent para encontrar el input que maximiza la activación de una neurona dada.</p>
+<hr>
 <h2>💻 Implementación Práctica</h2>
-<p>Ahora vamos a lo bueno: código real que puedes usar en tus proyectos.</p>
-<pre><code class="language-python"># Ejemplo práctico de LoRA
+<h3>Probing Classifier para Verificar Conocimiento</h3>
+<pre><code class="language-python">"""
+Probing Classifier para verificar si un modelo sabe algo.
+Implementación de linear probes para detectar conocimiento en capas.
+"""
+import torch
+import torch.nn as nn
+from torch.utils.data import Dataset, DataLoader
+from typing import List, Dict, Tuple, Optional
 import numpy as np
 
-def concepto_fundamental(data, param):
-    # Implementación básica del concepto
-    result = []
-    for item in data:
-        processed = item * param
-        result.append(processed)
-    return np.array(result)
+class HiddenActivationsDataset(Dataset):
+    """
+    Dataset que almacenaactivaciones ocultas de un modelo.
+    Se usa para entrenar probing classifiers.
+    """
+    def __init__(self, activations: np.ndarray, labels: np.ndarray):
+        """
+        Args:
+            activations: Array de shape (N, D) donde N = samples, D = dimensión de activación
+            labels: Array de labels de shape (N,)
+        """
+        self.activations = torch.FloatTensor(activations)
+        self.labels = torch.LongTensor(labels)
+    
+    def __len__(self):
+        return len(self.labels)
+    
+    def __getitem__(self, idx):
+        return self.activations[idx], self.labels[idx]
 
-data = [1, 2, 3, 4, 5]
-result = concepto_fundamental(data, 2)
-print(f"Resultado: {result}")
+class LinearProbe:
+    """
+    Linear probe para detectar conocimiento enactivaciones.
+    
+    Un linear probe es un clasificador lineal entrenado para
+    predecir una propiedad del input a partir de lasactivaciones.
+    
+    Si el probe puede predecir la propiedad mejor que chance,
+    entonces la información está codificada en lasactivaciones.
+    """
+    
+    def __init__(self, input_dim: int, num_classes: int):
+        self.input_dim = input_dim
+        self.num_classes = num_classes
+        self.model = nn.Linear(input_dim, num_classes)
+        self.criterion = nn.CrossEntropyLoss()
+        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=0.001)
+        self.history = []
+    
+    def fit(self, 
+            train_activations: np.ndarray, 
+            train_labels: np.ndarray,
+            val_activations: np.ndarray,
+            val_labels: np.ndarray,
+            epochs: int = 100,
+            patience: int = 10) -> Dict:
+        """
+        Entrena el probe y retorna métricas.
+        
+        Returns:
+            Dict con train/val accuracy por época
+        """
+        train_dataset = HiddenActivationsDataset(train_activations, train_labels)
+        val_dataset = HiddenActivationsDataset(val_activations, val_labels)
+        
+        train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
+        val_loader = DataLoader(val_dataset, batch_size=64)
+        
+        best_val_acc = 0
+        epochs_without_improvement = 0
+        best_state = None
+        
+        for epoch in range(epochs):
+            # Train
+            self.model.train()
+            train_correct = 0
+            train_total = 0
+            train_loss = 0
+            
+            for activations, labels in train_loader:
+                self.optimizer.zero_grad()
+                outputs = self.model(activations)
+                loss = self.criterion(outputs, labels)
+                loss.backward()
+                self.optimizer.step()
+                
+                train_loss += loss.item()
+                _, predicted = outputs.max(1)
+                train_total += labels.size(0)
+                train_correct += predicted.eq(labels).sum().item()
+            
+            train_acc = 100 * train_correct / train_total
+            
+            # Validation
+            self.model.eval()
+            val_correct = 0
+            val_total = 0
+            
+            with torch.no_grad():
+                for activations, labels in val_loader:
+                    outputs = self.model(activations)
+                    _, predicted = outputs.max(1)
+                    val_total += labels.size(0)
+                    val_correct += predicted.eq(labels).sum().item()
+            
+            val_acc = 100 * val_correct / val_total
+            
+            self.history.append({
+                'epoch': epoch,
+                'train_acc': train_acc,
+                'val_acc': val_acc,
+                'train_loss': train_loss / len(train_loader)
+            })
+            
+            # Early stopping
+            if val_acc > best_val_acc:
+                best_val_acc = val_acc
+                best_state = self.model.state_dict().copy()
+                epochs_without_improvement = 0
+            else:
+                epochs_without_improvement += 1
+            
+            if epochs_without_improvement >= patience:
+                print(f"Early stopping at epoch {epoch}")
+                break
+        
+        if best_state is not None:
+            self.model.load_state_dict(best_state)
+        
+        return {
+            'best_val_acc': best_val_acc,
+            'history': self.history
+        }
+    
+    def evaluate(self, activations: np.ndarray, labels: np.ndarray) -> Tuple[float, float]:
+        """Retorna accuracy y loss sobre un set de datos"""
+        self.model.eval()
+        dataset = HiddenActivationsDataset(activations, labels)
+        loader = DataLoader(dataset, batch_size=64)
+        
+        correct = 0
+        total = 0
+        loss = 0
+        
+        with torch.no_grad():
+            for act, lab in loader:
+                outputs = self.model(act)
+                loss += self.criterion(outputs, lab).item()
+                _, predicted = outputs.max(1)
+                total += lab.size(0)
+                correct += predicted.eq(lab).sum().item()
+        
+        return 100 * correct / total, loss / len(loader)
+    
+    def get_layer_importance(self) -> np.ndarray:
+        """
+        Retorna importancia de cada dimensión de activación.
+        Útil para saber qué features son más relevantes para la tarea.
+        """
+        weights = self.model.weight.data.numpy()
+        # Magnitud absoluta de los pesos
+        importance = np.abs(weights).mean(axis=0)
+        return importance
+
+def extract_activations_by_layer(
+    model: nn.Module,
+    tokenizer,
+    texts: List[str],
+    layer_indices: List[int]) -> Dict[int, np.ndarray]:
+    """
+    Extrae activaciones de capas específicas para una lista de textos.
+    
+    Args:
+        model: Modelo con hooks
+        tokenizer: Tokenizer del modelo
+        texts: Lista de textos a procesar
+        layer_indices: Índices de capas a monitorear
+    
+    Returns:
+        Dict[int, np.ndarray] mapeando layer_index -> activations
+    """
+    activations = {i: [] for i in layer_indices}
+    handles = []
+    
+    def get_hook(layer_idx):
+        def hook_fn(module, input, output):
+            # Guardaractivaciones del output
+            if isinstance(output, tuple):
+                # Attention output
+                activations[layer_idx].append(output[0].detach().cpu().numpy())
+            else:
+                activations[layer_idx].append(output.detach().cpu().numpy())
+        return hook_fn
+    
+    # Registrar hooks
+    for layer_idx in layer_indices:
+        if layer_idx < len(model.model.layers):
+            handle = model.model.layers[layer_idx].register_forward_hook(get_hook(layer_idx))
+            handles.append(handle)
+    
+    # Forward pass
+    model.eval()
+    with torch.no_grad():
+        for text in texts:
+            inputs = tokenizer(text, return_tensors='pt')
+            model(**inputs)
+    
+    # Remover hooks
+    for handle in handles:
+        handle.remove()
+    
+    # Promediar sobre tokens y convertir a array
+    result = {}
+    for layer_idx, act_list in activations.items():
+        if act_list:
+            # Concatenar y promediar sobre la secuencia
+            acts = np.concatenate(act_list, axis=0)
+            # Promedio sobre la dimensión de secuencia
+            result[layer_idx] = acts.mean(axis=1)
+    
+    return result
+
+# Ejemplo de uso
+if __name__ == "__main__":
+    # Esto es pseudocódigo - ajustar según el modelo específico
+    print("Probing Classifier para verificar conocimiento")
+    print("Este código extraeactivaciones y entrena un linear probe")
 </code></pre>
+
+<h3>Activation Analysis Práctico</h3>
+<pre><code class="language-python">"""
+Activation Analysis para entender qué sabe el modelo.
+Implementa métricas de activación y correlación entre capas.
+"""
+import torch
+import numpy as np
+from typing import Dict, List, Tuple
+from collections import defaultdict
+
+class ActivationAnalyzer:
+    """
+    Analiza patrones de activación en un LLM.
+    Permite entender:
+    - Qué neuronas se correlacionan con ciertos conceptos
+    - Cómo cambia la activación a través de las capas
+    - Dónde se representa cierta información
+    """
+    
+    def __init__(self, model):
+        self.model = model
+        self.activations = defaultdict(list)
+        self.hooks = []
+    
+    def register_hooks(self, layer_indices: List[int]):
+        """Registra hooks para capturaractivaciones"""
+        self.clear_hooks()
+        
+        for idx in layer_indices:
+            layer = self.model.model.layers[idx]
+            handle = layer.register_forward_hook(self._make_hook(idx))
+            self.hooks.append(handle)
+    
+    def _make_hook(self, layer_idx):
+        def hook_fn(module, input, output):
+            # output shape: (batch, seq_len, hidden_size)
+            # Nos interesa solo la última posición (último token)
+            if isinstance(output, tuple):
+                act = output[0]
+            else:
+                act = output
+            
+            # Tomar solo el último token
+            last_token_act = act[0, -1, :].cpu().numpy()
+            self.activations[layer_idx].append(last_token_act)
+        return hook_fn
+    
+    def clear_hooks(self):
+        """Remueve todos los hooks"""
+        for handle in self.hooks:
+            handle.remove()
+        self.hooks = []
+    
+    def compute_layer_statistics(self) -> Dict[int, Dict[str, float]]:
+        """
+        Calcula estadísticas de activación por capa.
+        
+        Returns:
+            Dict con mean, std, sparsity por capa
+        """
+        stats = {}
+        for layer_idx, acts in self.activations.items():
+            acts_array = np.array(acts)
+            stats[layer_idx] = {
+                'mean': float(np.mean(acts_array)),
+                'std': float(np.std(acts_array)),
+                'sparsity': float(np.mean(acts_array == 0)),  # % de ceros
+                'l2_norm': float(np.mean(np.linalg.norm(acts_array, axis=1)))
+            }
+        return stats
+    
+    def find_concept_neurons(self,
+                            concept_texts: List[str],
+                            control_texts: List[str],
+                            layer_idx: int,
+                            top_k: int = 50) -> List[Tuple[int, float]]:
+        """
+        Encuentra neuronas que se activan más con textos de un concepto.
+        
+        Args:
+            concept_texts: Textos que representan el concepto
+            control_texts: Textos de control (background)
+            layer_idx: Capa a analizar
+            top_k: Número de top neuronas a retornar
+        
+        Returns:
+            Lista de (neuron_idx, activation_difference)
+        """
+        self.activations.clear()
+        self.register_hooks([layer_idx])
+        
+        # Process concept texts
+        self.model.eval()
+        with torch.no_grad():
+            for text in concept_texts:
+                inputs = self.tokenizer(text, return_tensors='pt')
+                self.model(**inputs)
+            
+            concept_acts = np.array(self.activations[layer_idx])
+            concept_mean = concept_acts.mean(axis=0)
+        
+        # Process control texts
+        self.activations.clear()
+        with torch.no_grad():
+            for text in control_texts:
+                inputs = self.tokenizer(text, return_tensors='pt')
+                self.model(**inputs)
+            
+            control_acts = np.array(self.activations[layer_idx])
+            control_mean = control_acts.mean(axis=0)
+        
+        self.clear_hooks()
+        
+        # Calcular diferencia
+        diff = concept_mean - control_mean
+        
+        # Top neuronas por diferencia absoluta
+        neuron_scores = [(i, diff[i]) for i in range(len(diff))]
+        neuron_scores.sort(key=lambda x: abs(x[1]), reverse=True)
+        
+        return neuron_scores[:top_k]
+    
+    def compute_inter_layer_correlation(self) -> np.ndarray:
+        """
+        Calcula correlación entre capas.
+        Útil para entender qué tan redundante es la información.
+        
+        Returns:
+            Matriz de correlación (layers x layers)
+        """
+        layers = sorted(self.activations.keys())
+        n_layers = len(layers)
+        corr_matrix = np.zeros((n_layers, n_layers))
+        
+        layer_acts = [np.array(self.activations[l]) for l in layers]
+        
+        for i in range(n_layers):
+            for j in range(n_layers):
+                # Correlación de Pearson entre capas
+                acts_i = layer_acts[i].mean(axis=1)
+                acts_j = layer_acts[j].mean(axis=1)
+                corr = np.corrcoef(acts_i, acts_j)[0, 1]
+                corr_matrix[i, j] = corr
+        
+        return corr_matrix
+
+class FeatureVisualizer:
+    """
+    Visualización de features para entender qué activa una neurona.
+    Usa optimización para encontrar el input que maximiza una activación.
+    """
+    
+    def __init__(self, model, tokenizer):
+        self.model = model
+        self.tokenizer = tokenizer
+    
+    def find_maximum_activation_input(
+        self,
+        neuron_idx: int,
+        layer_idx: int,
+        n_iterations: int = 100,
+        lr: float = 0.1) -> str:
+        """
+        Encuentra un texto que maximiza la activación de una neurona.
+        
+        WARNING: Esto es computacionalmente intensivo y el resultado
+        puede ser texto incoherente. Es más informativo para conceptos
+        simples que para features complejos.
+        """
+        # Inicializar input aleatorio
+        input_ids = torch.randint(0, self.tokenizer.vocab_size, (1, 20))
+        input_ids.requires_grad = True
+        
+        optimizer = torch.optim.Adam([input_ids], lr=lr)
+        
+        for iteration in range(n_iterations):
+            optimizer.zero_grad()
+            
+            # Forward pass
+            outputs = self.model.model(torch.LongTensor(input_ids))
+            
+            # Obtener activación de la neurona objetivo
+            # (simplificado - en realidad hay que usar hooks)
+            target_activation = outputs[0, -1, neuron_idx]
+            
+            # Maximizar (negativa para minimizar)
+            loss = -target_activation
+            loss.backward()
+            optimizer.step()
+        
+        # Convertir a texto
+        result_ids = input_ids.detach().numpy()
+        result_text = self.tokenizer.decode(result_ids[0])
+        
+        return result_text
+</code></pre>
+
+<h3>Designing Probes para Specific Knowledge</h3>
+<pre><code class="language-python">"""
+Framework para diseñar probes que detecten conocimiento específico.
+Usa información mutua y otras métricas para seleccionar features.
+"""
+import torch
+import numpy as np
+from scipy.stats import mutual_info_score
+from sklearn.feature_selection import mutual_info_classif
+from typing import List, Tuple, Dict
+
+class KnowledgeProbeDesigner:
+    """
+    Diseña probes óptimos para detectar conocimiento específico.
+    
+    Dado un concepto (ej: "este texto es sobre matemáticas"),
+    encuentra qué capas del modelo codifican esa información.
+    """
+    
+    def __init__(self, model, tokenizer):
+        self.model = model
+        self.tokenizer = tokenizer
+        self.activation_cache = {}
+    
+    def collect_activations(self, 
+                           texts: List[str], 
+                           layers: List[int]) -> Dict[int, np.ndarray]:
+        """
+        Colecta activaciones para una lista de textos.
+        
+        Returns:
+            Dict[l layer_idx] -> (n_samples, hidden_dim) activations
+        """
+        self.model.eval()
+        all_activations = {l: [] for l in layers}
+        
+        # Registrar hooks
+        handles = []
+        def make_hook(layer_idx):
+            def hook_fn(module, input, output):
+                if isinstance(output, tuple):
+                    act = output[0]
+                else:
+                    act = output
+                # Tomar último token
+                last_act = act[0, -1, :].detach().cpu().numpy()
+                all_activations[layer_idx].append(last_act)
+            return hook_fn
+        
+        for layer_idx in layers:
+            handle = self.model.model.layers[layer_idx].register_forward_hook(
+                make_hook(layer_idx)
+            )
+            handles.append(handle)
+        
+        # Forward pass
+        with torch.no_grad():
+            for text in texts:
+                inputs = self.tokenizer(text, return_tensors='pt')
+                self.model(**inputs)
+        
+        # Cleanup
+        for handle in handles:
+            handle.remove()
+        
+        # Convertir a arrays
+        return {l: np.array(acts) for l, acts in all_activations.items()}
+    
+    def find_best_layer_for_concept(
+        self,
+        concept_texts: List[str],
+        control_texts: List[str],
+        layers: List[int],
+        n_samples: int = 1000) -> List[Tuple[int, float]]:
+        """
+        Encuentra cuál capa mejor discrimina textos de un concepto.
+        
+        Returns:
+            Lista de (layer_idx, accuracy) ordenada por accuracy
+        """
+        #收集activaciones
+        activations = self.collect_activations(
+            concept_texts + control_texts,
+            layers
+        )
+        
+        # Labels: 1 = concept, 0 = control
+        labels = np.array([1] * len(concept_texts) + [0] * len(control_texts))
+        
+        results = []
+        
+        for layer_idx in layers:
+            acts = activations[layer_idx]
+            
+            # Calcular información mutua entre cada feature y el label
+            mi_scores = mutual_info_classif(acts, labels, random_state=42)
+            
+            # Accuracy de un linear probe
+            from sklearn.linear_model import LogisticRegression
+            from sklearn.model_selection import cross_val_score
+            
+            clf = LogisticRegression(max_iter=1000)
+            scores = cross_val_score(clf, acts, labels, cv=5)
+            accuracy = scores.mean()
+            
+            results.append((layer_idx, accuracy, float(mi_scores.mean())))
+        
+        # Ordenar por accuracy
+        results.sort(key=lambda x: x[1], reverse=True)
+        
+        return [(r[0], r[1]) for r in results]
+    
+    def design_sparse_probe(
+        self,
+        activations: np.ndarray,
+        labels: np.ndarray,
+        sparsity: float = 0.1) -> Tuple[np.ndarray, List[int]]:
+        """
+        Diseña un probe que usa solo lasfeatures más importantes.
+        
+        Args:
+            activations: (n_samples, n_features)
+            labels: (n_samples,)
+            sparsity: fracción de features a mantener
+        
+        Returns:
+            (weights, selected_indices)
+        """
+        from sklearn.linear_model import LogisticRegression
+        
+        # Entrenar probe completo para ver importancia
+        clf = LogisticRegression(max_iter=1000, penalty='l1', solver='saga', C=0.1)
+        clf.fit(activations, labels)
+        
+        # Seleccionar top features por magnitud de peso
+        importances = np.abs(clf.coef_[0])
+        n_keep = int(len(importances) * sparsity)
+        top_indices = np.argsort(importances)[-n_keep:]
+        
+        # Reentrenar solo con features seleccionadas
+        clf_sparse = LogisticRegression(max_iter=1000)
+        clf_sparse.fit(activations[:, top_indices], labels)
+        
+        return clf_sparse.coef_[0], list(top_indices)
+
+# Ejemplo de uso
+if __name__ == "__main__":
+    print("Knowledge Probe Designer")
+    print("Diseña probes para detectar conocimiento específico en LLMs")
+</code></pre>
+
 <hr>
-<h2>🚨 Errores Comunes</h2>
-<h3>Error 1: No entender la matemática de fondo</h3>
-<p>El 80% de los practitioners implementa esto incorrectamente porque no entienden la base teórica.</p>
-<h3>Error 2: Ignorar los hiperparámetros</h3>
-<p>Muchos asumen que los valores por defecto son óptimos. En producción, esto raramente es cierto.</p>
+<h2>🚨 Errores Comunes en Interpretability</h2>
+<h3>Error 1: Usar Probing Sin Enough Data (Spurious Correlations)</h3>
+<p>El error más común con probing classifiers: entrenar con pocos datos y concluir que el modelo "sabe" algo cuando en realidad encontró correlaciones espurias.</p>
+<p><strong>El problema:</strong> Un probe lineal es muy poderoso. Si tenés 1000 features y solo 100 samples, podés encontrar cualquier correlaciónfake. El modelo parece saber algo que no sabe.</p>
+<p>Matemáticamente, si $n \ll d$ (samples mucho menor que features), el modelo puede memorizar el training set perfectamente sin generalizar:</p>
+<p$$\text{Train Error} \to 0 \text{ mientras } \text{Test Error} \to 0.5$$</p>
+<p><strong>Fix - Reglas para probes confiables:</strong></p>
+<ul>
+<li><strong>Samples >> Features</strong>: Regla práctica: $n > 10 \times d$ mínimo, $n > 100 \times d$ para ser seguro</li>
+<li><strong>Control for confounds</strong>: Asegurate que los textos de concepto y control difieran SOLO en el concepto, no en estilo, longitud, etc.</li>
+<li><strong>Cross-validation</strong>: Siempre usar CV para estimar generalización</li>
+<li><strong>Shuffle test</strong>: Mezclá los labels y verificá que el probe no logra accuracy sobre chance</li>
+<li><strong>Probe complexity</strong>: Si un linear probe no funciona, un MLP tampoco (a menos que tengas MUCHO más datos)</li>
+</ul>
+<pre><code class="language-python"># Ejemplo de verificación
+def verify_probe_not_spurious(probe, activations, labels):
+    """
+    Verifica que el probe no sea spurius.
+    """
+    # Test 1: Shuffle labels
+    shuffled_labels = labels.copy()
+    np.random.shuffle(shuffled_labels)
+    
+    clf_shuffled = LogisticRegression(max_iter=1000)
+    shuffled_scores = cross_val_score(clf_shuffled, activations, shuffled_labels, cv=5)
+    
+    if shuffled_scores.mean() > 0.55:
+        warnings.warn("Probe achieves high accuracy on shuffled labels - likely spurious!")
+    
+    # Test 2: Different random seeds
+    scores_by_seed = []
+    for seed in range(5):
+        clf = LogisticRegression(max_iter=1000)
+        scores = cross_val_score(clf, activations, labels, cv=5)
+        scores_by_seed.append(scores.mean())
+    
+    if np.std(scores_by_seed) > 0.05:
+        warnings.warn("High variance across seeds - results unstable")
+    
+    return np.mean(scores_by_seed), np.std(scores_by_seed)
+</code></pre>
+<h3>Error 2: Correlación como Causalidad en Activation Analysis</h3>
+<p>Ver que una neurona se activa con "perros" no significa que la neurona "represente perros". Podría ser que la neurona se active con cualquier animal, o con objetos pequeños, o con cualquier cosa que出现在 en imágenes de perros.</p>
+<p><strong>El problema:</strong> Activation patterns son correlaciones, no causalidad. Múltiples factores pueden covariar:</p>
+<ul>
+<li>Perros aparecen con Césped</li>
+<li>Perros aparecen con el color verde</li>
+<li>Perros aparecen en imágenes de exterior</li>
+<li>etc.</li>
+</ul>
+<p>Si tu neurona se activa con "perros", podría ser que represente cualquiera de estos confounders.</p>
+<p><strong>Fix - Causal Interventions:</strong></p>
+<ul>
+<li><strong>Ablation studies</strong>: Desactivá la neurona y ver si el comportamiento cambia. Si no cambia, la neurona no es causally important.</li>
+<li><strong>Intervention tests</strong>: Intervení activamente (no solo observes). Cambiá el input para ver si la activación cambia de la manera predicha.</li>
+<li><strong>Control for confounders</strong>: Diseñá inputs que varíen el concepto de interés mientras controlan otros factores</li>
+<li><strong>Patch experiments</strong>: Tomáactivación de un input que activa la neurona y "pachela" en otro input. Si el comportamiento cambia, hay causalidad.</li>
+</ul>
+<pre><code class="language-python"># Ejemplo: Ablation study
+def ablation_study(model, neuron_idx, layer_idx, test_texts):
+    """
+    Estudia el efecto causal de una neurona ablándola.
+    """
+    # Baseline: sin ablación
+    baseline_outputs = []
+    for text in test_texts:
+        output = model.generate(text)
+        baseline_outputs.append(output)
+    
+    # Con ablación
+    ablated_outputs = []
+    def make_ablation_hook():
+        def hook_fn(module, input, output):
+            if isinstance(output, tuple):
+                act = output[0]
+            else:
+                act = output
+            # Ablar la neurona: poner en cero
+            act[0, -1, neuron_idx] = 0
+            return output
+        return hook_fn
+    
+    handle = model.model.layers[layer_idx].register_forward_hook(make_ablation_hook())
+    
+    with torch.no_grad():
+        for text in test_texts:
+            output = model.generate(text)
+            ablated_outputs.append(output)
+    
+    handle.remove()
+    
+    # Comparar
+    differences = sum(1 for b, a in zip(baseline_outputs, ablated_outputs) if b != a)
+    return differences / len(test_texts)  # % de textos que cambian
+</code></pre>
+<h3>Error 3: Asumir que el Modelo "Entiende" Porque Responde Correctamente</h3>
+<p>El error filosófico más profundo: ver que el modelo responde bien sobre un tema y concluir que "entiende" el tema. El modelo podría estar haciendo pattern matching sin comprensión real.</p>
+<p><strong>El problema:</strong> Un LLM genera texto que statistically correlates con texto humano sobre el tema. Esto NO implica comprensión. Es como alguien que repite frases en un idioma que no habla: suena bien, pero no significa nada para el hablante.</p>
+<p>El test clásico: <strong>Comprehension vs Behavior</strong></p>
+<ul>
+<li><strong>Behavioral test</strong>: ¿El modelo responde correctamente? (lo que medimos)</li>
+<li><strong>Comprehension test</strong>: ¿El modelo entiende por qué responde correctamente? (lo que queremos saber)</li>
+</ul>
+<p>El modelo puede pasar tests behaviorales sin comprensión real. Esto se llama <strong>Clever Hans effect</strong> en ML: el modelo encuentra patrones superficiales que correlacionan con la respuesta correcta sin entender la estructura subyacente.</p>
+<p><strong>Fix - Profundizar en 而不是 Assuming:</strong></p>
+<ul>
+<li><strong>No asumas comprensión, investígala</strong>: Diseña tests que requieran comprensión genuina, no solo respuestas correctas</li>
+<li><strong>Test edge cases</strong>: Si el modelo sabe "gato" y "animal", ¿sabe que un gato es un animal? Preguntá de formas que requieran inferencia</li>
+<li><strong>Counterfactual tests</strong>: Cambiá detalles irrelevantes y verificá que la respuesta appropriate cambia</li>
+<li><strong>Causal reasoning tests</strong>: Preguntá sobre因果关系, no solo correlaciones</li>
+<li><strong>Multi-modal validation</strong>: Si decis que el modelo "entiende" algo, verificalo con otras modalities (ej: generación de imágenes consistente)</li>
+</ul>
 <hr>
 <h2>✅ Mejores Prácticas</h2>
 <ul>
-<li>Siempre documenta tu código y decisiones de diseño.</li>
-<li>Usa versionado para tus experimentos.</li>
-<li>Valida siempre con datos de prueba independientes.</li>
-<li>Monitorea las métricas en producción.</li>
+<li><strong>Triangulación</strong>: Usar múltiples métodos (probing, ablation, visualization) y verificar que convergen</li>
+<li><strong>Statistical significance</strong>: Reportar intervalos de confianza, no solo point estimates</li>
+<li><strong>Replicability</strong>:别人 puede replicar tus resultados con tu metodología?</li>
+<li><strong>Publish negative results</strong>: Si una neurona parecía importante pero no lo es, reportalo</li>
+<li><strong>Open source tools</strong>: Usar herramientas como TransformerLens, NMTK, atau-provided tools</li>
 </ul>
 <hr>
 <h2>📚 Recursos</h2>
 <ul>
-<li>Documentación oficial de peft</li>
-<li>Tutoriales prácticos en el blog</li>
-<li>Código fuente en GitHub</li>
+<li><strong>Papers</strong>: "Towards a Science of MLLM Interpretation", "Induction Heads", "Superposition"</li>
+<li><strong>Tools</strong>: TransformerLens, NMTK, Pyvene, interpretability.me</li>
+<li><strong>Communities</strong>: EleutherAI, CIRL, Mechanistic Interpretability Discord</li>
 </ul>
+<hr>
+<h2>📝 Resumen y Cierre</h2>
+<p>Hoy aprendimos que Interpretability es el Santo Grial que todavía no hemos encontrado. Tenemos herramientas útiles (probing, ablation, visualization), pero cada una tiene limitaciones graves.</p>
+<p>Los tres errores más peligrosos:</p>
+<ol>
+<li><strong>Probing sin datos suficientes</strong>: Encontrás correlaciones espurias que no existen en la realidad</li>
+<li><strong>Correlación como causalidad</strong>: Asumís que una neurona "representa" algo porque se activa con eso</li>
+<li><strong>Comportamiento como comprensión</strong>: El modelo responde bien, pero no "entiende" - solo hace pattern matching</li>
+</ol>
+<p>La frase del abuelo hoy: "del dicho al hecho hay mucho trecho". Un modelo que pasa tests no necesariamente entiende. Necesitamos ir más allá de behavioral tests hacia comprensión genuina.</p>
+<p>En Colombia decimos "el que se contenta con poco, pierde mucho". En interpretability, el que se contenta con correlación, pierde causalidad.</p>
+<p>Mañana en el Día 161 seguimos. #365DaysOfAI</p>
   </article>
 
   <script>
