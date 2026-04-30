@@ -99,55 +99,700 @@ nav {
   </header>
 
   <article class="article-body">
-    <p>Hola, parcero. Llegamos al Día 138 y hoy vamos con LossFunctions. Este tema es crítico porque el porcentaje que mencionamos en el título representa bugs y confusiones que veo constantemente en producción. Acompañame que esto va detallado.</p>
+    <p>Hola, parcero. Llegamos al Día 138 y hoy vamos con Loss Functions en profundidad. Este tema es crítico porque el 80% de los Practitioners en Colombia y el mundo usa CrossEntropy sin saber exactamente qué está pasando por debajo, y muchos cometen errores que preventable el aprendizaje. Yo mismo me demoré en entender la diferencia entre CrossEntropy y Binary CrossEntropy hasta que me senté con papel y lápiz. Acompañame que esto va bien detallado.</p>
+
 <hr>
 <h2>📐 Fundamentos Teóricos</h2>
-<p>Vamos paso a paso. Entender la teoría detrás de LossFunctions es lo que separa a alguien que copia código de alguien que realmente sabe lo que está haciendo.</p>
-<h3>Conceptos Clave</h3>
+
+<p>Vamos paso a paso. Entender las Loss Functions es entender qué está optimizando tu red realmente. Cada loss tiene supuestos sobre la distribución de tus datos y la tarea.</p>
+
+<h3>CrossEntropy vs Categorical Cross-Entropy</h3>
+
+<p>Primero lo primero: CrossEntropy y Categorical Cross-Entropy son la MISMA función. El nombre "Categorical" solo clarifica que estamos ante problemas de clasificación con múltiples clases mutuamente excluyentes.</p>
+
+<p class="katex-display">$$\mathcal{L}_{CE} = -\sum_{c=1}^{C} y_c \log(\hat{y}_c)$$</p>
+
+<p>Donde:</p>
 <ul>
-<li><strong>Concepto 1</strong>: Descripción del primer concepto fundamental.</li>
-<li><strong>Concepto 2</strong>: Descripción del segundo concepto que necesitas entender.</li>
-<li><strong>Concepto 3</strong>: Por qué esto importa en la práctica.</li>
+<li>$C$ = número de clases</li>
+<li>$y_c$ = label verdadero (1 para la clase correcta, 0 para las demás)</li>
+<li>$\hat{y}_c$ = probabilidad predicha para la clase $c$</li>
 </ul>
+
+<h3>La implementación en PyTorch</h3>
+
+<p>PyTorch implementa CrossEntropyLoss como:</p>
+
+<p class="katex-display">$$\text{CrossEntropyLoss}(x, y) = \text{LogSoftmax}(x) + \text{NLLLoss}(y)$$</p>
+
+<p>Es decir: primero aplicas log-softmax a las logits, luego Negative Log Likelihood. Esto es NUMÉRICAMENTE ESTABLE porque log-softmax evita overflow/underflow que pasaría si hicieras softmax + log por separado.</p>
+
+<h3>Binary Cross-Entropy (BCE)</h3>
+
+<p>BCE es para multi-label classification o regresión logística binaria:</p>
+
+<p class="katex-display">$$\mathcal{L}_{BCE} = -\frac{1}{N}\sum_{i=1}^{N} [y_i \log(\hat{y}_i) + (1-y_i)\log(1-\hat{y}_i)]$$</p>
+
+<p><strong>Diferencia crítica</strong>: BCE trata cada label como INDEPENDIENTE. En CrossEntropy, los labels son MUTUAMENTE EXCLUYENTES (solo una clase es correcta). Si tienes 3 classes y una imagen es "gato", BCE te puede dar alta probabilidad para "perro" Y "gato" al mismo tiempo. CrossEntropy no — solo una clase puede ganar.</p>
+
+<h3>Focal Loss — Para Class Imbalance Severo</h3>
+
+<p>Lin et al. propuso Focal Loss en 2017 para detectar objetos donde hay extreme class imbalance (ej: 99% background, 1% objects):</p>
+
+<p class="katex-display">$$\mathcal{L}_{FL} = -\alpha_t (1 - \hat{y}_t)^\gamma \log(\hat{y}_t)$$</p>
+
+<p>Donde $\gamma$ (gamma) es el focusing parameter:</p>
+<ul>
+<li>$\gamma = 0$: Focal Loss = CrossEntropy normal</li>
+<li>$\gamma > 0$: Reduce el weight de ejemplos "fáciles" (alta confianza), enfoca en los difíciles</li>
+<li>$\gamma = 2$: Valor típico en detección de objetos</li>
+</ul>
+
+<h3>Label Smoothing</h3>
+
+<p>Label Smoothing reemplaza los labels "duros" (0 y 1) con valores "blandos":</p>
+
+<p class="katex-display">$$y_{smooth} = y \cdot (1 - \epsilon) + \frac{\epsilon}{C}$$</p>
+
+<p>Donde $\epsilon$ es el smoothing factor (típico: 0.1). Esto previene overconfidence y mejora generalization en datasets grandes.</p>
+
 <hr>
-<h2>💻 Implementación Práctica</h2>
-<p>Ahora vamos a lo bueno: código real que puedes usar en tus proyectos.</p>
-<pre><code class="language-python"># Ejemplo práctico de LossFunctions
+<h2>💻 Implementación Práctica en PyTorch</h2>
+
+<p>Ahora vamos con código real que puedes usar. Este es un análisis completo de diferentes loss functions.</p>
+
+<pre><code class="language-python">"""
+Loss Functions Deep Dive - Día 138
+====================================
+Implementación desde cero de CrossEntropy, Focal Loss, Label Smoothing.
+Comparación práctica y cuándo usar cada uno.
+"""
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 import numpy as np
+from typing import Optional
 
-def concepto_fundamental(data, param):
-    # Implementación básica del concepto
-    result = []
-    for item in data:
-        processed = item * param
-        result.append(processed)
-    return np.array(result)
 
-data = [1, 2, 3, 4, 5]
-result = concepto_fundamental(data, 2)
-print(f"Resultado: {result}")
+# ─────────────────────────────────────────────
+# 1. CROSS-ENTROPY DESDE CERO (LOG-SOFTMAX + NLL)
+# ─────────────────────────────────────────────
+
+class CrossEntropyLossFromScratch(nn.Module):
+    """
+    Implementación manual de CrossEntropyLoss de PyTorch.
+    
+    math: CrossEntropyLoss(logits, target) = LogSoftmax(logits) + NLLLoss(target)
+    
+    PyTorch hace esto internamente por estabilidad numérica.
+    """
+    def __init__(self, reduction: str = 'mean'):
+        super().__init__()
+        self.reduction = reduction
+    
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            logits: (batch_size, num_classes) — raw outputs sin activar
+            targets: (batch_size,) — class indices (no one-hot!)
+        
+        Returns:
+            Scalar loss
+        """
+        # Paso 1: Log-Softmax (numéricamente estable)
+        # log_softmax(x)_c = x_c - log(sum(exp(x_j)))
+        # Restamos el max para evitar overflow
+        log_probs = F.log_softmax(logits, dim=-1)  # (batch, classes)
+        
+        # Paso 2: NLL = -log(p_true)
+        # Necesitamos solo el log_prob de la clase verdadera
+        batch_size = logits.shape[0]
+        
+        # targets es un tensor de índices, no one-hot
+        # gather toma el valor en el índice especificado
+        loss_per_sample = -log_probs.gather(dim=1, index=targets.unsqueeze(1))
+        loss_per_sample = loss_per_sample.squeeze(1)  # (batch,)
+        
+        # Paso 3: Reduction
+        if self.reduction == 'mean':
+            return loss_per_sample.mean()
+        elif self.reduction == 'sum':
+            return loss_per_sample.sum()
+        else:  # 'none'
+            return loss_per_sample
+
+
+# Verificación rápida
+def verify_cross_entropy():
+    """Compara nuestra implementación con PyTorch."""
+    torch.manual_seed(42)
+    
+    logits = torch.randn(8, 5)  # batch=8, classes=5
+    targets = torch.randint(0, 5, (8,))
+    
+    # Nuestra implementación
+    our_loss = CrossEntropyLossFromScratch(reduction='mean')(logits, targets)
+    
+    # PyTorch implementation
+    pytorch_loss = F.cross_entropy(logits, targets)
+    
+    print(f"Nuestra impl: {our_loss.item():.6f}")
+    print(f"PyTorch impl: {pytorch_loss.item():.6f}")
+    print(f"Diferencia: {abs(our_loss.item() - pytorch_loss.item()):.8f}")
+    
+    return torch.allclose(our_loss, pytorch_loss, atol=1e-5)
+
+
+# ─────────────────────────────────────────────
+# 2. FOCAL LOSS DESDE CERO
+# ─────────────────────────────────────────────
+
+class FocalLoss(nn.Module):
+    """
+    Focal Loss para class imbalance.
+    
+    Paper: Lin et al. "Focal Loss for Dense Object Detection" (ICCV 2017)
+    
+    math: FL(p_t) = -alpha_t * (1 - p_t)^gamma * log(p_t)
+    
+    Args:
+        alpha: Class weight (default: None, puede ser tensor de weights)
+        gamma: Focusing parameter (default: 2.0)
+            gamma=0 → CrossEntropy normal
+            gamma>0 → reduce peso de ejemplos fáciles
+        reduction: 'mean', 'sum', 'none'
+    """
+    def __init__(self, alpha: Optional[torch.Tensor] = None, gamma: float = 2.0, 
+                 reduction: str = 'mean'):
+        super().__init__()
+        self.alpha = alpha  # Puede ser tensor de class weights
+        self.gamma = gamma
+        self.reduction = reduction
+    
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        # Calcular probabilidades con softmax
+        probs = F.softmax(logits, dim=-1)  # (batch, classes)
+        
+        # Obtener la probabilidad de la clase correcta (pt)
+        # targets es (batch,) con índices de clase
+        pt = probs.gather(dim=1, index=targets.unsqueeze(1)).squeeze(1)  # (batch,)
+        
+        # Focal weight: (1 - pt)^gamma
+        focal_weight = (1 - pt).pow(self.gamma)  # (batch,)
+        
+        # Cross entropy per sample: -log(pt)
+        ce_loss = F.cross_entropy(logits, targets, reduction='none')  # (batch,)
+        
+        # Focal loss = focal_weight * ce_loss
+        focal_loss = focal_weight * ce_loss  # (batch,)
+        
+        # Aplicar alpha si existe
+        if self.alpha is not None:
+            # alpha es un tensor con weight por clase
+            alpha_t = self.alpha.gather(dim=0, index=targets)  # (batch,)
+            focal_loss = alpha_t * focal_loss
+        
+        # Reduction
+        if self.reduction == 'mean':
+            return focal_loss.mean()
+        elif self.reduction == 'sum':
+            return focal_loss.sum()
+        return focal_loss
+
+
+# ─────────────────────────────────────────────
+# 3. LABEL SMOOTHING CROSS ENTROPY
+# ─────────────────────────────────────────────
+
+class LabelSmoothingCrossEntropy(nn.Module):
+    """
+    CrossEntropy con Label Smoothing.
+    
+    math: y_smooth = y * (1 - eps) + eps / C
+           loss = -sum(y_smooth * log(probs))
+    
+    Args:
+        epsilon: Smoothing factor (0.1 es típico, NUNCA > 0.3)
+            epsilon=0 → vanilla cross entropy
+            epsilon=1 → distribución uniforme (destruye learning)
+    
+    WARNING: epsilon > 0.3 esencialmente destruye el aprendizaje.
+    """
+    def __init__(self, epsilon: float = 0.1, reduction: str = 'mean'):
+        super().__init__()
+        self.epsilon = epsilon
+        self.reduction = reduction
+    
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        num_classes = logits.shape[-1]
+        
+        # Convertir targets a one-hot
+        # targets: (batch,) → targets_onehot: (batch, classes)
+        targets_onehot = F.one_hot(targets, num_classes).float()
+        
+        # Label smoothing
+        # y_smooth = y * (1 - eps) + eps / C
+        with torch.no_grad():
+            smooth_targets = targets_onehot * (1 - self.epsilon) + self.epsilon / num_classes
+        
+        # Log-softmax de las logits
+        log_probs = F.log_softmax(logits, dim=-1)  # (batch, classes)
+        
+        # Cross entropy con targets suaves
+        loss = -smooth_targets * log_probs  # (batch, classes)
+        loss = loss.sum(dim=-1)  # (batch,) — sum sobre clases
+        
+        if self.reduction == 'mean':
+            return loss.mean()
+        elif self.reduction == 'sum':
+            return loss.sum()
+        return loss
+
+
+# ─────────────────────────────────────────────
+# 4. WEIGHTED CROSS-ENTROPY
+# ─────────────────────────────────────────────
+
+class WeightedCrossEntropyLoss(nn.Module):
+    """
+    CrossEntropy con class weights para imbalance.
+    
+    Útil cuando tienes desbalance severo de clases
+    y no quieres usar oversampling.
+    
+    math: loss = -weight_c * y_c * log(p_c)
+    
+    Args:
+        weights: Tensor de shape (C,) con peso por clase
+            weight_c > 1: la clase c es más importante
+            weight_c < 1: la clase c es menos importante
+    """
+    def __init__(self, weights: Optional[torch.Tensor] = None, reduction: str = 'mean'):
+        super().__init__()
+        self.weights = weights  # (num_classes,)
+        self.reduction = reduction
+    
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        # Cross entropy con weight por clase
+        loss = F.cross_entropy(logits, targets, weight=self.weights, reduction='none')
+        
+        if self.reduction == 'mean':
+            return loss.mean()
+        elif self.reduction == 'sum':
+            return loss.sum()
+        return loss
+
+
+# ─────────────────────────────────────────────
+# 5. CONTRASTIVE LOSS PARA METRIC LEARNING
+# ─────────────────────────────────────────────
+
+class ContrastiveLoss(nn.Module):
+    """
+    Contrastive Loss para metric learning (FaceNet, etc).
+    
+    Mantiene embeddings de la misma clase cercanos,
+    embeddings de clases diferentes separados.
+    
+    math: L = (1-y) * d² + y * max(0, margin - d)²
+    
+    donde d = ||f1 - f2||₂ (distancia euclidiana)
+    
+    Args:
+        margin: Margin mínimo entre clases diferentes (típico: 1.0 o 2.0)
+    """
+    def __init__(self, margin: float = 1.0):
+        super().__init__()
+        self.margin = margin
+    
+    def forward(self, embeddings1: torch.Tensor, embeddings2: torch.Tensor, 
+                labels: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            embeddings1: (batch, embedding_dim)
+            embeddings2: (batch, embedding_dim)
+            labels: (batch,) — 1 si son misma clase, 0 si diferente
+        """
+        # Distancia euclidiana
+        distances = F.pairwise_distance(embeddings1, embeddings2)  # (batch,)
+        
+        # Same class (label=1): want small distance
+        # Different class (label=0): want distance > margin
+        same_class_loss = labels * distances.pow(2)
+        diff_class_loss = (1 - labels) * F.relu(self.margin - distances).pow(2)
+        
+        loss = same_class_loss + diff_class_loss
+        return loss.mean()
+
+
+# ─────────────────────────────────────────────
+# 6. COMPARACIÓN PRÁCTICA
+# ─────────────────────────────────────────────
+
+def compare_losses():
+    """
+    Compara diferentes losses en un scenario simple.
+    Muestra cómo cada uno responde a imbalance.
+    """
+    print("=" * 60)
+    print("LOSS FUNCTIONS COMPARISON")
+    print("=" * 60)
+    
+    # Simular scenario con imbalance (clase 0 mucho más frecuente)
+    torch.manual_seed(42)
+    
+    # 100 samples, 3 classes, imbalance: clase 0 = 70%, clase 1 = 20%, clase 2 = 10%
+    batch_size = 100
+    num_classes = 3
+    logits = torch.randn(batch_size, num_classes)
+    
+    # Targets con imbalance
+    targets = torch.zeros(batch_size, dtype=torch.long)
+    targets[:70] = 0  # 70 samples clase 0
+    targets[70:90] = 1  # 20 samples clase 1
+    targets[90:] = 2  # 10 samples clase 2
+    
+    # Class weights para este imbalance específico
+    class_weights = torch.tensor([1.0, 3.5, 10.0])  # inverso a frecuencia
+    
+    # Losses
+    ce = F.cross_entropy(logits, targets)
+    ce_weighted = F.cross_entropy(logits, targets, weight=class_weights)
+    focal = FocalLoss(gamma=2.0)(logits, targets)
+    label_smooth = LabelSmoothingCrossEntropy(epsilon=0.1)(logits, targets)
+    
+    print(f"Standard CE:          {ce.item():.4f}")
+    print(f"Weighted CE:          {ce_weighted.item():.4f}")
+    print(f"Focal Loss (γ=2):     {focal.item():.4f}")
+    print(f"Label Smoothing (ε=0.1): {label_smooth.item():.4f}")
+    
+    # Qué pasa con epsilon > 0.3?
+    print("\n--- Label Smoothing con epsilon alto (PELIGRO) ---")
+    for eps in [0.3, 0.5, 0.7, 0.9]:
+        ls_loss = LabelSmoothingCrossEntropy(epsilon=eps)(logits, targets)
+        print(f"epsilon={eps}: {ls_loss.item():.4f} {'⚠️ DESTRUYE LEARNING' if eps > 0.3 else ''}")
+    
+    return True
+
+
+# ─────────────────────────────────────────────
+# 7. QUÉ USAR Y CUÁNDO
+# ─────────────────────────────────────────────
+
+def when_to_use():
+    """
+    Guía rápida: qué loss usar en cada scenario.
+    """
+    guide = """
+    ╔════════════════════════════════════════════════════════════════╗
+    ║              QUÉ LOSS USAR Y CUÁNDO                            ║
+    ╠════════════════════════════════════════════════════════════════╣
+    ║                                                                ║
+    ║  CLASIFICACIÓN MULTI-CLASE (mutuamente excluyentes)           ║
+    ║  ────────────────────────────────────────────────────────      ║
+    ║  • Imbalance leve → CrossEntropyLoss                          ║
+    ║  • Imbalance severo → WeightedCrossEntropy o FocalLoss       ║
+    ║  • Overconfidence → LabelSmoothing (ε ≤ 0.15)                 ║
+    ║                                                                ║
+    ║  CLASIFICACIÓN MULTI-LABEL (labels independientes)             ║
+    ║  ────────────────────────────────────────────────────────      ║
+    ║  • SIEMPRE → BCELoss / BCEWithLogitsLoss                      ║
+    ║  • NO uses CrossEntropy para multi-label                       ║
+    ║                                                                ║
+    ║  REGRESIÓN                                                     ║
+    ║  ────────────────────────────────────────────────────────      ║
+    ║  • MSE/L2 → smooth, penaliza outliers mucho                    ║
+    ║  • MAE/L1 → robusto a outliers                                ║
+    ║  • Huber → combinación de MSE y MAE                           ║
+    ║  • SmoothL1 → similar a Huber (en torchvision)               ║
+    ║                                                                ║
+    ║  METRIC LEARNING / FACE RECOGNITION                            ║
+    ║  ────────────────────────────────────────────────────────      ║
+    ║  • TripletLoss → triplets (anchor, positive, negative)        ║
+    ║  • ContrastiveLoss → pares                                    ║
+    ║  • CircleLoss → más moderno, mejor generalización              ║
+    ║  • MultiSimilarityLoss → state-of-the-art                     ║
+    ║                                                                ║
+    ║  GENERATIVE MODELS                                             ║
+    ║  ────────────────────────────────────────────────────────      ║
+    ║  • GANs →GANLoss, HingeLoss                                   ║
+    ║  • VAEs → ELBO (Evidence Lower Bound)                         ║
+    ║  • Diffusion → Noise Prediction Loss                           ║
+    ║                                                                ║
+    ╚════════════════════════════════════════════════════════════════╝
+    """
+    print(guide)
+
+
+# ─────────────────────────────────────────────
+# EJECUTAR TODO
+# ─────────────────────────────────────────────
+
+if __name__ == "__main__":
+    print("=" * 60)
+    print("LOSS FUNCTIONS DEEP DIVE - DÍA 138")
+    print("=" * 60)
+    
+    # 1. Verificar CrossEntropy
+    print("\n1. CrossEntropy Verification:")
+    verify_cross_entropy()
+    
+    # 2. Comparar losses
+    print("\n2. Loss Comparison:")
+    compare_losses()
+    
+    # 3. Guía de uso
+    print("\n3. When to Use:")
+    when_to_use()
 </code></pre>
+
 <hr>
-<h2>🚨 Errores Comunes</h2>
-<h3>Error 1: No entender la matemática de fondo</h3>
-<p>El 80% de los practitioners implementa esto incorrectamente porque no entienden la base teórica.</p>
-<h3>Error 2: Ignorar los hiperparámetros</h3>
-<p>Muchos asumen que los valores por defecto son óptimos. En producción, esto raramente es cierto.</p>
+<h2>🚨 Errores Comunes que Destruyen tu Modelo</h2>
+
+<h3>Error 1: Usar CrossEntropy para Multi-Label — El Error Más Costoso</h3>
+
+<p><strong>El problema</strong>: CrossEntropy asume que solo UNA clase es correcta por muestra. En multi-label, múltiples labels pueden ser correctos simultáneamente (ej: una imagen puede ser "perro" Y "mamífero" Y "animal").</p>
+
+<pre><code class="language-python"># ❌ ERROR: CrossEntropy para multi-label
+class BadMultiLabelClassifier(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(784, 256),
+            nn.ReLU(),
+            nn.Linear(256, 10)  # 10 labels posibles, MULTIPLES pueden ser True
+        )
+    
+    def forward(self, x):
+        return self.net(x)
+
+# En training:
+model = BadMultiLabelClassifier()
+logits = model(images)  # shape: (batch, 10)
+# ❌ ESTO ESTÁ MAL:
+loss = F.cross_entropy(logits, multi_label_targets)  
+# targets debería ser (batch,) con UNA clase, no (batch, 10) con múltiples labels
+
+
+# ✅ FIX: Usar BCE para multi-label
+class GoodMultiLabelClassifier(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(784, 256),
+            nn.ReLU(),
+            nn.Linear(256, 10)  # 10 labels independientes
+        )
+        # NO sigmoid aquí — BCEWithLogitsLoss lo hace internamente
+    
+    def forward(self, x):
+        return self.net(x)
+
+# En training:
+model = GoodMultiLabelClassifier()
+logits = model(images)  # shape: (batch, 10) — logits sin sigmoid
+
+# ✅ CORRECTO: BCEWithLogitsLoss combina sigmoid + BCE
+criterion = nn.BCEWithLogitsLoss()
+loss = criterion(logits, multi_label_targets)  # targets: (batch, 10) floats 0/1
+
+# O explícitamente:
+sigmoid = torch.sigmoid(logits)
+bce = F.binary_cross_entropy(sigmoid, multi_label_targets)
+
+
+# ¿Cómo detectar si tienes multi-label?
+# Si tus labels son one-hot encoded con MULTIPLES 1s → multi-label (usa BCE)
+# Si tus labels son índices únicos (UNA clase por muestra) → multi-class (usa CE)
+def detect_problem_type():
+    """
+    Returns:
+        'multi-class': una clase por muestra (MNIST, CIFAR-10)
+        'multi-label': múltiples clases por muestra (celebrities con atributos)
+        'binary': clasificación binaria (gato vs perro)
+    """
+    # En código real, esto depende de tu dataset
+    # Multi-class: targets shape = (N,) con valores 0..C-1
+    # Multi-label: targets shape = (N, C) con valores 0 o 1
+    pass
+</code></pre>
+
+<h3>Error 2: No Usar Class Weights con Imbalance Severo — Tu Modelo Ignora las Clases Raras</h3>
+
+<p><strong>El problema</strong>: Sin class weights, CrossEntropy treats all classes equally. Si tienes 99% clase 0 y 1% clase 1, el modelo aprende a predecir siempre 0 y obtiene 99% accuracy sin aprender nada útil.</p>
+
+<pre><code class="language-python"># ❌ ERROR: No usar class weights con dataset imbalanceado
+class NegligentClassifier(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(784, 256),
+            nn.ReLU(),
+            nn.Linear(256, 10)  # 10 classes, imbalance severo
+        )
+    
+    def forward(self, x):
+        return self.net(x)
+
+# Training sin weights
+model = NegligentClassifier()
+criterion = nn.CrossEntropyLoss()  # ❌ Sin class weights
+# El modelo ignora las clases minoritarias
+
+# ✅ FIX 1: Calcular class weights desde el dataset
+def compute_class_weights(dataset_targets, num_classes):
+    """
+    Computa pesos inversos a la frecuencia.
+    Clase con 1000 samples → weight = 1/1000
+    Clase con 10 samples → weight = 1/10 (10x más peso)
+    """
+    from collections import Counter
+    counts = Counter(dataset_targets.numpy())
+    total = len(dataset_targets)
+    
+    weights = []
+    for c in range(num_classes):
+        count = counts.get(c, 0)
+        # Peso = total / (num_classes * count)
+        # Suavizado con +1 para evitar división por cero
+        weight = total / (num_classes * (count + 1))
+        weights.append(weight)
+    
+    return torch.tensor(weights, dtype=torch.float32)
+
+# En tu training loop:
+class_weights = compute_class_weights(train_targets, num_classes=10)
+criterion = nn.CrossEntropyLoss(weight=class_weights)  # ✅ Con weights
+loss = criterion(logits, targets)
+
+
+# ✅ FIX 2: Usar WeightedRandomSampler durante training
+from torch.utils.data import WeightedRandomSampler
+
+def create_balanced_sampler(dataset_targets):
+    """Crea un sampler que balancea las clases automáticamente."""
+    class_counts = torch.bincount(dataset_targets)
+    class_weights = 1.0 / class_counts  # peso inverso
+    
+    # Weight para cada sample = peso de su clase
+    sample_weights = class_weights[dataset_targets]
+    
+    sampler = WeightedRandomSampler(
+        weights=sample_weights,
+        num_samples=len(dataset_targets),
+        replacement=True  # Oversample las clases minoritarias
+    )
+    return sampler
+
+# En tu DataLoader:
+sampler = create_balanced_sampler(train_targets)
+train_loader = DataLoader(train_dataset, batch_size=64, sampler=sampler)
+
+
+# ✅ FIX 3: Focal Loss para imbalance EXTREMO (detección de objetos)
+# Cuando tienes 99% background, 1% objects
+criterion = FocalLoss(alpha=None, gamma=2.0)  # ✅ Focal compensa imbalance
+loss = criterion(logits, targets)
+</code></pre>
+
+<h3>Error 3: Label Smoothing con Epsilon > 0.3 — Destruyes el Aprendizaje</h3>
+
+<p><strong>El problema</strong>: Label smoothing con epsilon alto fuerza a tu modelo a NO estar seguro de NADA. Si epsilon = 0.5, incluso el label correcto solo tiene 0.5 + 0.5/10 = 0.55 de peso. El modelo nunca aprende features discriminativos.</p>
+
+<pre><code class="language-python"># ❌ ERROR: Label smoothing con epsilon muy alto
+class OverSmoothedClassifier(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(784, 256),
+            nn.ReLU(),
+            nn.Linear(256, 10)
+        )
+    
+    def forward(self, x):
+        return self.net(x)
+
+# Training con epsilon = 0.5 (¡ESTÁ DESTRUYENDO LEARNING!)
+model = OverSmoothedClassifier()
+criterion = LabelSmoothingCrossEntropy(epsilon=0.5)  # ❌ ¡MUY ALTO!
+
+# El modelo aprende a predecir distribuciones uniformes
+# NO aprende features útiles — todas las clases se vuelven igual de probables
+
+
+# ❌ ERROR 2: Aplicar label smoothing donde NO tiene sentido
+# Label smoothing en problemas con labels ruidosos = okayish
+# Label smoothing en problemas donde la etiqueta EXACTA importa = MAL
+
+# Por ejemplo, en NLP:
+# - NER (Named Entity Recognition): labels son EXACTOS, smoothing puede ayudar
+# - Sentiment analysis (positivo/negativo): okayish, los límites son fuzzy
+# - Object detection con bounding boxes: NO uses smoothing en boxes
+
+
+# ✅ FIX: Usar epsilon en rango seguro [0.05, 0.2]
+class GoodSmoothedClassifier(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(784, 256),
+            nn.ReLU(),
+            nn.Linear(256, 10)
+        )
+    
+    def forward(self, x):
+        return self.net(x)
+
+# Training con epsilon correcto
+model = GoodSmoothedClassifier()
+criterion = LabelSmoothingCrossEntropy(epsilon=0.1)  # ✅ 0.1 es estándar y seguro
+# epsilon=0.05 → mínimo smoothing
+# epsilon=0.15 → moderado, bueno para datasets grandes
+# epsilon=0.2 → máximo recomendado, solo para casos con mucho ruido
+
+# Verificación: epsilon=0.1 significa:
+# - Para clase correcta: weight = (1 - 0.1) + 0.1/10 = 0.91
+# - Para clase incorrecta: weight = 0.1/10 = 0.01
+# El modelo aún puede ser muyconfident en la clase correcta
+
+
+# ✅ FIX 2: NO usar label smoothing cuando:
+# - Tienes dataset pequeño (el smoothing no ayuda a generalizar)
+# - Necesitas máxima precisión en una clase específica
+# - Estás haciendo metric learning (contrastive losses ya regularizan)
+
+def should_use_label_smoothing(dataset_size, num_classes, noise_level='low'):
+    """
+    Guía simple para decidir si usar label smoothing.
+    """
+    if dataset_size < 10000:
+        return False, "Dataset muy pequeño"
+    if noise_level == 'high':
+        return True, epsilon=0.15, "Ayuda con labels ruidosos"
+    if noise_level == 'medium':
+        return True, epsilon=0.1, "Mejora generalización"
+    else:  # low noise
+        return True, epsilon=0.05, "Mínimo smoothing, solo para regularización"
+</code></pre>
+
 <hr>
-<h2>✅ Mejores Prácticas</h2>
+<h2>✅ Resumen y Cierre</h2>
+
+<p>Bueno parcero, vamos con el resumen del día:</p>
+
 <ul>
-<li>Siempre documenta tu código y decisiones de diseño.</li>
-<li>Usa versionado para tus experimentos.</li>
-<li>Valida siempre con datos de prueba independientes.</li>
-<li>Monitorea las métricas en producción.</li>
+<li><strong>CrossEntropy</strong>: Para multi-class classification (UNA clase correcta por muestra). NO para multi-label.</li>
+<li><strong>BCE/BCEWithLogitsLoss</strong>: Para multi-label classification o binary classification. Múltiples labels pueden ser True simultáneamente.</li>
+<li><strong>Focal Loss</strong>: Para class imbalance severo (detección de objetos). Gamma=2 es buen punto de partida.</li>
+<li><strong>Label Smoothing</strong>: epsilon ≤ 0.15 mejora generalización. epsilon > 0.3 DESTRUYE learning.</li>
+<li><strong>Class Weights</strong>: Siempre calcula e inyecta cuando tienes desbalance de clases.</li>
 </ul>
-<hr>
-<h2>📚 Recursos</h2>
-<ul>
-<li>Documentación oficial de torch.nn</li>
-<li>Tutoriales prácticos en el blog</li>
-<li>Código fuente en GitHub</li>
-</ul>
+
+<p>La próxima vez que copies un training loop y veas <code>F.cross_entropy(logits, targets)</code> sin class weights en un dataset imbalanceado, ya sabes que hay un bug. Pregúntate: ¿el autor sabía lo que hacía o simplemente copió de un tutorial sin entender?</p>
+
+<p>Eso es todo por hoy, nos vemos en el Día 139. ¡Éxitos en sus proyectos!</p>
+
+<p><em>— Fabián</em></p>
   </article>
 
   <script>
