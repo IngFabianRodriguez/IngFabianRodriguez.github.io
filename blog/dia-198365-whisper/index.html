@@ -118,46 +118,539 @@ nav {
   </header>
 
   <article class="article-body">
-    <h1>Embeddings Contextuales - El Problema De Polisemia</h1>
-<p>Hagale pues, parcero. Hoy es el Dia 198 y hablamos del problema de polisemia y como los embeddings contextuales lo resuelven. Cafe.</p>
+<h1>Recommendation Systems — El Sistema que el 80% Implementa Incorrectamente</h1>
+<p>Hagale pues, parcero. Día 198 y hoy vamos a hablar de sistemas de recomendación. Si alguna vez te has preguntado por qué Netflix te sugiere series que no tienen nada que ver con lo que ves, o por qué Amazon siempre te recomienda exactamente lo que acabas de comprar... bueno, hay una razón. El 80% de las implementaciones básicas de recommendation systems cometen los mismos errores. Vamos a ver cómo hacerlo bien, con código PyTorch real. Sírvete otro tintico y vamos pa'llá.</p>
 <hr>
-<h2>🎯 El Problema De La Polisemia</h2>
-<p>La palabra "banco" puede mean banco (finanzas), banco (asiento), o banco (de peces). Un embedding estatico como Word2Vec solo tiene un vector para todas meanings.</p>
-<h3>El problema:</h3>
+<h2>🎯 Por Qué Son Tan Difíciles los Recommendation Systems?</h2>
+<p>Un recommendation system quiere predecir qué items va a preferir un usuario. Suena simple, pero hay problemas fundamentales:</p>
 <ul>
-<li><strong>Word2Vec</strong>: Un vector por palabra</li>
-<li><strong>Realidad</strong>: Multiples significados por palabra</li>
-<li><strong>Solucion</strong>: Embeddings contextuales</li>
+<li><strong>Cold Start</strong>: Usuarios o items nuevos sin historial</li>
+<li><strong>Sparsity</strong>: La matriz usuario-item es extremadamente sparse (millones de items, un usuario interactúa con cientos)</li>
+<li><strong>Popularity Bias</strong>: El sistema tiende a recomendar solo items populares, ignorando el long tail</li>
+<li><strong>Feedback loops</strong>: Lo que recomendaste afecta lo que el usuario ve, lo que afecta tus futuras recomendaciones</li>
 </ul>
+<p>La matemática detrás es elegante: queremos factorizar una matriz enorme $R_{m \times n}$ (m usuarios, n items) en dos matrices más pequeñas $U_{m \times k}$ y $I_{n \times k}$ tales que $R \approx U \cdot I^T$.</p>
 <hr>
-<h2>📐 Embeddings Contextuales</h2>
-<pre><code class="language-python"># embeddings contextual = f(word, context)
-# vs
-# embeddings estatico = f(word)
+<h2>📐 La Matemática de Collaborative Filtering</h2>
+<h3>Matrix Factorization</h3>
+<p>Dada la matriz de ratings $R \in \mathbb{R}^{m \times n}$, queremos encontrar:</p>
+<p>$$\hat{R} = U V^T$$</p>
+<p>Donde $U \in \mathbb{R}^{m \times k}$ son los embeddings de usuarios y $V \in \mathbb{R}^{n \times k}$ son los embeddings de items. El objetivo es minimizar:</p>
+<p>$$\min_{U, V} \sum_{(u, i) \in \mathcal{O}} (r_{ui} - u_u^T v_i)^2 + \lambda(\|U\|^2 + \|V\|^2)$$</p>
+<p>Donde $\mathcal{O}$ son las observaciones conocidas y $\lambda$ es la regularización.</p>
+<h3>Neural Collaborative Filtering</h3>
+<p>La versión neural reemplaza el producto punto $u_u^T v_i$ con una red neuronal que puede aprender interacciones no lineales:</p>
+<p>$$\hat{r}_{ui} = \sigma(\text{MLP}([u_u; v_i]))$$</p>
+<p>Donde $[;]$ denota concatenación y MLP es un multilayer perceptron.</p>
+<hr>
+<h2>🚀 Implementación en PyTorch</h2>
+<h3>Collaborative Filtering con Embeddings</h3>
+<pre><code class="language-python">import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import Dataset, DataLoader
 
-# "banco" tiene diferentes vectores en diferentes contextos:
-context1 = "Fui al banco a depositar dinero"  # financiera
-context2 = "Me sente en el banco del parque"  # asiento
+class EmbeddingDataset(Dataset):
+    """Dataset para ratings usuario-item."""
+    def __init__(self, user_ids, item_ids, ratings):
+        self.user_ids = torch.tensor(user_ids, dtype=torch.long)
+        self.item_ids = torch.tensor(item_ids, dtype=torch.long)
+        self.ratings = torch.tensor(ratings, dtype=torch.float32)
+    
+    def __len__(self):
+        return len(self.ratings)
+    
+    def __getitem__(self, idx):
+        return self.user_ids[idx], self.item_ids[idx], self.ratings[idx]
+
+
+class MatrixFactorization(nn.Module):
+    """
+    Matrix Factorization clásica con embeddings.
+    Minimiza: (r_ui - u_u^T v_i)^2 + regularization
+    """
+    def __init__(self, n_users, n_items, embedding_dim=64):
+        super().__init__()
+        self.user_embedding = nn.Embedding(n_users, embedding_dim)
+        self.item_embedding = nn.Embedding(n_items, embedding_dim)
+        self.user_bias = nn.Embedding(n_users, 1)
+        self.item_bias = nn.Embedding(n_items, 1)
+        self.global_bias = nn.Parameter(torch.zeros(1))
+        
+        # Inicialización
+        nn.init.normal_(self.user_embedding.weight, std=0.01)
+        nn.init.normal_(self.item_embedding.weight, std=0.01)
+    
+    def forward(self, user_ids, item_ids):
+        # Embeddings
+        u = self.user_embedding(user_ids)  # (batch, embedding_dim)
+        v = self.item_embedding(item_ids)   # (batch, embedding_dim)
+        
+        # Biases
+        b_u = self.user_bias(user_ids).squeeze()  # (batch,)
+        b_i = self.item_bias(item_ids).squeeze()  # (batch,)
+        
+        # Producto punto + biases
+        dot = (u * v).sum(dim=1)  # (batch,)
+        prediction = dot + b_u + b_i + self.global_bias
+        
+        return prediction
+
+
+# Datos de ejemplo (reemplazar con datos reales)
+n_users = 10000
+n_items = 50000
+embedding_dim = 64
+
+model = MatrixFactorization(n_users, n_items, embedding_dim)
+criterion = nn.MSELoss()
+optimizer = optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-5)
+
+# Datos de entrenamiento
+user_ids = torch.randint(0, n_users, (10000,))
+item_ids = torch.randint(0, n_items, (10000,))
+ratings = torch.rand(10000) * 4 + 1  # Ratings 1-5
+
+dataset = EmbeddingDataset(user_ids, item_ids, ratings)
+loader = DataLoader(dataset, batch_size=256, shuffle=True)
+
+# Entrenamiento
+for epoch in range(10):
+    total_loss = 0
+    for users, items, ratings_batch in loader:
+        preds = model(users, items)
+        loss = criterion(preds, ratings_batch)
+        
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+        total_loss += loss.item()
+    
+    print(f"Epoch {epoch+1}, Loss: {total_loss/len(loader):.4f}")
+</code></pre>
+<h3>Neural Collaborative Filtering (NCF)</h3>
+<pre><code class="language-python">class NeuralCollaborativeFiltering(nn.Module):
+    """
+    Neural CF: Combina GMF (Generalized Matrix Factorization) 
+    con MLP (Multi-Layer Perceptron).
+    """
+    def __init__(self, n_users, n_items, embedding_dim=64, hidden_layers=[128, 64, 32]):
+        super().__init__()
+        
+        # GMF: embeddings lineales
+        self.user_gmf = nn.Embedding(n_users, embedding_dim)
+        self.item_gmf = nn.Embedding(n_items, embedding_dim)
+        
+        # MLP: embeddings para red neuronal
+        self.user_mlp = nn.Embedding(n_users, embedding_dim)
+        self.item_mlp = nn.Embedding(n_items, embedding_dim)
+        
+        # MLP layers
+        mlp_input_dim = embedding_dim * 2
+        layers = []
+        prev_dim = mlp_input_dim
+        for hidden_dim in hidden_layers:
+            layers.append(nn.Linear(prev_dim, hidden_dim))
+            layers.append(nn.ReLU())
+            layers.append(nn.Dropout(0.2))
+            prev_dim = hidden_dim
+        self.mlp = nn.Sequential(*layers)
+        
+        # Capa final: combina GMF + MLP
+        self.output = nn.Linear(embedding_dim + hidden_layers[-1], 1)
+        
+        # Inicialización
+        self._init_weights()
+    
+    def _init_weights(self):
+        for module in self.modules():
+            if isinstance(module, nn.Embedding):
+                nn.init.normal_(module.weight, std=0.01)
+            elif isinstance(module, nn.Linear):
+                nn.init.xavier_uniform_(module.weight)
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
+    
+    def forward(self, user_ids, item_ids):
+        # GMF part
+        user_gmf = self.user_gmf(user_ids)
+        item_gmf = self.item_gmf(item_ids)
+        gmf_output = user_gmf * item_gmf  # Producto elemento-wise
+        
+        # MLP part
+        user_mlp = self.user_mlp(user_ids)
+        item_mlp = self.item_mlp(item_ids)
+        mlp_input = torch.cat([user_mlp, item_mlp], dim=1)
+        mlp_output = self.mlp(mlp_input)
+        
+        # Combinar GMF + MLP
+        combined = torch.cat([gmf_output, mlp_output], dim=1)
+        prediction = self.output(combined)
+        
+        return prediction.squeeze()
+
+
+# Entrenamiento NCF
+model = NeuralCollaborativeFiltering(n_users, n_items, embedding_dim=64)
+optimizer = optim.Adam(model.parameters(), lr=0.001)
+
+for epoch in range(10):
+    for users, items, ratings_batch in loader:
+        preds = model(users, items)
+        loss = criterion(preds, ratings_batch)
+        
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+</code></pre>
+<h3>Negative Sampling</h3>
+<pre><code class="language-python">class WeightedBCELoss(nn.Module):
+    """
+    Binary Cross Entropy con negative sampling.
+    Items no interactuados = 0, items interactuados = 1.
+    """
+    def __init__(self, ratio=4):
+        """
+        ratio: por cada positivo, muestrear 'ratio' negativos
+        """
+        super().__init__()
+        self.ratio = ratio
+    
+    def forward(self, predictions, labels):
+        return nn.functional.binary_cross_entropy_with_logits(predictions, labels)
+
+
+class RecDatasetWithNegativeSampling(Dataset):
+    """
+    Dataset con negative sampling: por cada (user, positive_item),
+    muestreamos 'ratio' items que el usuario NO ha interactuado.
+    """
+    def __init__(self, user_ids, item_ids, ratings, n_items, ratio=4):
+        self.user_ids = []
+        self.item_ids = []
+        self.labels = []
+        
+        # Crear set de items por usuario para negative sampling rápido
+        self.user_to_items = {}
+        for u, i in zip(user_ids, item_ids):
+            if u not in self.user_to_items:
+                self.user_to_items[u] = set()
+            self.user_to_items[u].add(i)
+        
+        all_items = set(range(n_items))
+        
+        for u, i, r in zip(user_ids, item_ids, ratings):
+            # Positivo
+            self.user_ids.append(u)
+            self.item_ids.append(i)
+            self.labels.append(1 if r > 0 else 0)
+            
+            # Negativos
+            negatives = all_items - self.user_to_items.get(u, set())
+            neg_items = list(np.random.choice(list(negatives), 
+                                               size=min(ratio, len(negatives)), 
+                                               replace=False))
+            for neg_i in neg_items:
+                self.user_ids.append(u)
+                self.item_ids.append(neg_i)
+                self.labels.append(0)
+        
+        self.user_ids = torch.tensor(self.user_ids, dtype=torch.long)
+        self.item_ids = torch.tensor(self.item_ids, dtype=torch.long)
+        self.labels = torch.tensor(self.labels, dtype=torch.float32)
+    
+    def __len__(self):
+        return len(self.labels)
+    
+    def __getitem__(self, idx):
+        return self.user_ids[idx], self.item_ids[idx], self.labels[idx]
+
+
+# Uso
+dataset = RecDatasetWithNegativeSampling(
+    user_ids, item_ids, ratings, 
+    n_items=n_items, ratio=4
+)
+loader = DataLoader(dataset, batch_size=512, shuffle=True)
 </code></pre>
 <hr>
-<h2>🚀 Soluciones</h2>
-<pre><code class="language-python"># 1. Multi-prototype vectors (Sense2Vec)
-# 2. Contextual embeddings (ELMo, BERT)
+<h2>⚠️ Errores Comunes (y Sus Soluciones)</h2>
+<h3>Error 1: Cold Start Problem Que No Se Addressed</h3>
+<p><strong>El problema</strong>: Usuarios nuevos no tienen historial, items nuevos no tienen interacciones. Tu matriz $R$ está casi vacía para ellos y el modelo no puede recomendar nada significativo. Terminan en "popular items" por defecto, lo cual es un círculo vicioso.</p>
+<pre><code class="language-python"># MAL: No handling de cold start
+class ColdStartAwareRecommender:
+    def __init__(self, n_users, n_items, embedding_dim):
+        self.cf_model = MatrixFactorization(n_users, n_items, embedding_dim)
+        # Sin handling de cold start...
+    
+    def recommend(self, user_id, user_history, all_items, n=10):
+        if user_id >= self.cf_model.user_embedding.num_embeddings:
+            # Usuario nuevo: fallback a popular
+            return self.popular_items[:n]  # Sesgo de popularidad
+        
+        # Usuario conocido
+        return self._cf_recommend(user_id, all_items, n)
 
-# Con BERT, el mismo token tiene diferentes embeddings
-# dependiendo del contexto
-from transformers import BertModel, BertTokenizer
 
-model = BertModel.from_pretrained("bert-base-uncased")
-tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
+# BIEN: Content-based hybrid para cold start
+class HybridRecommender:
+    def __init__(self, n_users, n_items, embedding_dim, item_features_dim):
+        self.cf_model = MatrixFactorization(n_users, n_items, embedding_dim)
+        self.content_model = nn.Sequential(
+            nn.Linear(item_features_dim, embedding_dim),
+            nn.ReLU(),
+            nn.Linear(embedding_dim, embedding_dim)
+        )
+        self.user_content_adapter = nn.Linear(item_features_dim, embedding_dim)
+    
+    def recommend(self, user_id, user_history, all_items, n=10, alpha=0.5):
+        # Alpha: peso entre CF (alpha) y content-based (1-alpha)
+        
+        if len(user_history) < 5:
+            # Cold start: usar content-based más pesado
+            return self._content_recommend(user_history, all_items, n)
+        
+        # Hybrid: combinar ambos
+        cf_scores = self._cf_scores(user_id, all_items)
+        content_scores = self._content_scores(user_history, all_items)
+        
+        hybrid_scores = alpha * cf_scores + (1 - alpha) * content_scores
+        return torch.topk(hybrid_scores, n).indices
+</code></pre>
+<p><strong>La solución</strong>: Para cold start, usa content-based features. Si el usuario acaba de registrarse, pregunta qué le gusta (géneros, categorías). Si el item es nuevo, usa sus features (descripción, categoría) para embeddearlo. Hybrid models combinan CF con content-based.</p>
+<h3>Error 2: Popularity Bias — Solo Recomienda Items Populares</h3>
+<p><strong>El problema</strong>: Cuando optimizas solo por accuracy (MSE, recall@K), el modelo aprende que es seguro recomendar items populares porque tienen más señales. Esto mata el long tail y crea un oligopolio de unos pocos items.</p>
+<pre><code class="language-python"># MAL: Sesgo de popularidad
+def train_naive(model, loader, criterion, optimizer):
+    for users, items, ratings in loader:
+        preds = model(users, items)
+        loss = criterion(preds, ratings)
+        # El modelo aprende que predecir "popular" minimiza el error
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+
+# BIEN: Popularity-aware training con regularization
+class PopularityAwareLoss(nn.Module):
+    """
+    Penaliza recomendación de items populares en proporción inversa
+    a su popularidad. Items muy populares reciben más penalización
+    cuando se predicen incorrectamente.
+    """
+    def __init__(self, item_counts, beta=0.5):
+        super().__init__()
+        # Frecuencia inversa: items menos populares = peso mayor
+        self.item_weights = 1.0 / (item_counts + 1)  # +1 para evitar división por 0
+        self.item_weights = self.item_weights / self.item_weights.sum()  # Normalizar
+        self.beta = beta  # Cuánto peso dar a la regularización de popularidad
+    
+    def forward(self, predictions, labels, item_ids):
+        # BCE base
+        bce = nn.functional.binary_cross_entropy_with_logits(predictions, labels, reduction='none')
+        
+        # Ponderar por popularidad inversa
+        weights = self.item_weights[item_ids].to(bce.device)
+        weighted_bce = (bce * weights).mean()
+        
+        # Calcular bias de popularidad en predicciones
+        popularity_bias = (predictions * weights).mean()
+        
+        return weighted_bce + self.beta * torch.abs(popularity_bias)
+
+
+#另另一种方法: Popularity debiasing en sampling
+class DebiasedDataLoader:
+    """
+    En vez de muestrear negatives uniformemente,
+    muestrea más negatives de items populares para que 
+    el modelo aprenda a diferenciarlos.
+    """
+    def __init__(self, user_to_items, n_items, ratio=4, popularity_power=0.5):
+        self.user_to_items = user_to_items
+        self.n_items = n_items
+        self.ratio = ratio
+        
+        # Distribución de popularidad
+        item_counts = np.zeros(n_items)
+        for items in user_to_items.values():
+            for i in items:
+                item_counts[i] += 1
+        
+        # Sampling proporcional a popularidad^power
+        # power=0: uniforme, power=1: proporcional a popularidad
+        pop_dist = item_counts ** popularity_power
+        pop_dist = pop_dist / pop_dist.sum()
+        self.pop_dist = pop_dist
+    
+    def sample_negatives(self, user_id):
+        user_items = self.user_to_items.get(user_id, set())
+        negatives = []
+        while len(negatives) < self.ratio:
+            candidates = np.random.choice(self.n_items, size=self.ratio*2, p=self.pop_dist)
+            for c in candidates:
+                if c not in user_items and c not in negatives:
+                    negatives.append(c)
+        return negatives[:self.ratio]
+</code></pre>
+<p><strong>La solución</strong>: Introduce popularity-aware losses, debiased sampling, o usa explore-exploit strategies (epsilon-greedy, UCB) para intentionally muestrear items menos populares.</p>
+<h3>Error 3: No Usar Negative Sampling Correctamente</h3>
+<p><strong>El problema</strong>: Muchos implementations tratan missing values como 0 o ignoran el negative sampling completamente. Esto sesga el modelo: aprende que "no observado" = "no preferido", pero hay muchos items no observados que el usuario SÍ preferiría.</p>
+<pre><code class="language-python"># MAL: Tratar todos los no-observados como negativos
+# Esto sobre-representa items populares porque tienen más "no observados"
+# pero son distribuidos uniformemente en el sampling
+
+# En el DataLoader:
+all_negative_items = list(set(range(n_items)) - set(user_positive_items))
+neg_items = random.sample(all_negative_items, k=ratio)  # Uniforme!
+
+
+# BIEN:重要性采样 para negatives
+def get_weighted_negatives(user_id, user_positive_items, all_items_scores, beta=0.5):
+    """
+    weighting negatives por su "relevance probability" estimada.
+    Un negative con alta score debería ser weighted menos
+    porque es más likely ser un false negative.
+    
+    Beta controla el trade-off:
+    - beta=0: todos los negatives pesan igual (naive)
+    - beta=1: pesos proporcionales a predicted relevance
+    """
+    # Para items negativos, el "true" label es 0
+    # Pero queremos weighting based on how likely they are
+    # to be false negatives
+    
+    # Si el modelo predice alta score para un negative,
+    # es más probable que sea un false negative
+    negative_scores = all_items_scores[list(set(range(n_items)) - user_positive_items)]
+    
+    # Inverse propensity: menos peso a items que el modelo ya piensa que son relevantes
+    # (porque si el modelo ya los penaliza, no necesitamos enseñarle eso)
+    weights = (1 - negative_scores) ** beta
+    
+    # Normalizar
+    weights = weights / weights.sum()
+    
+    return weights
+
+
+class CorrectNegativeSamplingLoss(nn.Module):
+    """
+    Loss que usa importance weighting para negatives.
+    Basado en "Large-scale Collaborative Filtering with 
+    Negative Sampling" y técnicas de debiasing.
+    """
+    def __init__(self, model, n_items, beta=0.5):
+        super().__init__()
+        self.model = model
+        self.n_items = n_items
+        self.beta = beta
+    
+    def forward(self, user_ids, pos_item_ids, neg_item_ids):
+        # Positive scores
+        pos_scores = self.model(user_ids, pos_item_ids)
+        
+        # Negative scores
+        neg_scores = self.model(user_ids, neg_item_ids)
+        
+        # BPR-style loss: maximizar diferencia entre pos y neg
+        # L = -log(sigmoid(pos_score - neg_score))
+        diff = pos_scores.unsqueeze(1) - neg_scores  # (batch, n_neg)
+        loss = -torch.log(torch.sigmoid(diff) + 1e-8).mean()
+        
+        return loss
+
+
+# Alternativa más simple: Adaptive negative sampling
+# Basada en confidence del modelo
+class AdaptiveNegativeSampler:
+    """
+    Muestrea negatives basándose en cuan "difícil" son.
+    Items que el modelo ya predice bien (score alto para negative)
+    son less informative y deberían ser muestreados menos.
+    """
+    def __init__(self, model, n_items, n_negatives=4, n_epochs=10):
+        self.model = model
+        self.n_items = n_items
+        self.n_negatives = n_negatives
+        self.n_epochs = n_epochs
+    
+    def sample(self, user_ids, known_items, epoch):
+        # Increase difficulty over epochs
+        temperature = 1.0 - 0.8 * (epoch / self.n_epochs)
+        
+        # Get model predictions for all items
+        with torch.no_grad():
+            all_scores = torch.sigmoid(self.model(
+                user_ids.unsqueeze(1).expand(len(user_ids), self.n_items),
+                torch.arange(self.n_items).unsqueeze(0).expand(len(user_ids), self.n_items)
+            ))  # (n_users, n_items)
+        
+        # Mask known items
+        for i, items in enumerate(known_items):
+            all_scores[i, list(items)] = -np.inf
+        
+        # Sample based on scores (higher score = more likely to be false negative)
+        probs = torch.softmax(all_scores / temperature, dim=1)
+        negatives = torch.multinomial(probs, self.n_negatives)
+        
+        return negatives
+</code></pre>
+<p><strong>La solución</strong>: Usa negative sampling con importance weighting. Los items que el modelo predice como "probable" para un negative son más informativas como training signals porque son likely false negatives.</p>
+<hr>
+<h2>📊 Métricas de Evaluación</h2>
+<pre><code class="language-python">def evaluate_recommender(model, test_annotations, n_items, k=10):
+    """
+    test_annotations: lista de (user_id, positive_items_set)
+    positive_items_set: items que el usuario interactuó en test
+    """
+    hits = 0
+    ndcg = 0
+    total = 0
+    
+    for user_id, pos_items in test_annotations:
+        # Get all item scores for this user
+        all_items = torch.arange(n_items)
+        user = torch.tensor([user_id] * n_items)
+        
+        with torch.no_grad():
+            scores = torch.sigmoid(model(user, all_items)).numpy()
+        
+        # Top-k recommendations
+        top_k = np.argsort(scores)[-k:]
+        
+        # Hit: al menos una recomendación es relevante
+        if any(item in pos_items for item in top_k):
+            hits += 1
+        
+        # NDCG@k
+        dcg = 0
+        for i, item in enumerate(top_k):
+            if item in pos_items:
+                dcg += 1 / np.log2(i + 2)
+        
+        # IDCG: ideal DCG (todos los relevantes en top k)
+        idcg = sum(1 / np.log2(i + 2) for i in range(min(len(pos_items), k)))
+        ndcg += dcg / idcg if idcg > 0 else 0
+        
+        total += 1
+    
+    return {
+        'hit_rate@k': hits / total,
+        'ndcg@k': ndcg / total
+    }
 </code></pre>
 <hr>
-<h2>⚠️ Errores Comunes</h2>
-<h3>Error 1: Usar Embeddings Estaticos En Tareas Sensibles Al Contexto</h3>
-<p><strong>El problema</strong>: Perder matices semanticos.</p>
-<p><strong>La solucion</strong>: Usa BERT o ELMo para tareas de alta complejidad.</p>
-<hr>
-<p><em>Eso es todo! Nos vemos en el Dia 199.</em></p>
+<h2>🎯 Resumen y Cierre</h2>
+<p>Hoy cubrimos recommendation systems: collaborative filtering, matrix factorization, y neural collaborative filtering. Los errores más comunes son:</p>
+<ul>
+<li><strong>Cold Start</strong>: Usa hybrid models con content-based para usuarios/items nuevos</li>
+<li><strong>Popularity Bias</strong>: Importance weighting y regularización específica</li>
+<li><strong>Negative Sampling</strong>: Importance-weighted negatives, no uniform sampling</li>
+</ul>
+<p>Un recommendation system que funciona bien es la diferencia entre un usuario que descubre tu producto y uno que se va frustrado. La diferencia está en cómo manejas los edges cases: cold start, long tail, y la calidad de tu negative sampling.</p>
+<p><em>Eso es todo por hoy, parcero. Día 198 completado. Vamos por el 199 mañana. ¡Abrazo!</em></p>
+</code></pre>
   </article>
 
   <script>
