@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="RAG (Retrieval Augmented Generation) - Por qué el 80% implementa RAG incorrectamente en producción | #365DaysOfAI por Fabián Rodríguez">
-  <title>RAG (Retrieval Augmented Generation) - Por qué el 80% implementa RAG incorrectamente en producción | #365DaysOfAI</title>
+  <meta name="description" content="Prefix Decoding - Por qué el 70% de lo que generás ya lo sabías | #365DaysOfAI por Fabián Rodríguez">
+  <title>Prefix Decoding - Por qué el 70% de lo que generás ya lo sabías | #365DaysOfAI</title>
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
@@ -91,63 +91,583 @@ nav {
 
   <header class="article-hero">
     <div class="day-badge">Día 156 / 365 &nbsp;·&nbsp; #365DaysOfAI</div>
-    <h1 class="article-title">RAG (Retrieval Augmented Generation) - Por qué el 80% implementa RAG incorrectamente en producción</h1>
+    <h1 class="article-title">Prefix Decoding - Por qué el 70% de lo que generás ya lo sabías</h1>
     <div class="article-meta">
       <time class="article-date">06 de may de 2026</time>
-      <div class="tags"><span class="tag">chromadb</span></div>
+      <div class="tags"><span class="tag">prefix-decoding</span></div>
     </div>
   </header>
 
   <article class="article-body">
-    <p>Hola, parcero. Llegamos al Día 156 y hoy vamos con RAG. Este tema es crítico porque el porcentaje que mencionamos en el título representa bugs y confusiones que veo constantemente en producción. Acompañame que esto va detallado.</p>
+    <p>Hola, parcero. Día 156 y hoy vamos con Prefix Decoding — una técnica que cuando la empezás a usar bien, te das cuenta de cuántas veces estabas tirando compute a la basura sin necesidad. Si tenés prompts repetitivos en producción (chatbots, RAG, agentes), esto es para vos. Café listo.</p>
+
 <hr>
-<h2>📐 Fundamentos Teóricos</h2>
-<p>Vamos paso a paso. Entender la teoría detrás de RAG es lo que separa a alguien que copia código de alguien que realmente sabe lo que está haciendo.</p>
-<h3>Conceptos Clave</h3>
+<h2>🎯 Que Es Prefix Decoding</h2>
+
+<p>En la generación autoregresiva estándar, cada token se genera uno a la vez. Pero en muchas aplicaciones reales, el prompt tiene partes fijas que no cambian entre requests. Por ejemplo:</p>
+
 <ul>
-<li><strong>Concepto 1</strong>: Descripción del primer concepto fundamental.</li>
-<li><strong>Concepto 2</strong>: Descripción del segundo concepto que necesitas entender.</li>
-<li><strong>Concepto 3</strong>: Por qué esto importa en la práctica.</li>
+<li>System prompt: "Sos un asistente útil..." (siempre igual)</li>
+<li>Instructions: "Responde en español..." (siempre igual)</li>
+<li>Context retrieval: chunks de RAG que se repiten entre queries similares</li>
 </ul>
+
+<p>Prefix Decoding cachea el computation del prefijo fijo para que solo calculés la parte "nueva" de cada request. Esto reduce dramáticamente la latencia cuando tenés prompts con mucho contenido repetido.</p>
+
 <hr>
-<h2>💻 Implementación Práctica</h2>
-<p>Ahora vamos a lo bueno: código real que puedes usar en tus proyectos.</p>
-<pre><code class="language-python"># Ejemplo práctico de RAG
-import numpy as np
+<h2>📐 specDec vs Prefix Caching</h2>
 
-def concepto_fundamental(data, param):
-    # Implementación básica del concepto
-    result = []
-    for item in data:
-        processed = item * param
-        result.append(processed)
-    return np.array(result)
+<p>Hay dos conceptos relacionados pero diferentes:</p>
 
-data = [1, 2, 3, 4, 5]
-result = concepto_fundamental(data, 2)
-print(f"Resultado: {result}")
+<p><strong>Speculative Decoding (specDec)</strong>: Usa un modelo pequeño ("draft model") para predecir varios tokens adelante, y el modelo grande solo verifica. El speedup viene de paralelizar la generación de varios tokens. No requiere prefijos repetitivos.</p>
+
+<p><strong>Prefix Caching</strong>: Lo que hoy tratamos. Cachea el KV cache del prefijo fijo para no recalcularlo. El speedup viene de reducir compute redundante en el prefijo.</p>
+
+<p>La diferencia clave: specDecspecula con tokens futuros, prefix caching reutiliza computation de tokens pasados.</p>
+
+<hr>
+<h2>💻 Implementación Real en PyTorch</h2>
+
+<p>Vamos con código de verdad mostrando cómo implementar prefix caching:</p>
+
+<pre><code class="language-python">"""
+Prefix Decoding / Prompt Caching Implementation - Día 156
+Demostración de cómo cachear prefijos para reducir latencia.
+"""
+import torch
+import torch.nn as nn
+import time
+from typing import Optional
+
+
+class PrefixCacheAttention(nn.Module):
+    """
+    Attention que soporta prefix caching.
+    
+    La idea es separar el prefix (cacheable) del suffix (generado).
+    """
+    
+    def __init__(self, d_model: int, n_heads: int):
+        super().__init__()
+        assert d_model % n_heads == 0
+        self.d_model = d_model
+        self.n_heads = n_heads
+        self.d_k = d_model // n_heads
+        
+        self.W_q = nn.Linear(d_model, d_model)
+        self.W_k = nn.Linear(d_model, d_model)
+        self.W_v = nn.Linear(d_model, d_model)
+        self.W_o = nn.Linear(d_model, d_model)
+    
+    def forward(
+        self,
+        x: torch.Tensor,
+        prefix_len: int,
+        kv_cache_prefix: Optional[tuple[torch.Tensor, torch.Tensor]] = None,
+        use_cache: bool = True
+    ) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor] | None]:
+        """
+        Args:
+            x: Input tensor [batch, seq_len, d_model]
+            prefix_len: Longitud del prefijo cacheado
+            kv_cache_prefix: KV cache del prefijo (de requests anteriores)
+            use_cache: Si usar cache
+        """
+        batch, seq_len, _ = x.shape
+        
+        # Proyecciones Q, K, V
+        Q = self.W_q(x).view(batch, seq_len, self.n_heads, self.d_k).transpose(1, 2)
+        K = self.W_k(x).view(batch, seq_len, self.n_heads, self.d_k).transpose(1, 2)
+        V = self.W_v(x).view(batch, seq_len, self.n_heads, self.d_k).transpose(1, 2)
+        
+        new_prefix_cache = None
+        new_kv_cache = None
+        
+        if use_cache and kv_cache_prefix is not None:
+            # Usamos el prefix cacheado + calculamos solo el suffix
+            k_prefix, v_prefix = kv_cache_prefix
+            
+            # El attention se hace en dos partes:
+            # 1. Q del suffix atiende a K del prefix (cacheado)
+            # 2. Q del suffix atiende a K del suffix (nuevo)
+            
+            # Para el primer token del suffix, solo necesitamos atender al prefix
+            # Los siguientes tokens atienden a prefix + suffix previo
+            
+            K_full = torch.cat([k_prefix, K], dim=2)
+            V_full = torch.cat([v_prefix, V], dim=2)
+            
+            # Guardar el KV del suffix completo para el próximo paso
+            new_kv_cache = (K_full, V_full)
+        
+        # Attention scores
+        scores = torch.matmul(Q, K.transpose(-2, -1)) / (self.d_k ** 0.5)
+        attn_weights = torch.softmax(scores, dim=-1)
+        
+        # Output
+        output = torch.matmul(attn_weights, V)
+        output = output.transpose(1, 2).contiguous().view(batch, -1, self.d_model)
+        output = self.W_o(output)
+        
+        if use_cache and kv_cache_prefix is not None:
+            return output, new_kv_cache
+        elif use_cache:
+            return output, (K, V)
+        return output, None
+
+
+class PrefixCachingLM(nn.Module):
+    """
+    Language Model con soporte para prefix caching.
+    """
+    
+    def __init__(self, vocab_size: int, d_model: int, n_heads: int, n_layers: int, d_ff: int):
+        super().__init__()
+        self.embedding = nn.Embedding(vocab_size, d_model)
+        self.layers = nn.ModuleList([
+            PrefixCacheAttention(d_model, n_heads) for _ in range(n_layers)
+        ])
+        self.lm_head = nn.Linear(d_model, vocab_size)
+        self.d_model = d_model
+    
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        prefix_len: int = 0,
+        kv_cache_prefix: Optional[list] = None,
+        use_cache: bool = True
+    ) -> tuple[torch.Tensor, list]:
+        x = self.embedding(input_ids) * (self.d_model ** 0.5)
+        
+        new_cache = []
+        
+        for i, layer in enumerate(self.layers):
+            if kv_cache_prefix is not None:
+                layer_cache = kv_cache_prefix[i] if i < len(kv_cache_prefix) else None
+            else:
+                layer_cache = None
+            
+            x, new_layer_cache = layer(x, prefix_len, layer_cache, use_cache)
+            new_cache.append(new_layer_cache)
+        
+        logits = self.lm_head(x)
+        return logits, new_cache
+
+
+def generate_with_prefix_cache(
+    model: nn.Module,
+    prefix_ids: torch.Tensor,
+    suffix_ids: torch.Tensor,
+    max_new_tokens: int,
+    kv_cache_prefix: Optional[list] = None,
+    temperature: float = 1.0,
+    top_k: int = 50
+) -> tuple[list[int], list, float]:
+    """
+    Genera usando prefix caching.
+    
+    Args:
+        prefix_ids: Tokens del prefijo fijo (system prompt, etc)
+        suffix_ids: Tokens del suffix (input del usuario)
+        kv_cache_prefix: KV cache del prefijo (de previous requests)
+    
+    Returns:
+        generated: Tokens generados
+        new_kv_cache_prefix: KV cache del prefix completo para reuse
+        time_elapsed: Tiempo total
+    """
+    model.eval()
+    device = next(model.parameters()).device
+    
+    prefix_len = prefix_ids.shape[1]
+    all_ids = torch.cat([prefix_ids, suffix_ids], dim=1).to(device)
+    
+    generated = suffix_ids.tolist()[0]
+    
+    # Forward pass inicial con prefix cache
+    input_for_model = all_ids
+    
+    start_time = time.time()
+    
+    with torch.no_grad():
+        # Initial forward with cache
+        logits, current_cache = model(
+            input_for_model, 
+            prefix_len=prefix_len,
+            kv_cache_prefix=kv_cache_prefix,
+            use_cache=True
+        )
+        
+        # Solo nos interesa el último logits
+        next_token_logits = logits[:, -1, :] / temperature
+        
+        # Top-k sampling
+        if top_k > 0:
+            indices_to_remove = next_token_logits < torch.topk(next_token_logits, top_k)[0][..., -1, None]
+            next_token_logits[indices_to_remove] = float('-inf')
+        
+        probs = torch.softmax(next_token_logits, dim=-1)
+        next_token = torch.multinomial(probs, num_samples=1)
+        
+        generated.append(next_token.item())
+        all_ids = next_token
+        
+        # Continuar generación
+        for _ in range(max_new_tokens - 1):
+            logits, current_cache = model(
+                all_ids,
+                prefix_len=prefix_len,
+                kv_cache_prefix=kv_cache_prefix,
+                use_cache=True
+            )
+            
+            next_token_logits = logits[:, -1, :] / temperature
+            
+            if top_k > 0:
+                indices_to_remove = next_token_logits < torch.topk(next_token_logits, top_k)[0][..., -1, None]
+                next_token_logits[indices_to_remove] = float('-inf')
+            
+            probs = torch.softmax(next_token_logits, dim=-1)
+            next_token = torch.multinomial(probs, num_samples=1)
+            
+            generated.append(next_token.item())
+            all_ids = next_token
+    
+    time_elapsed = time.time() - start_time
+    
+    # El cache del prefijo completo para futuras requests
+    return generated, current_cache, time_elapsed
+
+
+def generate_without_prefix_cache(
+    model: nn.Module,
+    prefix_ids: torch.Tensor,
+    suffix_ids: torch.Tensor,
+    max_new_tokens: int,
+    temperature: float = 1.0,
+    top_k: int = 50
+) -> tuple[list[int], float]:
+    """
+    Genera SIN prefix cache (recalcula todo cada vez).
+    """
+    model.eval()
+    device = next(model.parameters()).device
+    
+    all_ids = torch.cat([prefix_ids, suffix_ids], dim=1).to(device)
+    generated = suffix_ids.tolist()[0]
+    
+    start_time = time.time()
+    
+    with torch.no_grad():
+        for _ in range(max_new_tokens):
+            # SIN cache, recalculamos todo
+            logits, _ = model(all_ids, prefix_len=0, kv_cache_prefix=None, use_cache=False)
+            
+            next_token_logits = logits[:, -1, :] / temperature
+            
+            if top_k > 0:
+                indices_to_remove = next_token_logits < torch.topk(next_token_logits, top_k)[0][..., -1, None]
+                next_token_logits[indices_to_remove] = float('-inf')
+            
+            probs = torch.softmax(next_token_logits, dim=-1)
+            next_token = torch.multinomial(probs, num_samples=1)
+            
+            generated.append(next_token.item())
+            all_ids = torch.cat([all_ids, next_token], dim=1)
+    
+    time_elapsed = time.time() - start_time
+    return generated, time_elapsed
+
+
+def benchmark_prefix_cache():
+    """
+    Benchmark comparando generation con y sin prefix cache.
+    """
+    print("=" * 60)
+    print("Prefix Decoding Benchmark - Día 156")
+    print("=" * 60)
+    
+    # Config
+    vocab_size = 10000
+    d_model = 256
+    n_heads = 8
+    n_layers = 4
+    d_ff = 1024
+    
+    model = PrefixCachingLM(vocab_size, d_model, n_heads, n_layers, d_ff)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model = model.to(device)
+    
+    # Prefix: 200 tokens (system prompt + context fijo)
+    prefix = torch.randint(0, vocab_size, (1, 200))
+    
+    # Suffix: 50 tokens (input del usuario)
+    suffix = torch.randint(0, vocab_size, (1, 50))
+    
+    print(f"\nModelo: {n_layers} layers, {n_heads} heads, d_model={d_model}")
+    print(f"Prefix: {prefix.shape[1]} tokens (cacheable)")
+    print(f"Suffix: {suffix.shape[1]} tokens (único por request)")
+    print(f"Device: {device}")
+    
+    # Warmup
+    print("\nWarming up...")
+    for _ in range(3):
+        _, _, _ = generate_with_prefix_cache(model, prefix, suffix, 20, None)
+        _, _ = generate_without_prefix_cache(model, prefix, suffix, 20)
+    
+    # Benchmark
+    max_new_tokens = 100
+    
+    print(f"\nGenerando {max_new_tokens} tokens...")
+    print("-" * 40)
+    
+    # Con prefix cache
+    tokens_cached, cache_after, time_cached = generate_with_prefix_cache(
+        model, prefix, suffix, max_new_tokens, None
+    )
+    
+    # Segunda request con mismo prefix (REUSA el cache)
+    suffix2 = torch.randint(0, vocab_size, (1, 50))
+    tokens_cached2, cache_after2, time_cached2 = generate_with_prefix_cache(
+        model, prefix, suffix2, max_new_tokens, cache_after
+    )
+    
+    # Sin prefix cache
+    tokens_uncached, time_uncached = generate_without_prefix_cache(
+        model, prefix, suffix, max_new_tokens
+    )
+    
+    print(f"SIN prefix cache:          {time_uncached:.4f}s")
+    print(f"CON prefix cache (1ra):    {time_cached:.4f}s")
+    print(f"CON prefix cache (2da+):   {time_cached2:.4f}s")
+    print(f"\nSpeedup request repetitiva: {time_uncached/time_cached2:.1f}x más rápido")
+    print(f"Ahorro en request #2:      {((time_uncached - time_cached2)/time_uncached)*100:.1f}%")
+    
+    return time_uncached, time_cached2
+
+
+def design_prompts_for_cache_hit():
+    """
+    Guía práctica para maximizar cache hit rate.
+    """
+    print("\n" + "=" * 60)
+    print("Diseño de Prompts para Maximizar Cache Hit Rate")
+    print("=" * 60)
+    
+    print("""
+    ESTRATEGIA 1: Separar prefix y suffix
+    ─────────────────────────────────────
+    Prefix (cacheable):
+      - System prompt
+      - Instrucciones fijas ("Responde en español")
+      - Few-shot examples (siempre los mismos)
+      - Context de Background Retrieval (si es repetible)
+    
+    Suffix (único):
+      - Input del usuario
+      - Query específica
+      - Parámetros de búsqueda
+    
+    ESTRATEGIA 2: Normalizar el prefix
+    ─────────────────────────────────────
+    ❌ MAL: "Usuario: Juan, busca: laptops"
+    ❌ MAL: "Usuario: Maria, busca: celulares"
+    ✅ BIEN: "Usuario: {nombre}, busca: {producto}"
+    
+    Si el template es igual, el KV cache es reusable.
+    
+    ESTRATEGIA 3: Chunking inteligente
+    ─────────────────────────────────────
+    En RAG, si los chunks retrieval son siempre los mismos
+    (misma query similar), metelos en el prefix.
+    """
+    )
+
+
+if __name__ == "__main__":
+    time_uncached, time_cached = benchmark_prefix_cache()
+    design_prompts_for_cache_hit()
 </code></pre>
+
 <hr>
-<h2>🚨 Errores Comunes</h2>
-<h3>Error 1: No entender la matemática de fondo</h3>
-<p>El 80% de los practitioners implementa esto incorrectamente porque no entienden la base teórica.</p>
-<h3>Error 2: Ignorar los hiperparámetros</h3>
-<p>Muchos asumen que los valores por defecto son óptimos. En producción, esto raramente es cierto.</p>
-<hr>
-<h2>✅ Mejores Prácticas</h2>
+<h2>📊 Cuándo Conviene el Prefix Caching</h2>
+
+<p>No siempre vale la pena. Vamos con números:</p>
+
+<pre><code class="language-python"># Análisis de cuándo conviene prefix caching
+# 
+# Variables:
+# - L = longitud del prefix (tokens cacheables)
+# - S = longitud del suffix/input único
+# - G = tokens a generar
+# - t_prefix = tiempo de calcular prefix una vez
+# - t_suffix = tiempo de calcular suffix (por token)
+# - t_gen = tiempo de generar un token
+#
+# SIN CACHE:
+# Costo = t_prefix + S*t_suffix + G*t_gen
+#         (se calcula una vez)
+#
+# CON CACHE (request repetitiva):
+# Costo = 0 + S*t_suffix + G*t_gen
+#         (prefix es gratis)
+#
+# AHORRO = t_prefix
+#
+# Ejemplo real (estimaciones basadas en profiling):
+# L = 500 tokens, S = 100 tokens, G = 200 tokens
+# t_prefix ≈ 50ms, t_suffix ≈ 1ms/token, t_gen ≈ 0.5ms/token
+#
+# SIN CACHE: 50 + 100 + 100 = 250ms
+# CON CACHE:  0 + 100 + 100 = 200ms
+# AHORRO: 50ms (20% más rápido)
+#
+# PERO si L = 2000 tokens (long system prompt):
+# t_prefix ≈ 200ms
+# SIN CACHE: 200 + 100 + 100 = 400ms
+# CON CACHE:  0 + 100 + 100 = 200ms
+# AHORRO: 200ms (2x más rápido)
+</code></pre>
+
+<p>El prefix caching brilla cuando:</p>
+
 <ul>
-<li>Siempre documenta tu código y decisiones de diseño.</li>
-<li>Usa versionado para tus experimentos.</li>
-<li>Valida siempre con datos de prueba independientes.</li>
-<li>Monitorea las métricas en producción.</li>
+<li>Tenés prefixes largos (system prompts extensos)</li>
+<li>Muchos requests repetitivos (chatbots, RAG con queries similares)</li>
+<li>El context retrieval es repetible entre requests</li>
 </ul>
+
 <hr>
-<h2>📚 Recursos</h2>
+<h2>🚨 Los 3 Errores Que Más Duelen</h2>
+
+<h3>Error 1: No cachear prompts repetitivos — compute desperdiciado</h3>
+<p><strong>El problema</strong>: Cada request recalcula el system prompt completo aunque sea idéntico al anterior. Si tu system prompt tiene 1000 tokens y servís 1000 requests/hora, estás recalculando 1M de tokens que ya calculaste antes.</p>
+
+<p><strong>El fix</strong>: Implementar prefix caching desde el inicio. Separar el prompt en prefijo (fijo) y sufijo (variable):</p>
+
+<pre><code class="language-python"># ❌ MAL: Todo junto, nada cacheado
+full_prompt = system_prompt + user_input
+response = model.generate(full_prompt)
+
+# ✅ BIEN: Prefix cacheado, solo user_input es nuevo
+# Primera request: calcula prefix + suffix
+# Requests siguientes: reutiliza cache del prefix
+response = model.generate_with_prefix_cache(
+    prefix=system_prompt,
+    suffix=user_input,
+    kv_cache=previous_kv_cache  # ← esto hace la diferencia
+)
+</code></pre>
+
+<h3>Error 2: Prompts demasiado largos que reducen cache hit rate</h3>
+<p><strong>El problema</strong>: Si ponés demasiado en el prefix (incluyendo contenido que debería ser variable), cualquier cambio invalida el cache entero. Un cache hit rate bajo significa que no estás aprovechando los beneficios.</p>
+
+<p><strong>El fix</strong>: Diseñar prompts con prefijo MÍNIMO necesario. Solo cachear lo que es verdaderamente fijo:</p>
+
+<pre><code class="language-python"># ❌ MAL: Demasiado en el prefix
+prefix = system_prompt + few_shot_examples + retrieved_context_chunks
+# Si los retrieved chunks cambian, invalidás TODO
+
+# ✅ BIEN: Prefix mínimo, chunks en suffix
+prefix = system_prompt + few_shot_examples  # Solo lo verdaderamente fijo
+suffix = user_query + retrieved_context_chunks  # Lo que cambia por request
+
+# También: normalizar variables en el prefix
+# ❌ MAL: "El usuario Juan está buscando..."
+# ✅ BIEN: "El usuario {NOMBRE} está buscando..."
+# Así el prefix físico es cacheable aunque los valores varíen
+</code></pre>
+
+<h3>Error 3: Cache invalidation strategy incorrecta — stale results</h3>
+<p><strong>El problema</strong>: Una vez que cacheás el prefix, necesitás saber cuándo invalidar ese cache. Si no hacés esto bien, podés usar KV cache de un prompt anterior para un prompt diferente — generando respuestas mezcladas o incorrectas.</p>
+
+<p><strong>El fix</strong>: Implementar cache keys y invalidación correcta:</p>
+
+<pre><code class="language-python">import hashlib
+
+class PrefixCache:
+    """Cache de prefixes con invalidación correcta."""
+    
+    def __init__(self, max_size: int = 100):
+        self.cache = {}  # key -> kv_cache
+        self.access_order = []
+        self.max_size = max_size
+    
+    def get_cache_key(self, prefix_ids: list[int]) -> str:
+        """Genera key único para el prefix."""
+        return hashlib.sha256(
+            bytes(prefix_ids[:512])  # Solo primeros 512 tokens para la key
+        ).hexdigest()[:16]
+    
+    def get(self, prefix_ids: list[int]):
+        key = self.get_cache_key(prefix_ids)
+        if key in self.cache:
+            # Mover al final (LRU)
+            self.access_order.remove(key)
+            self.access_order.append(key)
+            return self.cache[key]
+        return None
+    
+    def set(self, prefix_ids: list[int], kv_cache):
+        key = self.get_cache_key(prefix_ids)
+        
+        # Evict LRU si estamos full
+        if len(self.cache) >= self.max_size and key not in self.cache:
+            oldest = self.access_order.pop(0)
+            del self.cache[oldest]
+        
+        self.cache[key] = kv_cache
+        self.access_order.append(key)
+    
+    def invalidate(self, prefix_ids: list[int] = None):
+        """Invalida cache específico o todo."""
+        if prefix_ids is None:
+            self.cache.clear()
+            self.access_order.clear()
+        else:
+            key = self.get_cache_key(prefix_ids)
+            if key in self.cache:
+                del self.cache[key]
+                self.access_order.remove(key)
+
+
+# Uso correcto
+cache = PrefixCache(max_size=100)
+
+def handle_request(user_input, system_prompt):
+    # Solo cachear el prefix FIJO
+    cache_key = cache.get_cache_key(system_prompt)
+    kv_cache = cache.get(system_prompt)
+    
+    # Generar con prefix cache
+    response, new_cache = generate_with_prefix_cache(
+        model, system_prompt, user_input, kv_cache
+    )
+    
+    # Guardar el cache para futuras requests
+    cache.set(system_prompt, new_cache)
+    
+    return response
+</code></pre>
+
+<hr>
+<h2>✅ Resumen y Cierre</h2>
+
+<p>Día 156, parcero. Prefix Decoding es una técnica directa: si tenés prompts repetitivos, cacheá el prefix. No hay magia — es pura ingeniería de sistemas.</p>
+
+<p>Los puntos clave:</p>
+
 <ul>
-<li>Documentación oficial de chromadb</li>
-<li>Tutoriales prácticos en el blog</li>
-<li>Código fuente en GitHub</li>
+<li><strong>Prefix Caching</strong> vs Speculative Decoding son cosas diferentes — no las confundas</li>
+<li>Cacheá SOLO lo que es fijo: system prompts, few-shot examples</li>
+<li>Mantene el prefix lo más pequeño posible para maximizar hit rate</li>
+<li>Implementá invalidación correcta o vas a tener stale results</li>
+<li>En producción con alta concurrencia, el ahorro se multiplica</li>
 </ul>
+
+<p>Mañana llegamos al Día 157 y seguimos con más temas de inferencia y optimization. ¡Nos vemos!</p>
+
+<p><em>#365DaysOfAI #PrefixDecoding #PromptCaching #InferenceOptimization</em></p>
   </article>
 
   <script>
