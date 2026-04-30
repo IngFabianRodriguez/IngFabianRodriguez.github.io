@@ -1,5 +1,5 @@
-var Ot=c=>{throw TypeError(c)};var $t=(c,r,t)=>r.has(c)||Ot("Cannot "+t);var s=(c,r,t)=>($t(c,r,"read from private field"),t?t.call(c):r.get(c)),y=(c,r,t)=>r.has(c)?Ot("Cannot add the same private member more than once"):r instanceof WeakSet?r.add(c):r.set(c,t),m=(c,r,t,i)=>($t(c,r,"write to private field"),i?i.call(c,t):r.set(c,t),t),h=(c,r,t)=>($t(c,r,"access private method"),t);(function(){const r=document.createElement("link").relList;if(r&&r.supports&&r.supports("modulepreload"))return;for(const e of document.querySelectorAll('link[rel="modulepreload"]'))i(e);new MutationObserver(e=>{for(const n of e)if(n.type==="childList")for(const o of n.addedNodes)o.tagName==="LINK"&&o.rel==="modulepreload"&&i(o)}).observe(document,{childList:!0,subtree:!0});function t(e){const n={};return e.integrity&&(n.integrity=e.integrity),e.referrerPolicy&&(n.referrerPolicy=e.referrerPolicy),e.crossOrigin==="use-credentials"?n.credentials="include":e.crossOrigin==="anonymous"?n.credentials="omit":n.credentials="same-origin",n}function i(e){if(e.ep)return;e.ep=!0;const n=t(e);fetch(e.href,n)}})();function Ht({id:c=crypto.randomUUID(),name:r,description:t="",createdAt:i=new Date().toISOString(),updatedAt:e=new Date().toISOString()}){return{id:c,name:r,description:t,createdAt:i,updatedAt:e}}function Vt(c){const r=[];return(!c.name||c.name.trim().length===0)&&r.push("El nombre del producto es requerido"),c.name&&c.name.length>100&&r.push("El nombre no puede exceder 100 caracteres"),{valid:r.length===0,errors:r}}function Wt({id:c=crypto.randomUUID(),productId:r,name:t,description:i="",createdAt:e=new Date().toISOString(),updatedAt:n=new Date().toISOString()}){return{id:c,productId:r,name:t,description:i,createdAt:e,updatedAt:n}}function Qt(c){const r=[];return c.productId||r.push("El producto es requerido"),(!c.name||c.name.trim().length===0)&&r.push("El nombre del proyecto es requerido"),c.name&&c.name.length>100&&r.push("El nombre no puede exceder 100 caracteres"),{valid:r.length===0,errors:r}}const Et={ACTIVE:"active",COMPLETED:"completed"};function Lt({id:c=crypto.randomUUID(),projectId:r,name:t,startDate:i,endDate:e,status:n=Et.ACTIVE}){return{id:c,projectId:r,name:t,startDate:i,endDate:e,status:n}}function Xt(c){const r=[];return c.projectId||r.push("El proyecto es requerido"),(!c.name||c.name.trim().length===0)&&r.push("El nombre del sprint es requerido"),c.name&&c.name.length>100&&r.push("El nombre no puede exceder 100 caracteres"),c.startDate||r.push("La fecha de inicio es requerida"),c.endDate||r.push("La fecha de fin es requerida"),c.startDate&&c.endDate&&new Date(c.startDate)>new Date(c.endDate)&&r.push("La fecha de fin debe ser posterior a la fecha de inicio"),Object.values(Et).includes(c.status)||r.push("Estado inválido"),{valid:r.length===0,errors:r}}const j={TODO:"todo",IN_PROGRESS:"in_progress",DONE:"done"},st={LOW:"low",MEDIUM:"medium",HIGH:"high",CRITICAL:"critical"};function Zt({title:c,description:r="",status:t=j.TODO,priority:i=st.MEDIUM,storyPoints:e=null,tags:n=[],createdAt:o=new Date().toISOString(),updatedAt:a=new Date().toISOString()}){return{id:crypto.randomUUID(),title:c,description:r,status:t,priority:i,storyPoints:e,tags:n,createdAt:o,updatedAt:a}}function Rt(c){const r=[];return(!c.title||c.title.trim().length===0)&&r.push("El título es requerido"),c.title&&c.title.length>200&&r.push("El título no puede exceder 200 caracteres"),Object.values(j).includes(c.status)||r.push("Estado inválido"),Object.values(st).includes(c.priority)||r.push("Prioridad inválida"),c.storyPoints!==null&&(typeof c.storyPoints!="number"||c.storyPoints<0||c.storyPoints>100)&&r.push("Story points debe ser un número entre 0 y 100"),{valid:r.length===0,errors:r}}const ft="scrum_products",kt="scrum_projects",et="scrum_sprints",W="scrum_tasks",wt="scrum_filter",Q="scrum_active";var P,B,T,w,R,g,pt,St,f,Nt,it,S,A,Ft;class Jt{constructor(){y(this,f);y(this,P,[]);y(this,B,[]);y(this,T,[]);y(this,w,[]);y(this,R,{search:"",priority:"",tag:""});y(this,g,{productId:null,projectId:null,sprintId:null});y(this,pt,new Set);y(this,St,!1);h(this,f,Nt).call(this)}subscribe(r){return s(this,pt).add(r),()=>s(this,pt).delete(r)}getActiveProductId(){return s(this,g).productId}getActiveProjectId(){return s(this,g).projectId}getActiveSprintId(){return s(this,g).sprintId}setActiveProduct(r){s(this,g).productId=r,s(this,g).projectId=null,s(this,g).sprintId=null,h(this,f,S).call(this,Q,s(this,g)),h(this,f,A).call(this)}setActiveProject(r){var t;if(s(this,g).projectId=r,s(this,g).sprintId=null,r){const i=this.getSprintsByProject(r);s(this,g).sprintId=((t=i[0])==null?void 0:t.id)??null}h(this,f,S).call(this,Q,s(this,g)),h(this,f,A).call(this)}setActiveSprint(r){s(this,g).sprintId=r,h(this,f,S).call(this,Q,s(this,g)),h(this,f,A).call(this)}getProducts(){return[...s(this,P)]}getProduct(r){return s(this,P).find(t=>t.id===r)??null}addProduct(r){const t=Ht(r),{valid:i,errors:e}=Vt(t);if(!i)throw new Error(e.join(", "));return s(this,P).push(t),h(this,f,S).call(this,ft,s(this,P)),h(this,f,A).call(this),t}updateProduct(r,t){const i=s(this,P).findIndex(e=>e.id===r);if(i===-1)throw new Error(`Producto ${r} no encontrado`);return s(this,P)[i]={...s(this,P)[i],...t,updatedAt:new Date().toISOString()},h(this,f,S).call(this,ft,s(this,P)),h(this,f,A).call(this),s(this,P)[i]}deleteProduct(r){var i;s(this,B).filter(e=>e.productId===r).map(e=>e.id).forEach(e=>this.deleteProject(e)),m(this,P,s(this,P).filter(e=>e.id!==r)),h(this,f,S).call(this,ft,s(this,P)),s(this,g).productId===r&&(s(this,g).productId=((i=s(this,P)[0])==null?void 0:i.id)??null,s(this,g).projectId=null,s(this,g).sprintId=null,h(this,f,S).call(this,Q,s(this,g))),h(this,f,A).call(this)}getProjects(r=null){return r||(r=s(this,g).productId),s(this,B).filter(t=>t.productId===r)}getProject(r){return s(this,B).find(t=>t.id===r)??null}getProjectByProduct(r){return s(this,B).filter(t=>t.productId===r)}addProject(r){const t=Wt({...r,productId:r.productId??s(this,g).productId}),{valid:i,errors:e}=Qt(t);if(!i)throw new Error(e.join(", "));if(s(this,B).push(t),h(this,f,S).call(this,kt,s(this,B)),this.getSprintsByProject(t.id).length===0){const n=Lt({name:"Sprint 1",startDate:new Date().toISOString().split("T")[0],endDate:new Date(Date.now()+12096e5).toISOString().split("T")[0],status:Et.ACTIVE,projectId:t.id});s(this,T).push(n),h(this,f,S).call(this,et,s(this,T))}return h(this,f,A).call(this),t}updateProject(r,t){const i=s(this,B).findIndex(e=>e.id===r);if(i===-1)throw new Error(`Proyecto ${r} no encontrado`);return s(this,B)[i]={...s(this,B)[i],...t,updatedAt:new Date().toISOString()},h(this,f,S).call(this,kt,s(this,B)),h(this,f,A).call(this),s(this,B)[i]}deleteProject(r){const t=s(this,T).filter(i=>i.projectId===r).map(i=>i.id);m(this,w,s(this,w).filter(i=>!t.includes(i.sprintId))),m(this,T,s(this,T).filter(i=>i.projectId!==r)),m(this,B,s(this,B).filter(i=>i.id!==r)),h(this,f,S).call(this,kt,s(this,B)),h(this,f,S).call(this,et,s(this,T)),h(this,f,S).call(this,W,s(this,w)),s(this,g).projectId===r&&(s(this,g).projectId=null,s(this,g).sprintId=null,h(this,f,S).call(this,Q,s(this,g))),h(this,f,A).call(this)}getSprints(r=null){return r||(r=s(this,g).projectId),r?s(this,T).filter(t=>t.projectId===r):[]}getSprintsByProject(r){return s(this,T).filter(t=>t.projectId===r)}getSprint(r){return s(this,T).find(t=>t.id===r)??null}addSprint(r){const t=Lt({...r,projectId:r.projectId??s(this,g).projectId}),{valid:i,errors:e}=Xt(t);if(!i)throw new Error(e.join(", "));return s(this,T).push(t),h(this,f,S).call(this,et,s(this,T)),h(this,f,A).call(this),t}updateSprint(r,t){const i=s(this,T).findIndex(e=>e.id===r);if(i===-1)throw new Error(`Sprint ${r} no encontrado`);return s(this,T)[i]={...s(this,T)[i],...t},h(this,f,S).call(this,et,s(this,T)),h(this,f,A).call(this),s(this,T)[i]}deleteSprint(r){var t;if(m(this,w,s(this,w).filter(i=>i.sprintId!==r)),m(this,T,s(this,T).filter(i=>i.id!==r)),h(this,f,S).call(this,et,s(this,T)),h(this,f,S).call(this,W,s(this,w)),s(this,g).sprintId===r){const i=this.getSprintsByProject(s(this,g).projectId);s(this,g).sprintId=((t=i[0])==null?void 0:t.id)??null,h(this,f,S).call(this,Q,s(this,g))}h(this,f,A).call(this)}getTasks(){let r=[...s(this,w)];if(s(this,g).sprintId)r=r.filter(t=>t.sprintId===s(this,g).sprintId);else if(s(this,g).projectId){const t=this.getSprintsByProject(s(this,g).projectId).map(i=>i.id);r=r.filter(i=>t.includes(i.sprintId))}else if(s(this,g).productId){const t=this.getProjectByProduct(s(this,g).productId).map(e=>e.id),i=s(this,T).filter(e=>t.includes(e.projectId)).map(e=>e.id);r=r.filter(e=>i.includes(e.sprintId))}return r}getTasksByStatus(r){return this.getTasks().filter(t=>t.status===r)}getTask(r){return s(this,w).find(t=>t.id===r)??null}addTask(r){var o;const t=r.sprintId??s(this,g).sprintId??((o=this.getSprints()[0])==null?void 0:o.id),i=Zt({...r,position:s(this,w).filter(a=>a.sprintId===(t??"")).length}),{valid:e,errors:n}=Rt(i);if(!e)throw new Error(n.join(", "));return s(this,w).push(i),h(this,f,S).call(this,W,s(this,w)),h(this,f,A).call(this),i}updateTask(r,t){const i=s(this,w).findIndex(o=>o.id===r);if(i===-1)throw new Error(`Tarea ${r} no encontrada`);s(this,w)[i]={...s(this,w)[i],...t,id:r,updatedAt:new Date().toISOString()};const{valid:e,errors:n}=Rt(s(this,w)[i]);if(!e)throw new Error(n.join(", "));return h(this,f,S).call(this,W,s(this,w)),h(this,f,A).call(this),s(this,w)[i]}deleteTask(r){m(this,w,s(this,w).filter(t=>t.id!==r)),h(this,f,S).call(this,W,s(this,w)),h(this,f,A).call(this)}moveTask(r,t){return this.updateTask(r,{status:t})}reorderTask(r,t,i){if(!this.getTask(r))return;this.getTasksByStatus(t).forEach((a,b)=>{const d=s(this,w).findIndex(u=>u.id===a.id);d!==-1&&(s(this,w)[d].position=b)});const o=s(this,w).findIndex(a=>a.id===r);o!==-1&&(s(this,w)[o].status=t,s(this,w)[o].position=i),h(this,f,S).call(this,W,s(this,w)),h(this,f,A).call(this)}getSelectedSprintId(){return s(this,g).sprintId}setSelectedSprint(r){this.setActiveSprint(r)}getStats(){const r=this.getTasks(),t=r.filter(n=>n.status===j.TODO),i=r.filter(n=>n.status===j.IN_PROGRESS),e=r.filter(n=>n.status===j.DONE);return{total:r.length,filteredTotal:r.length,todo:t.length,inProgress:i.length,done:e.length,totalPoints:r.reduce((n,o)=>n+(o.storyPoints||0),0),donePoints:e.reduce((n,o)=>n+(o.storyPoints||0),0),filteredPoints:r.reduce((n,o)=>n+(o.storyPoints||0),0),filteredDonePoints:e.reduce((n,o)=>n+(o.storyPoints||0),0)}}getSprintStats(r){const t=s(this,w).filter(e=>e.sprintId===r),i=t.filter(e=>e.status===j.DONE);return{total:t.length,done:i.length,totalPoints:t.reduce((e,n)=>e+(n.storyPoints||0),0),donePoints:i.reduce((e,n)=>e+(n.storyPoints||0),0)}}getFilterCriteria(){return{...s(this,R)}}setFilterCriteria(r){m(this,R,{...s(this,R),...r}),h(this,f,S).call(this,wt,s(this,R)),h(this,f,A).call(this)}clearFilters(){m(this,R,{search:"",priority:"",tag:""}),h(this,f,S).call(this,wt,s(this,R)),h(this,f,A).call(this)}getFilteredTasks(r){const{search:t,priority:i,tag:e}={...s(this,R),...r};let n=this.getTasks();if(t!=null&&t.trim()){const o=t.toLowerCase();n=n.filter(a=>a.title.toLowerCase().includes(o)||(a.description??"").toLowerCase().includes(o))}return i&&i!=="all"&&(n=n.filter(o=>o.priority===i)),e&&e!=="all"&&(n=n.filter(o=>{var a;return(a=o.tags)==null?void 0:a.includes(e)})),n}getAllTags(){const r=new Set;return this.getTasks().forEach(t=>{var i;return(i=t.tags)==null?void 0:i.forEach(e=>r.add(e))}),Array.from(r).sort()}getFilteredCount(){return this.getFilteredTasks(s(this,R)).length}addTaskQuick(r,t=j.TODO){return this.addTask({title:r,status:t})}reset(){m(this,w,[]),m(this,R,{search:"",priority:"",tag:""}),h(this,f,S).call(this,W,s(this,w)),h(this,f,S).call(this,wt,s(this,R)),h(this,f,A).call(this)}}P=new WeakMap,B=new WeakMap,T=new WeakMap,w=new WeakMap,R=new WeakMap,g=new WeakMap,pt=new WeakMap,St=new WeakMap,f=new WeakSet,Nt=function(){var r;if(m(this,P,h(this,f,it).call(this,ft)),m(this,B,h(this,f,it).call(this,kt)),m(this,T,h(this,f,it).call(this,et)),m(this,w,h(this,f,it).call(this,W)),m(this,R,h(this,f,it).call(this,wt)||{search:"",priority:"",tag:""}),m(this,g,h(this,f,it).call(this,Q)||{productId:null,projectId:null,sprintId:null}),m(this,St,!0),s(this,P).length===0){const t=Ht({name:"Mi Producto"});s(this,P).push(t),h(this,f,S).call(this,ft,s(this,P)),s(this,g).productId=t.id}if(s(this,g).productId&&!this.getProduct(s(this,g).productId)&&(s(this,g).productId=((r=s(this,P)[0])==null?void 0:r.id)??null),s(this,g).projectId&&!this.getProject(s(this,g).projectId)&&(s(this,g).projectId=null),s(this,g).sprintId&&!this.getSprint(s(this,g).sprintId)&&(s(this,g).sprintId=null),s(this,g).projectId&&this.getSprintsByProject(s(this,g).projectId).length===0){const t=Lt({name:"Sprint 1",startDate:new Date().toISOString().split("T")[0],endDate:new Date(Date.now()+12096e5).toISOString().split("T")[0],status:Et.ACTIVE,projectId:s(this,g).projectId});s(this,T).push(t),s(this,g).sprintId=t.id,h(this,f,S).call(this,et,s(this,T))}h(this,f,S).call(this,Q,s(this,g))},it=function(r){try{const t=localStorage.getItem(r);return t?JSON.parse(t):[]}catch{return[]}},S=function(r,t){try{localStorage.setItem(r,JSON.stringify(t))}catch(i){console.error("Save error",r,i)}},A=function(){h(this,f,Ft).call(this)},Ft=function(){s(this,pt).forEach(r=>r(s(this,w)))};const l=new Jt;var Y,X,It,Tt,V,jt,_t,Ut;class te{constructor(){y(this,V);y(this,Y,null);y(this,X,[]);y(this,It,3);y(this,Tt,3e3);h(this,V,jt).call(this)}notify(r,t="info",i=s(this,Tt)){if(h(this,V,jt).call(this),s(this,X).length>=s(this,It)){const b=s(this,X).shift();b&&(b.element.classList.add("toast-exit"),setTimeout(()=>b.element.remove(),200))}const e=document.createElement("div");e.className=`toast toast-${t}`,e.style.cssText=`
-      background: ${h(this,V,_t).call(this,t)};
+(function(){const t=document.createElement("link").relList;if(t&&t.supports&&t.supports("modulepreload"))return;for(const r of document.querySelectorAll('link[rel="modulepreload"]'))i(r);new MutationObserver(r=>{for(const o of r)if(o.type==="childList")for(const a of o.addedNodes)a.tagName==="LINK"&&a.rel==="modulepreload"&&i(a)}).observe(document,{childList:!0,subtree:!0});function e(r){const o={};return r.integrity&&(o.integrity=r.integrity),r.referrerPolicy&&(o.referrerPolicy=r.referrerPolicy),r.crossOrigin==="use-credentials"?o.credentials="include":r.crossOrigin==="anonymous"?o.credentials="omit":o.credentials="same-origin",o}function i(r){if(r.ep)return;r.ep=!0;const o=e(r);fetch(r.href,o)}})();var Mt=n=>{throw TypeError(n)},At=(n,t,e)=>t.has(n)||Mt("Cannot "+e),s=(n,t,e)=>(At(n,t,"read from private field"),e?e.call(n):t.get(n)),y=(n,t,e)=>t.has(n)?Mt("Cannot add the same private member more than once"):t instanceof WeakSet?t.add(n):t.set(n,e),f=(n,t,e,i)=>(At(n,t,"write to private field"),t.set(n,e),e),h=(n,t,e)=>(At(n,t,"access private method"),e);(function(){const n=document.createElement("link").relList;if(n&&n.supports&&n.supports("modulepreload"))return;for(const i of document.querySelectorAll('link[rel="modulepreload"]'))e(i);new MutationObserver(i=>{for(const r of i)if(r.type==="childList")for(const o of r.addedNodes)o.tagName==="LINK"&&o.rel==="modulepreload"&&e(o)}).observe(document,{childList:!0,subtree:!0});function t(i){const r={};return i.integrity&&(r.integrity=i.integrity),i.referrerPolicy&&(r.referrerPolicy=i.referrerPolicy),i.crossOrigin==="use-credentials"?r.credentials="include":i.crossOrigin==="anonymous"?r.credentials="omit":r.credentials="same-origin",r}function e(i){if(i.ep)return;i.ep=!0;const r=t(i);fetch(i.href,r)}})();function zt({id:n=crypto.randomUUID(),name:t,description:e="",createdAt:i=new Date().toISOString(),updatedAt:r=new Date().toISOString()}){return{id:n,name:t,description:e,createdAt:i,updatedAt:r}}function Vt(n){const t=[];return(!n.name||n.name.trim().length===0)&&t.push("El nombre del producto es requerido"),n.name&&n.name.length>100&&t.push("El nombre no puede exceder 100 caracteres"),{valid:t.length===0,errors:t}}function Yt({id:n=crypto.randomUUID(),productId:t,name:e,description:i="",createdAt:r=new Date().toISOString(),updatedAt:o=new Date().toISOString()}){return{id:n,productId:t,name:e,description:i,createdAt:r,updatedAt:o}}function Kt(n){const t=[];return n.productId||t.push("El producto es requerido"),(!n.name||n.name.trim().length===0)&&t.push("El nombre del proyecto es requerido"),n.name&&n.name.length>100&&t.push("El nombre no puede exceder 100 caracteres"),{valid:t.length===0,errors:t}}const yt={ACTIVE:"active",COMPLETED:"completed"};function St({id:n=crypto.randomUUID(),projectId:t,name:e,startDate:i,endDate:r,status:o=yt.ACTIVE}){return{id:n,projectId:t,name:e,startDate:i,endDate:r,status:o}}function Qt(n){const t=[];return n.projectId||t.push("El proyecto es requerido"),(!n.name||n.name.trim().length===0)&&t.push("El nombre del sprint es requerido"),n.name&&n.name.length>100&&t.push("El nombre no puede exceder 100 caracteres"),n.startDate||t.push("La fecha de inicio es requerida"),n.endDate||t.push("La fecha de fin es requerida"),n.startDate&&n.endDate&&new Date(n.startDate)>new Date(n.endDate)&&t.push("La fecha de fin debe ser posterior a la fecha de inicio"),Object.values(yt).includes(n.status)||t.push("Estado inválido"),{valid:t.length===0,errors:t}}const L={TODO:"todo",IN_PROGRESS:"in_progress",DONE:"done"},J={LOW:"low",MEDIUM:"medium",HIGH:"high",CRITICAL:"critical"};function Xt({title:n,description:t="",status:e=L.TODO,priority:i=J.MEDIUM,storyPoints:r=null,tags:o=[],createdAt:a=new Date().toISOString(),updatedAt:d=new Date().toISOString()}){return{id:crypto.randomUUID(),title:n,description:t,status:e,priority:i,storyPoints:r,tags:o,createdAt:a,updatedAt:d}}function Pt(n){const t=[];return(!n.title||n.title.trim().length===0)&&t.push("El título es requerido"),n.title&&n.title.length>200&&t.push("El título no puede exceder 200 caracteres"),Object.values(L).includes(n.status)||t.push("Estado inválido"),Object.values(J).includes(n.priority)||t.push("Prioridad inválida"),n.storyPoints!==null&&(typeof n.storyPoints!="number"||n.storyPoints<0||n.storyPoints>100)&&t.push("Story points debe ser un número entre 0 y 100"),{valid:t.length===0,errors:t}}const ct="scrum_products",ut="scrum_projects",Z="scrum_sprints",F="scrum_tasks",ht="scrum_filter",U="scrum_active";var A,q,I,w,H,m,pt,It,g,Ct,Y,E,j,qt;class Zt{constructor(){y(this,g),y(this,A,[]),y(this,q,[]),y(this,I,[]),y(this,w,[]),y(this,H,{search:"",priority:"",tag:""}),y(this,m,{productId:null,projectId:null,sprintId:null}),y(this,pt,new Set),y(this,It,!1),h(this,g,Ct).call(this)}subscribe(t){return s(this,pt).add(t),()=>s(this,pt).delete(t)}getActiveProductId(){return s(this,m).productId}getActiveProjectId(){return s(this,m).projectId}getActiveSprintId(){return s(this,m).sprintId}setActiveProduct(t){s(this,m).productId=t,s(this,m).projectId=null,s(this,m).sprintId=null,h(this,g,E).call(this,U,s(this,m)),h(this,g,j).call(this)}setActiveProject(t){var e;if(s(this,m).projectId=t,s(this,m).sprintId=null,t){const i=this.getSprintsByProject(t);s(this,m).sprintId=((e=i[0])==null?void 0:e.id)??null}h(this,g,E).call(this,U,s(this,m)),h(this,g,j).call(this)}setActiveSprint(t){s(this,m).sprintId=t,h(this,g,E).call(this,U,s(this,m)),h(this,g,j).call(this)}getProducts(){return[...s(this,A)]}getProduct(t){return s(this,A).find(e=>e.id===t)??null}addProduct(t){const e=zt(t),{valid:i,errors:r}=Vt(e);if(!i)throw new Error(r.join(", "));return s(this,A).push(e),h(this,g,E).call(this,ct,s(this,A)),h(this,g,j).call(this),e}updateProduct(t,e){const i=s(this,A).findIndex(r=>r.id===t);if(i===-1)throw new Error(`Producto ${t} no encontrado`);return s(this,A)[i]={...s(this,A)[i],...e,updatedAt:new Date().toISOString()},h(this,g,E).call(this,ct,s(this,A)),h(this,g,j).call(this),s(this,A)[i]}deleteProduct(t){var e;s(this,q).filter(i=>i.productId===t).map(i=>i.id).forEach(i=>this.deleteProject(i)),f(this,A,s(this,A).filter(i=>i.id!==t)),h(this,g,E).call(this,ct,s(this,A)),s(this,m).productId===t&&(s(this,m).productId=((e=s(this,A)[0])==null?void 0:e.id)??null,s(this,m).projectId=null,s(this,m).sprintId=null,h(this,g,E).call(this,U,s(this,m))),h(this,g,j).call(this)}getProjects(t=null){return t||(t=s(this,m).productId),s(this,q).filter(e=>e.productId===t)}getProject(t){return s(this,q).find(e=>e.id===t)??null}getProjectByProduct(t){return s(this,q).filter(e=>e.productId===t)}addProject(t){const e=Yt({...t,productId:t.productId??s(this,m).productId}),{valid:i,errors:r}=Kt(e);if(!i)throw new Error(r.join(", "));if(s(this,q).push(e),h(this,g,E).call(this,ut,s(this,q)),this.getSprintsByProject(e.id).length===0){const o=St({name:"Sprint 1",startDate:new Date().toISOString().split("T")[0],endDate:new Date(Date.now()+12096e5).toISOString().split("T")[0],status:yt.ACTIVE,projectId:e.id});s(this,I).push(o),h(this,g,E).call(this,Z,s(this,I))}return h(this,g,j).call(this),e}updateProject(t,e){const i=s(this,q).findIndex(r=>r.id===t);if(i===-1)throw new Error(`Proyecto ${t} no encontrado`);return s(this,q)[i]={...s(this,q)[i],...e,updatedAt:new Date().toISOString()},h(this,g,E).call(this,ut,s(this,q)),h(this,g,j).call(this),s(this,q)[i]}deleteProject(t){const e=s(this,I).filter(i=>i.projectId===t).map(i=>i.id);f(this,w,s(this,w).filter(i=>!e.includes(i.sprintId))),f(this,I,s(this,I).filter(i=>i.projectId!==t)),f(this,q,s(this,q).filter(i=>i.id!==t)),h(this,g,E).call(this,ut,s(this,q)),h(this,g,E).call(this,Z,s(this,I)),h(this,g,E).call(this,F,s(this,w)),s(this,m).projectId===t&&(s(this,m).projectId=null,s(this,m).sprintId=null,h(this,g,E).call(this,U,s(this,m))),h(this,g,j).call(this)}getSprints(t=null){return t||(t=s(this,m).projectId),t?s(this,I).filter(e=>e.projectId===t):[]}getSprintsByProject(t){return s(this,I).filter(e=>e.projectId===t)}getSprint(t){return s(this,I).find(e=>e.id===t)??null}addSprint(t){const e=St({...t,projectId:t.projectId??s(this,m).projectId}),{valid:i,errors:r}=Qt(e);if(!i)throw new Error(r.join(", "));return s(this,I).push(e),h(this,g,E).call(this,Z,s(this,I)),h(this,g,j).call(this),e}updateSprint(t,e){const i=s(this,I).findIndex(r=>r.id===t);if(i===-1)throw new Error(`Sprint ${t} no encontrado`);return s(this,I)[i]={...s(this,I)[i],...e},h(this,g,E).call(this,Z,s(this,I)),h(this,g,j).call(this),s(this,I)[i]}deleteSprint(t){var e;if(f(this,w,s(this,w).filter(i=>i.sprintId!==t)),f(this,I,s(this,I).filter(i=>i.id!==t)),h(this,g,E).call(this,Z,s(this,I)),h(this,g,E).call(this,F,s(this,w)),s(this,m).sprintId===t){const i=this.getSprintsByProject(s(this,m).projectId);s(this,m).sprintId=((e=i[0])==null?void 0:e.id)??null,h(this,g,E).call(this,U,s(this,m))}h(this,g,j).call(this)}getTasks(){let t=[...s(this,w)];if(s(this,m).sprintId)t=t.filter(e=>e.sprintId===s(this,m).sprintId);else if(s(this,m).projectId){const e=this.getSprintsByProject(s(this,m).projectId).map(i=>i.id);t=t.filter(i=>e.includes(i.sprintId))}else if(s(this,m).productId){const e=this.getProjectByProduct(s(this,m).productId).map(r=>r.id),i=s(this,I).filter(r=>e.includes(r.projectId)).map(r=>r.id);t=t.filter(r=>i.includes(r.sprintId))}return t}getTasksByStatus(t){return this.getTasks().filter(e=>e.status===t)}getTask(t){return s(this,w).find(e=>e.id===t)??null}addTask(t){var e;const i=t.sprintId??s(this,m).sprintId??((e=this.getSprints()[0])==null?void 0:e.id),r=Xt({...t,position:s(this,w).filter(d=>d.sprintId===(i??"")).length}),{valid:o,errors:a}=Pt(r);if(!o)throw new Error(a.join(", "));return s(this,w).push(r),h(this,g,E).call(this,F,s(this,w)),h(this,g,j).call(this),r}updateTask(t,e){const i=s(this,w).findIndex(a=>a.id===t);if(i===-1)throw new Error(`Tarea ${t} no encontrada`);s(this,w)[i]={...s(this,w)[i],...e,id:t,updatedAt:new Date().toISOString()};const{valid:r,errors:o}=Pt(s(this,w)[i]);if(!r)throw new Error(o.join(", "));return h(this,g,E).call(this,F,s(this,w)),h(this,g,j).call(this),s(this,w)[i]}deleteTask(t){f(this,w,s(this,w).filter(e=>e.id!==t)),h(this,g,E).call(this,F,s(this,w)),h(this,g,j).call(this)}moveTask(t,e){return this.updateTask(t,{status:e})}reorderTask(t,e,i){if(!this.getTask(t))return;this.getTasksByStatus(e).forEach((o,a)=>{const d=s(this,w).findIndex(l=>l.id===o.id);d!==-1&&(s(this,w)[d].position=a)});const r=s(this,w).findIndex(o=>o.id===t);r!==-1&&(s(this,w)[r].status=e,s(this,w)[r].position=i),h(this,g,E).call(this,F,s(this,w)),h(this,g,j).call(this)}getSelectedSprintId(){return s(this,m).sprintId}setSelectedSprint(t){this.setActiveSprint(t)}getStats(){const t=this.getTasks(),e=t.filter(o=>o.status===L.TODO),i=t.filter(o=>o.status===L.IN_PROGRESS),r=t.filter(o=>o.status===L.DONE);return{total:t.length,filteredTotal:t.length,todo:e.length,inProgress:i.length,done:r.length,totalPoints:t.reduce((o,a)=>o+(a.storyPoints||0),0),donePoints:r.reduce((o,a)=>o+(a.storyPoints||0),0),filteredPoints:t.reduce((o,a)=>o+(a.storyPoints||0),0),filteredDonePoints:r.reduce((o,a)=>o+(a.storyPoints||0),0)}}getSprintStats(t){const e=s(this,w).filter(r=>r.sprintId===t),i=e.filter(r=>r.status===L.DONE);return{total:e.length,done:i.length,totalPoints:e.reduce((r,o)=>r+(o.storyPoints||0),0),donePoints:i.reduce((r,o)=>r+(o.storyPoints||0),0)}}getFilterCriteria(){return{...s(this,H)}}setFilterCriteria(t){f(this,H,{...s(this,H),...t}),h(this,g,E).call(this,ht,s(this,H)),h(this,g,j).call(this)}clearFilters(){f(this,H,{search:"",priority:"",tag:""}),h(this,g,E).call(this,ht,s(this,H)),h(this,g,j).call(this)}getFilteredTasks(t){const{search:e,priority:i,tag:r}={...s(this,H),...t};let o=this.getTasks();if(e!=null&&e.trim()){const a=e.toLowerCase();o=o.filter(d=>d.title.toLowerCase().includes(a)||(d.description??"").toLowerCase().includes(a))}return i&&i!=="all"&&(o=o.filter(a=>a.priority===i)),r&&r!=="all"&&(o=o.filter(a=>{var d;return(d=a.tags)==null?void 0:d.includes(r)})),o}getAllTags(){const t=new Set;return this.getTasks().forEach(e=>{var i;return(i=e.tags)==null?void 0:i.forEach(r=>t.add(r))}),Array.from(t).sort()}getFilteredCount(){return this.getFilteredTasks(s(this,H)).length}addTaskQuick(t,e=L.TODO){return this.addTask({title:t,status:e})}reset(){f(this,w,[]),f(this,H,{search:"",priority:"",tag:""}),h(this,g,E).call(this,F,s(this,w)),h(this,g,E).call(this,ht,s(this,H)),h(this,g,j).call(this)}}A=new WeakMap,q=new WeakMap,I=new WeakMap,w=new WeakMap,H=new WeakMap,m=new WeakMap,pt=new WeakMap,It=new WeakMap,g=new WeakSet,Ct=function(){var n;if(f(this,A,h(this,g,Y).call(this,ct)),f(this,q,h(this,g,Y).call(this,ut)),f(this,I,h(this,g,Y).call(this,Z)),f(this,w,h(this,g,Y).call(this,F)),f(this,H,h(this,g,Y).call(this,ht)||{search:"",priority:"",tag:""}),f(this,m,h(this,g,Y).call(this,U)||{productId:null,projectId:null,sprintId:null}),f(this,It,!0),s(this,A).length===0){const t=zt({name:"Mi Producto"});s(this,A).push(t),h(this,g,E).call(this,ct,s(this,A)),s(this,m).productId=t.id}if(s(this,m).productId&&!this.getProduct(s(this,m).productId)&&(s(this,m).productId=((n=s(this,A)[0])==null?void 0:n.id)??null),s(this,m).projectId&&!this.getProject(s(this,m).projectId)&&(s(this,m).projectId=null),s(this,m).sprintId&&!this.getSprint(s(this,m).sprintId)&&(s(this,m).sprintId=null),s(this,m).projectId&&this.getSprintsByProject(s(this,m).projectId).length===0){const t=St({name:"Sprint 1",startDate:new Date().toISOString().split("T")[0],endDate:new Date(Date.now()+12096e5).toISOString().split("T")[0],status:yt.ACTIVE,projectId:s(this,m).projectId});s(this,I).push(t),s(this,m).sprintId=t.id,h(this,g,E).call(this,Z,s(this,I))}h(this,g,E).call(this,U,s(this,m))},Y=function(n){try{const t=localStorage.getItem(n);return t?JSON.parse(t):[]}catch{return[]}},E=function(n,t){try{localStorage.setItem(n,JSON.stringify(t))}catch(e){console.error("Save error",n,e)}},j=function(){h(this,g,qt).call(this)},qt=function(){s(this,pt).forEach(n=>n(s(this,w)))};const c=new Zt;var G,K,$t,Tt,it,Lt,Bt,Ot;class Jt{constructor(){y(this,it),y(this,G,null),y(this,K,[]),y(this,$t,3),y(this,Tt,3e3),h(this,it,Lt).call(this)}notify(t,e="info",i=s(this,Tt)){if(h(this,it,Lt).call(this),s(this,K).length>=s(this,$t)){const l=s(this,K).shift();l&&(l.element.classList.add("toast-exit"),setTimeout(()=>l.element.remove(),200))}const r=document.createElement("div");r.className=`toast toast-${e}`,r.style.cssText=`
+      background: ${h(this,it,Bt).call(this,e)};
       color: #11111b;
       padding: 12px 20px;
       border-radius: 8px;
@@ -12,7 +12,7 @@ var Ot=c=>{throw TypeError(c)};var $t=(c,r,t)=>r.has(c)||Ot("Cannot "+t);var s=(
       align-items: center;
       gap: 8px;
       max-width: 320px;
-    `;const n=h(this,V,Ut).call(this,t);if(e.innerHTML=`<span>${n}</span><span>${this.escapeHtml(r)}</span>`,t==="delete"){const b=document.createElement("button");b.textContent="↩︎ Deshacer",b.style.cssText=`
+    `;const o=h(this,it,Ot).call(this,e);if(r.innerHTML=`<span>${o}</span><span>${this.escapeHtml(t)}</span>`,e==="delete"){const l=document.createElement("button");l.textContent="↩︎ Deshacer",l.style.cssText=`
         background: rgba(0,0,0,0.2);
         border: none;
         color: #11111b;
@@ -22,7 +22,7 @@ var Ot=c=>{throw TypeError(c)};var $t=(c,r,t)=>r.has(c)||Ot("Cannot "+t);var s=(
         font-size: 12px;
         font-weight: 600;
         margin-left: 8px;
-      `,b.onclick=()=>{this.onUndo&&this.onUndo(),this.dismiss(e)},e.appendChild(b)}const o=document.createElement("button");o.innerHTML="✕",o.style.cssText=`
+      `,l.onclick=()=>{this.onUndo&&this.onUndo(),this.dismiss(r)},r.appendChild(l)}const a=document.createElement("button");a.innerHTML="✕",a.style.cssText=`
       background: none;
       border: none;
       color: #11111b;
@@ -31,7 +31,7 @@ var Ot=c=>{throw TypeError(c)};var $t=(c,r,t)=>r.has(c)||Ot("Cannot "+t);var s=(
       opacity: 0.7;
       padding: 0;
       margin-left: 4px;
-    `,o.onclick=()=>this.dismiss(e),e.appendChild(o),s(this,Y).appendChild(e);const a={element:e,message:r,type:t};return s(this,X).push(a),i>0&&setTimeout(()=>this.dismiss(e),i),e}dismiss(r){!r||!r.parentElement||(r.classList.add("toast-exit"),setTimeout(()=>{r.remove(),m(this,X,s(this,X).filter(t=>t.element!==r))},200))}escapeHtml(r){const t=document.createElement("div");return t.textContent=r,t.innerHTML}success(r,t){return this.notify(r,"success",t)}error(r,t){return this.notify(r,"error",t)}info(r,t){return this.notify(r,"info",t)}warning(r,t){return this.notify(r,"warning",t)}delete(r,t){return this.onUndo=t,this.notify(r,"delete",5e3)}}Y=new WeakMap,X=new WeakMap,It=new WeakMap,Tt=new WeakMap,V=new WeakSet,jt=function(){s(this,Y)||(m(this,Y,document.createElement("div")),s(this,Y).id="notifications-container",s(this,Y).style.cssText=`
+    `,a.onclick=()=>this.dismiss(r),r.appendChild(a),s(this,G).appendChild(r);const d={element:r,message:t,type:e};return s(this,K).push(d),i>0&&setTimeout(()=>this.dismiss(r),i),r}dismiss(t){!t||!t.parentElement||(t.classList.add("toast-exit"),setTimeout(()=>{t.remove(),f(this,K,s(this,K).filter(e=>e.element!==t))},200))}escapeHtml(t){const e=document.createElement("div");return e.textContent=t,e.innerHTML}success(t,e){return this.notify(t,"success",e)}error(t,e){return this.notify(t,"error",e)}info(t,e){return this.notify(t,"info",e)}warning(t,e){return this.notify(t,"warning",e)}delete(t,e){return this.onUndo=e,this.notify(t,"delete",5e3)}}G=new WeakMap,K=new WeakMap,$t=new WeakMap,Tt=new WeakMap,it=new WeakSet,Lt=function(){s(this,G)||(f(this,G,document.createElement("div")),s(this,G).id="notifications-container",s(this,G).style.cssText=`
       position: fixed;
       bottom: 20px;
       right: 20px;
@@ -40,7 +40,7 @@ var Ot=c=>{throw TypeError(c)};var $t=(c,r,t)=>r.has(c)||Ot("Cannot "+t);var s=(
       gap: 8px;
       z-index: 10000;
       pointer-events: none;
-    `,document.body.appendChild(s(this,Y)))},_t=function(r){const t={success:"#a6e3a1",error:"#f38ba8",info:"#89b4fa",warning:"#f9e2af"};return t[r]||t.info},Ut=function(r){const t={success:"✅",error:"❌",info:"ℹ️",warning:"⚠️",delete:"🗑️"};return t[r]||t.info};const I=new te;var bt;class ee extends HTMLElement{constructor(){super(...arguments);y(this,bt,null)}connectedCallback(){m(this,bt,l.subscribe(()=>this.refresh())),this.refresh()}disconnectedCallback(){var t;(t=s(this,bt))==null||t.call(this)}refresh(){var d,u;const t=l.getStats(),i=l.getFilterCriteria(),e=i.search||i.priority||i.tag,n=t.total>0?Math.round(t.done/t.total*100):0,o=l.getProduct(l.getActiveProductId()),a=l.getProject(l.getActiveProjectId()),b=l.getSprint(l.getActiveSprintId());this.innerHTML=`
+    `,document.body.appendChild(s(this,G)))},Bt=function(n){const t={success:"#a6e3a1",error:"#f38ba8",info:"#89b4fa",warning:"#f9e2af"};return t[n]||t.info},Ot=function(n){const t={success:"✅",error:"❌",info:"ℹ️",warning:"⚠️",delete:"🗑️"};return t[n]||t.info};const S=new Jt;var bt;class te extends HTMLElement{constructor(){super(...arguments),y(this,bt,null)}connectedCallback(){f(this,bt,c.subscribe(()=>this.refresh())),this.refresh()}disconnectedCallback(){var t;(t=s(this,bt))==null||t.call(this)}refresh(){var t,e;const i=c.getStats(),r=c.getFilterCriteria(),o=r.search||r.priority||r.tag,a=i.total>0?Math.round(i.done/i.total*100):0,d=c.getProduct(c.getActiveProductId()),l=c.getProject(c.getActiveProjectId()),b=c.getSprint(c.getActiveSprintId());this.innerHTML=`
       <style>
         :host { display: block; }
         .header {
@@ -128,16 +128,16 @@ var Ot=c=>{throw TypeError(c)};var $t=(c,r,t)=>r.has(c)||Ot("Cannot "+t);var s=(
       <div class="header">
         <div class="title-area">
           <div class="breadcrumb">
-            <div class="breadcrumb-item ${o?"":"active"}">
-              <span>📦 ${o?"":"Sin producto"}</span>
+            <div class="breadcrumb-item ${d?"":"active"}">
+              <span>📦 ${d?"":"Sin producto"}</span>
             </div>
-            ${o?`
+            ${d?`
               <span class="breadcrumb-sep">›</span>
-              <div class="breadcrumb-item ${o&&!a?"active":""}">
-                <span>📁 ${a?"":"Sin proyecto"}</span>
+              <div class="breadcrumb-item ${d&&!l?"active":""}">
+                <span>📁 ${l?"":"Sin proyecto"}</span>
               </div>
             `:""}
-            ${a?`
+            ${l?`
               <span class="breadcrumb-sep">›</span>
               <div class="breadcrumb-item ${b?"":"active"}">
                 <span>🎯 ${b?"":"Sin sprint"}</span>
@@ -147,31 +147,31 @@ var Ot=c=>{throw TypeError(c)};var $t=(c,r,t)=>r.has(c)||Ot("Cannot "+t);var s=(
           <div class="title-row">
             <span class="title-icon">🎯</span>
             <h1 class="title">
-              ${o?this.escapeHtml(o.name):"Scrum Backlog"}
-              ${a?` › ${this.escapeHtml(a.name)}`:""}
-              ${e?'<span class="filter-badge">Filtrado</span>':""}
+              ${d?this.escapeHtml(d.name):"Scrum Backlog"}
+              ${l?` › ${this.escapeHtml(l.name)}`:""}
+              ${o?'<span class="filter-badge">Filtrado</span>':""}
             </h1>
           </div>
         </div>
         <div class="stats">
           <div class="stat">
-            <span class="stat-value">${t.filteredTotal!==t.total?`${t.filteredTotal}/`:""}${t.todo}</span>
+            <span class="stat-value">${i.filteredTotal!==i.total?`${i.filteredTotal}/`:""}${i.todo}</span>
             <span class="stat-label">To Do</span>
           </div>
           <div class="stat">
-            <span class="stat-value progress">${t.inProgress}</span>
+            <span class="stat-value progress">${i.inProgress}</span>
             <span class="stat-label">En curso</span>
           </div>
           <div class="stat">
-            <span class="stat-value done">${t.done}</span>
+            <span class="stat-value done">${i.done}</span>
             <span class="stat-label">Hechas</span>
           </div>
           <div class="stat">
             <span class="stat-label">Progreso</span>
             <div class="progress-bar">
-              <div class="progress-fill" style="width: ${n}%"></div>
+              <div class="progress-fill" style="width: ${a}%"></div>
             </div>
-            <span class="stat-label">${n}%</span>
+            <span class="stat-label">${a}%</span>
           </div>
         </div>
         <div class="header-actions">
@@ -179,9 +179,9 @@ var Ot=c=>{throw TypeError(c)};var $t=(c,r,t)=>r.has(c)||Ot("Cannot "+t);var s=(
           <button class="btn-add" id="addTaskBtn">➕ Nueva tarea</button>
         </div>
       </div>
-    `,(d=this.querySelector("#addTaskBtn"))==null||d.addEventListener("click",()=>{this.dispatchEvent(new CustomEvent("open-create-modal",{bubbles:!0,composed:!0}))}),(u=this.querySelector("#exportBtn"))==null||u.addEventListener("click",()=>this.exportToCSV())}exportToCSV(){const t=l.getFilteredTasks(l.getFilterCriteria());if(t.length===0){I.warning("No hay tareas para exportar");return}const i=["id","title","description","status","priority","storyPoints","tags","sprintId","createdAt","updatedAt"],e=d=>{if(d==null)return"";const u=String(d);return u.includes(",")||u.includes('"')||u.includes(`
-`)?`"${u.replace(/"/g,'""')}"`:u},n=[i.join(","),...t.map(d=>[e(d.id),e(d.title),e(d.description),e(d.status),e(d.priority),e(d.storyPoints),e((d.tags||[]).join(";")),e(d.sprintId),e(d.createdAt),e(d.updatedAt)].join(","))],o=new Blob([n.join(`
-`)],{type:"text/csv;charset=utf-8;"}),a=URL.createObjectURL(o),b=document.createElement("a");b.href=a,b.download=`scrum-backlog-${new Date().toISOString().split("T")[0]}.csv`,b.click(),URL.revokeObjectURL(a),I.success(`Exportadas ${t.length} tareas`)}escapeHtml(t){const i=document.createElement("div");return i.textContent=t,i.innerHTML}}bt=new WeakMap;customElements.define("app-header",ee);const ct={TASK_MOVED:"task:moved",DRAG_START:"drag:start",DRAG_END:"drag:end"};var Z;class ie{constructor(){y(this,Z,new Map)}on(r,t){return s(this,Z).has(r)||s(this,Z).set(r,new Set),s(this,Z).get(r).add(t),()=>this.off(r,t)}off(r,t){var i;(i=s(this,Z).get(r))==null||i.delete(t)}emit(r,t){var i;(i=s(this,Z).get(r))==null||i.forEach(e=>e(t))}}Z=new WeakMap;const lt=new ie;var gt,ut,rt,qt,ot,F,Yt,Dt,Gt,re,At;class se extends HTMLElement{constructor(){super();y(this,F);y(this,gt,null);y(this,ut,!1);y(this,rt,!1);y(this,qt,!1);y(this,ot,new Set);this.attachShadow({mode:"open"})}connectedCallback(){m(this,gt,l.subscribe(()=>this.refresh())),this.refresh()}disconnectedCallback(){var t;(t=s(this,gt))==null||t.call(this)}refresh(){this.render()}render(){var o;const t=l.getProducts(),i=l.getActiveProductId(),e=l.getActiveProjectId(),n=l.getActiveSprintId();this.shadowRoot.innerHTML=`
+    `,(t=this.querySelector("#addTaskBtn"))==null||t.addEventListener("click",()=>{this.dispatchEvent(new CustomEvent("open-create-modal",{bubbles:!0,composed:!0}))}),(e=this.querySelector("#exportBtn"))==null||e.addEventListener("click",()=>this.exportToCSV())}exportToCSV(){const t=c.getFilteredTasks(c.getFilterCriteria());if(t.length===0){S.warning("No hay tareas para exportar");return}const e=["id","title","description","status","priority","storyPoints","tags","sprintId","createdAt","updatedAt"],i=l=>{if(l==null)return"";const b=String(l);return b.includes(",")||b.includes('"')||b.includes(`
+`)?`"${b.replace(/"/g,'""')}"`:b},r=[e.join(","),...t.map(l=>[i(l.id),i(l.title),i(l.description),i(l.status),i(l.priority),i(l.storyPoints),i((l.tags||[]).join(";")),i(l.sprintId),i(l.createdAt),i(l.updatedAt)].join(","))],o=new Blob([r.join(`
+`)],{type:"text/csv;charset=utf-8;"}),a=URL.createObjectURL(o),d=document.createElement("a");d.href=a,d.download=`scrum-backlog-${new Date().toISOString().split("T")[0]}.csv`,d.click(),URL.revokeObjectURL(a),S.success(`Exportadas ${t.length} tareas`)}escapeHtml(t){const e=document.createElement("div");return e.textContent=t,e.innerHTML}}bt=new WeakMap;customElements.define("app-header",te);const tt={TASK_MOVED:"task:moved",DRAG_START:"drag:start",DRAG_END:"drag:end"};var Q;class ee{constructor(){y(this,Q,new Map)}on(t,e){return s(this,Q).has(t)||s(this,Q).set(t,new Set),s(this,Q).get(t).add(e),()=>this.off(t,e)}off(t,e){var i;(i=s(this,Q).get(t))==null||i.delete(e)}emit(t,e){var i;(i=s(this,Q).get(t))==null||i.forEach(r=>r(e))}}Q=new WeakMap;const et=new ee;var gt,lt,at,Ht,nt,V,Rt,wt,Nt,jt;class ie extends HTMLElement{constructor(){super(),y(this,V),y(this,gt,null),y(this,lt,!1),y(this,at,!1),y(this,Ht,!1),y(this,nt,new Set),this.attachShadow({mode:"open"})}connectedCallback(){f(this,gt,c.subscribe(()=>this.refresh())),this.refresh()}disconnectedCallback(){var t;(t=s(this,gt))==null||t.call(this)}refresh(){this.render()}render(){var t;const e=c.getProducts(),i=c.getActiveProductId(),r=c.getActiveProjectId(),o=c.getActiveSprintId();this.shadowRoot.innerHTML=`
       <style>
         :host {
           display: flex;
@@ -441,11 +441,11 @@ var Ot=c=>{throw TypeError(c)};var $t=(c,r,t)=>r.has(c)||Ot("Cannot "+t);var s=(
         <div class="product-selector">
           <button class="product-btn" id="productBtn">
             <span class="product-icon">📦</span>
-            <span class="product-name">${this.escapeHtml(((o=t.find(a=>a.id===i))==null?void 0:o.name)??"Seleccionar")}</span>
+            <span class="product-name">${this.escapeHtml(((t=e.find(a=>a.id===i))==null?void 0:t.name)??"Seleccionar")}</span>
             <span class="product-arrow">▸</span>
           </button>
           <div class="product-dropdown" id="productDropdown" style="display:none">
-            ${t.map(a=>`
+            ${e.map(a=>`
               <div class="dropdown-item ${a.id===i?"active":""}" data-product-id="${a.id}">
                 📦 ${this.escapeHtml(a.name)}
               </div>
@@ -457,35 +457,35 @@ var Ot=c=>{throw TypeError(c)};var $t=(c,r,t)=>r.has(c)||Ot("Cannot "+t);var s=(
       </div>
 
       <div class="sidebar-body">
-        ${h(this,F,Yt).call(this,i,e,n)}
+        ${h(this,V,Rt).call(this,i,r,o)}
       </div>
-    `,this.setupEventListeners(t,i)}setupEventListeners(t,i){var n,o,a,b,d,u,k;const e=this.shadowRoot;(n=e.getElementById("productBtn"))==null||n.addEventListener("click",p=>{p.stopPropagation();const x=e.getElementById("productDropdown");x.style.display=x.style.display==="none"?"block":"none"}),document.addEventListener("click",()=>{const p=e.getElementById("productDropdown");p&&(p.style.display="none")}),e.querySelectorAll(".dropdown-item[data-product-id]").forEach(p=>{p.addEventListener("click",()=>{l.setActiveProduct(p.dataset.productId),e.getElementById("productDropdown").style.display="none"})}),(o=e.getElementById("newProductBtn"))==null||o.addEventListener("click",()=>{e.getElementById("productDropdown").style.display="none",m(this,ut,!0),this.refresh(),setTimeout(()=>{var p;return(p=e.getElementById("newProductName"))==null?void 0:p.focus()},10)}),(a=e.getElementById("cancelProduct"))==null||a.addEventListener("click",()=>{m(this,ut,!1),this.refresh()}),(b=e.getElementById("saveProduct"))==null||b.addEventListener("click",()=>{var x;const p=(x=e.getElementById("newProductName"))==null?void 0:x.value.trim();if(!p){I.error("El nombre es requerido");return}try{const v=l.addProduct({name:p});l.setActiveProduct(v.id),m(this,ut,!1),I.success(`Producto "${p}" creado`)}catch(v){I.error(v.message)}}),(d=e.getElementById("showProjectForm"))==null||d.addEventListener("click",()=>{m(this,rt,!0),this.refresh(),setTimeout(()=>{var p;return(p=e.getElementById("newProjectName"))==null?void 0:p.focus()},10)}),(u=e.getElementById("cancelProject"))==null||u.addEventListener("click",()=>{m(this,rt,!1),this.refresh()}),(k=e.getElementById("saveProject"))==null||k.addEventListener("click",()=>{var x;const p=(x=e.getElementById("newProjectName"))==null?void 0:x.value.trim();if(!p){I.error("El nombre es requerido");return}try{const v=l.addProject({name:p});l.setActiveProject(v.id),m(this,rt,!1),I.success(`Proyecto "${p}" creado`)}catch(v){I.error(v.message)}}),e.querySelectorAll(".project-chevron").forEach(p=>{p.addEventListener("click",x=>{x.stopPropagation();const $=p.closest(".project-item").dataset.projectId;s(this,ot).has($)?s(this,ot).delete($):s(this,ot).add($),this.refresh()})}),e.querySelectorAll(".project-header").forEach(p=>{p.addEventListener("click",x=>{var $;if(x.target.closest(".action-btn")||x.target.closest(".project-chevron"))return;const v=($=p.closest(".project-item"))==null?void 0:$.dataset.projectId;v&&l.setActiveProject(v)})}),e.querySelectorAll(".sprint-item").forEach(p=>{p.addEventListener("click",x=>{if(x.target.closest(".action-btn"))return;const v=p.dataset.sprintId;l.setActiveSprint(v)})}),e.querySelectorAll(".all-tasks-row").forEach(p=>{p.addEventListener("click",()=>{const x=p.dataset.projectId;l.setActiveProject(x),l.setActiveSprint(null)})}),e.querySelectorAll(".sprint-add").forEach(p=>{p.addEventListener("click",x=>{x.stopPropagation();const v=p.closest(".project-item"),$=v==null?void 0:v.dataset.projectId;if(!$)return;const q=v.querySelector(".sprint-list"),C=v.querySelector("#newSprintForm");if(C){C.remove();return}q&&q.insertAdjacentHTML("beforeend",h(this,F,Gt).call(this,$));const D=v.querySelector("#newSprintForm");D.querySelector("#cancelSprint").addEventListener("click",()=>D.remove()),D.querySelector("#saveSprint").addEventListener("click",()=>{var U,Bt,Mt;const z=(U=D.querySelector("#newSprintName"))==null?void 0:U.value.trim(),tt=(Bt=D.querySelector("#newSprintStart"))==null?void 0:Bt.value,E=(Mt=D.querySelector("#newSprintEnd"))==null?void 0:Mt.value;if(!z){I.error("El nombre es requerido");return}try{l.addSprint({name:z,startDate:tt,endDate:E,projectId:$}),I.success(`Sprint "${z}" creado`)}catch(Kt){I.error(Kt.message)}})})}),e.querySelectorAll(".sprint-del").forEach(p=>{p.addEventListener("click",x=>{x.stopPropagation();const v=p.closest(".sprint-item"),$=v==null?void 0:v.dataset.sprintId;if(!$)return;e.querySelectorAll(".confirm-overlay").forEach(z=>z.remove()),e.querySelector(".sidebar-body").insertAdjacentHTML("beforeend",h(this,F,At).call(this,"Este sprint y sus tareas serán eliminados."));const q=e.getElementById("confirmYes"),C=e.getElementById("confirmNo"),D=e.getElementById("confirmOverlay");q==null||q.addEventListener("click",()=>{l.deleteSprint($),I.info("Sprint eliminado"),D.remove()}),C==null||C.addEventListener("click",()=>D.remove()),D==null||D.addEventListener("click",z=>{z.target===D&&D.remove()})})}),e.querySelectorAll(".project-del").forEach(p=>{p.addEventListener("click",x=>{x.stopPropagation();const v=p.closest(".project-item"),$=v==null?void 0:v.dataset.projectId;if(!$)return;const q=l.getProject($);e.querySelectorAll(".confirm-overlay").forEach(tt=>tt.remove()),e.querySelector(".sidebar-body").insertAdjacentHTML("beforeend",h(this,F,At).call(this,`El proyecto "${q==null?void 0:q.name}" y todos sus sprints serán eliminados.`));const C=e.getElementById("confirmYes"),D=e.getElementById("confirmNo"),z=e.getElementById("confirmOverlay");C==null||C.addEventListener("click",()=>{l.deleteProject($),I.info("Proyecto eliminado"),z.remove()}),D==null||D.addEventListener("click",()=>z.remove()),z==null||z.addEventListener("click",tt=>{tt.target===z&&z.remove()})})})}escapeHtml(t){const i=document.createElement("div");return i.textContent=t,i.innerHTML}}gt=new WeakMap,ut=new WeakMap,rt=new WeakMap,qt=new WeakMap,ot=new WeakMap,F=new WeakSet,Yt=function(t,i,e){if(!t)return'<div style="color:#6c7086;font-size:12px;padding:12px">Selecciona un producto</div>';const n=l.getProjects(t);return n.length===0?`
+    `,this.setupEventListeners(e,i)}setupEventListeners(t,e){var i,r,o,a,d,l,b;const u=this.shadowRoot;(i=u.getElementById("productBtn"))==null||i.addEventListener("click",p=>{p.stopPropagation();const v=u.getElementById("productDropdown");v.style.display=v.style.display==="none"?"block":"none"}),document.addEventListener("click",()=>{const p=u.getElementById("productDropdown");p&&(p.style.display="none")}),u.querySelectorAll(".dropdown-item[data-product-id]").forEach(p=>{p.addEventListener("click",()=>{c.setActiveProduct(p.dataset.productId),u.getElementById("productDropdown").style.display="none"})}),(r=u.getElementById("newProductBtn"))==null||r.addEventListener("click",()=>{u.getElementById("productDropdown").style.display="none",f(this,lt,!0),this.refresh(),setTimeout(()=>{var p;return(p=u.getElementById("newProductName"))==null?void 0:p.focus()},10)}),(o=u.getElementById("cancelProduct"))==null||o.addEventListener("click",()=>{f(this,lt,!1),this.refresh()}),(a=u.getElementById("saveProduct"))==null||a.addEventListener("click",()=>{var p;const v=(p=u.getElementById("newProductName"))==null?void 0:p.value.trim();if(!v){S.error("El nombre es requerido");return}try{const k=c.addProduct({name:v});c.setActiveProduct(k.id),f(this,lt,!1),S.success(`Producto "${v}" creado`)}catch(k){S.error(k.message)}}),(d=u.getElementById("showProjectForm"))==null||d.addEventListener("click",()=>{f(this,at,!0),this.refresh(),setTimeout(()=>{var p;return(p=u.getElementById("newProjectName"))==null?void 0:p.focus()},10)}),(l=u.getElementById("cancelProject"))==null||l.addEventListener("click",()=>{f(this,at,!1),this.refresh()}),(b=u.getElementById("saveProject"))==null||b.addEventListener("click",()=>{var p;const v=(p=u.getElementById("newProjectName"))==null?void 0:p.value.trim();if(!v){S.error("El nombre es requerido");return}try{const k=c.addProject({name:v});c.setActiveProject(k.id),f(this,at,!1),S.success(`Proyecto "${v}" creado`)}catch(k){S.error(k.message)}}),u.querySelectorAll(".project-chevron").forEach(p=>{p.addEventListener("click",v=>{v.stopPropagation();const k=p.closest(".project-item").dataset.projectId;s(this,nt).has(k)?s(this,nt).delete(k):s(this,nt).add(k),this.refresh()})}),u.querySelectorAll(".project-header").forEach(p=>{p.addEventListener("click",v=>{var k;if(v.target.closest(".action-btn")||v.target.closest(".project-chevron"))return;const $=(k=p.closest(".project-item"))==null?void 0:k.dataset.projectId;$&&c.setActiveProject($)})}),u.querySelectorAll(".sprint-item").forEach(p=>{p.addEventListener("click",v=>{if(v.target.closest(".action-btn"))return;const k=p.dataset.sprintId;c.setActiveSprint(k)})}),u.querySelectorAll(".all-tasks-row").forEach(p=>{p.addEventListener("click",()=>{const v=p.dataset.projectId;c.setActiveProject(v),c.setActiveSprint(null)})}),u.querySelectorAll(".sprint-add").forEach(p=>{p.addEventListener("click",v=>{v.stopPropagation();const k=p.closest(".project-item"),$=k==null?void 0:k.dataset.projectId;if(!$)return;const M=k.querySelector(".sprint-list"),z=k.querySelector("#newSprintForm");if(z){z.remove();return}M&&M.insertAdjacentHTML("beforeend",h(this,V,Nt).call(this,$));const D=k.querySelector("#newSprintForm");D.querySelector("#cancelSprint").addEventListener("click",()=>D.remove()),D.querySelector("#saveSprint").addEventListener("click",()=>{var x,O,Dt;const kt=(x=D.querySelector("#newSprintName"))==null?void 0:x.value.trim(),_t=(O=D.querySelector("#newSprintStart"))==null?void 0:O.value,Ut=(Dt=D.querySelector("#newSprintEnd"))==null?void 0:Dt.value;if(!kt){S.error("El nombre es requerido");return}try{c.addSprint({name:kt,startDate:_t,endDate:Ut,projectId:$}),S.success(`Sprint "${kt}" creado`)}catch(Gt){S.error(Gt.message)}})})}),u.querySelectorAll(".sprint-del").forEach(p=>{p.addEventListener("click",v=>{v.stopPropagation();const k=p.closest(".sprint-item"),$=k==null?void 0:k.dataset.sprintId;if(!$)return;u.querySelectorAll(".confirm-overlay").forEach(x=>x.remove()),u.querySelector(".sidebar-body").insertAdjacentHTML("beforeend",h(this,V,jt).call(this,"Este sprint y sus tareas serán eliminados."));const M=u.getElementById("confirmYes"),z=u.getElementById("confirmNo"),D=u.getElementById("confirmOverlay");M==null||M.addEventListener("click",()=>{c.deleteSprint($),S.info("Sprint eliminado"),D.remove()}),z==null||z.addEventListener("click",()=>D.remove()),D==null||D.addEventListener("click",x=>{x.target===D&&D.remove()})})}),u.querySelectorAll(".project-del").forEach(p=>{p.addEventListener("click",v=>{v.stopPropagation();const k=p.closest(".project-item"),$=k==null?void 0:k.dataset.projectId;if(!$)return;const M=c.getProject($);u.querySelectorAll(".confirm-overlay").forEach(O=>O.remove()),u.querySelector(".sidebar-body").insertAdjacentHTML("beforeend",h(this,V,jt).call(this,`El proyecto "${M==null?void 0:M.name}" y todos sus sprints serán eliminados.`));const z=u.getElementById("confirmYes"),D=u.getElementById("confirmNo"),x=u.getElementById("confirmOverlay");z==null||z.addEventListener("click",()=>{c.deleteProject($),S.info("Proyecto eliminado"),x.remove()}),D==null||D.addEventListener("click",()=>x.remove()),x==null||x.addEventListener("click",O=>{O.target===x&&x.remove()})})})}escapeHtml(t){const e=document.createElement("div");return e.textContent=t,e.innerHTML}}gt=new WeakMap,lt=new WeakMap,at=new WeakMap,Ht=new WeakMap,nt=new WeakMap,V=new WeakSet,Rt=function(n,t,e){if(!n)return'<div style="color:#6c7086;font-size:12px;padding:12px">Selecciona un producto</div>';const i=c.getProjects(n);return i.length===0?`
         <div style="color:#6c7086;font-size:12px;padding:8px">No hay proyectos</div>
-        ${h(this,F,Dt).call(this)}
+        ${h(this,V,wt).call(this)}
       `:`
       <div class="section-label">Proyectos</div>
-      ${n.map(o=>{const a=l.getSprintsByProject(o.id),b=!s(this,ot).has(o.id);return`
-          <div class="project-item" data-project-id="${o.id}">
-            <div class="project-header ${o.id===i?"active":""}">
-              <span class="project-chevron ${b?"open":""}">▸</span>
-              <span class="project-name">${this.escapeHtml(o.name)}</span>
-              <span class="project-count">${a.length}</span>
+      ${i.map(r=>{const o=c.getSprintsByProject(r.id),a=!s(this,nt).has(r.id);return`
+          <div class="project-item" data-project-id="${r.id}">
+            <div class="project-header ${r.id===t?"active":""}">
+              <span class="project-chevron ${a?"open":""}">▸</span>
+              <span class="project-name">${this.escapeHtml(r.name)}</span>
+              <span class="project-count">${o.length}</span>
               <div class="project-actions">
                 <button class="action-btn sprint-add" title="Nuevo sprint">➕</button>
                 <button class="action-btn project-del delete" title="Eliminar proyecto">🗑️</button>
               </div>
             </div>
-            ${b?`
+            ${a?`
               <div class="sprint-list">
-                <div class="all-tasks-row ${!e&&o.id===i?"active":""}" data-scope="all" data-project-id="${o.id}">
+                <div class="all-tasks-row ${!e&&r.id===t?"active":""}" data-scope="all" data-project-id="${r.id}">
                   <span class="sprint-dot"></span>
                   <span class="sprint-name">📋 Todas las tareas</span>
                 </div>
-                ${a.map(d=>{const u=l.getSprintStats(d.id);return`
-                    <div class="sprint-item ${d.id===e?"active":""} ${d.status==="completed"?"completed":""}" data-sprint-id="${d.id}" data-project-id="${o.id}">
+                ${o.map(d=>{const l=c.getSprintStats(d.id);return`
+                    <div class="sprint-item ${d.id===e?"active":""} ${d.status==="completed"?"completed":""}" data-sprint-id="${d.id}" data-project-id="${r.id}">
                       <span class="sprint-dot"></span>
                       <span class="sprint-name">${this.escapeHtml(d.name)}</span>
-                      <span class="sprint-pts">${u.total}⭐</span>
+                      <span class="sprint-pts">${l.total}⭐</span>
                       <div class="sprint-actions">
                         <button class="action-btn sprint-del" title="Eliminar">🗑️</button>
                       </div>
@@ -495,12 +495,12 @@ var Ot=c=>{throw TypeError(c)};var $t=(c,r,t)=>r.has(c)||Ot("Cannot "+t);var s=(
             `:""}
           </div>
         `}).join("")}
-      ${s(this,rt)?h(this,F,Dt).call(this):`
+      ${s(this,at)?h(this,V,wt).call(this):`
         <button class="add-btn" id="showProjectForm">
           ➕ Nuevo proyecto
         </button>
       `}
-    `},Dt=function(){return`
+    `},wt=function(){return`
       <div class="create-form" id="newProjectForm">
         <div class="form-title">Nuevo Proyecto</div>
         <div class="form-group">
@@ -512,8 +512,8 @@ var Ot=c=>{throw TypeError(c)};var $t=(c,r,t)=>r.has(c)||Ot("Cannot "+t);var s=(
           <button class="btn btn-primary" id="saveProject">Crear</button>
         </div>
       </div>
-    `},Gt=function(t){return`
-      <div class="create-form" id="newSprintForm" data-project-id="${t}">
+    `},Nt=function(n){return`
+      <div class="create-form" id="newSprintForm" data-project-id="${n}">
         <div class="form-title">Nuevo Sprint</div>
         <div class="form-group">
           <label>Nombre</label>
@@ -532,30 +532,18 @@ var Ot=c=>{throw TypeError(c)};var $t=(c,r,t)=>r.has(c)||Ot("Cannot "+t);var s=(
           <button class="btn btn-primary" id="saveSprint">Crear</button>
         </div>
       </div>
-    `},re=function(){return`
-      <div class="create-form" id="newProductForm">
-        <div class="form-title">Nuevo Producto</div>
-        <div class="form-group">
-          <label>Nombre</label>
-          <input type="text" id="newProductName" placeholder="Mi producto" />
-        </div>
-        <div class="form-actions">
-          <button class="btn btn-secondary" id="cancelProduct">Cancelar</button>
-          <button class="btn btn-primary" id="saveProduct">Crear</button>
-        </div>
-      </div>
-    `},At=function(t){return`
+    `},jt=function(n){return`
       <div class="confirm-overlay" id="confirmOverlay">
         <div class="confirm-box">
           <h3>¿Eliminar?</h3>
-          <p>${t}</p>
+          <p>${n}</p>
           <div class="form-actions">
             <button class="btn btn-secondary" id="confirmNo">Cancelar</button>
             <button class="btn btn-danger" id="confirmYes">Eliminar</button>
           </div>
         </div>
       </div>
-    `};customElements.define("sprint-sidebar",se);var mt;class oe extends HTMLElement{constructor(){super();y(this,mt,null);this.attachShadow({mode:"open"})}connectedCallback(){m(this,mt,l.subscribe(()=>this.refresh())),this.refresh()}disconnectedCallback(){var t;(t=s(this,mt))==null||t.call(this)}refresh(){const t=l.getFilterCriteria(),i=l.getAllTags(),e=l.getStats(),n=t.search||t.priority||t.tag;this.render(t,i,e,n)}render(t,i,e,n){this.shadowRoot.innerHTML=`
+    `};customElements.define("sprint-sidebar",ie);var mt;class se extends HTMLElement{constructor(){super(),y(this,mt,null),this.attachShadow({mode:"open"})}connectedCallback(){f(this,mt,c.subscribe(()=>this.refresh())),this.refresh()}disconnectedCallback(){var t;(t=s(this,mt))==null||t.call(this)}refresh(){const t=c.getFilterCriteria(),e=c.getAllTags(),i=c.getStats(),r=t.search||t.priority||t.tag;this.render(t,e,i,r)}render(t,e,i,r){this.shadowRoot.innerHTML=`
       <style>
         :host {
           display: block;
@@ -604,7 +592,7 @@ var Ot=c=>{throw TypeError(c)};var $t=(c,r,t)=>r.has(c)||Ot("Cannot "+t);var s=(
           border-color: #89b4fa;
         }
         .clear-btn {
-          display: ${n?"flex":"none"};
+          display: ${r?"flex":"none"};
           align-items: center;
           gap: 4px;
           background: transparent;
@@ -649,7 +637,7 @@ var Ot=c=>{throw TypeError(c)};var $t=(c,r,t)=>r.has(c)||Ot("Cannot "+t);var s=(
         
         <select class="filter-select" id="tagFilter">
           <option value="">Todos</option>
-          ${i.map(o=>`
+          ${e.map(o=>`
             <option value="${this.escapeAttr(o)}" ${t.tag===o?"selected":""}>${this.escapeHtml(o)}</option>
           `).join("")}
         </select>
@@ -659,15 +647,15 @@ var Ot=c=>{throw TypeError(c)};var $t=(c,r,t)=>r.has(c)||Ot("Cannot "+t);var s=(
         </button>
         
         <span class="results-count">
-          ${e.filteredTotal!==e.total?`<strong>${e.filteredTotal}</strong> de ${e.total} tareas`:`<strong>${e.total}</strong> tareas`}
+          ${i.filteredTotal!==i.total?`<strong>${i.filteredTotal}</strong> de ${i.total} tareas`:`<strong>${i.total}</strong> tareas`}
         </span>
       </div>
-    `,this.setupEventListeners()}setupEventListeners(){const t=this.shadowRoot.getElementById("searchInput"),i=this.shadowRoot.getElementById("priorityFilter"),e=this.shadowRoot.getElementById("tagFilter"),n=this.shadowRoot.getElementById("clearBtn");let o;t==null||t.addEventListener("input",a=>{clearTimeout(o),o=setTimeout(()=>{l.setFilterCriteria({search:a.target.value})},150)}),i==null||i.addEventListener("change",a=>{l.setFilterCriteria({priority:a.target.value})}),e==null||e.addEventListener("change",a=>{l.setFilterCriteria({tag:a.target.value})}),n==null||n.addEventListener("click",()=>{l.clearFilters(),t.value="",i.value="",e.value=""})}focusSearch(){var t;(t=this.shadowRoot.getElementById("searchInput"))==null||t.focus()}escapeHtml(t){const i=document.createElement("div");return i.textContent=t,i.innerHTML}escapeAttr(t){return t.replace(/"/g,"&quot;").replace(/'/g,"&#39;")}}mt=new WeakMap;customElements.define("filter-bar",oe);const Pt={[j.TODO]:{title:"📋 To Do",color:"#89b4fa"},[j.IN_PROGRESS]:{title:"⚡ In Progress",color:"#f9e2af"},[j.DONE]:{title:"✅ Done",color:"#a6e3a1"}};var M,G,xt,K,Ct,zt;class ne extends HTMLElement{constructor(){super();y(this,M,null);y(this,G,[]);y(this,xt,null);y(this,K,!1);y(this,Ct,null);y(this,zt,null);this.attachShadow({mode:"open"})}static get observedAttributes(){return["status"]}connectedCallback(){m(this,xt,l.subscribe(()=>this.refresh())),this.setupDropZone(),this.refresh()}disconnectedCallback(){var t;(t=s(this,xt))==null||t.call(this)}attributeChangedCallback(t,i,e){t==="status"&&i!==e&&(m(this,M,e),this.refresh())}set status(t){m(this,M,t),this.refresh()}refresh(){if(!s(this,M))return;const t=l.getFilterCriteria();let e=l.getFilteredTasks(t).filter(n=>n.status===s(this,M));e=e.sort((n,o)=>(n.position||0)-(o.position||0)),m(this,G,e),this.render(),this.setupDropZone()}setupDropZone(){const t=this.shadowRoot.querySelector(".column"),i=this.shadowRoot.querySelector(".task-list");!t||!i||(t.addEventListener("dragover",e=>{var b;e.preventDefault(),e.dataTransfer.dropEffect="move",t.classList.add("drag-over");const n=Array.from(i.querySelectorAll("task-card")),o=this.getDragAfterElement(n,e.clientY);i.querySelectorAll(".drop-indicator").forEach(d=>d.remove());const a=document.createElement("div");a.className="drop-indicator",a.style.cssText=`
+    `,this.setupEventListeners()}setupEventListeners(){const t=this.shadowRoot.getElementById("searchInput"),e=this.shadowRoot.getElementById("priorityFilter"),i=this.shadowRoot.getElementById("tagFilter"),r=this.shadowRoot.getElementById("clearBtn");let o;t==null||t.addEventListener("input",a=>{clearTimeout(o),o=setTimeout(()=>{c.setFilterCriteria({search:a.target.value})},150)}),e==null||e.addEventListener("change",a=>{c.setFilterCriteria({priority:a.target.value})}),i==null||i.addEventListener("change",a=>{c.setFilterCriteria({tag:a.target.value})}),r==null||r.addEventListener("click",()=>{c.clearFilters(),t.value="",e.value="",i.value=""})}focusSearch(){var t;(t=this.shadowRoot.getElementById("searchInput"))==null||t.focus()}escapeHtml(t){const e=document.createElement("div");return e.textContent=t,e.innerHTML}escapeAttr(t){return t.replace(/"/g,"&quot;").replace(/'/g,"&#39;")}}mt=new WeakMap;customElements.define("filter-bar",se);const Et={[L.TODO]:{title:"📋 To Do",color:"#89b4fa"},[L.IN_PROGRESS]:{title:"⚡ In Progress",color:"#f9e2af"},[L.DONE]:{title:"✅ Done",color:"#a6e3a1"}};var P,W,ft,_,Ft,Wt;class re extends HTMLElement{constructor(){super(),y(this,P,null),y(this,W,[]),y(this,ft,null),y(this,_,!1),y(this,Ft,null),y(this,Wt,null),this.attachShadow({mode:"open"})}static get observedAttributes(){return["status"]}connectedCallback(){f(this,ft,c.subscribe(()=>this.refresh())),this.setupDropZone(),this.refresh()}disconnectedCallback(){var t;(t=s(this,ft))==null||t.call(this)}attributeChangedCallback(t,e,i){t==="status"&&e!==i&&(f(this,P,i),this.refresh())}set status(t){f(this,P,t),this.refresh()}refresh(){if(!s(this,P))return;const t=c.getFilterCriteria();let e=c.getFilteredTasks(t).filter(i=>i.status===s(this,P));e=e.sort((i,r)=>(i.position||0)-(r.position||0)),f(this,W,e),this.render(),this.setupDropZone()}setupDropZone(){const t=this.shadowRoot.querySelector(".column"),e=this.shadowRoot.querySelector(".task-list");!t||!e||(t.addEventListener("dragover",i=>{var r;i.preventDefault(),i.dataTransfer.dropEffect="move",t.classList.add("drag-over");const o=Array.from(e.querySelectorAll("task-card")),a=this.getDragAfterElement(o,i.clientY);e.querySelectorAll(".drop-indicator").forEach(l=>l.remove());const d=document.createElement("div");d.className="drop-indicator",d.style.cssText=`
         height: 3px;
-        background: ${((b=Pt[s(this,M)])==null?void 0:b.color)||"#89b4fa"};
+        background: ${((r=Et[s(this,P)])==null?void 0:r.color)||"#89b4fa"};
         border-radius: 2px;
         margin: 4px 0;
-      `,o?i.insertBefore(a,o):i.appendChild(a)}),t.addEventListener("dragleave",e=>{t.contains(e.relatedTarget)||(t.classList.remove("drag-over"),i.querySelectorAll(".drop-indicator").forEach(n=>n.remove()))}),t.addEventListener("drop",e=>{var u;e.preventDefault(),t.classList.remove("drag-over"),i.querySelectorAll(".drop-indicator").forEach(k=>k.remove());const n=e.dataTransfer.getData("text/plain");if(!n)return;const o=l.getTask(n);if(!o)return;const a=Array.from(i.querySelectorAll("task-card")),b=this.getDragAfterElement(a,e.clientY);let d=0;b?d=a.indexOf(b):d=a.length,o.status===s(this,M)?l.reorderTask(n,s(this,M),d):(l.moveTask(n,s(this,M)),d>0&&l.reorderTask(n,s(this,M),d)),I.success(`Tarea movida a ${((u=Pt[s(this,M)])==null?void 0:u.title)||s(this,M)}`),lt.emit(ct.TASK_MOVED,{taskId:n,newStatus:s(this,M)})}))}getDragAfterElement(t,i){return t.reduce((e,n)=>{const o=n.getBoundingClientRect(),a=i-o.top-o.height/2;return a<0&&a>e.offset?{offset:a,element:n}:e},{offset:Number.NEGATIVE_INFINITY}).element}render(){const t=Pt[s(this,M)]||{title:"Unknown",color:"#6c7086"},i=s(this,G).reduce((n,o)=>n+(o.storyPoints||0),0),e=s(this,G).length===0;this.shadowRoot.innerHTML=`
+      `,a?e.insertBefore(d,a):e.appendChild(d)}),t.addEventListener("dragleave",i=>{t.contains(i.relatedTarget)||(t.classList.remove("drag-over"),e.querySelectorAll(".drop-indicator").forEach(r=>r.remove()))}),t.addEventListener("drop",i=>{var r;i.preventDefault(),t.classList.remove("drag-over"),e.querySelectorAll(".drop-indicator").forEach(u=>u.remove());const o=i.dataTransfer.getData("text/plain");if(!o)return;const a=c.getTask(o);if(!a)return;const d=Array.from(e.querySelectorAll("task-card")),l=this.getDragAfterElement(d,i.clientY);let b=0;l?b=d.indexOf(l):b=d.length,a.status===s(this,P)?c.reorderTask(o,s(this,P),b):(c.moveTask(o,s(this,P)),b>0&&c.reorderTask(o,s(this,P),b)),S.success(`Tarea movida a ${((r=Et[s(this,P)])==null?void 0:r.title)||s(this,P)}`),et.emit(tt.TASK_MOVED,{taskId:o,newStatus:s(this,P)})}))}getDragAfterElement(t,e){return t.reduce((i,r)=>{const o=r.getBoundingClientRect(),a=e-o.top-o.height/2;return a<0&&a>i.offset?{offset:a,element:r}:i},{offset:Number.NEGATIVE_INFINITY}).element}render(){const t=Et[s(this,P)]||{title:"Unknown",color:"#6c7086"},e=s(this,W).reduce((r,o)=>r+(o.storyPoints||0),0),i=s(this,W).length===0;this.shadowRoot.innerHTML=`
       <style>
         :host {
           display: flex;
@@ -823,38 +811,38 @@ var Ot=c=>{throw TypeError(c)};var $t=(c,r,t)=>r.has(c)||Ot("Cannot "+t);var s=(
         <div class="column-header">
           <span class="column-title">
             ${t.title}
-            <span class="task-count">${s(this,G).length}</span>
+            <span class="task-count">${s(this,W).length}</span>
           </span>
           <div class="column-actions">
-            <span class="points-badge">${i} pts</span>
+            <span class="points-badge">${e} pts</span>
             <button class="btn-add-task" id="quickAddBtn" title="Agregar tarea">➕</button>
             <button class="btn-select-all" id="selectAllBtn" title="Seleccionar todos">☐</button>
           </div>
         </div>
         
-        ${s(this,K)?`
+        ${s(this,_)?`
           <div class="quick-add-form">
             <input type="text" class="quick-add-input" id="quickAddInput" placeholder="Nombre de la tarea..." />
             <button class="quick-add-btn" id="quickAddSubmit">+</button>
           </div>
         `:""}
         
-        <div class="task-list ${e?"empty":""}">
-          ${e&&!s(this,K)?`
+        <div class="task-list ${i?"empty":""}">
+          ${i&&!s(this,_)?`
             <div class="empty-content">
               <div class="empty-icon">📭</div>
               <div class="empty-message">Sin tareas</div>
               <div class="empty-message" style="margin-top:4px;font-size:11px">Arrastra aquí o presiona N</div>
             </div>
-          `:e?`
+          `:i?`
             <div class="empty-content">
               <div class="empty-icon">📭</div>
               <div class="empty-message">Sin tareas</div>
             </div>
-          `:s(this,G).map(n=>`<task-card task-id="${n.id}"></task-card>`).join("")}
+          `:s(this,W).map(r=>`<task-card task-id="${r.id}"></task-card>`).join("")}
         </div>
       </div>
-    `,this.setupEventListeners(),this.setupDropZone()}setupEventListeners(){var i,e,n;(i=this.shadowRoot.getElementById("quickAddBtn"))==null||i.addEventListener("click",()=>{m(this,K,!0),this.render(),setTimeout(()=>{var o;(o=this.shadowRoot.getElementById("quickAddInput"))==null||o.focus()},10)});const t=this.shadowRoot.getElementById("quickAddInput");t==null||t.addEventListener("keydown",o=>{if(o.key==="Enter"){const a=o.target.value.trim();a&&(l.addTaskQuick(a,s(this,M)),I.success("Tarea creada")),m(this,K,!1),this.refresh()}else o.key==="Escape"&&(m(this,K,!1),this.refresh())}),(e=this.shadowRoot.getElementById("quickAddSubmit"))==null||e.addEventListener("click",()=>{const o=this.shadowRoot.getElementById("quickAddInput"),a=o==null?void 0:o.value.trim();a&&(l.addTaskQuick(a,s(this,M)),I.success("Tarea creada")),m(this,K,!1),this.refresh()}),(n=this.shadowRoot.getElementById("selectAllBtn"))==null||n.addEventListener("click",()=>{s(this,G).forEach(o=>{window.dispatchEvent(new CustomEvent("toggle-task-selection",{detail:{taskId:o.id}}))})})}}M=new WeakMap,G=new WeakMap,xt=new WeakMap,K=new WeakMap,Ct=new WeakMap,zt=new WeakMap;customElements.define("task-column",ne);const ae={[st.LOW]:"#22c55e",[st.MEDIUM]:"#f59e0b",[st.HIGH]:"#f97316",[st.CRITICAL]:"#ef4444"};var N,ht,nt;class de extends HTMLElement{constructor(){super();y(this,N,null);y(this,ht,!1);y(this,nt,!1);this.attachShadow({mode:"open"})}static get observedAttributes(){return["task-id"]}connectedCallback(){this.render(),this.setupDrag(),this.setupSelection()}attributeChangedCallback(t,i,e){t==="task-id"&&i!==e&&(m(this,N,l.getTask(e)),this.render())}set task(t){m(this,N,t),this.render(),this.setupDrag(),this.setupSelection()}get task(){return s(this,N)}set selected(t){m(this,ht,t);const i=this.shadowRoot.querySelector(".card");i&&i.classList.toggle("selected",t)}get selected(){return s(this,ht)}set checked(t){m(this,nt,t);const i=this.shadowRoot.querySelector(".card-checkbox");if(i){i.checked=t;const e=this.shadowRoot.querySelector(".card");e==null||e.classList.toggle("checked",t)}}get checked(){return s(this,nt)}setupSelection(){const t=this.shadowRoot.querySelector(".card"),i=this.shadowRoot.querySelector(".card-checkbox");t&&(t.addEventListener("click",e=>{e.target.closest(".card-checkbox")||e.target.closest(".actions")||window.dispatchEvent(new CustomEvent("open-task-detail",{detail:{taskId:s(this,N).id},bubbles:!0}))}),i==null||i.addEventListener("click",e=>{e.stopPropagation(),window.dispatchEvent(new CustomEvent("toggle-task-selection",{detail:{taskId:s(this,N).id},bubbles:!0}))}))}setupDrag(){const t=this.shadowRoot.querySelector(".card");t&&(t.setAttribute("draggable","true"),t.addEventListener("dragstart",i=>{i.dataTransfer.setData("text/plain",s(this,N).id),i.dataTransfer.effectAllowed="move",t.classList.add("dragging"),lt.emit(ct.DRAG_START,{taskId:s(this,N).id,status:s(this,N).status})}),t.addEventListener("dragend",()=>{t.classList.remove("dragging"),lt.emit(ct.DRAG_END,{})}))}render(){if(!s(this,N))return;const{id:t,title:i,description:e,priority:n,storyPoints:o,tags:a}=s(this,N),b=a.length>0?`<div class="tags">${a.map(k=>`<span class="tag">${this.escapeHtml(k)}</span>`).join("")}</div>`:"",d=o!==null?`<span class="points">${o}</span>`:"",u=e.length>80?e.substring(0,80)+"...":e;this.shadowRoot.innerHTML=`
+    `,this.setupEventListeners(),this.setupDropZone()}setupEventListeners(){var t,e,i;(t=this.shadowRoot.getElementById("quickAddBtn"))==null||t.addEventListener("click",()=>{f(this,_,!0),this.render(),setTimeout(()=>{var o;(o=this.shadowRoot.getElementById("quickAddInput"))==null||o.focus()},10)});const r=this.shadowRoot.getElementById("quickAddInput");r==null||r.addEventListener("keydown",o=>{if(o.key==="Enter"){const a=o.target.value.trim();a&&(c.addTaskQuick(a,s(this,P)),S.success("Tarea creada")),f(this,_,!1),this.refresh()}else o.key==="Escape"&&(f(this,_,!1),this.refresh())}),(e=this.shadowRoot.getElementById("quickAddSubmit"))==null||e.addEventListener("click",()=>{const o=this.shadowRoot.getElementById("quickAddInput"),a=o==null?void 0:o.value.trim();a&&(c.addTaskQuick(a,s(this,P)),S.success("Tarea creada")),f(this,_,!1),this.refresh()}),(i=this.shadowRoot.getElementById("selectAllBtn"))==null||i.addEventListener("click",()=>{s(this,W).forEach(o=>{window.dispatchEvent(new CustomEvent("toggle-task-selection",{detail:{taskId:o.id}}))})})}}P=new WeakMap,W=new WeakMap,ft=new WeakMap,_=new WeakMap,Ft=new WeakMap,Wt=new WeakMap;customElements.define("task-column",re);const oe={[J.LOW]:"#22c55e",[J.MEDIUM]:"#f59e0b",[J.HIGH]:"#f97316",[J.CRITICAL]:"#ef4444"};var R,dt,st;class ae extends HTMLElement{constructor(){super(),y(this,R,null),y(this,dt,!1),y(this,st,!1),this.attachShadow({mode:"open"})}static get observedAttributes(){return["task-id"]}connectedCallback(){this.render(),this.setupDrag(),this.setupSelection()}attributeChangedCallback(t,e,i){t==="task-id"&&e!==i&&(f(this,R,c.getTask(i)),this.render())}set task(t){f(this,R,t),this.render(),this.setupDrag(),this.setupSelection()}get task(){return s(this,R)}set selected(t){f(this,dt,t);const e=this.shadowRoot.querySelector(".card");e&&e.classList.toggle("selected",t)}get selected(){return s(this,dt)}set checked(t){f(this,st,t);const e=this.shadowRoot.querySelector(".card-checkbox");if(e){e.checked=t;const i=this.shadowRoot.querySelector(".card");i==null||i.classList.toggle("checked",t)}}get checked(){return s(this,st)}setupSelection(){const t=this.shadowRoot.querySelector(".card"),e=this.shadowRoot.querySelector(".card-checkbox");t&&(t.addEventListener("click",i=>{i.target.closest(".card-checkbox")||i.target.closest(".actions")||window.dispatchEvent(new CustomEvent("open-task-detail",{detail:{taskId:s(this,R).id},bubbles:!0}))}),e==null||e.addEventListener("click",i=>{i.stopPropagation(),window.dispatchEvent(new CustomEvent("toggle-task-selection",{detail:{taskId:s(this,R).id},bubbles:!0}))}))}setupDrag(){const t=this.shadowRoot.querySelector(".card");t&&(t.setAttribute("draggable","true"),t.addEventListener("dragstart",e=>{e.dataTransfer.setData("text/plain",s(this,R).id),e.dataTransfer.effectAllowed="move",t.classList.add("dragging"),et.emit(tt.DRAG_START,{taskId:s(this,R).id,status:s(this,R).status})}),t.addEventListener("dragend",()=>{t.classList.remove("dragging"),et.emit(tt.DRAG_END,{})}))}render(){if(!s(this,R))return;const{id:t,title:e,description:i,priority:r,storyPoints:o,tags:a}=s(this,R),d=a.length>0?`<div class="tags">${a.map(u=>`<span class="tag">${this.escapeHtml(u)}</span>`).join("")}</div>`:"",l=o!==null?`<span class="points">${o}</span>`:"",b=i.length>80?i.substring(0,80)+"...":i;this.shadowRoot.innerHTML=`
       <style>
         .card {
           background: #1e1e2e;
@@ -980,25 +968,25 @@ var Ot=c=>{throw TypeError(c)};var $t=(c,r,t)=>r.has(c)||Ot("Cannot "+t);var s=(
           color: #f38ba8;
         }
       </style>
-      <div class="card ${s(this,ht)?"selected":""} ${s(this,nt)?"checked":""}">
+      <div class="card ${s(this,dt)?"selected":""} ${s(this,st)?"checked":""}">
         <div class="card-checkbox-wrap">
-          <input type="checkbox" class="card-checkbox" ${s(this,nt)?"checked":""} />
+          <input type="checkbox" class="card-checkbox" ${s(this,st)?"checked":""} />
         </div>
         <div class="card-header">
-          <span class="priority-dot" style="background: ${ae[n]}"></span>
-          <p class="title">${this.escapeHtml(i)}</p>
+          <span class="priority-dot" style="background: ${oe[r]}"></span>
+          <p class="title">${this.escapeHtml(e)}</p>
         </div>
-        ${u?`<p class="description">${this.escapeHtml(u)}</p>`:""}
-        ${b}
+        ${b?`<p class="description">${this.escapeHtml(b)}</p>`:""}
+        ${d}
         <div class="card-footer">
-          ${d}
+          ${l}
           <div class="actions">
             <button class="btn-action edit" title="Editar" data-action="edit">✏️</button>
             <button class="btn-action delete" title="Eliminar" data-action="delete">🗑️</button>
           </div>
         </div>
       </div>
-    `,this.setupSelection(),this.setupDrag(),this.shadowRoot.querySelectorAll(".btn-action").forEach(k=>{k.addEventListener("click",p=>{p.stopPropagation();const x=k.dataset.action;x==="edit"?this.dispatchEvent(new CustomEvent("task-edit",{detail:{id:t},bubbles:!0,composed:!0})):x==="delete"&&confirm("¿Eliminar esta tarea?")&&l.deleteTask(t)})})}escapeHtml(t){const i=document.createElement("div");return i.textContent=t,i.innerHTML}}N=new WeakMap,ht=new WeakMap,nt=new WeakMap;customElements.define("task-card",de);var at,J;class ce extends HTMLElement{constructor(){super(...arguments);y(this,at,null);y(this,J,!1)}connectedCallback(){this.addEventListener("task-edit",t=>{const i=l.getTask(t.detail.id);i&&(m(this,at,i),m(this,J,!0),this.show())}),this.addEventListener("open-create-modal",()=>{m(this,at,null),m(this,J,!1),this.show()}),this.addEventListener("keydown",t=>{t.key==="Escape"&&this.hide()})}show(){this.style.display="flex",this.render(),requestAnimationFrame(()=>{var t;(t=this.querySelector(".modal-backdrop"))==null||t.classList.add("active")})}hide(){const t=this.querySelector(".modal-backdrop");t?(t.classList.remove("active"),setTimeout(()=>{this.style.display="none",this.innerHTML=""},200)):this.style.display="none"}render(){const t=s(this,at)||{title:"",description:"",status:j.TODO,priority:st.MEDIUM,storyPoints:null,tags:[]};this.innerHTML=`
+    `,this.setupSelection(),this.setupDrag(),this.shadowRoot.querySelectorAll(".btn-action").forEach(u=>{u.addEventListener("click",p=>{p.stopPropagation();const v=u.dataset.action;v==="edit"?this.dispatchEvent(new CustomEvent("task-edit",{detail:{id:t},bubbles:!0,composed:!0})):v==="delete"&&confirm("¿Eliminar esta tarea?")&&c.deleteTask(t)})})}escapeHtml(t){const e=document.createElement("div");return e.textContent=t,e.innerHTML}}R=new WeakMap,dt=new WeakMap,st=new WeakMap;customElements.define("task-card",ae);var rt,X;class ne extends HTMLElement{constructor(){super(...arguments),y(this,rt,null),y(this,X,!1)}connectedCallback(){this.addEventListener("task-edit",t=>{const e=c.getTask(t.detail.id);e&&(f(this,rt,e),f(this,X,!0),this.show())}),this.addEventListener("open-create-modal",()=>{f(this,rt,null),f(this,X,!1),this.show()}),this.addEventListener("keydown",t=>{t.key==="Escape"&&this.hide()})}show(){this.style.display="flex",this.render(),requestAnimationFrame(()=>{var t;(t=this.querySelector(".modal-backdrop"))==null||t.classList.add("active")})}hide(){const t=this.querySelector(".modal-backdrop");t?(t.classList.remove("active"),setTimeout(()=>{this.style.display="none",this.innerHTML=""},200)):this.style.display="none"}render(){const t=s(this,rt)||{title:"",description:"",status:L.TODO,priority:J.MEDIUM,storyPoints:null,tags:[]};this.innerHTML=`
       <style>
         :host {
           display: none;
@@ -1210,7 +1198,7 @@ var Ot=c=>{throw TypeError(c)};var $t=(c,r,t)=>r.has(c)||Ot("Cannot "+t);var s=(
       <div class="modal-backdrop">
         <div class="modal">
           <div class="modal-header">
-            <h2 class="modal-title">${s(this,J)?"✏️ Editar tarea":"➕ Nueva tarea"}</h2>
+            <h2 class="modal-title">${s(this,X)?"✏️ Editar tarea":"➕ Nueva tarea"}</h2>
             <button class="btn-close" id="closeBtn">✕</button>
           </div>
           <form id="taskForm">
@@ -1236,12 +1224,12 @@ var Ot=c=>{throw TypeError(c)};var $t=(c,r,t)=>r.has(c)||Ot("Cannot "+t);var s=(
                 <input type="number" id="storyPoints" name="storyPoints" value="${t.storyPoints??""}" placeholder="0" min="0" max="100" />
               </div>
             </div>
-            <div class="form-group" id="sprintFormGroup" style="display:${l.getActiveProjectId()?"block":"none"}">
+            <div class="form-group" id="sprintFormGroup" style="display:${c.getActiveProjectId()?"block":"none"}">
               <label for="sprintSelect">Sprint</label>
               <select id="sprintSelect" name="sprint">
                 <option value="">— Sin sprint —</option>
-                ${l.getSprints(l.getActiveProjectId()).map(i=>`
-                  <option value="${i.id}" ${(t.sprintId??l.getActiveSprintId())===i.id?"selected":""}>${this.escapeHtml(i.name)}</option>
+                ${c.getSprints(c.getActiveProjectId()).map(e=>`
+                  <option value="${e.id}" ${(t.sprintId??c.getActiveSprintId())===e.id?"selected":""}>${this.escapeHtml(e.name)}</option>
                 `).join("")}
               </select>
             </div>
@@ -1257,22 +1245,22 @@ var Ot=c=>{throw TypeError(c)};var $t=(c,r,t)=>r.has(c)||Ot("Cannot "+t);var s=(
             <div class="form-group">
               <label>Tags</label>
               <div class="tags-input" id="tagsInput">
-                ${(t.tags||[]).map(i=>`
+                ${(t.tags||[]).map(e=>`
                   <span class="tag-item">
-                    ${this.escapeHtml(i)}
-                    <button type="button" class="tag-remove" data-tag="${this.escapeAttr(i)}">✕</button>
+                    ${this.escapeHtml(e)}
+                    <button type="button" class="tag-remove" data-tag="${this.escapeAttr(e)}">✕</button>
                   </span>
                 `).join("")}
                 <input type="text" class="tag-input-field" placeholder="Agregar tag..." id="tagInputField" />
               </div>
             </div>
             <button type="submit" class="btn-submit">
-              ${s(this,J)?"💾 Guardar cambios":"🚀 Crear tarea"}
+              ${s(this,X)?"💾 Guardar cambios":"🚀 Crear tarea"}
             </button>
           </form>
         </div>
       </div>
-    `,this.setupEventListeners()}setupEventListeners(){var i,e,n;(i=this.querySelector("#closeBtn"))==null||i.addEventListener("click",()=>this.hide()),(e=this.querySelector(".modal-backdrop"))==null||e.addEventListener("click",o=>{o.target.classList.contains("modal-backdrop")&&this.hide()}),this.querySelectorAll(".priority-option").forEach(o=>{o.addEventListener("click",()=>{this.querySelectorAll(".priority-option").forEach(a=>a.classList.remove("selected")),o.classList.add("selected")})});const t=this.querySelector("#tagInputField");t==null||t.addEventListener("keydown",o=>{if(o.key==="Enter"||o.key===","){o.preventDefault();const a=t.value.trim().replace(",","");a&&(this.addTagToUI(a),t.value="")}}),this.querySelectorAll(".tag-remove").forEach(o=>{o.addEventListener("click",()=>{o.parentElement.remove()})}),(n=this.querySelector("#taskForm"))==null||n.addEventListener("submit",o=>{o.preventDefault(),this.handleSubmit()})}addTagToUI(t){var a;const i=this.querySelector("#tagsInput"),e=this.querySelector("#tagInputField");if(!i||Array.from(i.querySelectorAll(".tag-item")).map(b=>b.textContent.replace("✕","").trim()).includes(t))return;const o=document.createElement("span");o.className="tag-item",o.innerHTML=`${this.escapeHtml(t)}<button type="button" class="tag-remove" data-tag="${this.escapeAttr(t)}">✕</button>`,i.insertBefore(o,e),(a=o.querySelector(".tag-remove"))==null||a.addEventListener("click",()=>o.remove())}handleSubmit(){var u,k,p,x,v,$;const t=(u=this.querySelector("#title"))==null?void 0:u.value.trim(),i=((k=this.querySelector("#description"))==null?void 0:k.value.trim())||"",e=((p=this.querySelector("#status"))==null?void 0:p.value)||"todo",n=(x=this.querySelector("#storyPoints"))==null?void 0:x.value,o=((v=this.querySelector(".priority-option.selected"))==null?void 0:v.dataset.priority)||"medium",a=Array.from(this.querySelectorAll(".tag-item")).map(q=>q.textContent.replace("✕","").trim()),b=(($=this.querySelector("#sprintSelect"))==null?void 0:$.value)||null,d={title:t,description:i,status:e,priority:o,storyPoints:n?parseInt(n,10):null,tags:a,sprintId:b};try{s(this,J)?l.updateTask(s(this,at).id,d):l.addTask(d),this.hide()}catch(q){const C=this.querySelector(".error-message")||this.insertErrorEl();C&&(C.textContent=q.message)}}insertErrorEl(){var i;const t=document.createElement("div");return t.className="error-message",(i=this.querySelector("#taskForm"))==null||i.appendChild(t),t}escapeHtml(t){const i=document.createElement("div");return i.textContent=t,i.innerHTML}escapeAttr(t){return t.replace(/"/g,"&quot;").replace(/'/g,"&#39;")}}at=new WeakMap,J=new WeakMap;customElements.define("task-modal",ce);var O,_,vt;class le extends HTMLElement{constructor(){super();y(this,O,null);y(this,_,!1);y(this,vt,null);this.attachShadow({mode:"open"})}connectedCallback(){m(this,vt,l.subscribe(()=>this.refresh())),document.addEventListener("keydown",this.handleKeydown.bind(this))}disconnectedCallback(){var t;(t=s(this,vt))==null||t.call(this),document.removeEventListener("keydown",this.handleKeydown.bind(this))}handleKeydown(t){t.key==="Escape"&&this.style.display!=="none"&&this.hide()}show(t){m(this,O,l.getTask(t)),s(this,O)&&(m(this,_,!1),this.style.display="flex",this.render(),requestAnimationFrame(()=>{var i;(i=this.querySelector(".detail-backdrop"))==null||i.classList.add("active")}))}hide(){const t=this.querySelector(".detail-backdrop");t?(t.classList.remove("active"),setTimeout(()=>{this.style.display="none",this.innerHTML=""},200)):this.style.display="none"}refresh(){if(s(this,O)){const t=l.getTask(s(this,O).id);t?(m(this,O,t),s(this,_)||this.render()):this.hide()}}render(){if(!s(this,O))return;const{id:t,title:i,description:e,status:n,priority:o,storyPoints:a,tags:b,sprintId:d,createdAt:u,updatedAt:k}=s(this,O),p=d?l.getSprint(d):null,x=p?p.name:"Backlog";this.innerHTML=`
+    `,this.setupEventListeners()}setupEventListeners(){var t,e,i;(t=this.querySelector("#closeBtn"))==null||t.addEventListener("click",()=>this.hide()),(e=this.querySelector(".modal-backdrop"))==null||e.addEventListener("click",o=>{o.target.classList.contains("modal-backdrop")&&this.hide()}),this.querySelectorAll(".priority-option").forEach(o=>{o.addEventListener("click",()=>{this.querySelectorAll(".priority-option").forEach(a=>a.classList.remove("selected")),o.classList.add("selected")})});const r=this.querySelector("#tagInputField");r==null||r.addEventListener("keydown",o=>{if(o.key==="Enter"||o.key===","){o.preventDefault();const a=r.value.trim().replace(",","");a&&(this.addTagToUI(a),r.value="")}}),this.querySelectorAll(".tag-remove").forEach(o=>{o.addEventListener("click",()=>{o.parentElement.remove()})}),(i=this.querySelector("#taskForm"))==null||i.addEventListener("submit",o=>{o.preventDefault(),this.handleSubmit()})}addTagToUI(t){var e;const i=this.querySelector("#tagsInput"),r=this.querySelector("#tagInputField");if(!i||Array.from(i.querySelectorAll(".tag-item")).map(a=>a.textContent.replace("✕","").trim()).includes(t))return;const o=document.createElement("span");o.className="tag-item",o.innerHTML=`${this.escapeHtml(t)}<button type="button" class="tag-remove" data-tag="${this.escapeAttr(t)}">✕</button>`,i.insertBefore(o,r),(e=o.querySelector(".tag-remove"))==null||e.addEventListener("click",()=>o.remove())}handleSubmit(){var t,e,i,r,o,a;const d=(t=this.querySelector("#title"))==null?void 0:t.value.trim(),l=((e=this.querySelector("#description"))==null?void 0:e.value.trim())||"",b=((i=this.querySelector("#status"))==null?void 0:i.value)||"todo",u=(r=this.querySelector("#storyPoints"))==null?void 0:r.value,p=((o=this.querySelector(".priority-option.selected"))==null?void 0:o.dataset.priority)||"medium",v=Array.from(this.querySelectorAll(".tag-item")).map(M=>M.textContent.replace("✕","").trim()),k=((a=this.querySelector("#sprintSelect"))==null?void 0:a.value)||null,$={title:d,description:l,status:b,priority:p,storyPoints:u?parseInt(u,10):null,tags:v,sprintId:k};try{s(this,X)?c.updateTask(s(this,rt).id,$):c.addTask($),this.hide()}catch(M){const z=this.querySelector(".error-message")||this.insertErrorEl();z&&(z.textContent=M.message)}}insertErrorEl(){var t;const e=document.createElement("div");return e.className="error-message",(t=this.querySelector("#taskForm"))==null||t.appendChild(e),e}escapeHtml(t){const e=document.createElement("div");return e.textContent=t,e.innerHTML}escapeAttr(t){return t.replace(/"/g,"&quot;").replace(/'/g,"&#39;")}}rt=new WeakMap,X=new WeakMap;customElements.define("task-modal",ne);var C,N,vt;class le extends HTMLElement{constructor(){super(),y(this,C,null),y(this,N,!1),y(this,vt,null),this.attachShadow({mode:"open"})}connectedCallback(){f(this,vt,c.subscribe(()=>this.refresh())),document.addEventListener("keydown",this.handleKeydown.bind(this))}disconnectedCallback(){var t;(t=s(this,vt))==null||t.call(this),document.removeEventListener("keydown",this.handleKeydown.bind(this))}handleKeydown(t){t.key==="Escape"&&this.style.display!=="none"&&this.hide()}show(t){f(this,C,c.getTask(t)),s(this,C)&&(f(this,N,!1),this.style.display="flex",this.render(),requestAnimationFrame(()=>{var e;(e=this.querySelector(".detail-backdrop"))==null||e.classList.add("active")}))}hide(){const t=this.querySelector(".detail-backdrop");t?(t.classList.remove("active"),setTimeout(()=>{this.style.display="none",this.innerHTML=""},200)):this.style.display="none"}refresh(){if(s(this,C)){const t=c.getTask(s(this,C).id);t?(f(this,C,t),s(this,N)||this.render()):this.hide()}}render(){if(!s(this,C))return;const{id:t,title:e,description:i,status:r,priority:o,storyPoints:a,tags:d,sprintId:l,createdAt:b,updatedAt:u}=s(this,C),p=l?c.getSprint(l):null,v=p?p.name:"Backlog";this.innerHTML=`
       <style>
         :host {
           display: none;
@@ -1535,22 +1523,22 @@ var Ot=c=>{throw TypeError(c)};var $t=(c,r,t)=>r.has(c)||Ot("Cannot "+t);var s=(
       <div class="detail-backdrop">
         <div class="detail-panel">
           <div class="detail-header">
-            <h2 class="detail-title">${s(this,_)?"✏️ Editar tarea":"📋 Detalle"}</h2>
+            <h2 class="detail-title">${s(this,N)?"✏️ Editar tarea":"📋 Detalle"}</h2>
             <button class="btn-close" id="closeBtn">✕</button>
           </div>
           
-          ${s(this,_)?this.renderEditForm():this.renderViewMode(t,i,e,n,o,a,b,x,u,k,sprintLabels)}
+          ${s(this,N)?this.renderEditForm():this.renderViewMode(t,e,i,r,o,a,d,v,b,u,sprintLabels)}
           
           <div class="detail-actions">
-            ${s(this,_)?`
+            ${s(this,N)?`
               <button class="btn btn-cancel" id="cancelBtn">Cancelar</button>
               <button class="btn btn-save" id="saveBtn">💾 Guardar</button>
             `:`
               <select class="move-select" id="moveSelect">
                 <option value="">Mover a...</option>
-                <option value="todo" ${n==="todo"?"disabled":""}>📋 To Do</option>
-                <option value="in_progress" ${n==="in_progress"?"disabled":""}>⚡ In Progress</option>
-                <option value="done" ${n==="done"?"disabled":""}>✅ Done</option>
+                <option value="todo" ${r==="todo"?"disabled":""}>📋 To Do</option>
+                <option value="in_progress" ${r==="in_progress"?"disabled":""}>⚡ In Progress</option>
+                <option value="done" ${r==="done"?"disabled":""}>✅ Done</option>
               </select>
               <button class="btn btn-edit" id="editBtn">✏️ Editar</button>
               <button class="btn btn-delete" id="deleteBtn">🗑️</button>
@@ -1558,20 +1546,20 @@ var Ot=c=>{throw TypeError(c)};var $t=(c,r,t)=>r.has(c)||Ot("Cannot "+t);var s=(
           </div>
         </div>
       </div>
-    `,this.setupEventListeners()}renderViewMode(t,i,e,n,o,a,b,d,u,k){const p={low:"🟢 Baja",medium:"🟡 Media",high:"🟠 Alta",critical:"🔴 Crítica"},x={todo:"📋 To Do",in_progress:"⚡ In Progress",done:"✅ Done"};return`
+    `,this.setupEventListeners()}renderViewMode(t,e,i,r,o,a,d,l,b,u){const p={low:"🟢 Baja",medium:"🟡 Media",high:"🟠 Alta",critical:"🔴 Crítica"},v={todo:"📋 To Do",in_progress:"⚡ In Progress",done:"✅ Done"};return`
       <div class="detail-body">
         <div class="detail-section">
-          <div class="detail-value title-value">${this.escapeHtml(i)}</div>
+          <div class="detail-value title-value">${this.escapeHtml(e)}</div>
         </div>
         
         <div class="detail-section">
           <div class="detail-label">Descripción</div>
-          <div class="detail-value">${e?this.escapeHtml(e):'<em style="color:#6c7086">Sin descripción</em>'}</div>
+          <div class="detail-value">${i?this.escapeHtml(i):'<em style="color:#6c7086">Sin descripción</em>'}</div>
         </div>
         
         <div class="detail-section">
           <div class="detail-label">Estado</div>
-          <span class="meta-badge status-${n}">${x[n]}</span>
+          <span class="meta-badge status-${r}">${v[r]}</span>
         </div>
         
         <div class="detail-section">
@@ -1586,18 +1574,18 @@ var Ot=c=>{throw TypeError(c)};var $t=(c,r,t)=>r.has(c)||Ot("Cannot "+t);var s=(
           </div>
         `:""}
         
-        ${b&&b.length>0?`
+        ${d&&d.length>0?`
           <div class="detail-section">
             <div class="detail-label">Tags</div>
             <div class="tag-list">
-              ${b.map(v=>`<span class="tag">${this.escapeHtml(v)}</span>`).join("")}
+              ${d.map(k=>`<span class="tag">${this.escapeHtml(k)}</span>`).join("")}
             </div>
           </div>
         `:""}
         
         <div class="detail-section">
           <div class="detail-label">Sprint</div>
-          <div class="detail-value">${this.escapeHtml(d)}</div>
+          <div class="detail-value">${this.escapeHtml(l)}</div>
         </div>
         
         <div class="detail-section">
@@ -1605,16 +1593,16 @@ var Ot=c=>{throw TypeError(c)};var $t=(c,r,t)=>r.has(c)||Ot("Cannot "+t);var s=(
           <div class="detail-meta">
             <div class="meta-item">
               <span class="detail-label" style="margin-bottom:2px">Creado</span>
-              <span class="detail-value">${new Date(u).toLocaleDateString("es-ES")}</span>
+              <span class="detail-value">${new Date(b).toLocaleDateString("es-ES")}</span>
             </div>
             <div class="meta-item">
               <span class="detail-label" style="margin-bottom:2px">Actualizado</span>
-              <span class="detail-value">${new Date(k).toLocaleDateString("es-ES")}</span>
+              <span class="detail-value">${new Date(u).toLocaleDateString("es-ES")}</span>
             </div>
           </div>
         </div>
       </div>
-    `}renderEditForm(){const t=s(this,O);return`
+    `}renderEditForm(){const t=s(this,C);return`
       <div class="detail-body edit-form">
         <div class="form-group">
           <label>Título</label>
@@ -1638,7 +1626,7 @@ var Ot=c=>{throw TypeError(c)};var $t=(c,r,t)=>r.has(c)||Ot("Cannot "+t);var s=(
           <input type="number" id="editPoints" value="${t.storyPoints??""}" min="0" max="100" />
         </div>
       </div>
-    `}setupEventListeners(){var a,b;(a=this.querySelector("#closeBtn"))==null||a.addEventListener("click",()=>this.hide()),(b=this.querySelector(".detail-backdrop"))==null||b.addEventListener("click",d=>{d.target.classList.contains("detail-backdrop")&&this.hide()});const t=this.querySelector("#editBtn");t==null||t.addEventListener("click",()=>{m(this,_,!0),this.render()});const i=this.querySelector("#deleteBtn");i==null||i.addEventListener("click",()=>{if(confirm("¿Eliminar esta tarea?")){const d=s(this,O).id,u=s(this,O).title,k={...s(this,O)};l.deleteTask(d),I.delete(`Tarea "${u}" eliminada`,()=>{try{l.addTask(k)}catch{I.error("No se pudo deshacer")}}),this.hide()}});const e=this.querySelector("#moveSelect");e==null||e.addEventListener("change",d=>{d.target.value&&(l.moveTask(s(this,O).id,d.target.value),I.success(`Tarea movida a ${d.target.options[d.target.selectedIndex].text}`),lt.emit(ct.TASK_MOVED,{taskId:s(this,O).id,newStatus:d.target.value}))});const n=this.querySelector("#cancelBtn");n==null||n.addEventListener("click",()=>{m(this,_,!1),this.render()});const o=this.querySelector("#saveBtn");o==null||o.addEventListener("click",()=>{var x,v,$,q;const d=(x=this.querySelector("#editTitle"))==null?void 0:x.value.trim(),u=((v=this.querySelector("#editDescription"))==null?void 0:v.value.trim())||"",k=($=this.querySelector("#editPoints"))==null?void 0:$.value,p=(q=this.querySelector(".priority-option.selected"))==null?void 0:q.dataset.priority;if(!d){I.error("El título es requerido");return}try{l.updateTask(s(this,O).id,{title:d,description:u,storyPoints:k?parseInt(k,10):null,priority:p}),m(this,_,!1),I.success("Tarea actualizada"),this.render()}catch(C){I.error(C.message)}}),this.querySelectorAll(".priority-option").forEach(d=>{d.addEventListener("click",()=>{this.querySelectorAll(".priority-option").forEach(u=>u.classList.remove("selected")),d.classList.add("selected")})})}escapeHtml(t){const i=document.createElement("div");return i.textContent=t,i.innerHTML}escapeAttr(t){return(t||"").replace(/"/g,"&quot;").replace(/'/g,"&#39;")}}O=new WeakMap,_=new WeakMap,vt=new WeakMap;customElements.define("task-detail",le);var dt,yt;class pe extends HTMLElement{constructor(){super();y(this,dt,!0);y(this,yt,null);this.attachShadow({mode:"open"})}connectedCallback(){m(this,yt,l.subscribe(()=>this.refresh())),this.refresh()}disconnectedCallback(){var t;(t=s(this,yt))==null||t.call(this)}refresh(){const t=l.getSelectedSprintId();if(!t){this.renderEmpty();return}const i=l.getSprint(t);if(!i){this.renderEmpty();return}const e=l.getTasksBySprint(t),n=e.reduce((p,x)=>p+(x.storyPoints||0),0),o=new Date(i.startDate),a=new Date(i.endDate),b=new Date,d=this.getDaysBetween(o,a);Math.max(0,Math.min(d,this.getDaysBetween(o,b)));const u=[];for(let p=0;p<=d;p++){const x=n-n/d*p;u.push({day:p,points:Math.max(0,x)})}const k=this.calculateActualBurndown(e,o,d,n);this.render(i,n,d,u,k,s(this,dt))}getDaysBetween(t,i){return Math.ceil((i-t)/864e5)+1}calculateActualBurndown(t,i,e,n){const o=t.filter(u=>u.status===j.DONE),a=new Map;for(let u=0;u<=e;u++)a.set(u,0);o.forEach(u=>{const k=new Date(u.updatedAt),p=Math.max(0,Math.min(e,this.getDaysBetween(i,k))),x=a.get(p)||0;a.set(p,x+(u.storyPoints||0))});const b=[];let d=n;for(let u=0;u<=e;u++){const k=a.get(u)||0;d=d-k,b.push({day:u,points:Math.max(0,d)})}return b}renderEmpty(){this.shadowRoot.innerHTML=`
+    `}setupEventListeners(){var t,e;(t=this.querySelector("#closeBtn"))==null||t.addEventListener("click",()=>this.hide()),(e=this.querySelector(".detail-backdrop"))==null||e.addEventListener("click",l=>{l.target.classList.contains("detail-backdrop")&&this.hide()});const i=this.querySelector("#editBtn");i==null||i.addEventListener("click",()=>{f(this,N,!0),this.render()});const r=this.querySelector("#deleteBtn");r==null||r.addEventListener("click",()=>{if(confirm("¿Eliminar esta tarea?")){const l=s(this,C).id,b=s(this,C).title,u={...s(this,C)};c.deleteTask(l),S.delete(`Tarea "${b}" eliminada`,()=>{try{c.addTask(u)}catch{S.error("No se pudo deshacer")}}),this.hide()}});const o=this.querySelector("#moveSelect");o==null||o.addEventListener("change",l=>{l.target.value&&(c.moveTask(s(this,C).id,l.target.value),S.success(`Tarea movida a ${l.target.options[l.target.selectedIndex].text}`),et.emit(tt.TASK_MOVED,{taskId:s(this,C).id,newStatus:l.target.value}))});const a=this.querySelector("#cancelBtn");a==null||a.addEventListener("click",()=>{f(this,N,!1),this.render()});const d=this.querySelector("#saveBtn");d==null||d.addEventListener("click",()=>{var l,b,u,p;const v=(l=this.querySelector("#editTitle"))==null?void 0:l.value.trim(),k=((b=this.querySelector("#editDescription"))==null?void 0:b.value.trim())||"",$=(u=this.querySelector("#editPoints"))==null?void 0:u.value,M=(p=this.querySelector(".priority-option.selected"))==null?void 0:p.dataset.priority;if(!v){S.error("El título es requerido");return}try{c.updateTask(s(this,C).id,{title:v,description:k,storyPoints:$?parseInt($,10):null,priority:M}),f(this,N,!1),S.success("Tarea actualizada"),this.render()}catch(z){S.error(z.message)}}),this.querySelectorAll(".priority-option").forEach(l=>{l.addEventListener("click",()=>{this.querySelectorAll(".priority-option").forEach(b=>b.classList.remove("selected")),l.classList.add("selected")})})}escapeHtml(t){const e=document.createElement("div");return e.textContent=t,e.innerHTML}escapeAttr(t){return(t||"").replace(/"/g,"&quot;").replace(/'/g,"&#39;")}}C=new WeakMap,N=new WeakMap,vt=new WeakMap;customElements.define("task-detail",le);var ot,xt;class de extends HTMLElement{constructor(){super(),y(this,ot,!0),y(this,xt,null),this.attachShadow({mode:"open"})}connectedCallback(){f(this,xt,c.subscribe(()=>this.refresh())),this.refresh()}disconnectedCallback(){var t;(t=s(this,xt))==null||t.call(this)}refresh(){const t=c.getSelectedSprintId();if(!t){this.renderEmpty();return}const e=c.getSprint(t);if(!e){this.renderEmpty();return}const i=c.getTasksBySprint(t),r=i.reduce((p,v)=>p+(v.storyPoints||0),0),o=new Date(e.startDate),a=new Date(e.endDate),d=new Date,l=this.getDaysBetween(o,a);Math.max(0,Math.min(l,this.getDaysBetween(o,d)));const b=[];for(let p=0;p<=l;p++){const v=r-r/l*p;b.push({day:p,points:Math.max(0,v)})}const u=this.calculateActualBurndown(i,o,l,r);this.render(e,r,l,b,u,s(this,ot))}getDaysBetween(t,e){return Math.ceil((e-t)/864e5)+1}calculateActualBurndown(t,e,i,r){const o=t.filter(b=>b.status===L.DONE),a=new Map;for(let b=0;b<=i;b++)a.set(b,0);o.forEach(b=>{const u=new Date(b.updatedAt),p=Math.max(0,Math.min(i,this.getDaysBetween(e,u))),v=a.get(p)||0;a.set(p,v+(b.storyPoints||0))});const d=[];let l=r;for(let b=0;b<=i;b++){const u=a.get(b)||0;l=l-u,d.push({day:b,points:Math.max(0,l)})}return d}renderEmpty(){this.shadowRoot.innerHTML=`
       <style>
         :host {
           display: block;
@@ -1682,9 +1670,9 @@ var Ot=c=>{throw TypeError(c)};var $t=(c,r,t)=>r.has(c)||Ot("Cannot "+t);var s=(
           <span>📊</span>
           Burndown
         </span>
-        <span class="toggle-icon ${s(this,dt)?"":"expanded"}">▼</span>
+        <span class="toggle-icon ${s(this,ot)?"":"expanded"}">▼</span>
       </div>
-    `,this.setupEventListeners()}render(t,i,e,n,o,a){const u={top:20,right:30,bottom:30,left:50},k=600-u.left-u.right,p=200-u.top-u.bottom,x=E=>u.left+E/e*k,v=E=>u.top+p-E/i*p,$=n.map((E,U)=>`${U===0?"M":"L"} ${x(E.day)} ${v(E.points)}`).join(" "),q=o.map((E,U)=>`${U===0?"M":"L"} ${x(E.day)} ${v(E.points)}`).join(" "),C=[],D=Math.ceil(i/5);for(let E=0;E<=i;E+=D)C.push(E);const z=[],tt=Math.max(1,Math.floor(e/6));for(let E=0;E<=e;E+=tt)z.push(E);this.shadowRoot.innerHTML=`
+    `,this.setupEventListeners()}render(t,e,i,r,o,a){const d={top:20,right:30,bottom:30,left:50},l=600-d.left-d.right,b=200-d.top-d.bottom,u=x=>d.left+x/i*l,p=x=>d.top+b-x/e*b,v=r.map((x,O)=>`${O===0?"M":"L"} ${u(x.day)} ${p(x.points)}`).join(" "),k=o.map((x,O)=>`${O===0?"M":"L"} ${u(x.day)} ${p(x.points)}`).join(" "),$=[],M=Math.ceil(e/5);for(let x=0;x<=e;x+=M)$.push(x);const z=[],D=Math.max(1,Math.floor(i/6));for(let x=0;x<=i;x+=D)z.push(x);this.shadowRoot.innerHTML=`
       <style>
         :host {
           display: block;
@@ -1795,7 +1783,7 @@ var Ot=c=>{throw TypeError(c)};var $t=(c,r,t)=>r.has(c)||Ot("Cannot "+t);var s=(
       
       <div class="chart-container">
         <div class="chart-header">
-          <span class="sprint-name">${t.name} - ${i} puntos totales</span>
+          <span class="sprint-name">${t.name} - ${e} puntos totales</span>
           <div class="chart-legend">
             <div class="legend-item">
               <span class="legend-line ideal"></span>
@@ -1810,46 +1798,46 @@ var Ot=c=>{throw TypeError(c)};var $t=(c,r,t)=>r.has(c)||Ot("Cannot "+t);var s=(
         
         <svg class="chart-svg" viewBox="0 0 600 200" preserveAspectRatio="xMidYMid meet">
           <!-- Grid lines -->
-          ${C.map(E=>`
+          ${$.map(x=>`
             <line class="grid-line" 
-              x1="${u.left}" 
-              y1="${v(E)}" 
-              x2="${600-u.right}" 
-              y2="${v(E)}" />
+              x1="${d.left}" 
+              y1="${p(x)}" 
+              x2="${600-d.right}" 
+              y2="${p(x)}" />
           `).join("")}
           
           <!-- Y-axis labels -->
-          ${C.map(E=>`
-            <text class="axis-label" x="${u.left-8}" y="${v(E)+3}" text-anchor="end">${E}</text>
+          ${$.map(x=>`
+            <text class="axis-label" x="${d.left-8}" y="${p(x)+3}" text-anchor="end">${x}</text>
           `).join("")}
           
           <!-- X-axis labels -->
-          ${z.map(E=>`
-            <text class="axis-label" x="${x(E)}" y="192" text-anchor="middle">Día ${E}</text>
+          ${z.map(x=>`
+            <text class="axis-label" x="${u(x)}" y="192" text-anchor="middle">Día ${x}</text>
           `).join("")}
           
           <!-- Ideal burndown line -->
-          <path class="ideal-line" d="${$}" />
+          <path class="ideal-line" d="${v}" />
           
           <!-- Actual burndown line -->
-          <path class="actual-line" d="${q}" />
+          <path class="actual-line" d="${k}" />
           
           <!-- Data points for actual -->
-          ${o.filter((E,U)=>U%Math.max(1,Math.floor(e/8))===0||U===o.length-1).map(E=>`
-            <circle class="data-point" cx="${x(E.day)}" cy="${v(E.points)}" />
+          ${o.filter((x,O)=>O%Math.max(1,Math.floor(i/8))===0||O===o.length-1).map(x=>`
+            <circle class="data-point" cx="${u(x.day)}" cy="${p(x.points)}" />
           `).join("")}
         </svg>
       </div>
-    `,this.setupEventListeners()}setupEventListeners(){var t;(t=this.shadowRoot.getElementById("toggle"))==null||t.addEventListener("click",()=>{m(this,dt,!s(this,dt)),this.refresh()})}}dt=new WeakMap,yt=new WeakMap;customElements.define("burndown-chart",pe);let L=null,H=new Set;function ue(){const c=document.getElementById("app");if(!c)return;c.innerHTML=`
+    `,this.setupEventListeners()}setupEventListeners(){var t;(t=this.shadowRoot.getElementById("toggle"))==null||t.addEventListener("click",()=>{f(this,ot,!s(this,ot)),this.refresh()})}}ot=new WeakMap,xt=new WeakMap;customElements.define("burndown-chart",de);let T=null,B=new Set;function ce(){const n=document.getElementById("app");if(!n)return;n.innerHTML=`
     <app-header></app-header>
     <div class="main-container">
       <sprint-sidebar></sprint-sidebar>
       <div class="content-area">
         <filter-bar></filter-bar>
         <main class="board">
-          <task-column status="${j.TODO}"></task-column>
-          <task-column status="${j.IN_PROGRESS}"></task-column>
-          <task-column status="${j.DONE}"></task-column>
+          <task-column status="${L.TODO}"></task-column>
+          <task-column status="${L.IN_PROGRESS}"></task-column>
+          <task-column status="${L.DONE}"></task-column>
         </main>
         <burndown-chart></burndown-chart>
       </div>
@@ -1857,7 +1845,7 @@ var Ot=c=>{throw TypeError(c)};var $t=(c,r,t)=>r.has(c)||Ot("Cannot "+t);var s=(
     <task-modal></task-modal>
     <task-detail></task-detail>
     <bulk-action-bar></bulk-action-bar>
-  `;const r=document.createElement("style");r.textContent=`
+  `;const t=document.createElement("style");t.textContent=`
     .main-container {
       display: flex;
       flex: 1;
@@ -1904,7 +1892,7 @@ var Ot=c=>{throw TypeError(c)};var $t=(c,r,t)=>r.has(c)||Ot("Cannot "+t);var s=(
         min-width: 280px;
       }
     }
-  `,c.appendChild(r);const t=c.querySelector("task-detail");class i extends HTMLElement{constructor(){super(),this.attachShadow({mode:"open"})}connectedCallback(){this.render(),window.addEventListener("update-bulk-bar",()=>this.render())}render(){const a=H.size;this.shadowRoot.innerHTML=`
+  `,n.appendChild(t);const e=n.querySelector("task-detail");class i extends HTMLElement{constructor(){super(),this.attachShadow({mode:"open"})}connectedCallback(){this.render(),window.addEventListener("update-bulk-bar",()=>this.render())}render(){const d=B.size;this.shadowRoot.innerHTML=`
         <style>
           :host {
             position: fixed;
@@ -1912,7 +1900,7 @@ var Ot=c=>{throw TypeError(c)};var $t=(c,r,t)=>r.has(c)||Ot("Cannot "+t);var s=(
             left: 50%;
             transform: translateX(-50%);
             z-index: 800;
-            display: ${a>0?"block":"none"};
+            display: ${d>0?"block":"none"};
           }
           .bulk-bar {
             display: flex;
@@ -1966,7 +1954,7 @@ var Ot=c=>{throw TypeError(c)};var $t=(c,r,t)=>r.has(c)||Ot("Cannot "+t);var s=(
           }
         </style>
         <div class="bulk-bar">
-          <span class="bulk-count">${a} seleccionada${a!==1?"s":""}</span>
+          <span class="bulk-count">${d} seleccionada${d!==1?"s":""}</span>
           <select class="bulk-select" id="bulkMoveSelect">
             <option value="">Mover a...</option>
             <option value="todo">📋 To Do</option>
@@ -1976,4 +1964,4 @@ var Ot=c=>{throw TypeError(c)};var $t=(c,r,t)=>r.has(c)||Ot("Cannot "+t);var s=(
           <button class="bulk-btn delete" id="bulkDeleteBtn">🗑️ Eliminar</button>
           <button class="bulk-btn clear" id="bulkClearBtn">Limpiar</button>
         </div>
-      `,this.setupListeners()}setupListeners(){const a=this.shadowRoot.getElementById("bulkMoveSelect");a==null||a.addEventListener("change",u=>{u.target.value&&(H.forEach(k=>{l.moveTask(k,u.target.value)}),I.success(`${H.size} tareas movidas`),n())});const b=this.shadowRoot.getElementById("bulkDeleteBtn");b==null||b.addEventListener("click",()=>{if(confirm(`¿Eliminar ${H.size} tareas?`)){const u=H.size;H.forEach(k=>{l.deleteTask(k)}),I.info(`${u} tareas eliminadas`),n()}});const d=this.shadowRoot.getElementById("bulkClearBtn");d==null||d.addEventListener("click",()=>{n()})}}customElements.define("bulk-action-bar",i),window.addEventListener("open-task-detail",o=>{t==null||t.show(o.detail.taskId)}),window.addEventListener("toggle-task-selection",o=>{e(o.detail.taskId)}),document.addEventListener("keydown",o=>{var d,u,k,p;const b=o.target.matches("input, textarea, select");if(o.key==="Escape"){t==null||t.hide(),(d=document.querySelector("task-modal"))==null||d.hide(),n();return}if(!b){if(o.key==="n"||o.key==="N"){o.preventDefault(),(u=c.querySelector("task-modal"))==null||u.dispatchEvent(new CustomEvent("open-create-modal"));return}if(o.key==="f"||o.key==="F"||o.key==="/"){o.preventDefault(),(k=document.querySelector("filter-bar"))==null||k.focusSearch();return}if(o.key==="1"&&L){o.preventDefault(),l.moveTask(L,j.TODO),I.success("Tarea movida a To Do"),lt.emit(ct.TASK_MOVED,{taskId:L,newStatus:j.TODO});return}if(o.key==="2"&&L){o.preventDefault(),l.moveTask(L,j.IN_PROGRESS),I.success("Tarea movida a In Progress"),lt.emit(ct.TASK_MOVED,{taskId:L,newStatus:j.IN_PROGRESS});return}if(o.key==="3"&&L){o.preventDefault(),l.moveTask(L,j.DONE),I.success("Tarea movida a Done"),lt.emit(ct.TASK_MOVED,{taskId:L,newStatus:j.DONE});return}if((o.key==="e"||o.key==="E")&&L){o.preventDefault(),(p=c.querySelector("task-modal"))==null||p.dispatchEvent(new CustomEvent("task-edit",{detail:{id:L},bubbles:!0}));return}if((o.key==="Delete"||o.key==="Backspace")&&L){o.preventDefault(),confirm("¿Eliminar esta tarea?")&&(l.deleteTask(L),I.info("Tarea eliminada"),L=null);return}}});function e(o){H.has(o)?H.delete(o):H.add(o),H.size===1?L=Array.from(H)[0]:H.size===0&&(L=null),document.querySelectorAll("task-card").forEach(a=>{const b=a.getAttribute("task-id");a.selected=b===L,a.checked=H.has(b)}),window.dispatchEvent(new CustomEvent("update-bulk-bar"))}function n(){H.clear(),L=null,document.querySelectorAll("task-card").forEach(o=>{o.selected=!1,o.checked=!1}),window.dispatchEvent(new CustomEvent("update-bulk-bar"))}l.subscribe(()=>{L&&!l.getTask(L)&&(L=null,H.clear(),window.dispatchEvent(new CustomEvent("update-bulk-bar")))})}document.addEventListener("DOMContentLoaded",()=>{ue()});
+      `,this.setupListeners()}setupListeners(){const d=this.shadowRoot.getElementById("bulkMoveSelect");d==null||d.addEventListener("change",u=>{u.target.value&&(B.forEach(p=>{c.moveTask(p,u.target.value)}),S.success(`${B.size} tareas movidas`),o())});const l=this.shadowRoot.getElementById("bulkDeleteBtn");l==null||l.addEventListener("click",()=>{if(confirm(`¿Eliminar ${B.size} tareas?`)){const u=B.size;B.forEach(p=>{c.deleteTask(p)}),S.info(`${u} tareas eliminadas`),o()}});const b=this.shadowRoot.getElementById("bulkClearBtn");b==null||b.addEventListener("click",()=>{o()})}}customElements.define("bulk-action-bar",i),window.addEventListener("open-task-detail",a=>{e==null||e.show(a.detail.taskId)}),window.addEventListener("toggle-task-selection",a=>{r(a.detail.taskId)}),document.addEventListener("keydown",a=>{var d,l,b,u;const p=a.target.matches("input, textarea, select");if(a.key==="Escape"){e==null||e.hide(),(d=document.querySelector("task-modal"))==null||d.hide(),o();return}if(!p){if(a.key==="n"||a.key==="N"){a.preventDefault(),(l=n.querySelector("task-modal"))==null||l.dispatchEvent(new CustomEvent("open-create-modal"));return}if(a.key==="f"||a.key==="F"||a.key==="/"){a.preventDefault(),(b=document.querySelector("filter-bar"))==null||b.focusSearch();return}if(a.key==="1"&&T){a.preventDefault(),c.moveTask(T,L.TODO),S.success("Tarea movida a To Do"),et.emit(tt.TASK_MOVED,{taskId:T,newStatus:L.TODO});return}if(a.key==="2"&&T){a.preventDefault(),c.moveTask(T,L.IN_PROGRESS),S.success("Tarea movida a In Progress"),et.emit(tt.TASK_MOVED,{taskId:T,newStatus:L.IN_PROGRESS});return}if(a.key==="3"&&T){a.preventDefault(),c.moveTask(T,L.DONE),S.success("Tarea movida a Done"),et.emit(tt.TASK_MOVED,{taskId:T,newStatus:L.DONE});return}if((a.key==="e"||a.key==="E")&&T){a.preventDefault(),(u=n.querySelector("task-modal"))==null||u.dispatchEvent(new CustomEvent("task-edit",{detail:{id:T},bubbles:!0}));return}if((a.key==="Delete"||a.key==="Backspace")&&T){a.preventDefault(),confirm("¿Eliminar esta tarea?")&&(c.deleteTask(T),S.info("Tarea eliminada"),T=null);return}}});function r(a){B.has(a)?B.delete(a):B.add(a),B.size===1?T=Array.from(B)[0]:B.size===0&&(T=null),document.querySelectorAll("task-card").forEach(d=>{const l=d.getAttribute("task-id");d.selected=l===T,d.checked=B.has(l)}),window.dispatchEvent(new CustomEvent("update-bulk-bar"))}function o(){B.clear(),T=null,document.querySelectorAll("task-card").forEach(a=>{a.selected=!1,a.checked=!1}),window.dispatchEvent(new CustomEvent("update-bulk-bar"))}c.subscribe(()=>{T&&!c.getTask(T)&&(T=null,B.clear(),window.dispatchEvent(new CustomEvent("update-bulk-bar")))})}document.addEventListener("DOMContentLoaded",()=>{ce()});
