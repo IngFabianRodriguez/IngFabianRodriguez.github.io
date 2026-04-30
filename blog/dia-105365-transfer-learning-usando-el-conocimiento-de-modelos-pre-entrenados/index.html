@@ -118,70 +118,362 @@ nav {
   </header>
 
   <article class="article-body">
-    <h1>Transfer Learning - Usando El Conocimiento De Modelos Pre-entrenados</h1>
-<p>Hágale pues, parcero. Llegamos al Día 105 y hoy toca hablar de transfer learning. Después de más de 10 años rompiendo redes neuronales en producción, te digo que esto es más jugoso de lo que parece. Dejá el café, acomodate, porque esto es más jugoso de lo que parece.</p>
-<hr>
 <h2>🎯 ¿Qué Es Transfer Learning?</h2>
-<p>En este artículo exploramos Transfer Learning en profundidad, con ejemplos prácticos y código.</p>
-<h3>Conceptos clave:</h3>
-<ul>
-<li><strong>Definición</strong>: Transfer Learning es fundamental en deep learning</li>
-<li><strong>Aplicación</strong>: Se usa en arquitecturas modernas de redes neuronales</li>
-<li><strong>Por qué importa</strong>: Sin esto, muchos modelos no podrían entrenar eficientemente</li>
-</ul>
-<hr>
-<h2>📐 La Matemática Detrás De Transfer Learning</h2>
-<p>La matemática que hace posible la magia de Transfer Learning:</p>
-<pre><code class="language-python">import torch
+<p>Hágale pues, parcero. Llegamos al Día 105 y hoy toca hablar de <strong>Transfer Learning</strong>. Esto es de lo más rico que hay en deep learning moderno: la idea de que no tenemos que partir de cero. Si alguien ya entrenó un modelo para reconocer objetos en millones de imágenes, ¿por qué iba a entrenar el mío desde cero?</p>
+<p>En Colombia solemos decir que hay que <em>"aprovechar el conocimiento ajeno"</em>. En ML esto se llama Transfer Learning, y es exactamente eso: transferir conocimiento de un modelo que ya aprendió algo útil a nuestra tarea específica.</p>
+<p>La intuición es sencilla: un modelo como ResNet entrenado en ImageNet aprendió a detectar bordes, texturas, formas, y objetos completos. Esa información está codificada en sus pesos. En lugar de destruir eso y empezar de nuevo, lo usamos como punto de partida.</p>
+
+<h2>📐 La Matemática Detrás</h2>
+<p>Cuando usamos un modelo pre-entrenado, estamos resolviendo un problema de optimización donde la función de pérdida combina dos componentes:</p>
+<p><strong>Feature Extraction (Extracción de Features):</strong> Los pesos del backbone permanecen <code>frozen</code> (sin actualizar). Solo entrenamos un clasificador nuevo en la parte superior.</p>
+<p>La pérdida total durante el entrenamiento del head:</p>
+<p>$$\mathcal{L}_{total} = \mathcal{L}_{CE}(f_{head}(h), y)$$</p>
+<p>donde $h = f_{backbone}(x)$ son las features extraídas y $f_{head}$ es el clasificador nuevo.</p>
+<p><strong>Fine-Tuning:</strong> Aquí sí actualizamos los pesos del modelo, pero generalmente con un learning rate más bajo para no destruir las features ya aprendidas. La actualización es:</p>
+<p>$$\theta_{new} = \theta_{old} - \alpha \cdot \nabla\mathcal{L}$$</p>
+<p>donde $\alpha_{fine-tune} \ll \alpha_{train-from-scratch}$. Un rule of thumb: 10x a 100x más bajo para el backbone.</p>
+<p><strong>Gradual Unfreezing:</strong> La estrategia de descongelar capas gradualmente:</p>
+<p>$$\theta_{layer_i}^{new} = \theta_{layer_i}^{old} - \alpha_i \cdot \nabla\mathcal{L}$$</p>
+<p>donde $\alpha_i$ aumenta para capas más cercanas a la entrada (las más genéricas se modifican menos).</p>
+
+<h2>🔧 Feature Extraction vs Fine-Tuning</h2>
+<p><strong>Feature Extraction</strong> es cuando tratas el modelo pre-entrenado como un extractor de features fijo. Solo entrenas un clasificador nuevo encima. Es rápido, barato, y funciona muy bien cuando tu dataset no es muy grande o es parecido al de pre-entrenamiento.</p>
+<p><strong>Fine-Tuning</strong> es cuando ajustas los pesos del modelo también. Esto es máscostoso en cómputo pero puede dar mejores resultados cuando tu dataset es mediano y tiene diferencias con el dataset original.</p>
+<p>La regla que uso en producción: si tu dataset tiene menos de 10K imágenes, empieza con feature extraction. Si tienes más y las clases son parecidas a ImageNet, haz fine-tuning del último bloque. Si son muy diferentes, descongela más capas.</p>
+
+<h2>🚀 Implementación Completa en PyTorch</h2>
+<pre><code class="language-python">"""
+Transfer Learning con ResNet50 pre-entrenado
+Comparación: Feature Extraction vs Fine-Tuning vs Gradual Unfreezing
+"""
+import torch
 import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader
+from torchvision import models, transforms
+from torchvision.models import ResNet50_Weights
+import numpy as np
+from sklearn.metrics import accuracy_score
+import matplotlib.pyplot as plt
+from sklearn.decomposition import PCA
 
-# Ejemplo de Transfer Learning
-x = torch.randn(32, 64)
-print(f'Input: {x.shape}')
-</code></pre>
-<hr>
-<h2>🚀 Implementación En PyTorch</h2>
-<pre><code class="language-python"># Implementación de Transfer Learning
-class TransferLearningBlock(nn.Module):
-    def __init__(self):
-        super().__init__()
-        # Capas del bloque
+# ─────────────────────────────────────────────
+# 1. NORMALIZACIÓN CON ESTADÍSTICAS IMAGENET
+# ─────────────────────────────────────────────
+# ¡CRÍTICO! ImageNet usa estos valores para normalizar.
+# Si no los usas, las features del modelo no tienen sentido.
+IMAGENET_MEAN = [0.485, 0.456, 0.406]
+IMAGENET_STD  = [0.229, 0.224, 0.225]
+
+# Dataset de ejemplo (sustituye con el tuyo)
+train_transforms = transforms.Compose([
+    transforms.RandomResizedCrop(224),
+    transforms.RandomHorizontalFlip(),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD)
+])
+
+val_transforms = transforms.Compose([
+    transforms.Resize(256),
+    transforms.CenterCrop(224),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD)
+])
+
+# Simular datos de ejemplo (reemplazar con dataset real)
+# train_dataset = TuDataset(root='data/train', transform=train_transforms)
+# val_dataset   = TuDataset(root='data/val',   transform=val_transforms)
+train_loader = DataLoader(torch.utils.data.TensorDataset(
+    torch.randn(800, 3, 224, 224), torch.randint(0, 10, (800,))
+), batch_size=32, shuffle=True)
+val_loader = DataLoader(torch.utils.data.TensorDataset(
+    torch.randn(200, 3, 224, 224), torch.randint(0, 10, (200,))
+), batch_size=32)
+
+NUM_CLASSES = 10
+DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+# ─────────────────────────────────────────────
+# 2. CARGAR RESNET50 PRE-ENTRENADO
+# ─────────────────────────────────────────────
+def get_model(mode='feature_extraction'):
+    """
+    Carga ResNet50 con pesos de ImageNet.
     
-    def forward(self, x):
-        return x
+    mode: 'feature_extraction' | 'full_finetune' | 'gradual_unfreeze'
+    """
+    model = models.resnet50(weights=ResNet50_Weights.IMAGENET1K_V2)
+    
+    # Reemplazar el classifier head (el fully connected final)
+    in_features = model.fc.in_features  # 2048
+    model.fc = nn.Linear(in_features, NUM_CLASSES)
+    
+    if mode == 'feature_extraction':
+        # ─── MODO A: FEATURE EXTRACTION ───
+        # Congelar TODOS los parámetros del backbone
+        for param in model.parameters():
+            param.requires_grad = False
+        # Solo el FC head es entrenable
+        model.fc.weight.requires_grad = True
+        model.fc.bias.requires_grad = True
+        print(f"[Feature Extraction] Parámetros entrenables: "
+              f"{sum(p.numel() for p in model.parameters() if p.requires_grad):,}")
+        
+    elif mode == 'full_finetune':
+        # ─── MODO B: FINE-TUNING COMPLETO ───
+        # Todos los parámetros son entrenables
+        for param in model.parameters():
+            param.requires_grad = True
+        print(f"[Full Fine-Tune] Parámetros entrenables: "
+              f"{sum(p.numel() for p in model.parameters() if p.requires_grad):,}")
+        
+    elif mode == 'gradual_unfreeze':
+        # ─── MODO C: GRADUAL UNFREEZING ───
+        # Primero congelamos todo
+        for param in model.parameters():
+            param.requires_grad = False
+        model.fc.weight.requires_grad = True
+        model.fc.bias.requires_grad = True
+        
+        # Etapa 1: entrenar solo el head (5 epochs)
+        print("[Gradual Unfreeze] Etapa 1: entrenando solo el head...")
+        
+        # Etapa 2: descongelar layer4 (3 epochs más)
+        for param in model.layer4.parameters():
+            param.requires_grad = True
+        
+        # Etapa 3: descongelar layer3 (3 epochs más)
+        for param in model.layer3.parameters():
+            param.requires_grad = True
+        
+        # Learning rates diferenciados: más bajo para capas profundas
+        print(f"[Gradual Unfreeze] Parámetros entrenables: "
+              f"{sum(p.numel() for p in model.parameters() if p.requires_grad):,}")
+    
+    return model
 
-# Uso
-model = TransferLearningBlock()
-output = model(x)
-print(f"Output shape: {output.shape}")
+# ─────────────────────────────────────────────
+# 3. FUNCIÓN DE ENTRENAMIENTO
+# ─────────────────────────────────────────────
+def train_model(model, train_loader, val_loader, epochs, lr, 
+                use_scheduler=False, description=""):
+    """Entrena el modelo y retorna histórico de pérdidas."""
+    model = model.to(DEVICE)
+    criterion = nn.CrossEntropyLoss()
+    
+    # Learning rate diferenciado si hay múltiples grupos
+    trainable_params = [p for p in model.parameters() if p.requires_grad]
+    optimizer = optim.AdamW(trainable_params, lr=lr, weight_decay=1e-4)
+    
+    if use_scheduler:
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
+    
+    history = {'train_loss': [], 'val_loss': [], 'val_acc': []}
+    
+    for epoch in range(epochs):
+        model.train()
+        running_loss = 0.0
+        
+        for batch_x, batch_y in train_loader:
+            batch_x = batch_x.to(DEVICE)
+            batch_y = batch_y.to(DEVICE)
+            
+            optimizer.zero_grad()
+            outputs = model(batch_x)
+            loss = criterion(outputs, batch_y)
+            loss.backward()
+            optimizer.step()
+            
+            running_loss += loss.item()
+        
+        # Validación
+        model.eval()
+        val_preds, val_targets = [], []
+        val_loss = 0.0
+        
+        with torch.no_grad():
+            for batch_x, batch_y in val_loader:
+                batch_x = batch_x.to(DEVICE)
+                batch_y = batch_y.to(DEVICE)
+                outputs = model(batch_x)
+                val_loss += criterion(outputs, batch_y).item()
+                val_preds.extend(outputs.argmax(dim=1).cpu().numpy())
+                val_targets.extend(batch_y.cpu().numpy())
+        
+        if use_scheduler:
+            scheduler.step()
+        
+        avg_train_loss = running_loss / len(train_loader)
+        avg_val_loss = val_loss / len(val_loader)
+        val_acc = accuracy_score(val_targets, val_preds)
+        
+        history['train_loss'].append(avg_train_loss)
+        history['val_loss'].append(avg_val_loss)
+        history['val_acc'].append(val_acc)
+        
+        print(f"  Epoch {epoch+1}/{epochs} | "
+              f"Train Loss: {avg_train_loss:.4f} | "
+              f"Val Loss: {avg_val_loss:.4f} | "
+              f"Val Acc: {val_acc:.4f}")
+    
+    return history
+
+# ─────────────────────────────────────────────
+# 4. COMPARACIÓN DE LOS 3 MÉTODOS
+# ─────────────────────────────────────────────
+print("\n" + "="*60)
+print("COMPARACIÓN: Feature Extraction vs Fine-Tuning vs Gradual Unfreeze")
+print("="*60 + "\n")
+
+EPOCHS = 10
+LR_FEATURE_EXT = 1e-3
+LR_FINETUNE     = 1e-5    # ¡Learning rate BAJO para no destruir features!
+LR_HEAD         = 1e-3
+LR_BACKBONE     = 1e-5    # 100x más bajo que el head
+
+results = {}
+
+# A) Feature Extraction
+print("\n>>> MODO A: Feature Extraction")
+print("-" * 40)
+model_fe = get_model(mode='feature_extraction')
+results['feature_extraction'] = train_model(
+    model_fe, train_loader, val_loader, 
+    epochs=EPOCHS, lr=LR_FEATURE_EXT,
+    description="Feature Extraction"
+)
+
+# B) Full Fine-Tuning (¡con lr bajo!)
+print("\n>>> MODO B: Full Fine-Tuning (lr={})".format(LR_FINETUNE))
+print("-" * 40)
+model_ft = get_model(mode='full_finetune')
+results['full_finetune'] = train_model(
+    model_ft, train_loader, val_loader,
+    epochs=EPOCHS, lr=LR_FINETUNE,
+    description="Full Fine-Tune"
+)
+
+# C) Gradual Unfreezing
+print("\n>>> MODO C: Gradual Unfreezing")
+print("-" * 40)
+model_gu = get_model(mode='gradual_unfreeze')
+results['gradual_unfreeze'] = train_model(
+    model_gu, train_loader, val_loader,
+    epochs=EPOCHS, lr=LR_HEAD,
+    description="Gradual Unfreeze"
+)
+
+# ─────────────────────────────────────────────
+# 5. COMPARAR RESULTADOS
+# ─────────────────────────────────────────────
+print("\n" + "="*60)
+print("RESUMEN DE RESULTADOS")
+print("="*60)
+for method, hist in results.items():
+    best_acc = max(hist['val_acc'])
+    final_loss = hist['val_loss'][-1]
+    print(f"{method:25s} | Best Val Acc: {best_acc:.4f} | Final Loss: {final_loss:.4f}")
+
+# ─────────────────────────────────────────────
+# 6. VISUALIZAR FEATURES CON PCA
+# ─────────────────────────────────────────────
+def extract_features(model, loader, device):
+    """Extrae features de la penúltima capa para visualización."""
+    model.eval()
+    features, labels = [], []
+    
+    with torch.no_grad():
+        for batch_x, batch_y in loader:
+            batch_x = batch_x.to(device)
+            # Obtener features antes del FC (Global Average Pooling)
+            x = model.conv1(batch_x)
+            x = model.bn1(x)
+            x = model.relu(x)
+            x = model.maxpool(x)
+            x = model.layer1(x)
+            x = model.layer2(x)
+            x = model.layer3(x)
+            x = model.layer4(x)
+            x = model.avgpool(x)
+            features.append(x.view(x.size(0), -1).cpu().numpy())
+            labels.extend(batch_y.numpy())
+    
+    return np.vstack(features), np.array(labels)
+
+print("\n>>> Extrayendo features para visualización PCA...")
+feat_fe, labs_fe = extract_features(model_fe, val_loader, DEVICE)
+
+# Reducir a 2D con PCA
+pca = PCA(n_components=2)
+feat_2d = pca.fit_transform(feat_fe)
+
+# Visualizar (guarda como imagen, no muestra en terminal)
+plt.figure(figsize=(10, 6))
+scatter = plt.scatter(feat_2d[:, 0], feat_2d[:, 1], 
+                       c=labs_fe, cmap='tab10', alpha=0.7)
+plt.title('Feature Extraction - ResNet50 (PCA 2D)')
+plt.xlabel(f'PC1 ({pca.explained_variance_ratio_[0]*100:.1f}% var)')
+plt.ylabel(f'PC2 ({pca.explained_variance_ratio_[1]*100:.1f}% var)')
+plt.colorbar(scatter, label='Clase')
+plt.tight_layout()
+plt.savefig('feature_visualization.png', dpi=150)
+print(">>> Visualización guardada en feature_visualization.png")
+
+print("\n" + "="*60)
+print("ENTRENAMIENTO COMPLETADO")
+print("="*60)
+
+# ─────────────────────────────────────────────
+# 7. VERIFICACIÓN: COMPARAR PESOS ANTES Y DESPUÉS
+# ─────────────────────────────────────────────
+print("\n>>> Verificando cambios en pesos...")
+original_weights = torch.load(
+    models.resnet50(weights=ResNet50_Weights.IMAGENET1K_V2).conv1.state_dict()
+)
+final_weights = model_ft.conv1.state_dict()
+
+# Calcular diferencia
+diff = 0.0
+for key in original_weights.keys():
+    diff += torch.abs(original_weights[key] - final_weights[key]).sum().item()
+
+print(f"Diferencia total en conv1 (backbone): {diff:.4f}")
+print(f"Si diff ≈ 0: fine-tuning con lr bajo NO modificó las features.")
+print(f"Si diff >> 0: fine-tuning SÍ aprendió features nuevas.")
+
+print("\n" + "="*60)
+print("¡Eso es todo por hoy! Nos vemos mañana en el Día 106.")
+print("="*60)
 </code></pre>
-<hr>
+
 <h2>⚠️ Errores Comunes Y Cómo Evitarlos</h2>
-<h3>Error 1: No entender el orden de operaciones</h3>
-<p><strong>El problema</strong>: El orden en que se aplican las operaciones con Transfer Learning afecta el resultado.</p>
-<p><strong>La solución</strong>: Siempre verifica la dimensión y el orden de las operaciones.</p>
-<h3>Error 2: Olvidar el modo de evaluación</h3>
-<p><strong>El problema</strong>: Transfer Learning puede comportarse diferente en entrenamiento vs inferencia.</p>
-<p><strong>La solución</strong>: Usa model.eval() durante inferencia y model.train() durante entrenamiento.</p>
-<hr>
+<h3>Error 1: Fine-tuning con learning rate alto que destruye features pre-entrenados</h3>
+<p><strong>El problema:</strong> Uno de los errores más costosos que he visto en producción es hacer fine-tuning con un learning rate típico de entrenamiento desde cero (ej: 1e-3). Con ese lr alto, el optimizador destruye los features que tanto trabajo costó aprender en ImageNet. En lugar de refinar, estás sobrescribiendo.</p>
+<p><strong>La solución:</strong> Usa un learning rate 10x a 100x más bajo para el backbone que para el head. En el código de arriba: <code>LR_FINETUNE = 1e-5</code> vs <code>LR_HEAD = 1e-3</code>. Si ves que la pérdida sube en lugar de bajar, baja el lr del backbone.</p>
+
+<h3>Error 2: No normalizar inputs con estadísticas ImageNet</h3>
+<p><strong>El problema:</strong> Cuando cargas un modelo pre-entrenado, este fue entrenado con inputs normalizados de cierta manera (mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]). Si tus imágenes no pasan por la misma normalización, los features que produce el modelo serán incoherentes. Verás activaciónes altísimas o bajísimas, y el modelo no aprenderá nada útil.</p>
+<p><strong>La solución:</strong> Siempre usa <code>transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD)</code> en tu pipeline de datos. No importa que tu dataset sea de avispas o radiografías: la red espera inputs normalizados así.</p>
+
+<h3>Error 3: Transferir de un domain muy diferente sin adaptación</h3>
+<p><strong>El problema:</strong> Transferir de ImageNet (fotos de objetos naturales) a algo muy diferente (ej: imágenes médicas, imágenes de satélite, datos microscópicos) sin ninguna adaptación suele dar resultados mediocres. Los features de bordes y texturas de ImageNet no son directamente útiles para rayos X o resonancias magnéticas. Estás aprovechando conocimiento que no aplica.</p>
+<p><strong>La solución:</strong> Para domains muy diferentes tienes dos opciones: (1) usa feature extraction (no fine-tuning) porque el backbone actúa como extractor genérico y solo tu head aprende features específicos del dominio, o (2) usa modelos pre-entrenados en domains similares (ej: MedicalNet para imágenes médicas, SatMAE para imágenes satelitales).</p>
+
 <h2>💡 Tips Para Producción</h2>
 <ul>
-<li>Monitorea las métricas relevantes durante el entrenamiento</li>
-<li>Usa Transfer Learning de acuerdo a la arquitectura de tu red</li>
-<li>No todas las técnicas sirven para todos los problemas</li>
+<li>Si tu dataset tiene menos de 10K imágenes: feature extraction. Si tiene más y es similar a ImageNet: fine-tuning gradual.</li>
+<li>Nunca uses el learning rate de entrenamiento-from-scratch para fine-tuning. Empieza bajo (1e-5) y ajusta.</li>
+<li>Si los features no mejoran después de varias épocas, el problema puede ser domain mismatch. Considera modelos pre-entrenados en domains más cercanos.</li>
+<li>Guarda siempre una copia de los pesos originales antes de descongelar. Si el fine-tuning diverge, puedes volver a empezar.</li>
 </ul>
-<hr>
-<p><em>¡Eso es todo por hoy! Nos vemos mañana en el Día 106.</em></p>
+
+<h2>📝 Resumen</h2>
+<p>Hoy aprendimos que Transfer Learning no es magia: es sentido común computacional. Si alguien ya hizo el trabajo pesado, ¿por qué repetirlo? Usamos el conocimiento de modelos entrenados en millones de imágenes como punto de partida. Ya sea quecongeles el backbone (feature extraction) o lo ajustes con cuidado (fine-tuning), la idea es la misma: no partir de cero.</p>
+<p>El código de hoy mostró cómo implementar las tres estrategias principales con ResNet50 en PyTorch: feature extraction puro, fine-tuning completo con lr bajo, y gradual unfreezing. Los errores comunes son precisamente los que más duelen en producción: lr alto que destruye features, no normalizar, y domain mismatch.</p>
+<p><em>¡Eso es todo por hoy, parcero! Mañana en el Día 106 hablamos de Embeddings, que son la otra mitad de por qué el deep learning funciona tan bien en datos categóricos y de texto. No se lo pierda.</em></p>
 
   </article>
 
   <script>
-    document.getElementById('themeToggle').addEventListener('click', function() {
-      const html = document.documentElement;
-      const isDark = html.getAttribute('data-theme') === 'dark';
-      html.setAttribute('data-theme', isDark ? 'light' : 'dark');
-      document.getElementById('themeIcon').className = isDark ? 'fas fa-moon' : 'fas fa-sun';
-    });
-  </script>
 </body>
 </html>
