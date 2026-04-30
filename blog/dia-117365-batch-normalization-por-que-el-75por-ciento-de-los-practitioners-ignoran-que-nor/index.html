@@ -99,55 +99,398 @@ nav {
   </header>
 
   <article class="article-body">
-    <p>Hola, parcero. Llegamos al Día 117 y hoy vamos con BatchNorm. Este tema es crítico porque el porcentaje que mencionamos en el título representa bugs y confusiones que veo constantemente en producción. Acompañame que esto va detallado.</p>
-<hr>
-<h2>📐 Fundamentos Teóricos</h2>
-<p>Vamos paso a paso. Entender la teoría detrás de BatchNorm es lo que separa a alguien que copia código de alguien que realmente sabe lo que está haciendo.</p>
-<h3>Conceptos Clave</h3>
+    <p>Hola, parcero. Llegamos al Día 117 y hoy vamos con BatchNorm. Este tema es crítico porque el porcentaje que mencionamos en el título representa bugs y confusiones que veo constantemente en producción, especialmente cuando alguien entrena modelos en GPUs poderosas pero luego hace deploy en producción y las predicciones no cuadran. Acompañame que esto va bien detallado.</p>
+
+<h2>📐 La Matemática Detrás de BatchNorm</h2>
+
+<p>Batch Normalization normaliza las activaciones de una capa restando la media del batch y dividiendo por la desviación estándar. Pero aquí viene el detalle que muchos ignoran: durante el entrenamiento usa estadísticas del batch actual, pero durante inference usa <em>running statistics</em> calculadas durante el entrenamiento.</p>
+
+<p>La fórmula durante entrenamiento es:</p>
+
+<div class="katex-display">\[
+\mu_B = \frac{1}{m} \sum_{i=1}^{m} x_i \quad \sigma_B^2 = \frac{1}{m} \sum_{i=1}^{m} (x_i - \mu_B)^2 \]
+\[
+\hat{x}_i = \frac{x_i - \mu_B}{\sqrt{\sigma_B^2 + \epsilon}} \quad y_i = \gamma \hat{x}_i + \beta
+\]</div>
+
+<p>Donde <code>γ</code> y <code>β</code> son parámetros aprendibles (si <code>affine=True</code>). Los <em>running statistics</em> se actualizan con momentum:</p>
+
+<div class="katex-display">\[
+\mu_{\text{running}} = (1 - \text{momentum}) \cdot \mu_{\text{running}} + \text{momentum} \cdot \mu_B \]
+\[
+\sigma^2_{\text{running}} = (1 - \text{momentum}) \cdot \sigma^2_{\text{running}} + \text{momentum} \cdot \sigma^2_B
+\]</div>
+
+<p>El <strong>momentum</strong> por defecto es 0.1 en PyTorch. Esto significa que el 10% del batch actual entra en las estadísticas acumuladas. Un valor bajo = estadísticas más estables pero converge más lento. Un valor alto = adapta más rápido a cambios en la distribución pero puede ser ruidoso.</p>
+
+<h3>Affine vs Non-Affine BatchNorm</h3>
+
+<p>Con <code>affine=True</code> (default), BatchNorm aprende parámetros <code>γ</code> (scale) y <code>β</code> (shift). Esto le da a la red capacidad de desaprender la normalización si es necesario. Con <code>affine=False</code>, la transformación es puramente determinista — útil cuando quieres congelar la normalización o cuando ya sabes que no la necesitas.</p>
+
+<h3>1D, 2D y ND BatchNorm</h3>
+
 <ul>
-<li><strong>Concepto 1</strong>: Descripción del primer concepto fundamental.</li>
-<li><strong>Concepto 2</strong>: Descripción del segundo concepto que necesitas entender.</li>
-<li><strong>Concepto 3</strong>: Por qué esto importa en la práctica.</li>
+<li><code>BatchNorm1d</code>: ParaMLPs — normaliza sobre las <code>features</code> de cada sample. Input: <code>(N, C)</code> o <code>(N, C, L)</code> donde normaliza sobre <code>C</code>.</li>
+<li><code>BatchNorm2d</code>: Para CNNs — normaliza sobre <code>(N, C, H, W)</code>, computes stats per channel sobre <code>N, H, W</code>.</li>
+<li><code>BatchNorm3d</code>: Para 3D convs — normaliza sobre <code>(N, C, D, H, W)</code>.</li>
 </ul>
-<hr>
-<h2>💻 Implementación Práctica</h2>
-<p>Ahora vamos a lo bueno: código real que puedes usar en tus proyectos.</p>
-<pre><code class="language-python"># Ejemplo práctico de BatchNorm
-import numpy as np
 
-def concepto_fundamental(data, param):
-    # Implementación básica del concepto
-    result = []
-    for item in data:
-        processed = item * param
-        result.append(processed)
-    return np.array(result)
+<h2>💻 Implementación Completa en PyTorch</h2>
 
-data = [1, 2, 3, 4, 5]
-result = concepto_fundamental(data, 2)
-print(f"Resultado: {result}")
+<pre><code class="language-python">"""
+BatchNorm desde cero + comparaciones prácticas
+Día 117 — #365DaysOfAI
+"""
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import math
+
+
+# ==============================================================================
+# 1. BatchNorm desde cero con running stats manuales
+# ==============================================================================
+class ManualBatchNorm1d(nn.Module):
+    """
+    Implementación de BatchNorm1d desde cero.
+    Normaliza features sobre el eje de channels.
+    """
+    def __init__(self, num_features, eps=1e-5, momentum=0.1, affine=True):
+        super().__init__()
+        self.num_features = num_features
+        self.eps = eps
+        self.momentum = momentum
+        self.affine = affine
+
+        # Running stats
+        self.register_buffer('running_mean', torch.zeros(num_features))
+        self.register_buffer('running_var', torch.ones(num_features))
+
+        # Parámetros aprendibles
+        if affine:
+            self.weight = nn.Parameter(torch.ones(num_features))
+            self.bias = nn.Parameter(torch.zeros(num_features))
+        else:
+            self.weight = None
+            self.bias = None
+
+    def forward(self, x):
+        # x shape: (N, C) o (N, C, L)
+        if self.training:
+            # Calcular stats sobre el batch actual
+            # Para 2D: (N, C, L) -> (N*L, C) para computar stats
+            if x.dim() == 3:
+                N, C, L = x.shape
+                x_flat = x.permute(0, 2, 1).reshape(-1, C)  # (N*L, C)
+            else:
+                x_flat = x
+
+            # Media y varianza del batch
+            batch_mean = x_flat.mean(dim=0)
+            batch_var = x_flat.var(dim=0, unbiased=False)
+
+            # Actualizar running stats (solo en training)
+            self.running_mean = (1 - self.momentum) * self.running_mean + self.momentum * batch_mean
+            self.running_var = (1 - self.momentum) * self.running_var + self.momentum * batch_var
+
+            # Normalizar
+            if x.dim() == 3:
+                x_norm = (x_flat - batch_mean) / torch.sqrt(batch_var + self.eps)
+                x_norm = x_norm.reshape(N, L, C).permute(0, 2, 1)
+            else:
+                x_norm = (x - batch_mean) / torch.sqrt(batch_var + self.eps)
+
+            # Scale y shift
+            if self.affine:
+                x_norm = x_norm * self.weight + self.bias
+        else:
+            # Inference: usar running stats
+            if x.dim() == 3:
+                N, C, L = x.shape
+                x_norm = (x - self.running_mean.view(1, C, 1)) / \
+                         torch.sqrt(self.running_var.view(1, C, 1) + self.eps)
+            else:
+                x_norm = (x - self.running_mean) / torch.sqrt(self.running_var + self.eps)
+
+            if self.affine:
+                x_norm = x_norm * self.weight + self.bias
+
+        return x_norm
+
+    def extra_repr(self):
+        return f'{self.num_features}, eps={self.eps}, momentum={self.momentum}, affine={self.affine}'
+
+
+# ==============================================================================
+# 2. Comparación: affine=True vs affine=False
+# ==============================================================================
+def compare_affine():
+    """Muestra cómo affine=True permite cambiar la distribución aprendida."""
+    torch.manual_seed(42)
+
+    bn_affine = nn.BatchNorm1d(64, affine=True)
+    bn_no_affine = nn.BatchNorm1d(64, affine=False)
+
+    x = torch.randn(32, 64)
+
+    out_affine = bn_affine(x)
+    out_no_affine = bn_no_affine(x)
+
+    print("=== Affine=True vs False ===")
+    print(f"Input mean: {x.mean():.4f}, std: {x.std():.4f}")
+    print(f"Affine=True  -> mean: {out_affine.mean():.4f}, std: {out_affine.std():.4f}")
+    print(f"Affine=False -> mean: {out_no_affine.mean():.4f}, std: {out_no_affine.std():.4f}")
+    print(f"Affine params: weight={bn_affine.weight.data[:5].tolist()}")
+    print()
+
+
+# ==============================================================================
+# 3. BatchNorm en CNNs vs LayerNorm en Transformers
+# ==============================================================================
+class CNNWithBatchNorm(nn.Module):
+    """CNN estándar con BatchNorm — normaliza sobre (N, H, W) por canal."""
+    def __init__(self, in_ch, out_ch):
+        super().__init__()
+        self.conv = nn.Conv2d(in_ch, out_ch, 3, padding=1)
+        self.bn = nn.BatchNorm2d(out_ch)
+        self.relu = nn.ReLU()
+
+    def forward(self, x):
+        return self.relu(self.bn(self.conv(x)))
+
+
+class TransformerBlock(nn.Module):
+    """Bloque de transformer con LayerNorm — normaliza sobre features."""
+    def __init__(self, d_model, n_heads):
+        super().__init__()
+        self.ln1 = nn.LayerNorm(d_model)
+        self.attn = nn.MultiheadAttention(d_model, n_heads, batch_first=True)
+        self.ln2 = nn.LayerNorm(d_model)
+        self.ff = nn.Sequential(
+            nn.Linear(d_model, d_model * 4),
+            nn.GELU(),
+            nn.Linear(d_model * 4, d_model)
+        )
+
+    def forward(self, x):
+        # LayerNorm normaliza sobre la dimensión de features
+        attn_out, _ = self.attn(self.ln1(x), self.ln1(x), self.ln1(x))
+        x = x + attn_out
+        x = x + self.ff(self.ln2(x))
+        return x
+
+
+# ==============================================================================
+# 4. Gradient Flow comparison: con y sin BatchNorm
+# ==============================================================================
+class SimpleBlock(nn.Module):
+    def __init__(self, dim, use_bn=False):
+        super().__init__()
+        self.lin = nn.Linear(dim, dim)
+        self.bn = nn.BatchNorm1d(dim) if use_bn else nn.Identity()
+        self.act = nn.ReLU()
+
+    def forward(self, x):
+        return self.act(self.bn(self.lin(x)))
+
+
+def measure_gradient_flow():
+    """Mide la magnitud de gradientes en capas profundas."""
+    torch.manual_seed(42)
+
+    depths = [1, 3, 5, 10, 20]
+    x = torch.randn(16, 512, requires_grad=True)
+
+    print("=== Gradient Flow: con vs sin BatchNorm ===")
+    print(f"{'Depth':>6} | {'Sin BN grad_mean':>18} | {'Con BN grad_mean':>18}")
+    print("-" * 50)
+
+    for depth in depths:
+        # Sin BatchNorm
+        model_no_bn = nn.Sequential(*[SimpleBlock(512, False) for _ in range(depth)])
+        model_no_bn(x.grad = None)
+        x_init = x.clone().detach().requires_grad_(True)
+        out = model_no_bn(x_init)
+        out.sum().backward()
+        grad_mean_no_bn = x_init.grad.abs().mean().item()
+
+        # Con BatchNorm
+        model_bn = nn.Sequential(*[SimpleBlock(512, True) for _ in range(depth)])
+        model_bn(x.grad = None)
+        x_init = x.clone().detach().requires_grad_(True)
+        out = model_bn(x_init)
+        out.sum().backward()
+        grad_mean_bn = x_init.grad.abs().mean().item()
+
+        print(f"{depth:>6} | {grad_mean_no_bn:>18.6f} | {grad_mean_bn:>18.6f}")
+
+    print()
+
+
+# ==============================================================================
+# 5. Efecto de batch size pequeño
+# ==============================================================================
+def small_batch_effect():
+    """Demuestra cómo batch sizes pequeños hacen que running stats sean ruido."""
+    torch.manual_seed(42)
+
+    bn = nn.BatchNorm1d(64, momentum=0.1)
+    bn.train()
+
+    print("=== Efecto de batch size pequeño ===")
+    print(f"Running mean inicial: {bn.running_mean[:5].tolist()}")
+
+    # Batch grande: estadísticas estables
+    x_large = torch.randn(64, 64)
+    bn(x_large)
+    print(f"Después de batch=64: mean={bn.running_mean[:5].tolist()}")
+
+    # Reset y batch pequeño
+    bn = nn.BatchNorm1d(64, momentum=0.1)
+    bn.train()
+
+    # Batch de 1 — stats muy ruidosos
+    for i in range(10):
+        x_small = torch.randn(1, 64)
+        bn(x_small)
+
+    print(f"Después de 10 batches de size=1: mean={bn.running_mean[:5].tolist()}")
+    print("^ ¡Este running mean es esencialmente ruido! No lo uses para inference.")
+    print()
+
+    # Batch de 2 — marginalmente mejor pero aún problemático
+    bn = nn.BatchNorm1d(64, momentum=0.1)
+    bn.train()
+    for i in range(50):
+        x_tiny = torch.randn(2, 64)
+        bn(x_tiny)
+
+    print(f"Después de 50 batches de size=2: mean={bn.running_mean[:5].tolist()}")
+    print()
+
+
+# ==============================================================================
+# MAIN
+# ==============================================================================
+if __name__ == "__main__":
+    print("=" * 60)
+    print("BatchNorm — Día 117 #365DaysOfAI")
+    print("=" * 60)
+    print()
+
+    compare_affine()
+
+    # Test forward pass con formas típicas
+    x_2d = torch.randn(16, 64)
+    x_3d = torch.randn(16, 64, 32)
+
+    mbn = ManualBatchNorm1d(64)
+    print(f"Input (N,C): {x_2d.shape} -> Output: {mbn(x_2d).shape}")
+    print(f"Input (N,C,L): {x_3d.shape} -> Output: {mbn(x_3d).shape}")
+    print()
+
+    # CNN con BatchNorm
+    cnn = CNNWithBatchNorm(3, 64)
+    x_img = torch.randn(8, 3, 32, 32)
+    out = cnn(x_img)
+    print(f"CNN+BN input: {x_img.shape} -> output: {out.shape}")
+    print()
+
+    # Transformer con LayerNorm
+    transformer = TransformerBlock(d_model=128, n_heads=4)
+    x_seq = torch.randn(16, 10, 128)  # (batch, seq_len, d_model)
+    out = transformer(x_seq)
+    print(f"Transformer+LN input: {x_seq.shape} -> output: {out.shape}")
+    print()
+
+    measure_gradient_flow()
+    small_batch_effect()
+
+    print("✅ Demo completada. Revisa los outputs de arriba.")
 </code></pre>
-<hr>
-<h2>🚨 Errores Comunes</h2>
-<h3>Error 1: No entender la matemática de fondo</h3>
-<p>El 80% de los practitioners implementa esto incorrectamente porque no entienden la base teórica.</p>
-<h3>Error 2: Ignorar los hiperparámetros</h3>
-<p>Muchos asumen que los valores por defecto son óptimos. En producción, esto raramente es cierto.</p>
-<hr>
-<h2>✅ Mejores Prácticas</h2>
+
+<h2>🚨 Los 3 Errores Más Comunes con BatchNorm</h2>
+
+<h3>Error 1: No llamar model.eval() en inference</h3>
+
+<p>Este es el bug más frecuente. En training, BatchNorm usa estadísticas del batch actual. Si haces inference sin <code>model.eval()</code>, la red usa estadísticas del último batch — que puede ser cualquier cosa. El resultado: predicciones diferentes cada vez que corres el modelo.</p>
+
+<pre><code class="language-python"># ❌ MAL: inference sin eval mode
+model.train()  # Esto está mal para inference
+predictions = model(data)
+
+# ✅ BIEN: inference con eval mode
+model.eval()
+with torch.no_grad():
+    predictions = model(data)
+</code></pre>
+
+<h3>Error 2: Batch size de 1-2 en training</h3>
+
+<p>Cuando el batch size es 1, la varianza es cero (o cercana), y dividir por cero es undefined. Con batch size 2, las estadísticas son extremadamente ruidosas. Los running stats acumulados se contaminan con este ruido y nunca convergen bien.</p>
+
+<pre><code class="language-python"># ❌ MAL: batch size de 1 o 2
+dataloader = DataLoader(dataset, batch_size=1)  # NO HACER ESTO con BatchNorm
+dataloader = DataLoader(dataset, batch_size=2)  # También problemático
+
+# ✅ BIEN: batch size mínimo de 16-32 para BatchNorm
+dataloader = DataLoader(dataset, batch_size=32)
+
+# Alternativa si tienes GPU limitada: usa LayerNorm o GroupNorm
+# que no dependen del batch size
+model = nn.Sequential(
+    nn.Conv2d(3, 64, 3, padding=1),
+    nn.GroupNorm(8, 64),  # Divide channels en grupos, no depende del batch
+    nn.ReLU()
+)
+</code></pre>
+
+<h3>Error 3: Usar BatchNorm en modelos autoregressive (RNNs, Transformers con padding variable)</h3>
+
+<p>En modelos autoregressive, la longitud de secuencia varía entre batches. BatchNorm asume que las estadísticas son comparables entre samples. Además, en inference con padding, el padding contribuye a las estadísticas y las corrompe.</p>
+
+<pre><code class="language-python"># ❌ MAL: BatchNorm en RNNs
+class BadRNNModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.rnn = nn.RNN(256, 512, batch_first=True)
+        self.bn = nn.BatchNorm1d(512)  # NO: RNN produce secuencias de longitud variable
+
+    def forward(self, x):
+        out, _ = self.rnn(x)
+        # out: (batch, seq, 512) — BatchNorm1d no maneja esto bien
+        return self.bn(out)  # Problemas con padding y seq length variable
+
+# ✅ BIEN: LayerNorm para secuencias
+class GoodRNNModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.rnn = nn.RNN(256, 512, batch_first=True)
+        self.ln = nn.LayerNorm(512)  # Normaliza sobre features, no sobre batch
+
+    def forward(self, x):
+        out, _ = self.rnn(x)
+        # LayerNorm normaliza sobre (seq, features) por cada sample independently
+        return self.ln(out)
+</code></pre>
+
+<h2>📊 Cuándo Usar Qué Normalization</h2>
+
 <ul>
-<li>Siempre documenta tu código y decisiones de diseño.</li>
-<li>Usa versionado para tus experimentos.</li>
-<li>Valida siempre con datos de prueba independientes.</li>
-<li>Monitorea las métricas en producción.</li>
+<li><strong>BatchNorm</strong>: CNNs, cuando tienes batch size >= 16, datasets de imágenes.</li>
+<li><strong>LayerNorm</strong>: Transformers, RNNs, cuando el batch es pequeño o variable.</li>
+<li><strong>InstanceNorm</strong>: Style transfer, generación de imágenes — normaliza cada sample/channel independently.</li>
+<li><strong>GroupNorm</strong>: Cuando tienes batch size pequeño (1-8) y necesitas algo similar a BatchNorm.</li>
+<li><strong>SyncBatchNorm</strong>: Cuando entrenas con múltiples GPUs y necesitas sincronizar stats.</li>
 </ul>
-<hr>
-<h2>📚 Recursos</h2>
-<ul>
-<li>Documentación oficial de sklearn</li>
-<li>Tutoriales prácticos en el blog</li>
-<li>Código fuente en GitHub</li>
-</ul>
+
+<h2>✅ Resumen y Cierre</h2>
+
+<p>BatchNorm es poderosa pero tiene requisitos claros: batch size suficiente, training/inference bien separados, y no en cualquier arquitectura. Los tres errores de arriba cubren el 75% de los problemas que veo cuando alguien me pregunta por qué su modelo se comporta diferente en producción.</p>
+
+<p>La clave: durante entrenamiento usa stats del batch actual y actualiza running stats. Durante inference SOLO usa running stats — y para eso necesitas <code>model.eval()</code>. Si tienes GPUs con batch size pequeño, mira GroupNorm o LayerNorm en su lugar.</p>
+
+<p>Eso es todo por hoy, parcero. Mañana seguimos con más. 🚀</p>
   </article>
 
   <script>
