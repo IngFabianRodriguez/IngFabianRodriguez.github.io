@@ -118,62 +118,557 @@ nav {
   </header>
 
   <article class="article-body">
-    <h1>Data Augmentation - Creando Datos De La Nada Para Tu Red</h1>
-<p>Hágale pues, parcero. Llegamos al Día 104 y hoy toca hablar de data augmentation. Después de más de 10 años rompiendo redes neuronales en producción, te digo que esto es más jugoso de lo que parece. Dejá el café, acomodate, porque esto es más jugoso de lo que parece.</p>
-<hr>
 <h2>🎯 ¿Qué Es Data Augmentation?</h2>
-<p>En este artículo exploramos Data Augmentation en profundidad, con ejemplos prácticos y código.</p>
-<h3>Conceptos clave:</h3>
-<ul>
-<li><strong>Definición</strong>: Data Augmentation es fundamental en deep learning</li>
-<li><strong>Aplicación</strong>: Se usa en arquitecturas modernas de redes neuronales</li>
-<li><strong>Por qué importa</strong>: Sin esto, muchos modelos no podrían entrenar eficientemente</li>
-</ul>
+<p>Hágale pues, parcero. Hoy llegamos al Día 104 y vamos a hablar de una de las técnicas más poderosas y más malentendidas del deep learning: <strong>Data Augmentation</strong>. Crear datos de la nada. Suena a brujería, pero es pura matemática.</p>
+<p>La idea es simple: tienes 1,000 imágenes de entrenamiento. Tus redes neuronales necesitan 100,000 para comportarse bien. Puedes salir a colectar más datos ( Caro, lento, tedioso) o puedes aplicar transformaciones a las que ya tienes para generar "nuevas" muestras que preserven el label. Rotate 15°, flip horizontal, cambia el brillo — la red ve una imagen diferente, pero el label sigue siendo el mismo. Genial, ¿no? Bueno, hay un catch. Como todo en machine learning, el diablo está en los detalles.</p>
 <hr>
-<h2>📐 La Matemática Detrás De Data Augmentation</h2>
-<p>La matemática que hace posible la magia de Data Augmentation:</p>
+<h2>📐 La Matemática — ¿Por Qué Funciona?</h2>
+<p>Data augmentation es esencialmente un regularization technique. Vamos a la formalización:</p>
+<p>Sea $x \in \mathcal{X}$ una imagen de entrada y $y \in \mathcal{Y}$ su label. La augmentación aplica una transformación estocástica $T(\cdot)$ tal que:</p>
+<p>$$(x_i, y_i) \xrightarrow{T} (x_i', y_i) \quad \text{donde} \quad x_i' = T(x_i)$$</p>
+<p>La clave: $T$ preserva el label, es decir, $y_i' = y_i$. Esto es lo que se conoce como <strong>label-preserving transformations</strong>. Si aplicas un flip horizontal a una foto de un gato, sigue siendo un gato. Pero si aplicas un rotate de 90° a texto, el label cambia (queda ilegible). Ahí es donde la gente falla.</p>
+<p>El efecto en la función de pérdida es directo. Sin augmentation:</p>
+<p>$$\mathcal{L} = \frac{1}{N} \sum_{i=1}^{N} \ell(f(x_i; \theta), y_i)$$</p>
+<p>Con augmentation, expandimos el dataset $N$ veces en expectation:</p>
+<p>$$\mathcal{L}_{\text{aug}} = \frac{1}{N} \sum_{i=1}^{N} \mathbb{E}_{T \sim \mathcal{T}}[\ell(f(T(x_i); \theta), y_i)]$$</p>
+<p>Esto equivale a regularization porque promediamos sobre múltiples vistas de cada muestra, reduciendo la varianza del estimator. En la práctica, reduce overfitting significativamente. Papers como "AlexNet" (2012) ya mostraban que el data augmentation era clave para evitar overfitting en ImageNet.</p>
+<hr>
+<h2>🚀 Implementación Completa en PyTorch</h2>
+<p>Vamos con código real — más de 90 líneas que cubren torchvision.transforms, albumentations, Mixup y Cutmix:</p>
 <pre><code class="language-python">import torch
 import torch.nn as nn
+import torch.nn.functional as F
+from torch.utils.data import DataLoader, Dataset
+import torchvision.transforms as T
+import torchvision.transforms.functional as TF
+import numpy as np
+from PIL import Image
+import random
+from pathlib import Path
 
-# Ejemplo de Data Augmentation
-x = torch.randn(32, 64)
-print(f'Input: {x.shape}')
+# ─────────────────────────────────────────────
+# 1. Torchvision Transforms — RandAugment
+# ─────────────────────────────────────────────
+
+def get_train_transforms():
+    """
+    RandAugment: aplica N operaciones aleatorias con magnitud M.
+    RandAugment(N=2, M=9) es la configuración popular en EfficientNet.
+    """
+    return T.Compose([
+        T.RandomResizedCrop(224, scale=(0.08, 1.0)),
+        T.RandomHorizontalFlip(p=0.5),
+        T.RandAugment(num_ops=2, magnitude=9),  # RandAugment
+        T.ToTensor(),
+        T.Normalize(mean=[0.485, 0.456, 0.406],
+                   std=[0.229, 0.224, 0.225]),
+    ])
+
+def get_val_transforms():
+    """Solo resize + normalize para validación."""
+    return T.Compose([
+        T.Resize(256),
+        T.CenterCrop(224),
+        T.ToTensor(),
+        T.Normalize(mean=[0.485, 0.456, 0.406],
+                   std=[0.229, 0.224, 0.225]),
+    ])
+
+
+# ─────────────────────────────────────────────
+# 2. AutoAugment y TrivialAugment
+# ─────────────────────────────────────────────
+
+def get_autoaugment_transforms():
+    """
+    AutoAugment: aprendió la política óptima de augmentations
+    en un NAS search. Mejor que RandAugment en algunos datasets
+    (pero más lento).
+    """
+    return T.Compose([
+        T.RandomResizedCrop(224),
+        T.AutoAugment(policy=T.AutoAugmentPolicy.IMAGENET),
+        T.ToTensor(),
+        T.Normalize(mean=[0.485, 0.456, 0.406],
+                   std=[0.229, 0.224, 0.225]),
+    ])
+
+def get_trivialaugment_transforms():
+    """
+    TrivialAugment: tan bueno como AutoAugment pero sin NAS search.
+    Más rápido, más simple. Recomendado para la mayoría de casos.
+    """
+    return T.Compose([
+        T.RandomResizedCrop(224),
+        T.TrivialAugmentWide(),  # Sin parámetros —最大值 de ops
+        T.ToTensor(),
+        T.Normalize(mean=[0.485, 0.456, 0.406],
+                   std=[0.229, 0.224, 0.225]),
+    ])
+
+
+# ─────────────────────────────────────────────
+# 3. Cutout — Regularización Espacial
+# ─────────────────────────────────────────────
+
+class Cutout:
+    """
+    Oculta aleatoriamente una región cuadrada de la imagen.
+    Equivalente a regularización Dropout pero en el espacio de la imagen.
+    El paper original (2017)报告显示 Cutout mejora CIFAR-10 de 2.6%.
+    """
+    def __init__(self, n_holes=1, length=16):
+        self.n_holes = n_holes
+        self.length = length
+
+    def __call__(self, img):
+        h, w = img.shape[1], img.shape[2]
+        mask = np.ones((h, w), np.float32)
+
+        for _ in range(self.n_holes):
+            y = np.random.randint(h)
+            x = np.random.randint(w)
+
+            y1 = np.clip(y - self.length // 2, 0, h)
+            y2 = np.clip(y + self.length // 2, 0, h)
+            x1 = np.clip(x - self.length // 2, 0, w)
+            x2 = np.clip(x + self.length // 2, 0, w)
+
+            mask[y1:y2, x1:x2] = 0.0
+
+        mask = torch.from_numpy(mask)
+        mask = mask.expand_as(img)
+        img = img * mask
+        return img
+
+
+# ─────────────────────────────────────────────
+# 4. Mixup — Interpolación de Muestras
+# ─────────────────────────────────────────────
+
+class Mixup:
+    """
+    Mixup: interpola linealmente entre dos imágenes y sus labels.
+    Dada (x_i, y_i) y (x_j, y_j), genera:
+        x' = λ·x_i + (1-λ)·x_j
+        y' = λ·y_i + (1-λ)·y_j
+    con λ ~ Beta(α, α).
+
+    Reduce overfitting, mejora calibración del modelo,
+    y hace la frontera de decisión más suave.
+    """
+    def __init__(self, alpha=0.4):
+        self.alpha = alpha
+
+    def __call__(self, batch_x, batch_y):
+        if self.alpha > 0:
+            lam = np.random.beta(self.alpha, self.alpha)
+        else:
+            lam = 1.0
+
+        batch_size = batch_x.size(0)
+        index = torch.randperm(batch_size).to(batch_x.device)
+
+        mixed_x = lam * batch_x + (1 - lam) * batch_x[index]
+        y_a, y_b = batch_y, batch_y[index]
+
+        return mixed_x, y_a, y_b, lam
+
+
+# ─────────────────────────────────────────────
+# 5. Cutmix — Trozos de Imagen
+# ─────────────────────────────────────────────
+
+class CutMix:
+    """
+    CutMix: corta una región de una imagen y la pega en otra.
+    El label se interpola según el área de cada trozo.
+
+    Más informativo que Mixup porque fuerza al modelo
+    a aprender de características parciales.
+    """
+    def __init__(self, alpha=1.0):
+        self.alpha = alpha
+
+    def __call__(self, batch_x, batch_y):
+        lam = np.random.beta(self.alpha, self.alpha)
+        batch_size = batch_x.size(0)
+        index = torch.randperm(batch_size).to(batch_x.device)
+
+        # Generar bounding box del corte
+        h, w = batch_x.size(1), batch_x.size(2)
+        cut_rat = np.sqrt(1.0 - lam)
+        cut_w = int(w * cut_rat)
+        cut_h = int(h * cut_rat)
+
+        cx = np.random.randint(w)
+        cy = np.random.randint(h)
+
+        bbx1 = np.clip(cx - cut_w // 2, 0, w)
+        bby1 = np.clip(cy - cut_h // 2, 0, h)
+        bbx2 = np.clip(cx + cut_w // 2, 0, w)
+        bby2 = np.clip(cy + cut_h // 2, 0, h)
+
+        # Pegar
+        batch_x[:, bby1:bby2, bbx1:bbx2] = batch_x[index, bby1:bby2, bbx1:bbx2]
+
+        # Ajustar lambda según área real
+        lam = 1 - ((bbx2 - bbx1) * (bby2 - bby1) / (w * h))
+
+        y_a, y_b = batch_y, batch_y[index]
+        return batch_x, y_a, y_b, lam
+
+
+# ─────────────────────────────────────────────
+# 6. Albumentations — Augmentations Avanzadas
+# ─────────────────────────────────────────────
+
+try:
+    import albumentations as A
+    from albumentations.pytorch import ToTensorV2
+
+    def get_albumentations_transforms():
+        """
+        Albumentations es más rápido que torchvision y tiene
+        más augmentations (ShiftScaleRotate, GridDistortion, etc.)
+        """
+        return A.Compose([
+            A.RandomResizedCrop(height=224, width=224, scale=(0.08, 1.0)),
+            A.HorizontalFlip(p=0.5),
+            A.ShiftScaleRotate(shift_limit=0.1, scale_limit=0.15,
+                             rotate_limit=25, p=0.5),
+            A.ColorJitter(brightness=0.2, contrast=0.2,
+                         saturation=0.2, hue=0.1, p=0.5),
+            A.GaussNoise(var_limit=(10.0, 50.0), p=0.3),
+            A.CoarseDropout(max_holes=4, max_height=32,
+                           max_width=32, p=0.3),
+            A.Normalize(mean=[0.485, 0.456, 0.406],
+                       std=[0.229, 0.224, 0.225]),
+            ToTensorV2(),
+        ])
+
+    ALBUMENTATIONS_AVAILABLE = True
+except ImportError:
+    ALBUMENTATIONS_AVAILABLE = False
+    print("⚠️ Albumentations no instalado. Ejecuta: pip install albumentations")
+
+
+# ─────────────────────────────────────────────
+# 7. Dataset con Augmentation Integrada
+# ─────────────────────────────────────────────
+
+class ImageDataset(Dataset):
+    def __init__(self, image_paths, labels, transform=None,
+                 mixup=None, cutmix=None):
+        self.image_paths = image_paths
+        self.labels = labels
+        self.transform = transform
+        self.mixup = mixup
+        self.cutmix = cutmix
+
+    def __len__(self):
+        return len(self.image_paths)
+
+    def __getitem__(self, idx):
+        img = Image.open(self.image_paths[idx]).convert('RGB')
+
+        if self.transform:
+            img = self.transform(img)
+
+        label = self.labels[idx]
+
+        return img, label
+
+    def collate_fn(self, batch):
+        """Custom collate para aplicar Mixup/Cutmix por batch."""
+        images, labels = zip(*batch)
+        images = torch.stack(images)
+        labels = torch.tensor(labels)
+
+        if self.mixup is not None and random.random() < 0.5:
+            images, labels_a, labels_b, lam = self.mixup(images, labels)
+            return images, labels_a, labels_b, lam
+        elif self.cutmix is not None and random.random() < 0.5:
+            images, labels_a, labels_b, lam = self.cutmix(images, labels)
+            return images, labels_a, labels_b, lam
+
+        return images, labels, labels, 1.0
+
+
+# ─────────────────────────────────────────────
+# 8. Training Loop con Mixup/Cutmix Loss
+# ─────────────────────────────────────────────
+
+def mixup_cutmix_loss(criterion, pred, y_a, y_b, lam):
+    """Computa loss para Mixup/Cutmix — interpolación de losses."""
+    return lam * criterion(pred, y_a) + (1 - lam) * criterion(pred, y_b)
+
+
+def train_one_epoch(model, loader, optimizer, criterion,
+                    device, mixup=None, cutmix=None):
+    model.train()
+    total_loss = 0.0
+    correct = 0
+    total = 0
+
+    for batch in loader:
+        if mixup is not None or cutmix is not None:
+            images, y_a, y_b, lam = batch
+            images = images.to(device)
+            y_a, y_b = y_a.to(device), y_b.to(device)
+        else:
+            images, y_a = batch[0].to(device), batch[1].to(device)
+            y_b, lam = y_a, 1.0
+
+        optimizer.zero_grad()
+        outputs = model(images)
+        loss = mixup_cutmix_loss(criterion, outputs, y_a, y_b, lam)
+        loss.backward()
+        optimizer.step()
+
+        total_loss += loss.item() * images.size(0)
+        _, predicted = outputs.max(1)
+        total += y_a.size(0)
+        correct += (lam * predicted.eq(y_a).sum().item() +
+                   (1 - lam) * predicted.eq(y_b).sum().item())
+
+    return total_loss / total, 100.0 * correct / total
+
+
+# ─────────────────────────────────────────────
+# 9. Test Time Augmentation (TTA)
+# ─────────────────────────────────────────────
+
+def predict_with_tta(model, image, n_augmentations=5, device='cuda'):
+    """
+    Test Time Augmentation: promedia predicciones de múltiples
+    vistas augmentadas de la misma imagen.
+    Mejora accuracy típicamente 1-3% a costo de más inferencia.
+    """
+    model.eval()
+
+    augmentations = T.Compose([
+        T.Resize(256),
+        T.CenterCrop(224),
+        T.RandomHorizontalFlip(p=0.5),
+        # No normalices aún
+    ])
+
+    to_tensor = T.Compose([
+        T.ToTensor(),
+        T.Normalize(mean=[0.485, 0.456, 0.406],
+                   std=[0.229, 0.224, 0.225]),
+    ])
+
+    predictions = []
+
+    with torch.no_grad():
+        # Original
+        img_tensor = to_tensor(image).unsqueeze(0).to(device)
+        predictions.append(torch.softmax(model(img_tensor), dim=1))
+
+        # Augmentations
+        for _ in range(n_augmentations):
+            augmented = augmentations(image)
+            img_tensor = to_tensor(augmented).unsqueeze(0).to(device)
+            predictions.append(torch.softmax(model(img_tensor), dim=1))
+
+    # Promediar predicciones
+    avg_prediction = torch.stack(predictions).mean(dim=0)
+    return avg_prediction
+
+
+# ─────────────────────────────────────────────
+# 10. Uso Completo
+# ─────────────────────────────────────────────
+
+if __name__ == "__main__":
+    # Simular paths y labels
+    dummy_images = [f"./data/img_{i}.jpg" for i in range(100)]
+    dummy_labels = [random.randint(0, 9) for _ in range(100)]
+
+    # Elegir estrategia de augmentation
+    use_albumentations = False
+
+    if use_albumentations and ALBUMENTATIONS_AVAILABLE:
+        train_transform = get_albumentations_transforms()
+    else:
+        # torchvision con Cutout
+        train_transform = T.Compose([
+            T.RandomResizedCrop(224),
+            T.RandomHorizontalFlip(),
+            T.RandAugment(num_ops=2, magnitude=9),
+            T.ToTensor(),
+            T.Normalize([0.485, 0.456, 0.406],
+                       [0.229, 0.224, 0.225]),
+            Cutout(n_holes=1, length=32),
+        ])
+
+    val_transform = get_val_transforms()
+
+    # Dataset
+    dataset = ImageDataset(
+        dummy_images, dummy_labels,
+        transform=train_transform,
+        mixup=Mixup(alpha=0.4),
+        cutmix=CutMix(alpha=1.0)
+    )
+
+    loader = DataLoader(dataset, batch_size=16, shuffle=True,
+                        collate_fn=dataset.collate_fn)
+
+    # Modelo dummy
+    model = nn.Sequential(
+        nn.Conv2d(3, 32, 3, padding=1), nn.ReLU(),
+        nn.AdaptiveAvgPool2d(1),
+        nn.Flatten(),
+        nn.Linear(32, 10)
+    ).to('cuda')
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+    criterion = nn.CrossEntropyLoss()
+
+    # Entrenar
+    for epoch in range(3):
+        loss, acc = train_one_epoch(
+            model, loader, optimizer, criterion, 'cuda',
+            mixup=dataset.mixup, cutmix=dataset.cutmix
+        )
+        print(f"Epoch {epoch+1}: Loss={loss:.4f}, Acc={acc:.2f}%")
+
+    # TTA en inferencia
+    print("\n🔮 Predicción con TTA (5 augmentations):")
+    dummy_img = Image.open(dummy_images[0]).convert('RGB')
+    pred = predict_with_tta(model, dummy_img, n_augmentations=5, device='cuda')
+    print(f"  Predicción promediada: {pred.argmax().item()}")</code></pre>
+<hr>
+<h2>⚠️ Los 3 Errores Más Comunes (y Sus Arreglos)</h2>
+<h3>Error 1: No Usar Augmentation en Datos Desbalanceados — Empeora el Imbalance</h3>
+<p><strong>El problema:</strong> En datasets desbalanceados (ej. 95% clase A, 5% clase B), la gente aplica random augmentation y listo. Pero si solo haces random horizontal flip, rotate, y color jitter, las clases minoritarias siguen siendo minoritarias. La augmentación multiplica todas las clases por igual, así que el imbalance se mantiene — y en algunos casos empeora porque las clases mayoritarias se vuelven aún más dominantes.</p>
+<p><strong>El código malo:</strong></p>
+<pre><code class="language-python"># ❌ AUGMENTATION IGUAL PARA TODAS LAS CLASES
+transform = T.Compose([
+    T.RandomHorizontalFlip(),
+    T.RandAugment(num_ops=2, magnitude=9),
+    T.ToTensor(),
+])
+# El dataset desbalanceado sigue desbalanceado después de esto
+</code></pre>
+<p><strong>La solución:</strong> Usa <strong>class-balanced sampling</strong> o augmentación específica para clases minoritarias:</p>
+<pre><code class="language-python"># ✅ OVERSAMPLING CON AUGMENTATION PARA CLASE MINORITARIA
+from torch.utils.data import WeightedRandomSampler
+
+# Calcular pesos por clase
+class_counts = [900, 50, 50]  # ejemplo: clase 0=900, clase 1=50, clase 2=50
+class_weights = 1.0 / torch.tensor(class_counts, dtype=torch.float)
+sample_weights = class_weights[labels]
+
+sampler = WeightedRandomSampler(
+    weights=sample_weights,
+    num_samples=len(sample_weights),
+    replacement=True
+)
+# Combinar con augmentation heavy para clases minoritarias
+# (más rotations, más scale variations, etc.)
+</code></pre>
+<p>También existen técnicas como <strong>SMOTE</strong> adaptadas para imágenes (ej. <code>torchsnippets</code> o usar GANs para generar samples adicionales de clases minoritarias).</p>
+<h3>Error 2: Augmentation Demasiado Agresiva — Destruye los Labels</h3>
+<p><strong>El problema:</strong> En imágenes médicas o de documentos, aplicar augmentations fuertes puede alterar la estructura que el modelo necesita aprender. Un rotate de 45° en una radiografía de pecho puede hacer que estructuras anatómicas queden irreconocibles. Un color jitter fuerte en imágenes histológicas destruye los colores que identifican tejido canceroso vs normal.</p>
+<p><strong>El código malo:</strong></p>
+<pre><code class="language-python"># ❌ AUGMENTATION MUY AGRESIVA PARA MEDICAL IMAGING
+transform = T.Compose([
+    T.RandomRotation(degrees=90),      # 90° rotation es ridículo
+    T.ColorJitter(brightness=0.8),    # Brightness extremo
+    T.RandomHorizontalFlip(),         # En MRI el flip puede ser válido o no
+    T.RandAugment(num_ops=3, magnitude=14),  # Magnitud máxima
+])
+# El label "tumor" ya no corresponde a la imagen transformada
+</code></pre>
+<p><strong>La solución:</strong> Conoce tu dominio. Para medical imaging:</p>
+<pre><code class="language-python"># ✅ AUGMENTATION CONSERVADORA PARA MEDICAL IMAGING
+medical_transform = T.Compose([
+    T.RandomRotation(degrees=15),      # Solo rotaciones suaves
+    T.RandomAffine(degrees=0, translate=(0.05, 0.05)),  # Shift suave
+    T.RandomHorizontalFlip(p=0.5),    # Solo si es anatómicamente válido
+    # No color jitter en imágenes histológicas
+    # El brightness/contrast solo con valores muy bajos
+    T.ColorJitter(brightness=0.1, contrast=0.1),
+    T.ToTensor(),
+    T.Normalize(mean, std),
+])
+
+# Alternativa: usa albumentations con bounded transforms
+if ALBUMENTATIONS_AVAILABLE:
+    medical_album = A.Compose([
+        A.ShiftScaleRotate(shift_limit=0.05, scale_limit=0.1,
+                          rotate_limit=15, p=0.5),
+        A.ElasticTransform(alpha=1, sigma=50, p=0.2),  # Suave
+        A.GaussNoise(var_limit=(5.0, 20.0), p=0.3),
+    ])
+</code></pre>
+<h3>Error 3: No Aplicar Augmentation en Test Time (TTA)</h3>
+<p><strong>El problema:</strong> Entras en producción con un modelo que entrenó con augmentation, pero en inferencia solo le pasas la imagen original. Estás desperdiciando el esfuerzo de entrenamiento. TTA (Test Time Augmentation) es trivial de implementar y típicamente mejora accuracy 1-3% sin reentrenar.</p>
+<p><strong>El código malo:</strong></p>
+<pre><code class="language-python"># ❌ SIN TTA — SOLO INFERENCIA DIRECTA
+model.eval()
+with torch.no_grad():
+    output = model(original_image)  # Solo una vista
+# Estás dejando 1-3% de accuracy sobre la mesa
+</code></pre>
+<p><strong>La solución:</strong> Implementa TTA como en la sección de código arriba:</p>
+<pre><code class="language-python"># ✅ CON TTA — PROMEDIAR MÚLTIPLES VISTAS
+def predict_with_tta(model, image, n_augmentations=8, device='cuda'):
+    model.eval()
+    augmentations = [
+        lambda x: x,  # Original
+        T.RandomHorizontalFlip(p=1.0),  # Flip
+        # Más augmentations...
+    ]
+
+    predictions = []
+    with torch.no_grad():
+        for aug in augmentations:
+            aug_img = aug(image)
+            pred = torch.softmax(model(aug_img), dim=1)
+            predictions.append(pred)
+
+    return torch.stack(predictions).mean(dim=0)
+
+# Típicamente: +1-3% accuracy sin reentrenar
 </code></pre>
 <hr>
-<h2>🚀 Implementación En PyTorch</h2>
-<pre><code class="language-python"># Implementación de Data Augmentation
-class DataAugmentationBlock(nn.Module):
-    def __init__(self):
-        super().__init__()
-        # Capas del bloque
-    
-    def forward(self, x):
-        return x
-
-# Uso
-model = DataAugmentationBlock()
-output = model(x)
-print(f"Output shape: {output.shape}")
-</code></pre>
-<hr>
-<h2>⚠️ Errores Comunes Y Cómo Evitarlos</h2>
-<h3>Error 1: No entender el orden de operaciones</h3>
-<p><strong>El problema</strong>: El orden en que se aplican las operaciones con Data Augmentation afecta el resultado.</p>
-<p><strong>La solución</strong>: Siempre verifica la dimensión y el orden de las operaciones.</p>
-<h3>Error 2: Olvidar el modo de evaluación</h3>
-<p><strong>El problema</strong>: Data Augmentation puede comportarse diferente en entrenamiento vs inferencia.</p>
-<p><strong>La solución</strong>: Usa model.eval() durante inferencia y model.train() durante entrenamiento.</p>
+<h2>📐 Resumen de Técnicas de Augmentation</h2>
+<ul>
+<li><strong>RandAugment</strong>: Simple, eficaz, sin parámetros a tuneear. Buena para starting point.</li>
+<li><strong>AutoAugment</strong>: Mejor performance pero más costoso (NAS search). Para cuando necesitas lo último.</li>
+<li><strong>TrivialAugment</strong>: Lo mejor de ambos mundos — simple y efectivo. Mi recomendación para la mayoría.</li>
+<li><strong>Cutout</strong>: Regularización espacial, fácil de implementar, mejora consistente.</li>
+<li><strong>Mixup</strong>: Suaviza la frontera de decisión, mejora calibración, reduce overfitting.</li>
+<li><strong>Cutmix</strong>: Más informativo que Mixup — forza al modelo a aprender de parches.</li>
+<li><strong>TTA</strong>: +1-3% accuracy en producción sin costo de entrenamiento.</li>
+</ul>
 <hr>
 <h2>💡 Tips Para Producción</h2>
 <ul>
-<li>Monitorea las métricas relevantes durante el entrenamiento</li>
-<li>Usa Data Augmentation de acuerdo a la arquitectura de tu red</li>
-<li>No todas las técnicas sirven para todos los problemas</li>
+<li><strong>Siempre aplica Normalize al final</strong> — no lo olvides o lasactivations van a explotar</li>
+<li><strong>Audit tus augmentations</strong>: visualiza una imagen original vs augmentada para verificar que el label sigue teniendo sentido</li>
+<li><strong>TTA no es gratis</strong>: multiplica el tiempo de inferencia por n_augmentations. En producciónlatency-sensitive, usa 3-5 augmentations, no 20</li>
+<li><strong>Albumentations &gt; torchvision</strong> para speed cuando tienes pipelines de datos pesados</li>
+<li><strong>Mixup + Cutmix</strong> no se usan juntos normalmente — elige uno. En mis experimentos, Cutmix suele ganar en ImageNet, Mixup en datasets pequeños</li>
 </ul>
 <hr>
-<p><em>¡Eso es todo por hoy! Nos vemos mañana en el Día 105.</em></p>
-
-  </article>
+<h2>📊 Resumen</h2>
+<p>Data augmentation es probablemente la técnica con mejor costo-beneficio en todo el deep learning. No requiere más datos, no aumenta el costo de entrenamiento (solo ligeramente), y puede mejorar dramáticamente la generalización de tu modelo. La clave está en entender qué operaciones preservan el label en tu dominio específico:</p>
+<ul>
+<li>En imagenet natural: casi cualquier augmentación funciona</li>
+<li>En medical imaging: conservative, domain-specific augmentations only</li>
+<li>En texto/NLP: back-translation, synonym replacement, no random word dropout</li>
+<li>En audio: time stretch, pitch shift, noise injection — no random silencing</li>
+</ul>
+<p>Y no olvides TTA en producción. Es gratis (en términos de entrenamiento) y te da ese boost extra que puede marcar la diferencia entre un modelo aceptable y uno excelente.</p>
+<p>Eso es todo por hoy, parcero. Mañana en el Día 105 seguimos con más. ¡Hasta entonces!</p>
+<p><em>💻 #365DaysOfAI — Día 104 por Fabián Rodríguez</em></p>
+</article>
 
   <script>
     document.getElementById('themeToggle').addEventListener('click', function() {
