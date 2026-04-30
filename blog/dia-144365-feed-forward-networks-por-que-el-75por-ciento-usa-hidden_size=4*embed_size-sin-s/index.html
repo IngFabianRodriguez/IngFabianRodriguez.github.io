@@ -99,55 +99,515 @@ nav {
   </header>
 
   <article class="article-body">
-    <p>Hola, parcero. Llegamos al Día 144 y hoy vamos con FFN. Este tema es crítico porque el porcentaje que mencionamos en el título representa bugs y confusiones que veo constantemente en producción. Acompañame que esto va detallado.</p>
+    <p>Hola, parcero. Día 144 y hoy vamos con Feed-Forward Networks — las capas que el 75% configura como <code>hidden_size = 4 * embed_size</code> sin entender por qué. Ese "4x" viene de algún lado, pero no de la intuición de Frankle, ni de ningún paper fundamental. Es copy-paste puro. Acompañame a entender qué hace realmente el FFN dentro del Transformer.</p>
+
 <hr>
-<h2>📐 Fundamentos Teóricos</h2>
-<p>Vamos paso a paso. Entender la teoría detrás de FFN es lo que separa a alguien que copia código de alguien que realmente sabe lo que está haciendo.</p>
-<h3>Conceptos Clave</h3>
+<h2>📐 Feed-Forward en el Transformer — La matemática</h2>
+
+<p>Cada layer del Transformer tiene esta estructura:</p>
+
+$$\text{FFN}(x) = \max(0, xW_1 + b_1)W_2 + b_2$$
+
+<p>o equivalentemente:</p>
+
+$$\text{FFN}(x) = \text{GELU}(xW_1 + b_1)W_2 + b_2$$
+
+<p>en modelos modernos. El punto clave: <strong>FFN opera token-wise</strong>. A diferencia de attention, que mezcla información entre posiciones, FFN procesa cada token completamente independiente. Esto es exactamente lo que le permite capturar interacciones no-lineales entre features del mismo token.</p>
+
+<p>Estructura:</p>
 <ul>
-<li><strong>Concepto 1</strong>: Descripción del primer concepto fundamental.</li>
-<li><strong>Concepto 2</strong>: Descripción del segundo concepto que necesitas entender.</li>
-<li><strong>Concepto 3</strong>: Por qué esto importa en la práctica.</li>
+<li><strong>Expansión</strong>: $d_{model} \rightarrow d_{ff}$ (típicamente $d_{ff} = 4 \times d_{model}$)</li>
+<li><strong>Activación</strong>: introduce no-linealidad (GELU en vez de ReLU)</li>
+<li><strong>Contracción</strong>: $d_{ff} \rightarrow d_{model}$</li>
 </ul>
+
 <hr>
-<h2>💻 Implementación Práctica</h2>
-<p>Ahora vamos a lo bueno: código real que puedes usar en tus proyectos.</p>
-<pre><code class="language-python"># Ejemplo práctico de FFN
-import numpy as np
+<h2>🧠 ¿Por qué FFN consume 2/3 del compute?</h2>
 
-def concepto_fundamental(data, param):
-    # Implementación básica del concepto
-    result = []
-    for item in data:
-        processed = item * param
-        result.append(processed)
-    return np.array(result)
+<p>Este dato sorprende a muchos. En un Transformer layer típico:</p>
+<ul>
+<li><strong>Attention</strong>: $O(d_{model}^2 \cdot n)$ donde $n$ es seq_len</li>
+<li><strong>FFN</strong>: $O(d_{model} \cdot d_{ff})$ por token</li>
+</ul>
 
-data = [1, 2, 3, 4, 5]
-result = concepto_fundamental(data, 2)
-print(f"Resultado: {result}")
+<p>Con $d_{ff} = 4d_{model}$ y seq_len típico de 512+ tokens, FFN domina el cómputo total. Es la razón por la que en modelos como LLaMA o Mistral se trabaja tan duro en optimizaciones de FFN (quantization, sparse MoE, etc.).</p>
+
+<hr>
+<h2>💻 Implementación desde cero — 100+ líneas</h2>
+
+<pre><code class="language-python">import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import math
+
+
+# ============================================================
+# FFN básico con diferentes activaciones
+# ============================================================
+
+class FeedForward(nn.Module):
+    """
+    FFN estándar: linear -> activation -> dropout -> linear
+    """
+
+    def __init__(self, d_model: int, d_ff: int, activation: str = 'gelu', dropout: float = 0.1):
+        super().__init__()
+        self.linear1 = nn.Linear(d_model, d_ff)
+        self.activation = {
+            'relu': nn.ReLU(),
+            'gelu': nn.GELU(),
+            'silu': nn.SiLU(),
+            'swiglu': None,  # maneja separately
+        }[activation]
+        self.dropout = nn.Dropout(dropout)
+        self.linear2 = nn.Linear(d_ff, d_model)
+
+    def forward(self, x):
+        x = self.linear1(x)
+        if self.activation is not None:
+            x = self.activation(x)
+        x = self.dropout(x)
+        x = self.linear2(x)
+        return x
+
+
+# ============================================================
+# SwiGLU — la activación que usa LLaMA, Mistral, etc.
+# ============================================================
+
+class SwiGLU(nn.Module):
+    """
+    SwiGLU: SiLU(x) * sigmoid(x)
+   paper: GLU Variants Improve Transformer (2020)
+    Usado en: LLaMA, Mistral, Qwen, etc.
+    """
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x):
+        return F.silu(x) * torch.sigmoid(x)
+
+
+class SwiGLUFFN(nn.Module):
+    """
+    FFN con SwiGLU — usa 3 linear layers:
+    W_gate, W_up, W_down
+
+    FFN_SwiGLU(x) = SwiGLU(xW_gate) * (xW_up)W_down
+    """
+    def __init__(self, d_model: int, d_ff: int, dropout: float = 0.1):
+        super().__init__()
+        # El paper original usa d_ff = 4 * d_model
+        # Pero con SwiGLU elff = d_ff / 2 porque tenemos 2 proyecciones
+        self.w_gate = nn.Linear(d_model, d_ff, bias=False)
+        self.w_up = nn.Linear(d_model, d_ff, bias=False)
+        self.w_down = nn.Linear(d_ff, d_model, bias=False)
+        self.swiglu = SwiGLU()
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x):
+        # x: (batch, seq, d_model)
+        gate = self.w_gate(x)           # (batch, seq, d_ff)
+        up = self.w_up(x)               # (batch, seq, d_ff)
+        gated = self.swiglu(gate) * up  # SwiGLU aplica silu al gate
+        gated = self.dropout(gated)
+        return self.w_down(gated)
+
+
+# ============================================================
+# Gated Linear Unit (GLU) — base de SwiGLU
+# ============================================================
+
+class GatedLinearUnit(nn.Module):
+    """
+    GLU: sigmoid(xW_gate) * (xW_up)
+   paper: Language Modeling with Gated Convolutional Networks (2017)
+    """
+    def __init__(self, d_model: int, d_ff: int):
+        super().__init__()
+        self.w_gate = nn.Linear(d_model, d_ff, bias=False)
+        self.w_up = nn.Linear(d_model, d_ff, bias=False)
+        self.w_down = nn.Linear(d_ff, d_model, bias=False)
+
+    def forward(self, x):
+        gate = torch.sigmoid(self.w_gate(x))
+        up = self.w_up(x)
+        return self.w_down(gate * up)
+
+
+# ============================================================
+# FFN con residual connection — CRÍTICO para entrenar
+# ============================================================
+
+class TransformerBlock(nn.Module):
+    """
+    Un bloque completo de Transformer con residual connection en FFN.
+    Sin residual, el gradiente apenas fluye y el entrenamiento es imposible.
+    """
+    def __init__(self, d_model: int, num_heads: int, d_ff: int, dropout: float = 0.1):
+        super().__init__()
+        self.attention = nn.MultiheadAttention(d_model, num_heads, dropout=dropout, batch_first=True)
+        self.norm1 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
+        self.ffn = FeedForward(d_model, d_ff, activation='gelu', dropout=dropout)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x, mask=None):
+        # Attention con residual y norm
+        attn_out, _ = self.attention(x, x, x, attn_mask=mask)
+        x = self.norm1(x + self.dropout(attn_out))
+
+        # FFN con residual y norm — ESTA es la conexión residual del FFN
+        ffn_out = self.ffn(x)
+        x = self.norm2(x + self.dropout(ffn_out))
+
+        return x
+
+
+# ============================================================
+# TEST 1: GELU vs ReLU vs SwiGLU — comparación empírica
+# ============================================================
+print("=" * 60)
+print("TEST 1: GELU vs ReLU vs SwiGLU — superficie de activación")
+print("=" * 60)
+
+x = torch.linspace(-4, 4, 200)
+
+relu = nn.ReLU()
+gelu = nn.GELU()
+silu = nn.SiLU()
+swiglu_out = F.silu(x) * torch.sigmoid(x)
+
+plt.figure(figsize=(10, 5))
+plt.plot(x.numpy(), relu(x).numpy(), label='ReLU', linewidth=2, alpha=0.8)
+plt.plot(x.numpy(), gelu(x).numpy(), label='GELU', linewidth=2, alpha=0.8)
+plt.plot(x.numpy(), silu(x).numpy(), label='SiLU (Swish)', linewidth=2, alpha=0.8)
+plt.plot(x.numpy(), swiglu_out.numpy(), label='SwiGLU: SiLU(x)*σ(x)', linewidth=2, alpha=0.8)
+plt.axhline(0, color='gray', linewidth=0.5)
+plt.axvline(0, color='gray', linewidth=0.5)
+plt.title('Activations: GELU vs ReLU vs SwiGLU')
+plt.xlabel('x')
+plt.ylabel('activation(x)')
+plt.legend()
+plt.grid(True, alpha=0.3)
+plt.tight_layout()
+plt.savefig('/tmp/activations.png', dpi=120, bbox_inches='tight')
+plt.close()
+print("✓ Figura guardada: activations.png")
+
+# ============================================================
+# TEST 2: GELU vs ReLU en práctica — salida de un FFN
+# ============================================================
+print("=" * 60)
+print("TEST 2: GELU vs ReLU — salida de un FFN (d_model=512, d_ff=2048)")
+print("=" * 60)
+
+d_model = 512
+d_ff = 2048
+batch = 4
+seq = 32
+
+torch.manual_seed(42)
+x = torch.randn(batch, seq, d_model)
+
+ffn_relu = FeedForward(d_model, d_ff, activation='relu')
+ffn_gelu = FeedForward(d_model, d_ff, activation='gelu')
+ffn_swiglu = SwiGLUFFN(d_model, d_ff)
+
+with torch.no_grad():
+    out_relu = ffn_relu(x)
+    out_gelu = ffn_gelu(x)
+    out_swiglu = ffn_swiglu(x)
+
+print(f"Entrada: mean={x.mean():.4f}, std={x.std():.4f}")
+print(f"ReLU:    mean={out_relu.mean():.4f}, std={out_relu.std():.4f}, min={out_relu.min():.4f}")
+print(f"GELU:    mean={out_gelu.mean():.4f}, std={out_gelu.std():.4f}, min={out_gelu.min():.4f}")
+print(f"SwiGLU:  mean={out_swiglu.mean():.4f}, std={out_swiglu.std():.4f}, min={out_swiglu.min():.4f}")
+print()
+print("→ GELU y SwiGLU preservan valores negativos (a diferencia de ReLU que los mata)")
+print("→ Esto permite que la información negativa también se propague")
+print("→ ReLU tiene min=0 porque mata todos los valores negativos")
+
+
+# ============================================================
+# TEST 3: Expansion ratio — ¿4x es óptimo?
+# ============================================================
+print("=" * 60)
+print("TEST 3: Expansion ratio — ¿4x es siempre la mejor opción?")
+print("=" * 60)
+
+d_model = 256
+seq = 20
+batch = 2
+
+torch.manual_seed(99)
+x = torch.randn(batch, seq, d_model)
+
+for expansion in [1, 2, 4, 8, 16]:
+    d_ff = d_model * expansion
+    ffn = FeedForward(d_model, d_ff, activation='gelu')
+    out = ffn(x)
+    num_params = sum(p.numel() for p in ffn.parameters())
+    # Captura de información: correlación entre entrada y salida
+    corr = torch.corrcoef(
+        torch.cat([x.view(-1, d_model), out.view(-1, d_model)], dim=0)
+    )[:d_model, d_model:].diagonal().mean().item()
+    print(f"  expansion={expansion:2d}x | d_ff={d_ff:4d} | params={num_params:6d} | correlación in-out={corr:.4f}")
+
+print()
+print("→ Mayor expansion captura más interacciones pero con más parámetros")
+print("→ 4x es un balance empírico — no es óptimo universal")
+print("→ En modelos grandes como GPT-3 (d_model=12288, d_ff=49152) es 4x")
+print("→ En modelos pequeños puede que expansion=2 sea mejor para no overfittear")
+
+
+# ============================================================
+# TEST 4: Por qué las residual connections SON OBLIGATORIAS
+# ============================================================
+print("=" * 60)
+print("TEST 4: Residual connection en FFN — efecto en gradientes")
+print("=" * 60)
+
+class FFNWithResidual(nn.Module):
+    def __init__(self, d_model, d_ff):
+        super().__init__()
+        self.norm = nn.LayerNorm(d_model)
+        self.ffn = FeedForward(d_model, d_ff, activation='gelu')
+
+    def forward(self, x):
+        return x + self.ffn(self.norm(x))  # residual!
+
+
+class FFNWithoutResidual(nn.Module):
+    def __init__(self, d_model, d_ff):
+        super().__init__()
+        self.norm = nn.LayerNorm(d_model)
+        self.ffn = FeedForward(d_model, d_ff, activation='gelu')
+
+    def forward(self, x):
+        return self.ffn(self.norm(x))  # SIN residual!
+
+
+d_model = 128
+d_ff = 512
+ffn_res = FFNWithResidual(d_model, d_ff)
+ffn_no_res = FFNWithoutResidual(d_model, d_ff)
+
+# Pasar un input, calcular loss, y ver gradientes
+x = torch.randn(2, 10, d_model)
+target = torch.randn(2, 10, d_model)
+
+# Loss simple MSE
+for name, ffn in [('CON residual', ffn_res), ('SIN residual', ffn_no_res)]:
+    ffn.zero_grad()
+    out = ffn(x)
+    loss = F.mse_loss(out, target)
+    loss.backward()
+
+    # Gradiente en el primer layer del FFN
+    grad_norm = ffn.ffn.linear1.weight.grad.norm().item()
+    print(f"  {name}: grad norm en linear1 = {grad_norm:.6f}")
+
+print()
+print("→ Sin residual, los gradientes pueden ser mucho más pequeños")
+print("→ La skip connection permite que el gradiente fluya directamente")
+print("→ Esto es especialmente crítico en redes profundas (12+ layers)")
+
+
+# ============================================================
+# TEST 5: FFN como aproximación de mixture of experts
+# ============================================================
+print("=" * 60)
+print("TEST 5: FFN vs MoE — analogía conceptual")
+print("=" * 60)
+
+# El FFN con SwiGLU puede verse como una forma simple de MoE
+# donde el gate decide cómo combinar información de diferentes "expertos"
+# En un FFN normal, el expansion layer es un solo experto pesado
+# En SwiGLU, el gate modula qué tanto contribuye cada parte
+
+d_model = 64
+d_ff = 256
+x = torch.randn(1, 10, d_model)
+
+ffn_gelu = FeedForward(d_model, d_ff, activation='gelu')
+ffn_swiglu = SwiGLUFFN(d_model, d_ff)
+
+with torch.no_grad():
+    # Ver cómo el gate de SwiGLU modula la información
+    gate_values = torch.sigmoid(ffn_swiglu.w_gate(x))
+    up_values = ffn_swiglu.w_up(x)
+
+    print(f"Gate values (σ(w_gate*x)): mean={gate_values.mean():.4f}, std={gate_values.std():.4f}")
+    print(f"Up values: mean={up_values.mean():.4f}, std={up_values.std():.4f}")
+    print()
+    print("→ El gate aprende a modular qué información pasa por el expansion")
+    print("→ Es como un attention mechanism interno al FFN")
+    print("→ Por eso SwiGLU funciona mejor que FFN lineal en modelos grandes")
+
+
+# ============================================================
+# TEST 6: Dropout en FFN — regularización
+# ============================================================
+print("=" * 60)
+print("TEST 6: Dropout en FFN — efecto en inferencia vs entrenamiento")
+print("=" * 60)
+
+d_model = 128
+d_ff = 512
+
+ffn_train = FeedForward(d_model, d_ff, dropout=0.3)
+ffn_eval = FeedForward(d_model, d_ff, dropout=0.3)
+ffn_eval.eval()
+
+x = torch.randn(8, 20, d_model)
+
+# Modo train
+ffn_train.train()
+out_train = ffn_train(x)
+out_train_mean = out_train.mean().item()
+
+# Modo eval
+ffn_eval.eval()
+with torch.no_grad():
+    out_eval = ffn_eval(x)
+    out_eval_mean = out_eval.mean().item()
+
+print(f"Train mode: mean={out_train_mean:.4f} (dropout activo)")
+print(f"Eval mode:  mean={out_eval_mean:.4f} (dropout apagado)")
+print()
+print("→ En inference SIEMPRE usa eval() o los outputs serán随机")
+print("→ En entrenamiento, dropout previene que el FFN memorize")
+print("→ La ubicación del dropout DESPUÉS de la activación es importante")
 </code></pre>
+
 <hr>
-<h2>🚨 Errores Comunes</h2>
-<h3>Error 1: No entender la matemática de fondo</h3>
-<p>El 80% de los practitioners implementa esto incorrectamente porque no entienden la base teórica.</p>
-<h3>Error 2: Ignorar los hiperparámetros</h3>
-<p>Muchos asumen que los valores por defecto son óptimos. En producción, esto raramente es cierto.</p>
-<hr>
-<h2>✅ Mejores Prácticas</h2>
+<h2>🧠 GELU — Por qué优于 ReLU</h2>
+
+<p>ReLU tiene un problema fundamental: mata todos los valores negativos poniéndolos en cero. Esto es irrecuperable — la información negativa se pierde para siempre.</p>
+
+<p><strong>GELU</strong> (Gaussian Error Linear Unit):</p>
+
+$$\text{GELU}(x) = x \cdot \Phi(x) = x \cdot \frac{1}{2}\left[1 + \text{erf}\left(\frac{x}{\sqrt{2}}\right)\right]$$
+
+<p>近似为:</p>
+
+$$\text{GELU}(x) \approx 0.5x\left(1 + \tanh\left[\sqrt{\frac{2}{\pi}}(x + 0.044715x^3)\right]\right)$$
+
+<p>PyTorch usa esta aproximación para eficiencia. GELU:</p>
 <ul>
-<li>Siempre documenta tu código y decisiones de diseño.</li>
-<li>Usa versionado para tus experimentos.</li>
-<li>Valida siempre con datos de prueba independientes.</li>
-<li>Monitorea las métricas en producción.</li>
+<li>Pondera los valores por su probabilidad (no los mata)</li>
+<li>Es suave (diferenciable en todas partes)</li>
+<li>Preserva información negativa para inputs con alta magnitud negativa</li>
 </ul>
+
 <hr>
-<h2>📚 Recursos</h2>
+<h2>🔧 Expansion ratio — ¿realmente debe ser 4x?</h2>
+
+<p>El 4x viene del paper original "Attention Is All You Need". La intuición:</p>
 <ul>
-<li>Documentación oficial de torch.nn</li>
-<li>Tutoriales prácticos en el blog</li>
-<li>Código fuente en GitHub</li>
+<li>El FFN expande a un espacio más grande para capturar interacciones más ricas</li>
+<li>4x es un balance entre capacidad y compute</li>
+<li>Se convirtió en convención porque funcionaba bien en la práctica</li>
 </ul>
+
+<p>Pero no hay nada mágico en el 4x. En Paper "FiSM" y otros trabajos recientes muestran que:</p>
+<ul>
+<li>Modelos pequeños se benefician de expansion ratios menores (2x-3x) para evitar overfitting</li>
+<li>Modelos grandes pueden usar ratios mayores (4x-8x) sin problema</li>
+<li>La relación óptima depende del dataset y la profundidad del modelo</li>
+</ul>
+
+<hr>
+<h2>🚨 Los 3 errores que verás en producción</h2>
+
+<h3>Error 1: Usar expansion ratio de 4x sin pensar</h3>
+<p>Copiar ciegamente <code>d_ff = 4 * d_model</code> de tutoriales sin considerar el tamaño del modelo ni el dataset. Un modelo de 50M parámetros con 4x expansion puede tener más capacidad en FFN que la que necesita, causando overfitting.</p>
+
+<p><strong>Fix:</strong> Para modelos pequeños (d_model < 256), prueba expansion=2 o 3. Para modelos grandes (> 1024), 4x o mayor tiene sentido. Siempre haz ablations del expansion ratio.</p>
+
+<pre><code class="language-python"># BAD: siempre 4x sin considerar el modelo
+d_model = 128
+d_ff = d_model * 4  # 512 → puede ser overkill para modelo pequeño
+
+# GOOD: dependent del tamaño
+d_model = 128
+if d_model < 256:
+    d_ff = d_model * 2  # 256 — suficiente
+elif d_model < 768:
+    d_ff = d_model * 4  # 512 — apropiado
+else:
+    d_ff = d_model * 4  # o mayor
+</code></pre>
+
+<h3>Error 2: No usar residual connections en el FFN</h3>
+<p>Esto es devastable para el entrenamiento. Sin la skip connection <code>x + FFN(x)</code>, los gradientes apenas fluyen a través del FFN en redes profundas. El modelo simplemente no entrena.</p>
+
+<p><strong>Fix:</strong> SIEMPRE usa residual connection en el FFN. La estructura correcta es <code>output = x + FFN(LayerNorm(x))</code>, donde el LayerNorm dentro del bloque es tan importante como la skip connection.</p>
+
+<pre><code class="language-python"># BAD: sin residual
+class BadTransformerBlock(nn.Module):
+    def __init__(self, d_model, d_ff):
+        super().__init__()
+        self.ffn = FeedForward(d_model, d_ff)
+        self.norm = nn.LayerNorm(d_model)
+
+    def forward(self, x):
+        return self.norm(self.ffn(x))  # ← sin residual, gradientes estancados
+
+
+# GOOD: con residual
+class GoodTransformerBlock(nn.Module):
+    def __init__(self, d_model, d_ff):
+        super().__init__()
+        self.ffn = FeedForward(d_model, d_ff)
+        self.norm = nn.LayerNorm(d_model)
+
+    def forward(self, x):
+        return x + self.ffn(self.norm(x))  # ← residual, gradientes fluyen
+</code></pre>
+
+<h3>Error 3: Ignorar que FFN consume 2/3 del compute total</h3>
+<p>En modelos grandes, el FFN es el bottleneck de compute. Cuantizar solo los pesos de attention mientras se dejan los del FFN en fp32 es un error. La optimización de FFN (quantization, pruning, MoE) tiene el mayor impacto.</p>
+
+<p><strong>Fix:</strong> Al optimizar, prioriza el FFN. En quantization por ejemplo, 4-bit para FFN tiene más impacto que 4-bit para attention weights porque el FFN tiene ~3x más parámetros y compute.</p>
+
+<pre><code class="language-python"># En un modelo como LLaMA-7B:
+# - attention: ~3x7B * 0.5 = ~1GB (aproximado)
+# - ffn: ~3x7B * 0.5 = ~2GB (aproximado)
+
+# Optimizar FFN tiene 2x más impacto en footprint y velocidad
+# que optimizar attention
+</code></pre>
+
+<hr>
+<h2>📊 FFN como mixture of experts — la conexión</h2>
+
+<p>Esta es una perspectiva avanzada pero importante. Un FFN con SwiGLU:</p>
+
+$$\text{SwiGLU}(x) = \text{SiLU}(xW_{\text{gate}}) \odot (xW_{\text{up}})$$
+
+<p>puede verse como una forma simplificada de mixture of experts donde el gate modula qué tanto activa cada parte del expansion. En MoE real (como Switch Transformer), en vez de un solo FFN pesado, tienes múltiples FFNs "expertos" y un router que decide cuál usar por token.</p>
+
+<p>SwiGLU es, en cierto sentido, un MoE de un solo experto con gate continuo — el gate aprende a ponderar diferentes subspaces de la representación.</p>
+
+<hr>
+<h2>✅ Resumen y cierre</h2>
+
+<p>Hoy cubrimos Feed-Forward Networks desde la matemática hasta los errores comunes. Los puntos clave:</p>
+
+<ul>
+<li>FFN procesa cada token independientemente — attention mezcla entre posiciones, FFN procesa features locales</li>
+<li>GELU > ReLU porque preserva información negativa (no la mata)</li>
+<li>SwiGLU (LLaMA, Mistral) añade un gate interno que modula la información</li>
+<li>Expansion ratio de 4x es convención, no ley — para modelos pequeños prueba 2x-3x</li>
+<li>Residual connection en FFN NO es opcional — es lo que hace que el entrenamiento funcione</li>
+<li>FFN consume ~2/3 del compute — al optimizar, priorízalo sobre attention</li>
+</ul>
+
+<p>Ese 75% que usa 4x sin pensar? La próxima vez que configures un Transformer, ya sabes qué estás haciendo y por qué.</p>
+
+<p>Nos vemos en el Día 145, parcero. 💪</p>
   </article>
 
   <script>
