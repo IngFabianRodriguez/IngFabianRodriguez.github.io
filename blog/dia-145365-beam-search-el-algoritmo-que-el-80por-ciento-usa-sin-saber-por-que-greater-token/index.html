@@ -99,55 +99,444 @@ nav {
   </header>
 
   <article class="article-body">
-    <p>Hola, parcero. Llegamos al Día 145 y hoy vamos con BeamSearch. Este tema es crítico porque el porcentaje que mencionamos en el título representa bugs y confusiones que veo constantemente en producción. Acompañame que esto va detallado.</p>
+<p>Hola, parcero. Llegamos al Día 145 y hoy vamos con Beam Search. Este algoritmo es el pan de cada día en traducción automática, resumen de textos y cualquier tarea seq2seq. El problema es que el 80% lo usa con beam_width=1 — eso no es Beam Search, es greedy search disfrazado. Acompañame que esto va detallado.</p>
+
 <hr>
 <h2>📐 Fundamentos Teóricos</h2>
-<p>Vamos paso a paso. Entender la teoría detrás de BeamSearch es lo que separa a alguien que copia código de alguien que realmente sabe lo que está haciendo.</p>
-<h3>Conceptos Clave</h3>
+
+<p>Beam Search es un algoritmo de búsqueda aproximada que balancea calidad vs. compute. En lugar de explorar TODAS las secuencias posibles (exponencial), solo mantiene las <code>K</code> mejores candidatos — las <strong>beams</strong>.</p>
+
+<h3>La matemática detrás</h3>
+
+<p>En cada paso <code>t</code>, tenemos <code>K</code> secuencias parciales. Para cada una, calculamos el score:</p>
+
+<p class="katex-display">score(y_1, ..., y_t) = \sum_{i=1}^{t} \log P(y_i | y_1, ..., y_{i-1})</p>
+
+<p>Luego seleccionamos las <code>K</code> con mayor score acumulado. El truco está en que se trabaja en log-space para evitar underflow numérico.</p>
+
+<h3>Beam Width: el trade-off silencioso</h3>
+
 <ul>
-<li><strong>Concepto 1</strong>: Descripción del primer concepto fundamental.</li>
-<li><strong>Concepto 2</strong>: Descripción del segundo concepto que necesitas entender.</li>
-<li><strong>Concepto 3</strong>: Por qué esto importa en la práctica.</li>
+<li><strong>beam=1</strong>: Greedy — solo explora un camino. Rápido pero suboptimal.</li>
+<li><strong>beam=3-5</strong>: Balance típico para traducción. Mejora notable sobre greedy.</li>
+<li><strong>beam=10+</strong>: Para tareas que requieren diversidad. Cuidado con la calidad vs. diversidad.</li>
 </ul>
+
+<h3>Length Normalization</h3>
+
+<p>Sin normalization, Beam Search prefiere secuencias cortas porque acumulan menos penalización de log-probabilidad negativa:</p>
+
+<p class="katex-display">score_{norm}(y) = \frac{score(y)}{|y|^\alpha}</p>
+
+<p>Donde <code>α ∈ [0.6, 0.7]</code> es el estándar según Google Neural Machine Translation. Esto evita que "the" gane sobre "the cat sat on the mat" solo porque tiene menos tokens.</p>
+
+<h3>Coverage Penalty</h3>
+
+<p>Para tareas donde cada token de entrada debe ser "cubierto" (e.g., resumen), se añade:</p>
+
+<p class="katex-display">score_{final} = score_{norm}(y) + \beta \cdot \sum_{i=1}^{|x|} \log(\max(c_i, \epsilon))</p>
+
+<p>Donde <code>c_i</code> es la cobertura del token <code>i</code> de entrada. Esto reduce la repetición y mejora la cobertura.</p>
+
 <hr>
-<h2>💻 Implementación Práctica</h2>
-<p>Ahora vamos a lo bueno: código real que puedes usar en tus proyectos.</p>
-<pre><code class="language-python"># Ejemplo práctico de BeamSearch
-import numpy as np
+<h2>💻 Implementación Práctica en PyTorch</h2>
 
-def concepto_fundamental(data, param):
-    # Implementación básica del concepto
-    result = []
-    for item in data:
-        processed = item * param
-        result.append(processed)
-    return np.array(result)
+<p>Vamos con código real que podés usar. Esta implementación incluye beam search básico, con length normalization, y comparación con greedy y sampling.</p>
 
-data = [1, 2, 3, 4, 5]
-result = concepto_fundamental(data, 2)
-print(f"Resultado: {result}")
+<pre><code class="language-python">import torch
+import torch.nn.functional as F
+import math
+from typing import List, Tuple
+
+# ============================================================
+# BEAM SEARCH DESDE CERO — Día 145 #365DaysOfAI
+# Fabián Rodríguez @IngFabianRodriguez
+# ============================================================
+
+class SimpleDecoder(torch.nn.Module):
+    """Decoder simulado para demostrar beam search.
+    En producción usarías tu modelo real (LLaMA, T5, etc.)
+    """
+    def __init__(self, vocab_size: int, embed_dim: int = 128, hidden_dim: int = 256):
+        super().__init__()
+        self.vocab_size = vocab_size
+        self.embed = torch.nn.Embedding(vocab_size, embed_dim)
+        self.lstm = torch.nn.LSTM(embed_dim, hidden_dim, batch_first=True)
+        self.fc = torch.nn.Linear(hidden_dim, vocab_size)
+        
+    def forward(self, x: torch.Tensor, hidden=None) -> Tuple[torch.Tensor, tuple]:
+        emb = self.embed(x)
+        out, hidden = self.lstm(emb, hidden)
+        logits = self.fc(out)
+        return logits, hidden
+    
+    def get_log_probs(self, token_ids: torch.Tensor, hidden=None) -> Tuple[torch.Tensor, tuple]:
+        """Retorna log-probabilidades del próximo token."""
+        logits, hidden = self.forward(token_ids, hidden)
+        log_probs = F.log_softmax(logits[:, -1:], dim=-1)
+        return log_probs, hidden
+
+
+def beam_search(
+    model: torch.nn.Module,
+    start_token: int,
+    end_token: int,
+    beam_width: int = 5,
+    max_len: int = 50,
+    length_penalty: float = 0.6,
+    device: str = "cpu"
+) -> List[Tuple[List[int], float]]:
+    """
+    Beam Search con length normalization.
+    
+    Args:
+        model: Decoder con get_log_probs()
+        start_token: Token de inicio (e.g., 2)
+        end_token: Token de fin (e.g., 3)
+        beam_width: Número de beams a mantener
+        max_len: Longitud máxima de generación
+        length_penalty: α para length normalization (0.6-0.7 típico)
+        device: cpu o cuda
+    
+    Returns:
+        Lista de (secuencia_tokens, score_normalizado)
+    """
+    model.eval()
+    
+    # Estado inicial: una sola beam con solo el start_token
+    # beams: list of (token_sequence, log_prob_sum, hidden_state)
+    beams = [(start_token,), 0.0, None]
+    completed = []
+    
+    with torch.no_grad():
+        for step in range(max_len):
+            all_candidates = []
+            
+            for seq, score, hidden in beams:
+                # Si ya terminó, agregar a completados
+                if seq[-1] == end_token:
+                    completed.append((seq, score))
+                    continue
+                    
+                # Preparar input para el modelo
+                seq_tensor = torch.tensor([[seq[-1]]], dtype=torch.long).to(device)
+                
+                # Obtener log-probs del próximo token
+                if hidden is not None:
+                    hidden = tuple(h.to(device) for h in hidden)
+                    
+                log_probs, new_hidden = model.get_log_probs(seq_tensor, hidden)
+                log_probs = log_probs.squeeze(0)  # (vocab_size,)
+                
+                # Top-k tokens para esta beam
+                topk_log_probs, topk_indices = log_probs.topk(beam_width * 2)
+                
+                for log_p, token_id in zip(topk_log_probs, topk_indices):
+                    new_seq = seq + (token_id.item(),)
+                    new_score = score + log_p.item()
+                    all_candidates.append((new_seq, new_score, new_hidden))
+            
+            if not all_candidates:
+                break
+                
+            # ORDENAR por score normalizado (length normalized)
+            # Esto es LO QUE DIFERENCIA beam search de greedy
+            normalized = [
+                (seq, score / (len(seq) ** length_penalty), hidden)
+                for seq, score, hidden in all_candidates
+            ]
+            normalized.sort(key=lambda x: x[1], reverse=True)
+            
+            # Mantener solo las top-K beams
+            beams = normalized[:beam_width]
+            
+            # Si todas las beams terminaron, parar
+            if all(seq[-1] == end_token for seq, _, _ in beams):
+                break
+    
+    # Agregar beams incompletas a completados
+    for seq, score, _ in beams:
+        if seq[-1] != end_token:
+            completed.append((seq, score / (len(seq) ** length_penalty)))
+    
+    # Ordenar por score normalizado
+    completed.sort(key=lambda x: x[1], reverse=True)
+    return completed
+
+
+def greedy_search(
+    model: torch.nn.Module,
+    start_token: int,
+    end_token: int,
+    max_len: int = 50,
+    device: str = "cpu"
+) -> Tuple[List[int], float]:
+    """Greedy search: siempre toma el token con mayor probabilidad."""
+    model.eval()
+    seq = [start_token]
+    total_log_prob = 0.0
+    
+    with torch.no_grad():
+        hidden = None
+        for _ in range(max_len):
+            seq_tensor = torch.tensor([[seq[-1]]], dtype=torch.long).to(device)
+            log_probs, hidden = model.get_log_probs(seq_tensor, hidden)
+            log_probs = log_probs.squeeze(0)
+            
+            top_idx = log_probs.argmax().item()
+            top_log_prob = log_probs[top_idx].item()
+            
+            if top_idx == end_token:
+                total_log_prob += top_log_prob
+                break
+                
+            seq.append(top_idx)
+            total_log_prob += top_log_prob
+    
+    return seq, total_log_prob / (len(seq) ** 0.6)
+
+
+def nucleus_sampling(
+    model: torch.nn.Module,
+    start_token: int,
+    end_token: int,
+    p: float = 0.9,
+    max_len: int = 50,
+    temperature: float = 1.0,
+    device: str = "cpu"
+) -> Tuple[List[int], float]:
+    """Nucleus Sampling (Top-P) — alternatica a beam search para generación abierta."""
+    model.eval()
+    seq = [start_token]
+    total_log_prob = 0.0
+    
+    with torch.no_grad():
+        hidden = None
+        for _ in range(max_len):
+            seq_tensor = torch.tensor([[seq[-1]]], dtype=torch.long).to(device)
+            logits, hidden = model.get_log_probs(seq_tensor, hidden)
+            logits = logits.squeeze(0) / temperature
+            
+            # Softmax para obtener probabilidades
+            probs = F.softmax(logits, dim=-1)
+            
+            # Nucleus: ordenar y acumular hasta llegar a p
+            sorted_probs, sorted_indices = torch.sort(probs, descending=True)
+            cumsum = torch.cumsum(sorted_probs, dim=-1)
+            
+            # Masks: incluir tokens hasta que cumsum > p
+            nucleus_mask = cumsum <= p
+            nucleus_mask = torch.cat([nucleus_mask[:-1], torch.tensor([True]).to(device)])
+            
+            # Aplicar mask y renormalizar
+            filtered_probs = probs * nucleus_mask.float()
+            filtered_probs = filtered_probs / filtered_probs.sum()
+            
+            # Sample del núcleo
+            next_token = torch.multinomial(filtered_probs, 1).item()
+            
+            if next_token == end_token:
+                break
+                
+            seq.append(next_token)
+    
+    return seq, 0.0  # Score no aplica para sampling
+
+
+def compare_strategies(
+    model: torch.nn.Module,
+    start_token: int,
+    end_token: int,
+    device: str = "cpu"
+):
+    """Compara greedy, beam search y nucleus sampling."""
+    print("\n" + "="*60)
+    print("COMPARACIÓN DE ESTRATEGIAS DE DECODIFICACIÓN")
+    print("="*60)
+    
+    # Greedy
+    greedy_seq, greedy_score = greedy_search(model, start_token, end_token, device=device)
+    print(f"\n📍 GREEDY (beam=1):")
+    print(f"   Secuencia: {greedy_seq}")
+    print(f"   Score norm: {greedy_score:.4f}")
+    
+    # Beam Search con diferentes widths
+    for bw in [3, 5, 10]:
+        beams = beam_search(model, start_token, end_token, beam_width=bw, device=device)
+        if beams:
+            best_seq, best_score = beams[0]
+            print(f"\n📍 BEAM SEARCH (width={bw}):")
+            print(f"   Mejor: {best_seq}")
+            print(f"   Score norm: {best_score:.4f}")
+            print(f"   Total candidates: {len(beams)}")
+    
+    # Nucleus Sampling
+    nucleus_seq, _ = nucleus_sampling(model, start_token, end_token, p=0.9, device=device)
+    print(f"\n📍 NUCLEUS SAMPLING (p=0.9):")
+    print(f"   Secuencia: {nucleus_seq}")
+
+
+def demo_length_normalization():
+    """Demuestra por qué length normalization es crítica."""
+    print("\n" + "="*60)
+    print("LENGTH NORMALIZATION: EL PROBLEMA DE SECUENCIAS CORTAS")
+    print("="*60)
+    
+    # Scores crudos (sin normalizar) — preferirá secuencias cortas
+    scores_raw = [
+        ([1, 2, 3], -2.5),      # Secuencia corta
+        ([1, 2, 3, 4, 5, 6], -5.0),  # Secuencia larga
+    ]
+    
+    print("\n❌ SIN LENGTH NORMALIZATION:")
+    for seq, score in scores_raw:
+        print(f"   Seq {seq}: score={score:.4f} → gana {[s for s, _ in scores_raw if _ == max(scores_raw, key=lambda x: x[1])[1]]}")
+    
+    # Scores normalizados — balance apropiado
+    alpha = 0.6
+    scores_norm = [(seq, score / (len(seq) ** alpha)) for seq, score in scores_raw]
+    
+    print("\n✅ CON LENGTH NORMALIZATION (α=0.6):")
+    for seq, score in scores_norm:
+        print(f"   Seq {seq}: score_norm={score:.4f}")
+    
+    winner = max(scores_norm, key=lambda x: x[1])
+    print(f"   → Ganador: {winner[0]} con score {winner[1]:.4f}")
+
+
+if __name__ == "__main__":
+    # Demo con modelo pequeño
+    device = "cpu"
+    VOCAB_SIZE = 100
+    START_TOKEN = 2
+    END_TOKEN = 3
+    
+    # Crear modelo dummy
+    model = SimpleDecoder(VOCAB_SIZE).to(device)
+    
+    print("🎯 BEAM SEARCH — Día 145 #365DaysOfAI")
+    print("Fabian Rodriguez @IngFabianRodriguez\n")
+    
+    # Comparar estrategias
+    compare_strategies(model, START_TOKEN, END_TOKEN, device)
+    
+    # Demo de length normalization
+    demo_length_normalization()
 </code></pre>
+
 <hr>
-<h2>🚨 Errores Comunes</h2>
-<h3>Error 1: No entender la matemática de fondo</h3>
-<p>El 80% de los practitioners implementa esto incorrectamente porque no entienden la base teórica.</p>
-<h3>Error 2: Ignorar los hiperparámetros</h3>
-<p>Muchos asumen que los valores por defecto son óptimos. En producción, esto raramente es cierto.</p>
+<h2>📊 Beam Width: Efecto Práctico</h2>
+
+<p>La siguiente tabla resume el impacto del beam width:</p>
+
+<table>
+<thead>
+<tr>
+<th>Beam Width</th>
+<th>Calidad</th>
+<th>Velocidad</th>
+<th>Uso Recomendado</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1 (Greedy)</td>
+<td>Baja</td>
+<td>Muy rápida</td>
+<td>Solo para debugging</td>
+</tr>
+<tr>
+<td>3-5</td>
+<td>Buena</td>
+<td>Rápida</td>
+<td>Traducción, resumen</td>
+</tr>
+<tr>
+<td>10-20</td>
+<td>Muy buena</td>
+<td>Media</td>
+<td>Generación estructurada</td>
+</tr>
+<tr>
+<td>50+</td>
+<td>Excelente</td>
+<td>Lenta</td>
+<td>Solo si necesitas coverage</td>
+</tr>
+</tbody>
+</table>
+
 <hr>
-<h2>✅ Mejores Prácticas</h2>
+<h2>🚨 Errores Comunes y Sus Fallas</h2>
+
+<h3>Error 1: Usar beam_width=1 y creer que es Beam Search</h3>
+
+<p><strong>El problema:</strong> La mayoría de tutoriales usan <code>num_beams=1</code> "para ser más rápidos" — eso NO es beam search, es greedy search con otro nombre. Perdés toda la ventaja del algoritmo.</p>
+
+<pre><code class="language-python"># ❌ MAL: esto es GREEDY, no beam search
+outputs = model.generate(input_ids, num_beams=1, max_length=50)
+
+# ✅ BIEN: beam search real con width=5
+outputs = model.generate(input_ids, num_beams=5, max_length=50)
+</code></pre>
+
+<p><strong>El fix:</strong> Usa <code>num_beams >= 3</code> mínimo. Si tu modelo tarda 100ms en greedy, beam=5 tarda ~500ms pero la calidad mejora significativamente en tareas de seq2seq.</p>
+
+<h3>Error 2: No usar Length Normalization</h3>
+
+<p><strong>El problema:</strong> Sin normalization, beam search produce secuencias sistemáticamente más cortas de lo óptimo porque acumula menos penalización negativa.</p>
+
+<pre><code class="language-python"># ❌ MAL: sin length normalization
+# El modelo prefiere "the" sobre "the cat sat on the mat"
+
+# ✅ BIEN: con length normalization
+outputs = model.generate(
+    input_ids,
+    num_beams=5,
+    max_length=50,
+    length_penalty=0.6  # Google NMT usa 0.6-0.7
+)
+</code></pre>
+
+<p><strong>El fix:</strong> Siempre usa <code>length_penalty</code> entre 0.6 y 0.7. Esto normaliza por <code>|y|^α</code> y balancea la preferencia por longitud.</p>
+
+<h3>Error 3: Usar Beam Search para Generación Abierta</h3>
+
+<p><strong>El problema:</strong> Beam search es determinista y explora pocas trayectorias. Para chat, storytelling o code completion abierto, esto resulta en texto repetitivo y falta de diversidad.</p>
+
+<pre><code class="language-python"># ❌ MAL: beam search para generación abierta
+# Vas a obtener texto repetitivo tipo "el el el el..."
+outputs = model.generate(input_ids, num_beams=10, max_length=200)
+
+# ✅ BIEN: nucleus sampling para generación abierta
+outputs = model.generate(
+    input_ids,
+    do_sample=True,
+    top_p=0.9,
+    temperature=0.8,
+    max_length=200
+)
+</code></pre>
+
+<p><strong>El fix:</strong> Para tareas open-ended, usa nucleus sampling (<code>top_p</code>) o temperature sampling. Beam search brilla en tareas con目标和是正确的输出 (traducción, resumen, QA estructurado).</p>
+
+<hr>
+<h2>✅ Resumen y Cierre</h2>
+
+<p>Hoy aprendimos que Beam Search no es solo "poner num_beams > 1". Es entender:</p>
+
 <ul>
-<li>Siempre documenta tu código y decisiones de diseño.</li>
-<li>Usa versionado para tus experimentos.</li>
-<li>Valida siempre con datos de prueba independientes.</li>
-<li>Monitorea las métricas en producción.</li>
+<li>El <strong>beam width</strong> controla el trade-off calidad vs. compute</li>
+<li>La <strong>length normalization</strong> evita el sesgo hacia secuencias cortas</li>
+<li>El <strong>coverage penalty</strong> mejora la cobertura en tareas de resumen</li>
+<li>Beam Search NO es para generación abierta — para eso está nucleus sampling</li>
 </ul>
-<hr>
-<h2>📚 Recursos</h2>
-<ul>
-<li>Documentación oficial de torch</li>
-<li>Tutoriales prácticos en el blog</li>
-<li>Código fuente en GitHub</li>
-</ul>
+
+<p>La próxima vez que tu modelo de traducción produzca "the the the", ya sabés qué hacer: length_penalty=0.6 y num_beams=5.</p>
+
+<p>Nos vemos mañana, parcero. 💪</p>
+
+<p><em>#365DaysOfAI #BeamSearch #PyTorch #NLP</em></p>
   </article>
 
   <script>
