@@ -118,62 +118,428 @@ nav {
   </header>
 
   <article class="article-body">
-    <h1>Tokenization - El Primer Paso Que 85% De Los Practitioners Hacen Mal</h1>
-<p>Hágale pues, parcero. Llegamos al Día 113 y hoy toca hablar de tokenization. Después de más de 10 años rompiendo redes neuronales en producción, te digo que esto es más jugoso de lo que parece. Dejá el café, acomodate, porque esto es más jugoso de lo que parece.</p>
+<p>Bueno parientes, llegamos al Día 113 y hoy vamos a hablar de algo que el 85% de los practitioners de NLP ignoran hasta que les explota en la cara: la tokenization. Así como cuando uno empieza a cocinar arroz en Colombia y lo primero que hace es medir el agua con el dedo — funciona, pero a veces queda crudo o empastelado — muchos developers entrenan modelos sin entender cómo se fragmenta su texto. Acomodá el sombrero, cogé tu Aguila fría que esto se pone bueno.</p>
+
 <hr>
-<h2>🎯 ¿Qué Es Tokenization?</h2>
-<p>En este artículo exploramos Tokenization en profundidad, con ejemplos prácticos y código.</p>
-<h3>Conceptos clave:</h3>
+<h2>🎯 ¿Qué Es Tokenization Y Por Qué Es El Primer Paso Crítico?</h2>
+
+<p>Tokenization es el proceso de convertir texto plano en secuencias de números enteros (tokens) que un modelo puede procesar. No es simplemente "dividir por espacios" — es el arte de representar el lenguaje de manera que preserva información semántica mientras maneja eficientemente el vocabulario.</p>
+
+<p>Existen tres categorías fundamentales de tokenization:</p>
+
 <ul>
-<li><strong>Definición</strong>: Tokenization es fundamental en deep learning</li>
-<li><strong>Aplicación</strong>: Se usa en arquitecturas modernas de redes neuronales</li>
-<li><strong>Por qué importa</strong>: Sin esto, muchos modelos no podrían entrenar eficientemente</li>
+<li><strong>Word-level tokenization:</strong> Cada palabra es un token. Problema: vocabulario enorme y OOV (out-of-vocabulary) guaranteed.</li>
+<li><strong>Character-level tokenization:</strong> Cada carácter es un token. Funciona para cualquier texto pero genera secuencias larguísimas.</li>
+<li><strong>Subword tokenization:</strong> La mayoría de las palabras se dividen en subpartes lógicas. Balanced approach.</li>
 </ul>
+
+<p>Los modelos modernos como BERT, GPT-2, GPT-3, LLaMA todos usan subword tokenization. Específicamente:</p>
+
+<ul>
+<li><strong>BPE (Byte Pair Encoding):</strong> Usado por GPT-2, RoBERTa, y la mayoría de modelos degenerativos.</li>
+<li><strong>WordPiece:</strong> Usado por BERT y sus variantes.</li>
+<li><strong>SentencePiece:</strong> Usado por T5, XLNet, MarianMT. Unificado y entrenado directamente sobre texto raw sin pre-tokenization.</li>
+</ul>
+
 <hr>
-<h2>📐 La Matemática Detrás De Tokenization</h2>
-<p>La matemática que hace posible la magia de Tokenization:</p>
+<h2>📐 La Matemática Detrás De BPE — El Algoritmo</h2>
+
+<p>BPE es elegante en su simplicidad. Parte de un vocabulario donde cada carácter es un token individual, y va fusionando iterativamente el par más frecuente. La función de merge se selecciona maximizando:</p>
+
+<p><code>score(c1, c2) = freq(c1c2) / (freq(c1) * freq(c2))</code></p>
+
+<p>Esta fórmula evita fusionar pares que involucran tokens ya muy frecuentes (como espacios). En código PyTorch:</p>
+
 <pre><code class="language-python">import torch
-import torch.nn as nn
+from collections import defaultdict
+import re
 
-# Ejemplo de Tokenization
-x = torch.randn(32, 64)
-print(f'Input: {x.shape}')
-</code></pre>
-<hr>
-<h2>🚀 Implementación En PyTorch</h2>
-<pre><code class="language-python"># Implementación de Tokenization
-class TokenizationBlock(nn.Module):
-    def __init__(self):
-        super().__init__()
-        # Capas del bloque
+def get_stats(vocab):
+    """Cuenta frecuencia de pares de tokens adyacentes."""
+    pairs = defaultdict(int)
+    for word, freq in vocab.items():
+        symbols = word.split()
+        for i in range(len(symbols) - 1):
+            pairs[(symbols[i], symbols[i+1])] += freq
+    return pairs
+
+def merge_vocab(pair, v_in):
+    """Fusiona el par más frecuente en el vocabulario."""
+    v_out = {}
+    bigram = re.escape(pair[0] + ' ' + pair[1])
+    p = re.compile(r'(?&lt;!\S)' + bigram + r'(?!\S)')
+    for word in v_in:
+        w_out = p.sub(''.join(pair), word)
+        v_out[w_out] = v_in[word]
+    return v_out
+
+def bpe_train(corpus, num_merges=100):
+    """
+    Entrena un tokenizador BPE desde cero.
     
-    def forward(self, x):
-        return x
+    Args:
+        corpus: Lista de textos para entrenar
+        num_merges: Número de fusiones a realizar
+    
+    Returns:
+        vocab: Vocabulario entrenado con merges aplicados
+        merges: Lista de tuplas (token1, token2) que fueron fusionadas
+    """
+    # Inicializar vocabulario con caracteres individuales
+    vocab = defaultdict(int)
+    for text in corpus:
+        # Añadir marker de fin de palabra
+        words = text.lower().split()
+        for word in words:
+            word = ' '.join(list(word) + ['&lt;/w&gt;'])
+            vocab[word] += 1
+    
+    # Proceso de fusión iterativa
+    merges = []
+    for i in range(num_merges):
+        pairs = get_stats(vocab)
+        if not pairs:
+            break
+        # Encontrar el par más frecuente
+        best_pair = max(pairs, key=pairs.get)
+        if pairs[best_pair] &lt; 2:  # Stop si frecuencia es muy baja
+            break
+        # Fusionar
+        vocab = merge_vocab(best_pair, vocab)
+        merges.append(best_pair)
+        if (i + 1) % 20 == 0:
+            print(f"[BPE] Merge {i+1}/{num_merges}: {best_pair} "
+                  f"(freq={pairs[best_pair]})")
+    
+    return vocab, merges
 
-# Uso
-model = TokenizationBlock()
-output = model(x)
-print(f"Output shape: {output.shape}")
+def tokenize_text(text, vocab, merges):
+    """Tokeniza texto usando vocabulario BPE entrenado."""
+    # Tokenización básica a caracteres
+    tokens = []
+    for word in text.lower().split():
+        word_tokens = list(word) + ['&lt;/w&gt;']
+        tokens.extend(word_tokens)
+    
+    # Aplicar merges en orden
+    for merge in merges:
+        merge_str = merge[0] + merge[1]
+        new_tokens = []
+        i = 0
+        while i &lt; len(tokens):
+            if i &lt; len(tokens) - 1 and tokens[i] == merge[0] and tokens[i+1] == merge[1]:
+                new_tokens.append(merge_str)
+                i += 2
+            else:
+                new_tokens.append(tokens[i])
+                i += 1
+        tokens = new_tokens
+    
+    return tokens
+
+# Ejemplo de entrenamiento
+corpus = [
+    "el gato come pescado",
+    "el perro come carne", 
+    "el gato duerme mucho",
+    "el perro duerme en la casa",
+    "mucho tiempo juntos",
+]
+
+print("=== Entrenando BPE ===")
+vocab, merges = bpe_train(corpus, num_merges=50)
+
+print(f"\n=== Vocabulario final ({len(vocab)} palabras) ===")
+print("Sample:", list(vocab.items())[:5])
+
+print(f"\n=== Merges realizados ({len(merges)} fusiones) ===")
+for m in merges[:10]:
+    print(f"  {m}")
+
+# Tokenización de ejemplo
+test_text = "el gato duerme"
+result = tokenize_text(test_text, vocab, merges)
+print(f"\n=== Tokenización ===")
+print(f"Input: '{test_text}'")
+print(f"Tokens: {result}")
+print(f"Número de tokens: {len(result)}")
 </code></pre>
+
 <hr>
-<h2>⚠️ Errores Comunes Y Cómo Evitarlos</h2>
-<h3>Error 1: No entender el orden de operaciones</h3>
-<p><strong>El problema</strong>: El orden en que se aplican las operaciones con Tokenization afecta el resultado.</p>
-<p><strong>La solución</strong>: Siempre verifica la dimensión y el orden de las operaciones.</p>
-<h3>Error 2: Olvidar el modo de evaluación</h3>
-<p><strong>El problema</strong>: Tokenization puede comportarse diferente en entrenamiento vs inferencia.</p>
-<p><strong>La solución</strong>: Usa model.eval() durante inferencia y model.train() durante entrenamiento.</p>
+<h2>🚀 Implementación Completa Con HuggingFace Tokenizers</h2>
+
+<p>Ahora veamos cómo usar los tokenizadores pre-entrenados de HuggingFace y comparar estrategias:</p>
+
+<pre><code class="language-python">from transformers import AutoTokenizer, BertTokenizer, GPT2Tokenizer
+import torch
+
+# =============================================================================
+# Comparación de Tokenizers
+# =============================================================================
+
+print("=" * 60)
+print("COMPARACIÓN DE TOKENIZADORES")
+print("=" * 60)
+
+# GPT-2 Tokenizer (BPE)
+gpt2_tokenizer = AutoTokenizer.from_pretrained("gpt2")
+# BERT Tokenizer (WordPiece)
+bert_tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
+# SentencePiece (via MarianMT)
+sentencepiece_tokenizer = AutoTokenizer.from_pretrained("Helsinki-NLP/opus-mt-en-es")
+
+test_texts = [
+    "Hello, world!",
+    "Tokenization is awesome! 🎉",
+    "Transformer-based models changed NLP forever.",
+    "The quick brown fox jumps over the lazy dog. 1234567890",
+]
+
+print("\n📊 Análisis de diferentes tokenizadores:\n")
+
+for text in test_texts:
+    print(f"Texto: '{text}'")
+    
+    # GPT-2
+    gpt2_ids = gpt2_tokenizer.encode(text, add_special_tokens=False)
+    print(f"  GPT-2 (BPE):     {len(gpt2_ids):3d} tokens → {gpt2_ids}")
+    
+    # BERT
+    bert_ids = bert_tokenizer.encode(text, add_special_tokens=False)
+    print(f"  BERT (WordPiece): {len(bert_ids):3d} tokens → {bert_ids}")
+    
+    # SentencePiece
+    try:
+        sp_ids = sentencepiece_tokenizer.encode(text, add_special_tokens=False)
+        print(f"  SentencePiece:    {len(sp_ids):3d} tokens → {sp_ids}")
+    except:
+        print(f"  SentencePiece:    Error en tokenización")
+    print()
+
+# =============================================================================
+# Efecto del Vocabulary Size en Model Performance
+# =============================================================================
+
+print("=" * 60)
+print("EFECTO DEL VOCABULARY SIZE")
+print("=" * 60)
+
+def simulate_vocab_effect(text, vocab_sizes=[5000, 10000, 25000, 50000]):
+    """
+    Simula cómo el vocabulary size afecta la tokenización.
+    Vocabularios pequeños fragmentan más palabras (más tokens).
+    Vocabularios grandes tienen menos fragmentation pero más parámetros.
+    """
+    print(f"\nTexto de prueba: '{text}'")
+    print("-" * 50)
+    
+    # GPT-2 tiene vocab de 50257
+    tokenizer = AutoTokenizer.from_pretrained("gpt2")
+    tokens = tokenizer.encode(text, add_special_tokens=False)
+    
+    print(f"GPT-2 vocab (50257): {len(tokens)} tokens")
+    print(f"Tokens: {tokens}")
+    
+    # Calcular metrics
+    char_count = len(text.replace(" ", ""))
+    compression_ratio = char_count / len(tokens) if tokens else 0
+    
+    print(f"\nMétricas:")
+    print(f"  - Caracteres: {char_count}")
+    print(f"  - Tokens: {len(tokens)}")
+    print(f"  - Ratio de compresión: {compression_ratio:.2f} chars/token")
+    print(f"  - Costo de memoria del embedding layer: ~{50257 * 768 * 4 / 1024 / 1024:.1f} MB (float32)")
+    
+    return len(tokens)
+
+tokens_count = simulate_vocab_effect("The transformer architecture revolutionized natural language processing!")
+
+# =============================================================================
+# Special Tokens y Su Significado
+# =============================================================================
+
+print("\n" + "=" * 60)
+print("SPECIAL TOKENS - EL OLVIDO DEL 80%")
+print("=" * 60)
+
+tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
+
+print("\n📌 Special Tokens en BERT:")
+special_tokens = {
+    "[PAD]": tokenizer.pad_token_id,
+    "[UNK]": tokenizer.unk_token_id,
+    "[CLS]": tokenizer.cls_token_id,
+    "[SEP]": tokenizer.sep_token_id,
+    "[MASK]": tokenizer.mask_token_id,
+}
+
+for name, token_id in special_tokens.items():
+    print(f"  {name:10s} → ID: {token_id:3d}")
+
+# Cómo afectan la tokenización
+text_with_special = "[CLS] Hello world [SEP] This is a test [PAD] [PAD]"
+encoded = tokenizer.encode(text_with_special, add_special_tokens=False)
+print(f"\nEncode with special tokens: {encoded}")
+print(f"Decoded: {tokenizer.decode(encoded)}")
+
+# =============================================================================
+# Verificación de Mismatch Tokenizer/Model
+# =============================================================================
+
+print("\n" + "=" * 60)
+print("VERIFICACIÓN DE TOKENIZER/MODEL COMPATIBILITY")
+print("=" * 60)
+
+from transformers import GPT2LMHeadModel, BertForSequenceClassification
+
+def verify_tokenizer_model_match(tokenizer, model, model_name):
+    """Verifica que el tokenizer y modelo sean compatibles."""
+    print(f"\n🔍 Verificando {model_name}...")
+    
+    # Get vocab sizes
+    tokenizer_vocab_size = tokenizer.vocab_size
+    model_vocab_size = model.config.vocab_size
+    
+    print(f"  Tokenizer vocab size: {tokenizer_vocab_size}")
+    print(f"  Model vocab size:     {model_vocab_size}")
+    
+    if tokenizer_vocab_size == model_vocab_size:
+        print(f"  ✅ Match! Compatible.")
+        return True
+    else:
+        print(f"  ❌ MISMATCH! Incompatible.")
+        return False
+
+# Verificar matches
+gpt2tok = AutoTokenizer.from_pretrained("gpt2")
+gpt2model = GPT2LMHeadModel.from_pretrained("gpt2")
+verify_tokenizer_model_match(gpt2tok, gpt2model, "GPT-2")
+
+bertok = BertTokenizer.from_pretrained("bert-base-uncased")
+bertmodel = BertForSequenceClassification.from_pretrained("bert-base-uncased")
+verify_tokenizer_model_match(bertok, bertmodel, "BERT")
+
+# ERROR COMÚN: Mismatch entre tokenizer y modelo
+print("\n⚠️  ERROR FRECUENTE:")
+print("Si entrenas con GPT2 tokenizer pero cargas modelo BERT:")
+wrong_tok = AutoTokenizer.from_pretrained("gpt2")
+right_model = BertForSequenceClassification.from_pretrained("bert-base-uncased")
+match = verify_tokenizer_model_match(wrong_tok, right_model, "GPT2 tokenizer + BERT model")
+</code></pre>
+
+<hr>
+<h2>⚠️ Los 3 Errores Que El 85% De Los Practitioners Cometen</h2>
+
+<h3>❌ Error 1: No Usar Subword Tokenization — OOV Garantizado</h3>
+
+<p><strong>El problema:</strong> Usar tokenization por palabras completas causa que cualquier palabra fuera del vocabulario (OOV) sea convertida a [UNK]. Si tu vocabulario tiene 50,000 palabras y encuentras "neuronavigatión", se convierte en token desconocido.</p>
+
+<p><strong>El impacto:</strong> Modelos con word-level tokenization tienen accuracy terrible en datasets con palabras fuera del training set. En benchmarks como FLUD (Few-shot Language Understanding Dataset) esto puede significar 40% menos accuracy.</p>
+
+<p><strong>La solución:</strong></p>
+
+<pre><code class="language-python"># ❌ WRONG: Word-level tokenization con OOV
+def bad_tokenize(text):
+    words = text.lower().split()
+    return [word_to_id.get(w, UNK_ID) for w in words]
+
+# ✅ CORRECT: Subword tokenization
+tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
+tokens = tokenizer.encode(text, add_special_tokens=False)
+# "neuronavigation" → ['ne', '##uro', '##nav', '##igation']
+</code></pre>
+
+<h3>❌ Error 2: Vocabulary Muy Pequeño — Fragmentación Excesiva</h3>
+
+<p><strong>El problema:</strong> Elegir un vocabulary size muy pequeño (ej: 10,000 tokens cuando el dataset tiene alta diversidad léxica) causa que palabras comunes se fragmenten en múltiples subwords, aumentando la longitud de secuencias 3-4x.</p>
+
+<p><strong>El impacto:</strong></p>
+<ul>
+<li>Secuencias 3-4x más largas = 3-4x más costo computacional</li>
+<li>Mayor uso de memoria GPU</li>
+<li>Inferencia más lenta</li>
+<li>Modelos más difíciles de entrenar (gradient propagation más largo)</li>
+</ul>
+
+<p><strong>La solución:</strong></p>
+
+<pre><code class="language-python"># Fórmula empírica para vocabulary size mínimo:
+# vocab_size ≈ sqrt(total_unique_subwords_in_corpus) * 1.5
+
+# O usar rule of thumb:
+# - English general purpose: 30,000-50,000
+# - Domain-specific (medical, legal): 50,000-100,000  
+# - Multilingual: 100,000+
+
+# Si entrenas desde cero:
+from tokenizers import Tokenizer
+from tokenizers.models import BPE
+
+tokenizer = Tokenizer(BPE(unk_token="[UNK]"))
+trainer = Tokenizer.trainers.BpeTrainer(
+    vocab_size=30000,  # ← Ajusta según tu corpus
+    min_frequency=2,
+    special_tokens=["[PAD]", "[UNK]", "[CLS]", "[SEP]", "[MASK]"]
+)
+</code></pre>
+
+<h3>❌ Error 3: Tokenizer/Model Mismatch — El Error Silencioso</h3>
+
+<p><strong>El problema:</strong> Entrenar un modelo con un tokenizer y luego cargar los pesos con otro tokenizer diferente. Esto pasa frecuentemente cuando:</p>
+<ul>
+<li>Copias la configuración del modelo pero no el tokenizer</li>
+<li>Usas fine-tuning sin guardar el tokenizer junto con el modelo</li>
+<li>Intercambias tokenizers entre modelos de arquitecturas similares</li>
+</ul>
+
+<p><strong>El impacto:</strong> El modelo genera garbage porque los IDs de los tokens no corresponden a las mismas piezas de texto.</p>
+
+<p><strong>La solución:</strong></p>
+
+<pre><code class="language-python"># ✅ SIEMPRE guarda tokenizer y modelo juntos
+model.save_pretrained("./my_model")
+tokenizer.save_pretrained("./my_model")
+
+# ✅ Cargar ambos juntos
+from transformers import AutoModel, AutoTokenizer
+model = AutoModel.from_pretrained("./my_model")
+tokenizer = AutoTokenizer.from_pretrained("./my_model")
+
+# ❌ WRONG: Cargar modelo sin tokenizer
+model = AutoModel.from_pretrained("./my_model")  # Sin tokenizer!
+outputs = model(**tokenizer("Hello world"))  # ❌ IDs mal mapeados
+
+# ✅ CORRECT: Siempre verificar match
+assert model.config.vocab_size == tokenizer.vocab_size, "Vocab mismatch!"
+</code></pre>
+
 <hr>
 <h2>💡 Tips Para Producción</h2>
-<ul>
-<li>Monitorea las métricas relevantes durante el entrenamiento</li>
-<li>Usa Tokenization de acuerdo a la arquitectura de tu red</li>
-<li>No todas las técnicas sirven para todos los problemas</li>
-</ul>
-<hr>
-<p><em>¡Eso es todo por hoy! Nos vemos mañana en el Día 114.</em></p>
 
-  </article>
+<ul>
+<li><strong>Cachea tokenizaciones:</strong> Si tokenizas el mismo texto múltiples veces (ej: durante validación), cachea los resultados. Esto puede reducir tiempo de inferencia 10x.</li>
+<li><strong>Usa fast tokenizer:</strong> Los tokenizadores basados en Rust (fast tokenizers) son 10-20x más rápidos que los de Python puro.</li>
+<li><strong>Configura truncation:</strong> Siempre define max_length y truncation=True explícitamente. El default behavior varía entre tokenizadores.</li>
+<li><strong>Benchmark en tu dominio:</strong> Un tokenizer que funciona bien en English puede ser terrible en Spanish. Evalúa siempre con datos de tu dominio.</li>
+<li><strong>Considera el padding strategy:</strong> Longest vs. max_length. Para batched inference, max_length con padding reduce variaciones.</li>
+</ul>
+
+<hr>
+<h2>📊 Resumen — Lo Que Debes Llevarte</h2>
+
+<ul>
+<li><strong>Subword > Word-level:</strong> Siempre usa BPE, WordPiece o SentencePiece. El OOV problem te va a explotar.</li>
+<li><strong>Vocab size importa:</strong> Ni muy pequeño (fragmentación) ni muy grande (memoria). 30k-50k es buen punto de partida para English.</li>
+<li><strong>Special tokens no son opcionales:</strong> [PAD], [UNK], [CLS], [SEP], [MASK] existen por razones específicas. Respétalos.</li>
+<li><strong>Tokenizer y modelo son un par:</strong> Nunca los separes. Siempre guardalos y precargalos juntos.</li>
+<li><strong>Mide comprensión:</strong> Antes de entrenar, analiza la distribución de longitud de tokens en tu dataset. Esto te dice mucho sobre qué tan bien tu tokenizer representa tu dominio.</li>
+</ul>
+
+<p>Pues ahí lo tiens, parcero. La tokenization no es el paso que te puedes saltar mientras piensas en la arquitectura del modelo. Es tan importante como los datos mismos. Un mal tokenizer puede arruinar incluso el mejor diseño de red. La próxima vez que tu modelo prediga "危 &[UNK] 隆 化" en vez de texto coherente, ya sabés por dónde va el problema.</p>
+
+<p>Nos vemos mañana en el Día 115. Stay tuned, que esto sigue bueno. 🍺</p>
+
+<p><em>— Fabián Rodríguez | #365DaysOfAI</em></p>
 
   <script>
     document.getElementById('themeToggle').addEventListener('click', function() {
