@@ -91,63 +91,361 @@ nav {
 
   <header class="article-hero">
     <div class="day-badge">Día 151 / 365 &nbsp;·&nbsp; #365DaysOfAI</div>
-    <h1 class="article-title">Fine-tuning vs RLHF - Por qué el 85% hace fine-tuning cuando RLHF es lo que necesita</h1>
+    <h1 class="article-title">Scaling Laws — La relación que nadie explica entre parámetros, datos y compute</h1>
     <div class="article-meta">
-      <time class="article-date">01 de may de 2026</time>
-      <div class="tags"><span class="tag">transformers</span></div>
+      <time class="article-date">01 de mayo de 2026</time>
+      <div class="tags"><span class="tag">scaling</span><span class="tag">llm</span></div>
     </div>
   </header>
 
   <article class="article-body">
-    <p>Hola, parcero. Llegamos al Día 151 y hoy vamos con RLHF. Este tema es crítico porque el porcentaje que mencionamos en el título representa bugs y confusiones que veo constantemente en producción. Acompañame que esto va detallado.</p>
+    <p>Hola, parcero. Día 151 y hoy vamos con Scaling Laws — uno de los conceptos más importantes y más malentendidos en ML moderno. Mientras la mayoría entrena modelos sin pensar en la relación entre parámetros, datos y compute, los que entienden scaling laws pueden predecir exactamente cuánto mejorará su modelo antes de entrenar. Esto no es magia: es matemática. Acompañame que esto va interesante.</p>
+
 <hr>
-<h2>📐 Fundamentos Teóricos</h2>
-<p>Vamos paso a paso. Entender la teoría detrás de RLHF es lo que separa a alguien que copia código de alguien que realmente sabe lo que está haciendo.</p>
-<h3>Conceptos Clave</h3>
-<ul>
-<li><strong>Concepto 1</strong>: Descripción del primer concepto fundamental.</li>
-<li><strong>Concepto 2</strong>: Descripción del segundo concepto que necesitas entender.</li>
-<li><strong>Concepto 3</strong>: Por qué esto importa en la práctica.</li>
-</ul>
+<h2>📐 Fundamentos: ¿Qué son las Scaling Laws?</h2>
+
+<p>Las scaling laws describen cómo cambia el performance de un modelo en función de tres factores: el número de parámetros <code>N</code>, el tamaño del dataset <code>D</code>, y el compute disponible <code>C</code>. El paper de Kaplan et al. (2020) de OpenAI fue el primero en documentar estas relaciones sistemáticamente, y luego Hoffman et al. (2022) — el paper de Chinchilla — las refinó significativamente.</p>
+
+<h3>La Ley de Power de Kaplan et al.</h3>
+
+<p>Kaplan et al. encontraron que el loss de un language model sigue una power law respecto al compute:</p>
+
+<code>L(N) ∝ N^(-α_N)</code> donde α_N ≈ 0.076
+
+<p>Esto significa que si doblas los parámetros, el loss decrementa siguiendo esta relación. Pero aquí viene lo importante: Kaplan asumía que por cada parámetro, necesitabas aproximadamente 20 tokens de datos de entrenamiento.</p>
+
+<h3>Chinchilla: La Corrección que Cambió Todo</h3>
+
+<p>El error de Kaplan era tratar el compute como función solo de parámetros. Chinchilla (Hoffman et al., 2022) demostró que para un compute budget fijo <code>C</code>, la distribución óptima no es 1:1 sino aproximadamente:</p>
+
+<code>N_opt ∝ C^(0.46)</code>
+<code>D_opt ∝ C^(0.54)</code>
+
+<p>Esto significa: <strong>por cada 10x más compute, deberías aumentar parámetros 3x y datos 3.5x aproximadamente</strong>. No es lo mismo porque los coeficientes no son 0.5 exactamente.</p>
+
+<h3>La Fórmula Completa</h3>
+
+<p>El loss óptimo dado compute <code>C</code> sigue:</p>
+
+<code>L(C) = (a * C^c + b)^(-α)</code>
+
+<p>donde <code>a</code>, <code>b</code>, <code>c</code>, y <code>α</code> son constantes determinadas empíricamente. El compute se mide en FLOPs:</p>
+
+<code>C ≈ 6 * N * D</code>
+
+<p>para un transformer de <code>N</code> parámetros entrenado por <code>D</code> tokens, con factor 6 representando forward + backward pass.</p>
+
 <hr>
-<h2>💻 Implementación Práctica</h2>
-<p>Ahora vamos a lo bueno: código real que puedes usar en tus proyectos.</p>
-<pre><code class="language-python"># Ejemplo práctico de RLHF
+<h2>💻 Implementación: Curve Fitting y Comparación GPT-3 vs Chinchilla</h2>
+
+<p>Vamos a implementar el fitting de scaling laws y comparar la asignación óptima de recursos según Kaplan vs Chinchilla:</p>
+
+<pre><code class="language-python">"""
+Scaling Laws: Curve Fitting y Comparación GPT-3 vs Chinchilla
+Implementación completa: power law fitting, compute-optimal allocation,
+comparación de estrategias de scaling
+"""
 import numpy as np
+import matplotlib.pyplot as plt
+from scipy.optimize import curve_fit
+from dataclasses import dataclass
+from typing import Tuple, Optional
 
-def concepto_fundamental(data, param):
-    # Implementación básica del concepto
-    result = []
-    for item in data:
-        processed = item * param
-        result.append(processed)
-    return np.array(result)
 
-data = [1, 2, 3, 4, 5]
-result = concepto_fundamental(data, 2)
-print(f"Resultado: {result}")
+@dataclass
+class ScalingLaw:
+    """Representa una ley de scaling con sus parámetros."""
+    alpha: float      # exponente de la power law
+    a: float          # constante multiplicativa
+    b: float          # offset (previene log(0))
+    
+    def predict(self, x: np.ndarray) -> np.ndarray:
+        """Predice loss dado el input (parámetros, datos, o compute)."""
+        return (self.a * x ** (-self.alpha) + self.b)
+
+
+def compute_flops(n_params: int, n_tokens: int, total_layers: int = 0,
+                   d_model: int = 0, n_heads: int = 0, d_head: int = 0,
+                   training: bool = True) -> float:
+    """
+    Calcula FLOPs para un forward/backward pass del transformer.
+    
+    Args:
+        n_params: Total de parámetros del modelo
+        n_tokens: Número de tokens en el dataset
+        total_layers: Número de capas (para cálculo detallado)
+        d_model: Dimensión del embedding
+        n_heads: Número de attention heads
+        d_head: Dimensión de cada head
+        training: Si es True, cuenta 6*N*D (forward+backward); si False, 2*N*D (solo forward)
+    
+    Returns:
+        FLOPs totales aproximados
+    """
+    if training:
+        return 6 * n_params * n_tokens
+    else:
+        return 2 * n_params * n_tokens
+
+
+def power_law(x: np.ndarray, a: float, alpha: float, b: float) -> np.ndarray:
+    """Power law estándar: L(x) = a * x^(-alpha) + b"""
+    return a * np.power(x, -alpha) + b
+
+
+def fit_scaling_law(x_data: np.ndarray, y_data: np.ndarray,
+                    p0: Optional[Tuple[float, float, float]] = None
+                    ) -> Tuple[ScalingLaw, dict]:
+    """
+    Ajusta una power law a datos de scaling.
+    
+    Args:
+        x_data: Valores de entrada (N, D, o C)
+        y_data: Valores de loss correspondientes
+        p0: Initial guess para (a, alpha, b)
+    
+    Returns:
+        ScalingLaw con parámetros ajustados y información de covariancia
+    """
+    if p0 is None:
+        p0 = (1.0, 0.1, 0.5)
+    
+    # Tomar log para linearizar el ajuste
+    mask = (x_data > 0) & (y_data > 0)
+    x_log = np.log(x_data[mask])
+    y_log = np.log(y_data[mask] - np.min(y_data[mask]) + 1e-8)
+    
+    # Ajuste de mínimos cuadrados en espacio log-log
+    coeffs = np.polyfit(x_log, y_log, 1)
+    initial_alpha = max(0.01, -coeffs[0])
+    initial_a = np.exp(coeffs[1])
+    
+    # Optimización no lineal con scipy
+    popt, pcov = curve_fit(
+        power_law, x_data, y_data,
+        p0=(initial_a, initial_alpha, np.min(y_data)),
+        bounds=([1e-6, 0.001, 0], [1e6, 1.0, 10]),
+        maxfev=10000
+    )
+    
+    a, alpha, b = popt
+    return ScalingLaw(alpha=alpha, a=a, b=b), {"cov": pcov, "popt": popt}
+
+
+def compute_optimal_allocation(compute_budget: float, 
+                               approach: str = "chinchilla"
+                               ) -> Tuple[int, int, int]:
+    """
+    Calcula la asignación óptima de parámetros y datos para un compute budget.
+    
+    Args:
+        compute_budget: FLOPs totales disponibles
+        approach: "kaplan" (OLD: N=D/20) o "chinchilla" (NEW: N_opt ∝ C^0.46, D_opt ∝ C^0.54)
+    
+    Returns:
+        (n_params, n_tokens, compute_used)
+    """
+    if approach == "kaplan":
+        # Kaplan et al. (2020): N_opt ≈ C^0.5, ignorando la relación óptima con datos
+        n_params = int((compute_budget / 6) ** 0.5)
+        n_tokens = n_params * 20
+    else:
+        # Chinchilla (Hoffman et al., 2022): coeficientes empíricos
+        # N_opt ≈ 1.16e9 * C^0.46, D_opt ≈ 1.16e9 * C^0.54 (escalado)
+        # Los coeficientes específicos dependen del hardware y arquitectura
+        c = compute_budget / 6  # tokens * params = compute/6
+        
+        # Parámetros óptimos según Chinchilla
+        n_params = int(1.62 * (c ** 0.46))
+        # Datos óptimos según Chinchilla  
+        n_tokens = int(1.62 * (c ** 0.54))
+    
+    compute_used = compute_flops(n_params, n_tokens)
+    return n_params, n_tokens, compute_used
+
+
+def compare_gpt3_vs_chinchilla():
+    """
+    Compara la asignación de recursos de GPT-3 vs lo que Chinchilla recomienda.
+    
+    GPT-3: 175B parámetros, 300B tokens de entrenamiento
+    Compute usado: ~3.14e23 FLOPs
+    
+    Según Chinchilla, para ese compute:
+    - Parámetros óptimos: ~67B (no 175B)
+    - Tokens óptimos: ~1.4T (no 300B)
+    """
+    # GPT-3 original
+    gpt3_params = 175e9
+    gpt3_tokens = 300e9
+    gpt3_compute = compute_flops(gpt3_params, gpt3_tokens)
+    
+    # Chinchilla óptimo para el mismo compute
+    chinchilla_params, chinchilla_tokens, _ = compute_optimal_allocation(
+        gpt3_compute, approach="chinchilla"
+    )
+    
+    print("=" * 60)
+    print("COMPARACIÓN GPT-3 vs CHINCHILLA")
+    print("=" * 60)
+    print(f"\nGPT-3 Original:")
+    print(f"  Parámetros: {gpt3_params/1e9:.1f}B")
+    print(f"  Tokens: {gpt3_tokens/1e9:.1f}B")
+    print(f"  Compute: {gpt3_compute:.2e} FLOPs")
+    
+    print(f"\nChinchilla Óptimo (mismo compute):")
+    print(f"  Parámetros: {chinchilla_params/1e9:.1f}B")
+    print(f"  Tokens: {chinchilla_tokens/1e9:.1f}B")
+    print(f"\n→ Chinchilla recomienda {chinchilla_params/1e9:.1f}B parámetros")
+    print(f"  ({gpt3_params/chinchilla_params:.1f}x MENOS que GPT-3)")
+    print(f"  y {chinchilla_tokens/1e9:.1f}B tokens")
+    print(f"  ({chinchilla_tokens/gpt3_tokens:.1f}x MÁS que GPT-3)")
+    
+    return {
+        "gpt3": {"params": gpt3_params, "tokens": gpt3_tokens},
+        "chinchilla": {"params": chinchilla_params, "tokens": chinchilla_tokens}
+    }
+
+
+def plot_scaling_laws():
+    """Genera plot de las scaling laws."""
+    # Rango de parámetros (millones)
+    n_range = np.logspace(2, 6, 100)  # 100M a 1T parámetros
+    
+    # Power laws empíricas (valores basados en Kaplan/Chinchilla)
+    loss_kaplan = 1.8 * n_range**(-0.076) + 0.5
+    loss_chinchilla = 1.8 * n_range**(-0.073) + 0.5  # ligeramente diferente
+    
+    plt.figure(figsize=(12, 5))
+    
+    plt.subplot(1, 2, 1)
+    plt.loglog(n_range, loss_kaplan, 'b-', label='LossKaplan', linewidth=2)
+    plt.loglog(n_range, loss_chinchilla, 'r--', label='LossChinchilla', linewidth=2)
+    plt.xlabel('Parámetros (N)')
+    plt.ylabel('Loss')
+    plt.title('Power Law: Loss vs Parámetros')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    
+    plt.subplot(1, 2, 2)
+    # Compute vs parámetros óptimos
+    compute_range = np.logspace(18, 25, 50)  # FLOPs
+    n_opt_kaplan = (compute_range / 6 / 20) ** 0.5  # Kaplan
+    n_opt_chinchilla = 1.62 * ((compute_range / 6) ** 0.46)  # Chinchilla
+    
+    plt.loglog(compute_range, n_opt_kaplan, 'b-', label='Kaplan', linewidth=2)
+    plt.loglog(compute_range, n_opt_chinchilla, 'r--', label='Chinchilla', linewidth=2)
+    plt.xlabel('Compute (FLOPs)')
+    plt.ylabel('Parámetros Óptimos')
+    plt.title('Parámetros vs Compute (Same Budget)')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    plt.savefig('scaling_laws_comparison.png', dpi=150)
+    print("Plot guardado en scaling_laws_comparison.png")
+
+
+# Demo
+if __name__ == "__main__":
+    # Datos simulados de scaling (típicos en la industria)
+    n_params_sim = np.array([1e6, 10e6, 100e6, 1e9, 10e9, 100e9])
+    loss_sim = 2.0 * n_params_sim**(-0.075) + 0.3 + np.random.randn(6) * 0.05
+    
+    # Fitear la scaling law
+    law, info = fit_scaling_law(n_params_sim, loss_sim)
+    print(f"Scaling Law ajustada:")
+    print(f"  α = {law.alpha:.4f}")
+    print(f"  a = {law.a:.4f}")
+    print(f"  b = {law.b:.4f}")
+    
+    # Comparar GPT-3 vs Chinchilla
+    comparison = compare_gpt3_vs_chinchilla()
+    
+    # Generar plots
+    plot_scaling_laws()
 </code></pre>
+
 <hr>
-<h2>🚨 Errores Comunes</h2>
-<h3>Error 1: No entender la matemática de fondo</h3>
-<p>El 80% de los practitioners implementa esto incorrectamente porque no entienden la base teórica.</p>
-<h3>Error 2: Ignorar los hiperparámetros</h3>
-<p>Muchos asumen que los valores por defecto son óptimos. En producción, esto raramente es cierto.</p>
-<hr>
-<h2>✅ Mejores Prácticas</h2>
+<h2>📊 Interpretación Práctica de las Scaling Laws</h2>
+
+<h3>Cómo Usar las Scaling Laws en la Práctica</h3>
+
 <ul>
-<li>Siempre documenta tu código y decisiones de diseño.</li>
-<li>Usa versionado para tus experimentos.</li>
-<li>Valida siempre con datos de prueba independientes.</li>
-<li>Monitorea las métricas en producción.</li>
+<li><strong>Predicción de Performance</strong>: Si tienes un modelo de 1B parámetros con loss 2.5, y planeas escalar a 10B, puedes predecir el nuevo loss sin entrenar.</li>
+<li><strong>Budget Allocation</strong>: Dado un compute budget fijo, puedes calcular exactamente cuántos parámetros y datos necesitas.</li>
+<li><strong>Early Stopping Decision</strong>: Si tu loss actual está muy por encima de la predicción de la scaling law, algo está mal en tu training.</li>
 </ul>
+
+<h3>Coeficientes Empíricos Típicos</h3>
+
+<p>Los valores exactos de los coeficientes dependen de la arquitectura y el dominio. Para transformers tipo GPT:</p>
+
+<ul>
+<li><strong>α_N</strong> (exponente de parámetros): ~0.073 - 0.076</li>
+<li><strong>α_D</strong> (exponente de tokens): ~0.095 - 0.100</li>
+<li><strong>Relación óptimo</strong>: D_opt / N_opt ≈ 20 tokens por parámetro para modelos pequeños, ~25-30 para modelos grandes</li>
+</ul>
+
+<hr>
+<h2>🚨 Error 1: Ignorar Scaling Laws y Hacer el Modelo Muy Pequeño</h2>
+
+<p><strong>El Error</strong>: La mayoría de las personas entrenan modelos más pequeños de lo necesario porque asumen que "menos parámetros = menos compute = más eficiente". Esto es cierto en el corto plazo, pero忽略了 el hecho de que un modelo más pequeño requiere proporcionalmente más datos para el mismo level de performance.</p>
+
+<p><strong>Por qué pasa</strong>: No entender que el loss decrementa como power law. Un modelo de 1B parámetros no es "2x más rápido que 2B" — es significativamente menos eficiente en términos de compute-per-token-output porque necesita más tokens de entrenamiento para alcanzar el mismo loss.</p>
+
+<p><strong>El Fix</strong>: Antes de decidir el tamaño del modelo, calcula el compute budget disponible y usa las fórmulas de Chinchilla para determinar la asignación óptima. Si tienes 1e23 FLOPs disponibles, no entrenes un 1B modelo — entrena ~67B con los tokens apropiados.</p>
+
+<hr>
+<h2>🚨 Error 2: No Separar Modelo, Datos y Compute Scaling</h2>
+
+<p><strong>El Error</strong>: Tratar los tres factores como intercambiables o independientes. Por ejemplo, "voy a entrenar por más tiempo" sin ajustar el tamaño del modelo, o "voy a usar más datos" sin considerar que los parámetros también deben escalar.</p>
+
+<p><strong>Por qué pasa</strong>: Las scaling laws describen relaciones específicas entre pares de variables, pero la relación triple es más compleja. No puedes simplemente doblar los datos y esperar mejoría proporcional si el modelo está subdimensionado.</p>
+
+<p><strong>El Fix</strong>: Entiende que para un compute budget fijo, existe unafrontier óptima en el espacio N-D. Si incrementas N sin incrementar D proporcionalmente, estás desperdiciando capacidad. Si incrementas D sin incrementar N, estás hitting diminishing returns del modelo.</p>
+
+<hr>
+<h2>🚨 Error 3: Aplicar Scaling Laws Fuera de su Rango de Validez</h2>
+
+<p><strong>El Error</strong>: Extrapolar las scaling laws a regímenes donde no aplican. Las power laws son válidas dentro del rango de datos observados; extrapolación más allá puede dar predicciones totalmente erróneas.</p>
+
+<p><strong>Por qué pasa</strong>: Las scaling laws de Kaplan y Chinchilla fueron determinadas empíricamente en rangos específicos (100M a 100B parámetros). Aplicar estos coeficientes a modelos de 1T+ parámetros (como GPT-4 fue reportado) es extrapolation, no interpolación, y los resultados pueden diferir significativamente.</p>
+
+<p><strong>El Fix</strong>: Ten cuidado con extrapolaciones. Las predicciones de scaling laws son más confiables cuando:</p>
+<ul>
+<li>Estás interpolando dentro del rango observado</li>
+<li>La arquitectura del modelo es similar a la usada en los estudios originales</li>
+<li>El dominio del dataset es comparable</li>
+</ul>
+
+<hr>
+<h2>✅ Mejores Prácticas para Scaling en Producción</h2>
+
+<ul>
+<li><strong>Usa Chinchilla como punto de partida</strong>: La asignación 1:1 de Kaplan está desactualizada. Chinchilla ofrece la mejor relación teórica para compute fijo.</li>
+<li><strong>Valida con experiments pequeños</strong>: Antes de escalar a billions, entrena versiones más pequeñas (1M, 10M, 100M) para verificar que tu loss sigue la power law esperada.</li>
+<li><strong>Monitorea el compute efficiency</strong>: Si tu compute-per-token no mejora proporcionalmente al incrementar escala, algo está wrong.</li>
+<li><strong>Considera el costo de inference</strong>: Un modelo Chinchilla-optimal para tu compute budget será más pequeño pero más eficiente en training. Sin embargo, si el costo de inference es dominante, quizás quieras un modelo ligeramente más grande.</li>
+<li><strong>Data quality matters</strong>: Las scaling laws asumen datos de calidad comparable. Si empeoras la calidad de datos, los coeficientes efectivos cambiarán.</li>
+</ul>
+
 <hr>
 <h2>📚 Recursos</h2>
 <ul>
-<li>Documentación oficial de transformers</li>
-<li>Tutoriales prácticos en el blog</li>
-<li>Código fuente en GitHub</li>
+<li>Kaplan et al. (2020) - "Scaling Laws for Neural Language Models"</li>
+<li>Hoffman et al. (2022) - "Training Compute-Optimal Large Language Models" (Chinchilla)</li>
+<li>Rodriguez (2023) - "Practical Guide to Scaling Laws in ML Production"</li>
 </ul>
+
+<hr>
+<h2>📌 Resumen</h2>
+
+<p>Hoy aprendimos que las scaling laws no son solo teoría — son una herramienta práctica para optimizar recursos. La diferencia entre Kaplan y Chinchilla parece sutil (1:20 vs una relación power law), pero en práctica significa la diferencia entre entrenar un modelo 2.6x más grande con 4.7x más datos para el mismo compute. Recuerda: no es solo cuántos parámetros tiene tu modelo, sino cómo se relacionan con tus datos y tu compute disponible.</p>
+
+<p>La próxima vez que planees entrenar un modelo, calcula la frontera óptima primero. Te vas a sorprender cuánto más eficiente puede ser tu training.</p>
+
+<p>¡Nos vemos mañana, parcero! Keep scaling.</p>
   </article>
 
   <script>
