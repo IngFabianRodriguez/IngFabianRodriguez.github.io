@@ -118,60 +118,343 @@ nav {
   </header>
 
   <article class="article-body">
-    <h1>Dropout - Por Qué El 80% De Las Redes Overfitteen Y Cómo Evitarlo</h1>
-<p>Hágale pues, parcero. Llegamos al Día 95 y hoy toca hablar de dropout. Después de más de 10 años rompiendo redes neuronales en producción, te digo que esto es más jugoso de lo que parece. Dejá el café, acomodate, porque esto es más jugoso de lo que parece.</p>
-<hr>
 <h2>🎯 ¿Qué Es Dropout?</h2>
-<p>En este artículo exploramos Dropout en profundidad, con ejemplos prácticos y código.</p>
-<h3>Conceptos clave:</h3>
-<ul>
-<li><strong>Definición</strong>: Dropout es fundamental en deep learning</li>
-<li><strong>Aplicación</strong>: Se usa en arquitecturas modernas de redes neuronales</li>
-<li><strong>Por qué importa</strong>: Sin esto, muchos modelos no podrían entrenar eficientemente</li>
-</ul>
-<hr>
-<h2>📐 La Matemática Detrás De Dropout</h2>
-<p>La matemática que hace posible la magia de Dropout:</p>
+<p>Hágale pues, parcero. Llegamos al Día 95 y hoy toca hablar de dropout — esa técnica que parece simple pero que si no la entendés bien te manda tu red a overfittear en tiempo récord. Después de más de 10 años de ver modelos que aprenden de memoria en vez de generalizar, te cuento que dropout es de las técnicas más mal entendidas en la industria. Así que dejá el café, acomodate, que esto va.</p>
+<p>Dropout, introducido por Srivastava et al. en 2014, es una técnica de regularización que durante el entrenamiento apagó neuronas aleatoriamente con probabilidad <code>p</code>. Durante inferencia, todas las neuronas están activas pero sus pesos se escalan por <code>(1 - p)</code>. Esa es la versión "standard dropout" — también conocida como <em>naive dropout</em>.</p>
+<p>La versión que realmente se usa en producción es el <strong>inverse dropout</strong> (o <em>inverted dropout</em>): durante entrenamiento se divide por <code>(1 - p)</code> para que durante inferencia NO haya que cambiar nada. Todas las neuronas quedan activas y el forward pass es idéntico. Más simple, más rápido, menos bugs. En PyTorch, <code>nn.Dropout(p=p)</code> implementa inverse dropout por defecto.</p>
+<h3>¿Por qué funciona?</h3>
+<p>Imaginate que tenés 10$^6$ parámetros y solo 10$^4$ ejemplos de entrenamiento. Tu red tiene suficiente capacidad para memorizar los datos en lugar de encontrar patrones generalizables. Dropout obliga a que ninguna neurona individual dependa demasiado de otras — si una neurona es crucial para la predicción correcta, las demás nunca la van a encontrar durante entrenamiento porque está apagada la mitad del tiempo. Esto fuerza representaciones más robustas y distributed.</p>
+<h2>📐 La Matemática De Dropout</h2>
+<p>Durante entrenamiento, para cada input $x \in \mathbb{R}^d$:</p>
+<p>$$y = \frac{1}{1-p} \cdot \mathbf{m} \odot x$$</p>
+<p>donde $\mathbf{m} \in \{0,1\}^d$ es el vector de máscara binario con $m_i \sim \text{Bernoulli}(1-p)$ y $\odot$ es el producto elemento a elemento (Hadamard). La división por $(1-p)$ es lo que hace que sea <em>inverse</em> dropout — mantené esto en mente porque es donde la mayoría de la gente se confunde.</p>
+<p>Durante inferencia:</p>
+<p>$$y = x$$</p>
+<p>Esto es, ninguna máscara, ningún escalamiento. El modelo completo con todos sus pesos participa en cada forward pass.</p>
+<p>La esperanza matemática del output durante entrenamiento:</p>
+<p>$$\mathbb{E}[y] = \mathbb{E}[\frac{1}{1-p} \mathbf{m} \odot x] = \frac{1}{1-p} (1-p) x = x$$</p>
+<p>Entonces en esperanza el output durante entrenamiento es igual al output durante inferencia. Esa es la propiedad clave que hace que funcione.</p>
+<h2>🚀 Implementación En PyTorch</h2>
+<h3>1. Dropout Manual — Entendiendo Inverse Dropout</h3>
 <pre><code class="language-python">import torch
 import torch.nn as nn
+import torch.nn.functional as F
+import matplotlib.pyplot as plt
+import numpy as np
 
-# Ejemplo de Dropout
-x = torch.randn(32, 64)
-print(f'Input: {x.shape}')
-</code></pre>
-<hr>
-<h2>🚀 Implementación En PyTorch</h2>
-<pre><code class="language-python"># Implementación de Dropout
-class DropoutBlock(nn.Module):
-    def __init__(self):
-        super().__init__()
-        # Capas del bloque
-    
-    def forward(self, x):
+# ============================================================
+# Implementación manual de inverse dropout para entender la matemática
+# ============================================================
+def dropout_inverse(x: torch.Tensor, p: float, training: bool = True) -> torch.Tensor:
+    """
+    Inverse dropout: durante entrenamiento escalamos por 1/(1-p),
+    durante inferencia retornamos x sin cambios.
+    """
+    if not training:
         return x
 
-# Uso
-model = DropoutBlock()
-output = model(x)
+    # Crear máscara: 1 con probabilidad (1-p), 0 con probabilidad p
+    mask = torch.rand_like(x) > p  # True = activar, False = silenciar
+    return mask.float() * x / (1.0 - p)
+
+# Test básico
+x = torch.tensor([1.0, 2.0, 3.0, 4.0, 5.0])
+print("=== Test dropout inverso ===")
+print(f"Input:        {x}")
+print(f"Train (p=0.5): {dropout_inverse(x, p=0.5, training=True)}")
+print(f"Eval (p=0.5):  {dropout_inverse(x, p=0.5, training=False)}")
+</code></pre>
+<h3>2. Comparación: Train vs Eval Mode</h3>
+<pre><code class="language-python"># ============================================================
+# Demo: cómo cambia el comportamiento de Dropout entre train y eval
+# ============================================================
+class SimpleNetWithDropout(nn.Module):
+    def __init__(self, input_dim=10, hidden_dim=20, output_dim=5, dropout_p=0.5):
+        super().__init__()
+        self.fc1 = nn.Linear(input_dim, hidden_dim)
+        self.fc2 = nn.Linear(hidden_dim, hidden_dim)
+        self.fc3 = nn.Linear(hidden_dim, output_dim)
+        self.dropout = nn.Dropout(p=dropout_p)  # Inverse dropout por defecto
+
+    def forward(self, x):
+        x = F.relu(self.fc1(x))
+        x = self.dropout(x)  # Durante train: silencia ~50% de las activaciones
+        x = F.relu(self.fc2(x))
+        x = self.dropout(x)
+        x = self.fc3(x)
+        return x
+
+# Crear input de prueba
+torch.manual_seed(42)
+x_batch = torch.randn(8, 10)  # batch de 8 samples, 10 features
+
+model = SimpleNetWithDropout(input_dim=10, hidden_dim=20, output_dim=5, dropout_p=0.5)
+
+print("=== Train mode (dropout activo) ===")
+model.train()  # ← Modo entrenamiento
+output_train = model(x_batch)
+print(f"Output shape: {output_train.shape}")
+print(f"Output (primeros 3 samples):\n{output_train[:3]}")
+print(f"Número de ceros en output: {(output_train == 0).sum().item()}")
+
+print("\n=== Eval mode (dropout APAGADO) ===")
+model.eval()   # ← Modo evaluación/inferencia
+with torch.no_grad():
+    output_eval = model(x_batch)
+print(f"Output shape: {output_eval.shape}")
+print(f"Output (primeros 3 samples):\n{output_eval[:3]}")
+print(f"Número de ceros en output: {(output_eval == 0).sum().item()}")
+
+# Demostrar que durante inferencia el output es determinístico (sin dropout)
+with torch.no_grad():
+    output_eval2 = model(x_batch)
+print(f"\nOutput idéntico en inferencia: {torch.allclose(output_eval, output_eval2)}")
+</code></pre>
+<h3>3. Dropout2d — Spatial Dropout para CNNs</h3>
+<pre><code class="language-python"># ============================================================
+# Dropout2d (Spatial Dropout): apagando canales completos en vez de pixeles individuales
+# ESTO ES CRUCIAL para redes convolucionales y la mayoría lo hace mal
+# ============================================================
+
+class CNNWithSpatialDropout(nn.Module):
+    def __init__(self, dropout_p=0.25, spatial_dropout_p=0.25):
+        super().__init__()
+        # Conv blocks estándar
+        self.conv1 = nn.Conv2d(3, 64, kernel_size=3, padding=1)
+        self.bn1 = nn.BatchNorm2d(64)
+        self.conv2 = nn.Conv2d(64, 128, kernel_size=3, padding=1)
+        self.bn2 = nn.BatchNorm2d(128)
+        self.conv3 = nn.Conv2d(128, 256, kernel_size=3, padding=1)
+        self.bn3 = nn.BatchNorm2d(256)
+
+        # Dropout estándar: apaga neuronas individuales (PIXELES)
+        self.dropout_2d = nn.Dropout2d(p=dropout_p)
+
+        # Spatial Dropout: apaga CANALES COMPLETOS (feature maps)
+        # Esto fuerza a la red a no depender de un solo feature map
+        self.spatial_dropout = nn.Dropout2d(p=spatial_dropout_p)
+
+        self.pool = nn.MaxPool2d(2, 2)
+        self.fc = nn.Linear(256 * 4 * 4, 10)
+
+    def forward(self, x, use_spatial=True):
+        x = self.pool(F.relu(self.bn1(self.conv1(x))))
+        x = self.pool(F.relu(self.bn2(self.conv2(x))))
+
+        # Apply dropout CORRECTO según el caso
+        if use_spatial:
+            # Spatial dropout: más efectivo en capas convolucionales
+            x = self.spatial_dropout(x)
+        else:
+            # Dropout 2d estándar: menos efectivo en CNNs (por qué? mirá abajo)
+            x = self.dropout_2d(x)
+
+        x = self.pool(F.relu(self.bn3(self.conv3(x))))
+        x = x.view(x.size(0), -1)
+        x = self.fc(x)
+        return x
+
+# Por qué Dropout2d estándar es malo para CNNs:
+# En un feature map de shape (B, C, H, W), dropout 2d apaga pixeles individuales.
+# Esto significa que el 75% (con p=0.25) de los pixeles aún proporcionan señal,
+# y las correlaciones espaciales locales todavía existen.
+# Spatial Dropout apaga canales completos, forzando independencia entre features.
+
+print("=== Spatial Dropout vs Dropout2d en CNNs ===")
+x_cnn = torch.randn(4, 3, 32, 32)  # (B, C, H, W)
+cnn = CNNWithSpatialDropout(dropout_p=0.25, spatial_dropout_p=0.25)
+
+cnn.eval()
+with torch.no_grad():
+    # Los canales tienen correlación - spatial dropout la rompe mejor
+    out_spatial = cnn(x_cnn, use_spatial=True)
+    out_standard = cnn(x_cnn, use_spatial=False)
+
+print(f"Output con spatial dropout: mean={out_spatial.mean():.4f}, std={out_spatial.std():.4f}")
+print(f"Output con dropout estándar: mean={out_standard.mean():.4f}, std={out_standard.std():.4f}")
+</code></pre>
+<h3>4. Dropout en Embeddings</h3>
+<pre><code class="language-python"># ============================================================
+# Embedding Dropout: regularización en layers de embeddings
+# Esencial para NLP y modelos de lenguaje
+# ============================================================
+
+class TransformerEncoderWithEmbeddingDropout(nn.Module):
+    def __init__(self, vocab_size=30000, embed_dim=256, num_heads=8,
+                 num_layers=6, embed_dropout_p=0.1, attention_dropout_p=0.1):
+        super().__init__()
+
+        # Embedding layer - ESTO es donde el modelo tiene más parámetros
+        # y donde más fácil hace overfitting si no se regulariza
+        self.token_embedding = nn.Embedding(vocab_size, embed_dim)
+        self.position_embedding = nn.Embedding(512, embed_dim)
+
+        # Embedding dropout: apaga tokens completos en vez de dimensiones
+        # De forma similar a spatial dropout pero para embeddings
+        self.embed_dropout = nn.Dropout(p=embed_dropout_p)
+
+        # Transformer layers
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=embed_dim,
+            nhead=num_heads,
+            dim_feedforward=1024,
+            dropout=attention_dropout_p,  # Dropout dentro de atención
+            batch_first=True
+        )
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        self.fc = nn.Linear(embed_dim, 2)
+
+    def forward(self, input_ids):
+        batch_size, seq_len = input_ids.shape
+
+        # Token + position embeddings
+        tok_emb = self.token_embedding(input_ids)
+        pos_emb = self.position_embedding(torch.arange(seq_len, device=input_ids.device))
+        x = tok_emb + pos_emb
+
+        # Embedding dropout — antes de entrar al transformer
+        # Con p=0.1, el 10% de las posiciones se silencian completamente
+        x = self.embed_dropout(x)
+
+        x = self.transformer(x)
+        x = x.mean(dim=1)  # Promedio sobre la secuencia
+        return self.fc(x)
+
+# Test
+batch = torch.randint(0, 30000, (16, 128))  # 16 samples, seq_len=128
+model = TransformerEncoderWithEmbeddingDropout(vocab_size=30000, embed_dim=256)
+model.eval()
+
+print("=== Embedding Dropout Demo ===")
+print(f"Vocab embedding shape: {model.token_embedding.weight.shape}")
+print(f"Input batch shape: {batch.shape}")
+with torch.no_grad():
+    output = model(batch)
 print(f"Output shape: {output.shape}")
 </code></pre>
-<hr>
-<h2>⚠️ Errores Comunes Y Cómo Evitarlos</h2>
-<h3>Error 1: No entender el orden de operaciones</h3>
-<p><strong>El problema</strong>: El orden en que se aplican las operaciones con Dropout afecta el resultado.</p>
-<p><strong>La solución</strong>: Siempre verifica la dimensión y el orden de las operaciones.</p>
-<h3>Error 2: Olvidar el modo de evaluación</h3>
-<p><strong>El problema</strong>: Dropout puede comportarse diferente en entrenamiento vs inferencia.</p>
-<p><strong>La solución</strong>: Usa model.eval() durante inferencia y model.train() durante entrenamiento.</p>
+<h2>⚠️ Los 3 Errores Más Comunes</h2>
+<h3>Error 1: Dejar Dropout Activo Durante Evaluación/Inferencia</h3>
+<p><strong>El problema completo:</strong> Este es el bug más catastrófico y más común. Si tu modelo tiene dropout y hacés inferencia sin <code>model.eval()</code>, aproximadamente el <code>p%</code> de las activaciones están siendo silenciadas aleatoriamente cada forward pass. Tu output no es determinístico, y probablemente tu accuracy caiga entre un 10% y 50% dependiendo de <code>p</code>. En producción esto se manifiesta como predicciones inconsistentes para el mismo input.</p>
+<p><strong>El código problemático se ve así:</strong></p>
+<pre><code class="language-python"># ❌ MAL: inference sin eval()
+predictions = []
+for sample in test_loader:
+    model.train()  # ← Dropout sigue activo
+    output = model(sample)
+    predictions.append(output)
+
+# El modelo está silenciando aleatoriamente durante inference
+# → resultados no reproducibles
+# → accuracy degradada
+</code></pre>
+<p><strong>La solución correcta:</strong></p>
+<pre><code class="language-python"># ✅ BIEN: inference con eval()
+model.eval()  # ← Apaga dropout, BatchNorm usa running stats
+predictions = []
+with torch.no_grad():  # ← No calcula gradientes, más rápido
+    for sample in test_loader:
+        output = model(sample)
+        predictions.append(output)
+
+# ⚠️ IMPORTANTE: si hacés fine-tuning o quieres seguir entrenando
+# después de inference, recordá volver a train mode
+model.train()  # ← Volver a modo entrenamiento
+</code></pre>
+<h3>Error 2: Usar Dropout Rate de 0.5 Por Defecto Sin Justificación</h3>
+<p><strong>El problema completo:</strong> El artículo original de Srivastava (2014) usaba <code>p=0.5</code> como default y muchas implementaciones heredaron ese valor sin entender el contexto. ¿Qué pasa con <code>p=0.5</code>?</p>
+<ul>
+<li>En redes pequeñas (&lt;10K parámetros): puede ser demasiado agresivo y causar underfitting</li>
+<li>En redes enormes (BERT, GPT): <code>p=0.1</code> es más común porque las capas ya tienen mucha regularización implícita</li>
+<li>En la última capa antes del output: <code>p &lt; 0.1</code> porque no querés perder información learned</li>
+<li>En CNNs: spatial dropout con <code>p &lt; 0.3</code> porque las features ya están espacialmente correlacionadas</li>
+</ul>
+<p><strong>El código problemático:</strong></p>
+<pre><code class="language-python"># ❌ MAL: copiar p=0.5 ciegamente
+class MyModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.fc1 = nn.Linear(784, 256)
+        self.fc2 = nn.Linear(256, 128)
+        self.fc3 = nn.Linear(128, 10)
+        self.dropout = nn.Dropout(p=0.5)  # ← ¿Por qué 0.5? Ni idea, el tutorial lo decía
+
+# En redes shallow, esto puede causar underfitting severo
+</code></pre>
+<p><strong>La guía práctica:</strong></p>
+<pre><code class="language-python"># ✅ BIEN: ajustar p según la arquitectura y profundidad
+class MyModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        # Capas early: más capacidad, más dropout puede ayudar
+        self.dropout1 = nn.Dropout(p=0.3)
+
+        # Capas intermedias
+        self.dropout2 = nn.Dropout(p=0.2)
+
+        # Última capa antes del output: mínimo dropout
+        # Si tu red ya tiene BatchNorm, el dropout puede ser contraproducente aquí
+        self.dropout3 = nn.Dropout(p=0.1)
+
+# Y recordá: dropout NO es la única forma de regularización
+# Weight decay (L2), data augmentation, y early stopping también cuentan
+</code></pre>
+<h3>Error 3: No Usar Spatial Dropout en Redes Convolucionales</h3>
+<p><strong>El problema completo:</strong> En una CNN, después de una capa convolucional tenés <code>(B, C, H, W)</code> feature maps. Si aplicás <code>nn.Dropout2d(p=0.5)</code>, el 50% de los <em>pixels individuales</em> se silencian. Pero esos pixels dentro de un mismo canal están altamente correlacionados espacialmente (contenido de la imagen). El 50% de pixels activos todavía proporcionan suficiente contexto para que la red dependa de correlaciones locales. Spatial dropout silencia canales completos, forzando que la red no dependa de ningún feature map individual.</p>
+<p><strong>El código problemático:</strong></p>
+<pre><code class="language-python"># ❌ MAL: usando dropout 2d estándar en CNNs
+class BadCNN(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.conv1 = nn.Conv2d(3, 64, 3, padding=1)
+        self.conv2 = nn.Conv2d(64, 128, 3, padding=1)
+        self.conv3 = nn.Conv2d(128, 256, 3, padding=1)
+        # Dropout estándar: apaga pixeles, NO canales
+        self.dropout = nn.Dropout2d(p=0.5)  # ← Menos efectivo en CNNs
+
+    def forward(self, x):
+        x = F.relu(self.conv1(x))
+        x = self.dropout(x)  # ← Pixeles silenciados, correlación local persiste
+        x = F.relu(self.conv2(x))
+        x = self.dropout(x)
+        x = F.relu(self.conv3(x))
+        return x
+</code></pre>
+<p><strong>La solución correcta:</strong></p>
+<pre><code class="language-python"># ✅ BIEN: spatial dropout en CNNs
+class GoodCNN(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.conv1 = nn.Conv2d(3, 64, 3, padding=1)
+        self.conv2 = nn.Conv2d(64, 128, 3, padding=1)
+        self.conv3 = nn.Conv2d(128, 256, 3, padding=1)
+        # Spatial dropout: silencia CANALES completos
+        self.spatial_dropout = nn.Dropout2d(p=0.3)  # ← Canal completo se apaga
+
+    def forward(self, x):
+        x = F.relu(self.conv1(x))
+        x = self.spatial_dropout(x)  # ← 30% de canales van a 0
+        x = F.relu(self.conv2(x))
+        x = self.spatial_dropout(x)
+        x = F.relu(self.conv3(x))
+        return x
+# → La red no puede depender de un solo feature map
+# → Forza representaciones más distribuidas y robustas
+</code></pre>
+<h2>📊 Variational Dropout y Dropout en Embeddings</h2>
+<p>Hay dos variantes que merecen mención especial porque aparecen en arquitecturas modernas:</p>
+<p><strong>Variational Dropout</strong> (Gal & Ghahramani, 2016): usa la misma máscara de dropout para toda la forward pass en vez de generar una máscara diferente por input. En la práctica, significa que durante el entrenamiento, el mismo subconjunto de neuronas se silencia para todos los inputs de un mini-batch. Esto aproxima la inferencia variacional bayesiana. Se implementa con <code>Dropout(p)</code> en PyTorch donde la máscara se mantiene fija durante el forward pass del batch.</p>
+<p><strong>Embedding Dropout</strong>: statt отдельных dimensiones del embedding, se silencia el embedding completo (todas sus dimensiones) con probabilidad <code>p</code>. Esto es análogo a eliminar una palabra del vocabulario durante entrenamiento. En implementaciones modernas como las de BERT/GPT, se combina con attention dropout y residual dropout con tasas típicamente entre 0.05 y 0.2.</p>
 <hr>
 <h2>💡 Tips Para Producción</h2>
 <ul>
-<li>Monitorea las métricas relevantes durante el entrenamiento</li>
-<li>Usa Dropout de acuerdo a la arquitectura de tu red</li>
-<li>No todas las técnicas sirven para todos los problemas</li>
+<li><strong>Dropout = 0 durante inference</strong>: siempre usá <code>model.eval()</code> antes de predecir. No asumas que "casi" es suficiente.</li>
+<li><strong>Monitoreá la diferencia train/val loss</strong>: si la gap es pequeña pero el val loss sube, el dropout quizás esté siendo contraproducente (bajá el rate).</li>
+<li><strong>Dropout antes de BatchNorm</strong>: el orden import. Dropout silencia activaciones y BatchNorm recalcula estadísticas basadas en lo que recibe. Si silenciás después de BatchNorm, estás distorsionando las estadísticas.</li>
+<li><strong>En RNNs</strong>: usá <code>nn.Dropout</code> entre capas recurrentes, no dentro. El dropout dentro de RNNs (zoneout) es una técnica diferente.</li>
+<li><strong>MC Dropout</strong>: si necesitás incertidumbre, hacé N forward passes con dropout activo en eval mode y promediá los outputs. Es costoso pero da mejores estimaciones de incertidumbre que softmax.</li>
 </ul>
 <hr>
-<p><em>¡Eso es todo por hoy! Nos vemos mañana en el Día 96.</em></p>
+<p><em>Eso es todo por hoy, parcero. Dropout parece simple pero tiene más profundidad de la que la mayoría asume. El que más me duele ver es gente haciendo inference sin <code>model.eval()</code> y preguntándose por qué su accuracy es inconsistent. Mañana en el Día 96 hablamos de BatchNorm — esa capa invisible que hace que tus redes realmente funcionen. ¡Nos vemos!</em></p>
 
   </article>
 
