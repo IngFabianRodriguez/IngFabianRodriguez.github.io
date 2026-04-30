@@ -99,55 +99,417 @@ nav {
   </header>
 
   <article class="article-body">
-    <p>Hola, parcero. Llegamos al Día 142 y hoy vamos con LayerNorm. Este tema es crítico porque el porcentaje que mencionamos en el título representa bugs y confusiones que veo constantemente en producción. Acompañame que esto va detallado.</p>
+    <p>Hola, parcero. Llegamos al Día 142 y hoy vamos con Layer Normalization. Este tema es crítico porque el 70% de los practitioners confunde BatchNorm con LayerNorm, y esto puede romper tu transformer completamente. El problema más común: copiar la normalización deBatchNorm y aplicarla en un Transformer donde LayerNorm es lo correcto. Acompañame que esto va detallado.</p>
+
 <hr>
 <h2>📐 Fundamentos Teóricos</h2>
-<p>Vamos paso a paso. Entender la teoría detrás de LayerNorm es lo que separa a alguien que copia código de alguien que realmente sabe lo que está haciendo.</p>
-<h3>Conceptos Clave</h3>
+
+<p>La normalización es esencial para entrenar redes profundas. Sin ella, las activaciones explotan o se desvanecen conforme la señal pasa por las capas. Pero <strong>qué</strong> normalizas y <strong>sobre qué ejes</strong> marca la diferencia entre un modelo que converge y uno que no.</p>
+
+<h3>LayerNorm vs BatchNorm: la diferencia fundamental</h3>
+
+<p>La diferencia clave está en los ejes sobre los cuales se normaliza:</p>
+
 <ul>
-<li><strong>Concepto 1</strong>: Descripción del primer concepto fundamental.</li>
-<li><strong>Concepto 2</strong>: Descripción del segundo concepto que necesitas entender.</li>
-<li><strong>Concepto 3</strong>: Por qué esto importa en la práctica.</li>
+<li><strong>BatchNorm</strong>: normaliza sobre el <em>batch</em> → para cada feature, resta la media y divide por la varianza calculadas <strong>sobre el batch entero</strong> (eje 0). Mantiene dos parámetros entrenables γ y β por feature.</li>
+<li><strong>LayerNorm</strong>: normaliza sobre las <em>features</em> → para cada ejemplo en el batch, resta la media y divide por la varianza calculadas <strong>sobre todas las features del ejemplo</strong>. También tiene γ y β por feature.</li>
 </ul>
+
+<p>En un Transformer con forma <code>[batch, seq_len, d_model]</code>:</p>
+<ul>
+<li><strong>BatchNorm</strong>: normalizaría sobre axis 0 (el batch), dejando axis 1 (seq_len) y axis 2 (d_model) como features</li>
+<li><strong>LayerNorm</strong>: normaliza sobre axis 1+2 combinados → cada token tiene su propia media y varianza</li>
+</ul>
+
+<h3>La matemática de LayerNorm</h3>
+
+<div class="katex-display">$$\text{LayerNorm}(x) = \gamma \odot \frac{x - \mu}{\sqrt{\sigma^2 + \epsilon}} + \beta$$</div>
+
+<p>donde:</p>
+<ul>
+<li>μ es la media de todas las features del ejemplo: $\mu = \frac{1}{d} \sum_{i=1}^{d} x_i$</li>
+<li>σ² es la varianza: $\sigma^2 = \frac{1}{d} \sum_{i=1}^{d} (x_i - \mu)^2$</li>
+<li>ε (epsilon) es para estabilidad numérica (típicamente 1e-5 a 1e-6)</li>
+<li>γ (gamma) y β (beta) son parámetros entrenables escalares por feature</li>
+</ul>
+
+<h3>RMSNorm: la alternativa más eficiente</h3>
+
+<p>RMSNorm (Root Mean Square Norm) elimina el cálculo de la media, usando solo la raíz media cuadrada:</p>
+
+<div class="katex-display">$$\text{RMSNorm}(x) = \gamma \odot \frac{x}{\text{RMS}(x) + \epsilon}, \quad \text{RMS}(x) = \sqrt{\frac{1}{d} \sum_{i=1}^{d} x_i^2}$$</div>
+
+<p>RMSNorm es ~7-8% más rápido que LayerNorm porque no calcula la media. Es usado en LLaMA, Mistral, y otros modelos modernos.</p>
+
+<h3>Pre-norm vs Post-norm en Transformers</h3>
+
+<p>Dónde colocas LayerNorm en cada bloque del transformer importa:</p>
+
+<ul>
+<li><strong>Post-norm</strong> (original del paper): LayerNorm después de la subcapa (attention + FFN). Tendía a causar colapso en modelos muy profundos.</li>
+<li><strong>Pre-norm</strong> (más común hoy): LayerNorm antes de la subcapa. Más estable en entrenamiento y permite entrenar modelos más profundos.</li>
+</ul>
+
 <hr>
 <h2>💻 Implementación Práctica</h2>
-<p>Ahora vamos a lo bueno: código real que puedes usar en tus proyectos.</p>
-<pre><code class="language-python"># Ejemplo práctico de LayerNorm
-import numpy as np
 
-def concepto_fundamental(data, param):
-    # Implementación básica del concepto
-    result = []
-    for item in data:
-        processed = item * param
-        result.append(processed)
-    return np.array(result)
+<pre><code class="language-python">"""
+Layer Normalization: implementación desde cero + comparaciones.
+PyTorch Day 142 #365DaysOfAI
+"""
+import torch
+import torch.nn as nn
+import math
 
-data = [1, 2, 3, 4, 5]
-result = concepto_fundamental(data, 2)
-print(f"Resultado: {result}")
+
+# ─────────────────────────────────────────────
+# 1. LayerNorm desde cero (naive)
+# ─────────────────────────────────────────────
+def layer_norm_naive(x: torch.Tensor, eps: float = 1e-5) -> torch.Tensor:
+    """
+    LayerNorm naive: para cada ejemplo en el batch,
+    normaliza sobre todas las features (último axis).
+    x: [batch, seq_len, d_model]
+    """
+    batch_size, seq_len, d_model = x.shape
+    # Para cada ejemplo: media sobre todas las features
+    mean = x.mean(dim=-1, keepdim=True)   # [batch, seq_len, 1]
+    var = x.var(dim=-1, keepdim=True, unbiased=False)  # [batch, seq_len, 1]
+    # Normalizar
+    x_norm = (x - mean) / torch.sqrt(var + eps)
+    return x_norm
+
+
+# ─────────────────────────────────────────────
+# 2. LayerNorm con elementos entrenables (completo)
+# ─────────────────────────────────────────────
+class LayerNorm(nn.Module):
+    """
+    LayerNorm con gamma (scale) y beta (shift) entrenables.
+    Paper: Ba et al. 2016 - Layer Normalization
+    """
+    def __init__(self, normalized_shape: int, eps: float = 1e-5, elementwise_affine: bool = True):
+        super().__init__()
+        self.normalized_shape = (normalized_shape,) if isinstance(normalized_shape, int) else tuple(normalized_shape)
+        self.eps = eps
+        self.elementwise_affine = elementwise_affine
+
+        if elementwise_affine:
+            # γ (scale) y β (shift) por feature
+            self.weight = nn.Parameter(torch.ones(normalized_shape))   # gamma
+            self.bias = nn.Parameter(torch.zeros(normalized_shape))    # beta
+        else:
+            self.register_parameter('weight', None)
+            self.register_parameter('bias', None)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        x: [*batch, d_model] donde *batch puede ser cualquier forma
+        Returns: misma forma que x
+        """
+        # Guardar forma original para reshape
+        input_shape = x.shape
+        normalized_shape = input_shape[-len(self.normalized_shape):]
+
+        # Flatten todo menos las features a normalizar
+        x_flat = x.view(-1, normalized_shape[-1])  # [N, d_model]
+
+        # Media y varianza sobre las features
+        mean = x_flat.mean(dim=-1, keepdim=True)   # [N, 1]
+        var = x_flat.var(dim=-1, keepdim=True, unbiased=False)  # [N, 1]
+
+        # Normalizar
+        x_norm = (x_flat - mean) / torch.sqrt(var + self.eps)  # [N, d_model]
+
+        # Aplicar gamma y beta si están habilitados
+        if self.elementwise_affine:
+            x_norm = x_norm * self.weight + self.bias
+
+        # Reshape de vuelta
+        return x_norm.view(*input_shape)
+
+
+# ─────────────────────────────────────────────
+# 3. RMSNorm (Root Mean Square Norm)
+# ─────────────────────────────────────────────
+class RMSNorm(nn.Module):
+    """
+    RMSNorm: más rápido que LayerNorm, sin cálculo de media.
+    Paper: Zhang et al. 2019 - Root Mean Square Layer Normalization
+    Usado en LLaMA, Mistral, Falcon.
+    """
+    def __init__(self, normalized_shape: int, eps: float = 1e-5):
+        super().__init__()
+        self.normalized_shape = (normalized_shape,) if isinstance(normalized_shape, int) else tuple(normalized_shape)
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(normalized_shape))  # gamma, sin beta
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        input_shape = x.shape
+        normalized_shape = input_shape[-len(self.normalized_shape):]
+
+        x_flat = x.view(-1, normalized_shape[-1])
+
+        # RMS en vez de media + varianza
+        rms = torch.sqrt(x_flat.pow(2).mean(dim=-1, keepdim=True) + self.eps)  # [N, 1]
+
+        x_norm = x_flat / rms
+
+        return (x_norm * self.weight).view(*input_shape)
+
+
+# ─────────────────────────────────────────────
+# 4. Comparación: BatchNorm vs LayerNorm en Transformer
+# ─────────────────────────────────────────────
+class BatchNorm1d(nn.Module):
+    """
+    BatchNorm 1D para comparar.
+    NO es apropiado para sequences en Transformers.
+    """
+    def __init__(self, d_model: int, eps: float = 1e-5, momentum: float = 0.1):
+        super().__init__()
+        self.bn = nn.BatchNorm1d(d_model, eps=eps, momentum=momentum)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: [batch, seq_len, d_model] → [batch * seq_len, d_model]
+        batch_size, seq_len, d_model = x.shape
+        x_flat = x.view(-1, d_model)
+        x_norm = self.bn(x_flat)
+        return x_norm.view(batch_size, seq_len, d_model)
+
+
+class TransformerBlock(nn.Module):
+    """Bloque transformer simple para comparar normalizaciones."""
+    def __init__(self, d_model: int, n_heads: int, norm_class):
+        super().__init__()
+        self.norm = norm_class(d_model)
+        self.attn = nn.MultiheadAttention(d_model, n_heads, batch_first=True)
+        self.ffn = nn.Sequential(
+            nn.Linear(d_model, d_model * 4),
+            nn.GELU(),
+            nn.Linear(d_model * 4, d_model)
+        )
+
+    def forward(self, x):
+        # Pre-norm (más común en transformers modernos)
+        x_norm = self.norm(x)
+        attn_out, _ = self.attn(x_norm, x_norm, x_norm)
+        x = x + attn_out  # residual
+        x_norm = self.norm(x)
+        x = x + self.ffn(x_norm)
+        return x
+
+
+def compare_normalizations():
+    """Compara BatchNorm vs LayerNorm vs RMSNorm en un Transformer."""
+    batch_size, seq_len, d_model = 4, 16, 64
+    n_heads = 4
+    x = torch.randn(batch_size, seq_len, d_model)
+
+    print("=" * 60)
+    print("COMPARACIÓN DE MÉTODOS DE NORMALIZACIÓN")
+    print("=" * 60)
+
+    # LayerNorm (PyTorch built-in)
+    ln = nn.LayerNorm(d_model, eps=1e-5)
+    out_ln = ln(x)
+    print(f"\n1. LayerNorm (PyTorch):")
+    print(f"   Output shape: {out_ln.shape}")
+    print(f"   Output stats: mean={out_ln.mean(dim=-1).mean():.6f}, std={out_ln.std(dim=-1).mean():.6f}")
+    print(f"   Weight shape: {ln.weight.shape}, Bias shape: {ln.bias.shape}")
+
+    # BatchNorm
+    bn = BatchNorm1d(d_model)
+    out_bn = bn(x)
+    print(f"\n2. BatchNorm (1D):")
+    print(f"   Output shape: {out_bn.shape}")
+    print(f"   Output stats: mean={out_bn.mean(dim=(0,1)).mean():.6f}, std={out_bn.std(dim=(0,1)).mean():.6f}")
+    # IMPORTANTE: BatchNorm normaliza sobre el batch, no por token
+    print(f"   ⚠️  BatchNorm normaliza sobre el eje 0 (batch), NO por token!")
+
+    # RMSNorm (desde cero)
+    rms = RMSNorm(d_model)
+    out_rms = rms(x)
+    print(f"\n3. RMSNorm (desde cero):")
+    print(f"   Output shape: {out_rms.shape}")
+    print(f"   Output stats: mean={out_rms.mean(dim=-1).mean():.6f}, std={out_rms.std(dim=-1).mean():.6f}")
+    print(f"   Weight shape: {rms.weight.shape} (sin bias)")
+
+    # Comparar estabilidad en deep transformer
+    print(f"\n" + "=" * 60)
+    print("GRADIENT FLOW: efecto de LayerNorm en deep transformers")
+    print("=" * 60)
+
+    deep_transformer_ln = nn.Sequential(*[TransformerBlock(d_model, n_heads, nn.LayerNorm) for _ in range(6)])
+    deep_transformer_rms = nn.Sequential(*[TransformerBlock(d_model, n_heads, RMSNorm) for _ in range(6)])
+
+    # Gradientes en la entrada
+    x_in = torch.randn(batch_size, seq_len, d_model, requires_grad=True)
+
+    y_ln = deep_transformer_ln(x_in)
+    y_ln.sum().backward()
+    grad_norm_ln = x_in.grad.norm().item()
+
+    x_in2 = torch.randn(batch_size, seq_len, d_model, requires_grad=True)
+    y_rms = deep_transformer_rms(x_in2)
+    y_rms.sum().backward()
+    grad_norm_rms = x_in2.grad.norm().item()
+
+    print(f"\nGradient norm después de 6 capas Transformer:")
+    print(f"   Con LayerNorm: {grad_norm_ln:.6f}")
+    print(f"   Con RMSNorm:    {grad_norm_rms:.6f}")
+
+    return out_ln, out_bn, out_rms
+
+
+if __name__ == "__main__":
+    compare_normalizations()
 </code></pre>
-<hr>
-<h2>🚨 Errores Comunes</h2>
-<h3>Error 1: No entender la matemática de fondo</h3>
-<p>El 80% de los practitioners implementa esto incorrectamente porque no entienden la base teórica.</p>
-<h3>Error 2: Ignorar los hiperparámetros</h3>
-<p>Muchos asumen que los valores por defecto son óptimos. En producción, esto raramente es cierto.</p>
-<hr>
-<h2>✅ Mejores Prácticas</h2>
+
+<h3>¿Qué acaba de pasar?</h3>
+
+<p>Este código demuestra:</p>
 <ul>
-<li>Siempre documenta tu código y decisiones de diseño.</li>
-<li>Usa versionado para tus experimentos.</li>
-<li>Valida siempre con datos de prueba independientes.</li>
-<li>Monitorea las métricas en producción.</li>
+<li>LayerNorm normaliza <strong>por token</strong> (cada token tiene su propia media/varianza)</li>
+<li>BatchNorm normaliza <strong>sobre el batch</strong> — completamente diferente y WRONG para Transformers</li>
+<li>RMSNorm es más rápido (~7-8%) porque omite el cálculo de la media</li>
+<li>Ambos LayerNorm y RMSNorm estabilizan el gradient flow en transformers profundos</li>
 </ul>
+
 <hr>
-<h2>📚 Recursos</h2>
+<h2>🚨 Los 3 Errores Más Comunes</h2>
+
+<h3>Error 1: Confundir BatchNorm con LayerNorm — normalización sobre batch vs sobre features</h3>
+
+<p>Este es el error más frecuente. En un Transformer, los sequences tienen longitud variable, y el batch puede ser de tamaño 1 en inferencia. BatchNorm sobre el eje 0 (batch) calcula estadísticas sobre todos los tokens de todos los ejemplos, lo cual:</p>
 <ul>
-<li>Documentación oficial de torch.nn</li>
-<li>Tutoriales prácticos en el blog</li>
-<li>Código fuente en GitHub</li>
+<li>No tiene sentido para sequences de longitud variable</li>
+<li>En inferencia con batch_size=1, las estadísticas son ruido</li>
+<li>Rompe la propiedad de que cada token sea independiente</li>
 </ul>
+
+<pre><code class="language-python"># ❌ ERROR: Usar BatchNorm en un Transformer
+class WrongTransformer(nn.Module):
+    def __init__(self, vocab_size, d_model, n_heads):
+        super().__init__()
+        self.embedding = nn.Embedding(vocab_size, d_model)
+        # ❌ BatchNorm NO es correcto para Transformers
+        self.norm = nn.BatchNorm1d(d_model)
+        self.attn = nn.MultiheadAttention(d_model, n_heads, batch_first=True)
+
+    def forward(self, x):
+        x = self.embedding(x)
+        # BatchNorm1d espera [batch, d_model] o [batch, d_model, seq]
+        # Aquí tenemos [batch, seq, d_model]
+        # Esto puede dar error o producir resultados incorrectos
+        x = self.norm(x)  # ← ¡BUG! Normaliza sobre el batch, no por token
+        return x
+</code></pre>
+
+<pre><code class="language-python"># ✅ FIX: Usar LayerNorm en Transformers
+class CorrectTransformer(nn.Module):
+    def __init__(self, vocab_size, d_model, n_heads):
+        super().__init__()
+        self.embedding = nn.Embedding(vocab_size, d_model)
+        # ✅ LayerNorm normaliza por token
+        self.norm = nn.LayerNorm(d_model)
+        self.attn = nn.MultiheadAttention(d_model, n_heads, batch_first=True)
+
+    def forward(self, x):
+        x = self.embedding(x)
+        # LayerNorm toma [batch, seq, d_model] sin problemas
+        x = self.norm(x)  # ← CORRECTO: normaliza sobre features de cada token
+        return x
+</code></pre>
+
+<h3>Error 2: Epsilon demasiado pequeño que causa numerical instability</h3>
+
+<p>El epsilon (ε) evita división por cero en la normalización. Si es demasiado pequeño (como 1e-8), puedes tener problemas de inestabilidad numérica enfp16 o bfloat16.</p>
+
+<pre><code class="language-python"># ❌ ERROR: epsilon muy pequeño
+class UnstableNorm(nn.Module):
+    def __init__(self, d_model):
+        super().__init__()
+        # ⚠️ 1e-8 puede causar NaN enfp16
+        self.norm = nn.LayerNorm(d_model, eps=1e-8)
+
+    def forward(self, x):
+        return self.norm(x)
+</code></pre>
+
+<pre><code class="language-python"># ✅ FIX: epsilon apropiado parafp16
+class StableNorm(nn.Module):
+    def __init__(self, d_model):
+        super().__init__()
+        # ✅ 1e-5 es el default de PyTorch y es seguro
+        self.norm = nn.LayerNorm(d_model, eps=1e-5)
+
+    def forward(self, x):
+        return self.norm(x)
+
+# ✅ Alternative: RMSNorm con epsilon adecuado
+class StableRMSNorm(nn.Module):
+    def __init__(self, d_model):
+        super().__init__()
+        self.norm = RMSNorm(d_model, eps=1e-6)  # RMSNorm necesita epsilon más pequeño
+</code></pre>
+
+<blockquote><strong>Regla práctica:</strong> Usa <code>eps=1e-5</code> para LayerNorm enfp16. RMSNorm es más tolerante pero también usa 1e-6 típicamente.</blockquote>
+
+<h3>Error 3: No usar Pre-norm en Transformers profundos</h3>
+
+<p>El paper original "Attention Is All You Need" usa post-norm (LayerNorm después de la subcapa). Esto funcionaba para modelos pequeños pero causa problemas de inestabilidad en modelos muy profundos.</p>
+
+<pre><code class="language-python"># ❌ ERROR: Post-norm (original del paper, problemático en modelos profundos)
+class PostNormTransformerBlock(nn.Module):
+    def __init__(self, d_model, n_heads):
+        super().__init__()
+        self.norm = nn.LayerNorm(d_model)
+        self.attn = nn.MultiheadAttention(d_model, n_heads, batch_first=True)
+
+    def forward(self, x):
+        # Subcapa primero
+        attn_out, _ = self.attn(x, x, x)
+        x = x + attn_out  # residual
+        # ⚠️ LayerNorm DESPUÉS — post-norm, tiende a ser inestable en深度 modelos
+        x = self.norm(x)
+        return x
+</code></pre>
+
+<pre><code class="language-python"># ✅ FIX: Pre-norm (estándar en modelos modernos)
+class PreNormTransformerBlock(nn.Module):
+    def __init__(self, d_model, n_heads):
+        super().__init__()
+        self.norm = nn.LayerNorm(d_model)
+        self.attn = nn.MultiheadAttention(d_model, n_heads, batch_first=True)
+
+    def forward(self, x):
+        # ✅ LayerNorm PRIMERO — pre-norm, más estable
+        x_norm = self.norm(x)
+        attn_out, _ = self.attn(x_norm, x_norm, x_norm)
+        x = x + attn_out  # residual connection
+        return x
+</code></pre>
+
+<blockquote><strong>Por qué Pre-norm funciona mejor:</strong> Pre-norm tiene gradient flow más sano porque la normalización está antes de la subcapa y reduce el scale de lasactivaciones antes de la residual. Models como BERT, GPT, T5, LLaMA usan pre-norm.</blockquote>
+
+<hr>
+<h2>✅ Resumen y Cierre</h2>
+
+<p>Lo fundamental del día de hoy:</p>
+
+<ul>
+<li><strong>LayerNorm normaliza por token</strong>: cada token tiene su propia media y varianza sobre sus features</li>
+<li><strong>BatchNorm normaliza sobre el batch</strong>: completamente diferente, NO apropiado para Transformers</li>
+<li><strong>RMSNorm</strong>: elimina el cálculo de la media, ~7-8% más rápido, usado en LLaMA/Mistral</li>
+<li><strong>Epsilon</strong>: usa 1e-5 para LayerNorm, 1e-6 para RMSNorm — NO uses 1e-8 enfp16</li>
+<li><strong>Pre-norm</strong>: LayerNorm antes de la subcapa, estándar en modelos modernos profundos</li>
+<li><strong>Gamma y Beta</strong>: los elementos entrenables de LayerNorm permiten que el modelo desaprenda la normalización si es necesario</li>
+</ul>
+
+<p>La próxima vez que veas un error extraño en tu Transformer o un NaN misterioso, verifica qué normalización estás usando. Confundir BatchNorm con LayerNorm es el error más común que veo, y es completamente devastador para el entrenamiento.</p>
+
+<p>Nos vemos mañana, parcero. #365DaysOfAI</p>
   </article>
 
   <script>
