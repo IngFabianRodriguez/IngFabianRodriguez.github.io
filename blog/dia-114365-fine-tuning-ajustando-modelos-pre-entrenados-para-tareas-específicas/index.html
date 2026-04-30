@@ -118,62 +118,525 @@ nav {
   </header>
 
   <article class="article-body">
-    <h1>Fine-tuning - Ajustando Modelos Pre-entrenados Para Tareas Específicas</h1>
-<p>Hágale pues, parcero. Llegamos al Día 114 y hoy toca hablar de fine-tuning. Después de más de 10 años rompiendo redes neuronales en producción, te digo que esto es más jugoso de lo que parece. Dejá el café, acomodate, porque esto es más jugoso de lo que parece.</p>
+<p>Qué tal parientes, Día 114 y hoy toca un tema que cuando uno lo hace bien, feels como ganar la Libertadores: fine-tuning. Así como cuando uno prende una arepa en la brasa y la voltea en el momento exacto — con el timing perfecto, doradita por fuera y blandita por dentro — el fine-tuning bien hecho puede transformar un modelo genérico en una máquina especializada. Muchos se lanzan a afinar modelos sin entender las trampas. HOY se las cuento.</p>
+
 <hr>
-<h2>🎯 ¿Qué Es Fine-tuning?</h2>
-<p>En este artículo exploramos Fine-tuning en profundidad, con ejemplos prácticos y código.</p>
-<h3>Conceptos clave:</h3>
+<h2>🎯 ¿Qué Es Fine-tuning Y Por Qué No Es Solo "Entrenar Más"?</h2>
+
+<p>Fine-tuning es el proceso de tomar un modelo pre-entrenado y continuar el entrenamiento en un dataset específico para una tarea particular. No es entrenar desde cero — es ajustar los pesos ya aprendidos para especializarse.</p>
+
+<p>La diferencia es crucial:</p>
+
 <ul>
-<li><strong>Definición</strong>: Fine-tuning es fundamental en deep learning</li>
-<li><strong>Aplicación</strong>: Se usa en arquitecturas modernas de redes neuronales</li>
-<li><strong>Por qué importa</strong>: Sin esto, muchos modelos no podrían entrenar eficientemente</li>
+<li><strong>Pre-training:</strong> El modelo aprende lenguaje general, gramática, hechos, razonamiento básico. Requiere terabytes de texto y semanas de entrenamiento.</li>
+<li><strong>Fine-tuning:</strong> El modelo se especializa en una tarea específica. Requiere relativamente poco datos y minutos/horas de entrenamiento.</li>
 </ul>
+
+<p>El proceso funciona porque los primeros layers del modelo aprenden features generales (estructura del lenguaje, patrones gramaticales) que son útiles para todas las tareas. Los últimos layers se especializan en la tarea específica. Fine-tuning ajusta todos los pesos para especializarse.</p>
+
+<p>Existem dos abordaxes principais:</p>
+
+<ul>
+<li><strong>Full fine-tuning:</strong> Se actualizan TODOS los parámetros del modelo. Mayor capacidad de adaptación pero requiere más recursos.</li>
+<li><strong>Parameter-efficient fine-tuning (PEFT):</strong> Se congelan la mayoría de parámetros y solo se entrenan adaptadores pequeños. LoRA, QLoRA, adapters. Mucho más eficiente.</li>
+</ul>
+
 <hr>
-<h2>📐 La Matemática Detrás De Fine-tuning</h2>
-<p>La matemática que hace posible la magia de Fine-tuning:</p>
+<h2>📐 La Matemática — Entendiendo El Proceso</h2>
+
+<p>En fine-tuning supervisado, el objetivo es minimizar la loss específica de la tarea:</p>
+
+<p><code>Loss = -Σ y_true * log(y_pred)</code></p>
+
+<p> donde y_pred = softmax(model(x; θ))</p>
+
+<p>Durante fine-tuning, los gradientes se calculan sobre la loss de la tarea específica y se propagan hacia atrás. La key insight es que el learning rate durante fine-tuning es típicamente 10-100x menor que en pre-training. Esto es crucial porque:</p>
+
+<ul>
+<li>Si el LR es muy alto → catastrophic forgetting (el modelo "olvida" lo que sabía)</li>
+<li>Si el LR es muy bajo → el modelo no aprende la tarea nueva (underfitting)</li>
+</ul>
+
+<p>La fórmula del learning rate con warmup:</p>
+
+<p><code>lr = lr_max * min(step / warmup_steps, 1.0) * cos((step - warmup_steps) / (total_steps - warmup_steps) * π)</code></p>
+
+<p>Ahora veamos la implementación completa:</p>
+
 <pre><code class="language-python">import torch
 import torch.nn as nn
+from torch.utils.data import Dataset, DataLoader
+from transformers import (
+    AutoModelForSequenceClassification,
+    AutoTokenizer,
+    TrainingArguments,
+    Trainer,
+    DataCollatorWithPadding,
+    EarlyStoppingCallback
+)
+from sklearn.metrics import accuracy, f1_score, precision_score, recall_score
+import numpy as np
 
-# Ejemplo de Fine-tuning
-x = torch.randn(32, 64)
-print(f'Input: {x.shape}')
-</code></pre>
-<hr>
-<h2>🚀 Implementación En PyTorch</h2>
-<pre><code class="language-python"># Implementación de Fine-tuning
-class Fine-tuningBlock(nn.Module):
-    def __init__(self):
-        super().__init__()
-        # Capas del bloque
+# =============================================================================
+# 1. Dataset Personalizado
+# =============================================================================
+
+class SentimentDataset(Dataset):
+    """
+    Dataset para clasificación de sentimientos.
+    Supongamos que tenemos reviews de productos.
+    """
+    def __init__(self, texts, labels, tokenizer, max_length=512):
+        self.texts = texts
+        self.labels = labels
+        self.tokenizer = tokenizer
+        self.max_length = max_length
     
-    def forward(self, x):
-        return x
+    def __len__(self):
+        return len(self.texts)
+    
+    def __getitem__(self, idx):
+        text = str(self.texts[idx])
+        label = int(self.labels[idx])
+        
+        encoding = self.tokenizer(
+            text,
+            truncation=True,
+            max_length=self.max_length,
+            padding=False,  # No padding aquí, el DataCollator lo hace
+            return_tensors=None
+        )
+        
+        return {
+            'input_ids': encoding['input_ids'],
+            'attention_mask': encoding['attention_mask'],
+            'labels': label
+        }
 
-# Uso
-model = Fine-tuningBlock()
-output = model(x)
-print(f"Output shape: {output.shape}")
+# =============================================================================
+# 2. Función De Métricas
+# =============================================================================
+
+def compute_metrics(eval_pred):
+    """
+    Computa métricas para evaluación.
+    Importante: la API de HuggingFace espera este formato exacto.
+    """
+    predictions, labels = eval_pred
+    predictions = np.argmax(predictions, axis=-1)
+    
+    accuracy_val = accuracy_score(labels, predictions)
+    f1_val = f1_score(labels, predictions, average='weighted')
+    precision_val = precision_score(labels, predictions, average='weighted')
+    recall_val = recall_score(labels, predictions, average='weighted')
+    
+    return {
+        'accuracy': accuracy_val,
+        'f1': f1_val,
+        'precision': precision_val,
+        'recall': recall_val
+    }
+
+# =============================================================================
+# 3. Fine-Tuning Completo Con HF Trainer
+# =============================================================================
+
+def fine_tune_model(
+    model_name="bert-base-uncased",
+    train_texts=None,
+    train_labels=None,
+    val_texts=None,
+    val_labels=None,
+    output_dir="./fine_tuned_model",
+    learning_rate=2e-5,
+    epochs=3,
+    batch_size=16,
+    warmup_steps=100,
+    weight_decay=0.01,
+    early_stopping_patience=3
+):
+    """
+    Pipeline completo de fine-tuning con HuggingFace Trainer.
+    
+    Args:
+        model_name: Nombre del modelo pre-entrenado
+        train_texts: Lista de textos de entrenamiento
+        train_labels: Lista de labels de entrenamiento
+        val_texts: Lista de textos de validación
+        val_labels: Lista de labels de validación
+        output_dir: Directorio para guardar el modelo
+        learning_rate: Learning rate (ver errores comunes)
+        epochs: Número de épocas
+        batch_size: Tamaño de batch
+        warmup_steps: Pasos de warmup (ver errores comunes)
+        weight_decay: Weight decay para regularización
+        early_stopping_patience: Épocas sin mejora antes de parar
+    
+    Returns:
+        trainer: El objeto Trainer entrenado
+    """
+    
+    print("=" * 60)
+    print("FINE-TUNING PIPELINE")
+    print("=" * 60)
+    print(f"Model: {model_name}")
+    print(f"Learning Rate: {learning_rate}")
+    print(f"Epochs: {epochs}")
+    print(f"Batch Size: {batch_size}")
+    print(f"Warmup Steps: {warmup_steps}")
+    print("=" * 60)
+    
+    # Cargar tokenizer y modelo
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    model = AutoModelForSequenceClassification.from_pretrained(
+        model_name,
+        num_labels=2,  # Binary classification
+        problem_type="single_label_classification"
+    )
+    
+    # Crear datasets
+    train_dataset = SentimentDataset(train_texts, train_labels, tokenizer)
+    val_dataset = SentimentDataset(val_texts, val_labels, tokenizer)
+    
+    print(f"\nTrain samples: {len(train_dataset)}")
+    print(f"Val samples: {len(val_dataset)}")
+    
+    # =================================================================
+    # TrainingArguments - La Configuración Crítica
+    # =================================================================
+    
+    training_args = TrainingArguments(
+        output_dir=output_dir,
+        num_train_epochs=epochs,
+        per_device_train_batch_size=batch_size,
+        per_device_eval_batch_size=batch_size * 2,  # Mayor para evaluación
+        
+        # Learning Rate Configuration
+        learning_rate=learning_rate,
+        weight_decay=weight_decay,
+        
+        # Warmup - CRÍTICO para estabilidad
+        warmup_steps=warmup_steps,
+        warmup_ratio=0.0,  # Usamos warmup_steps directamente
+        
+        # Logging
+        logging_dir=f"{output_dir}/logs",
+        logging_steps=50,
+        log_level="info",
+        
+        # Evaluación
+        eval_strategy="epoch",
+        eval_steps=None,
+        
+        # Guardado del mejor modelo - CRÍTICO
+        load_best_model_at_end=True,
+        metric_for_best_model="eval_loss",
+        greater_is_better=False,
+        save_strategy="epoch",
+        save_total_limit=2,
+        
+        # Reproducibilidad
+        seed=42,
+        dataloader_num_workers=0,
+        
+        # Eficiencia
+        gradient_accumulation_steps=1,
+        fp16=False,  # Cambiar a True si tienes GPU con CUDA
+        
+        # Regularización adicional
+        label_smoothing_factor=0.1,
+        
+        # Desactivar esta opción en producción
+        remove_unused_columns=False,
+    )
+    
+    # =================================================================
+    # DataCollator - Para Padding Dinámico
+    # =================================================================
+    
+    data_collator = DataCollatorWithPadding(
+        tokenizer=tokenizer,
+        padding=True,
+        truncation=True,
+        max_length=512,
+        return_tensors="pt"
+    )
+    
+    # =================================================================
+    # Early Stopping Callback
+    # =================================================================
+    
+    early_stopping = EarlyStoppingCallback(
+        early_stopping_patience=early_stopping_patience,
+        early_stopping_threshold=0.01
+    )
+    
+    # =================================================================
+    # Trainer
+    # =================================================================
+    
+    trainer = Trainer(
+        model=model,
+        args=training_args,
+        train_dataset=train_dataset,
+        eval_dataset=val_dataset,
+        data_collator=data_collator,
+        compute_metrics=compute_metrics,
+        callbacks=[early_stopping],
+    )
+    
+    print("\n🚀 Iniciando entrenamiento...")
+    train_result = trainer.train()
+    
+    print("\n📊 Resultados del entrenamiento:")
+    print(f"  Training loss: {train_result.training_loss:.4f}")
+    print(f"  Training time: {train_result.metrics['train_runtime']:.2f}s")
+    
+    # Guardar modelo y tokenizer
+    trainer.save_model()
+    tokenizer.save_pretrained(output_dir)
+    
+    print(f"\n✅ Modelo guardado en: {output_dir}")
+    
+    # Evaluación final
+    eval_results = trainer.evaluate()
+    print("\n📈 Evaluación final:")
+    for key, value in eval_results.items():
+        print(f"  {key}: {value:.4f}")
+    
+    return trainer
+
+# =============================================================================
+# 4. Gradient Accumulation - Para Batch Sizes Grandes
+# =============================================================================
+
+def fine_tune_with_gradient_accumulation(
+    model_name="bert-base-uncased",
+    train_texts=None,
+    train_labels=None,
+    effective_batch_size=64,  # Batch size efectivo deseado
+    train_batch_size=8,      # Batch size real por dispositivo
+    epochs=3,
+    learning_rate=2e-5
+):
+    """
+    Fine-tuning con gradient accumulation para simulate larger batches.
+    
+    Gradient accumulation permite usar batches efectivos más grandes
+    sin necesidad de más memoria GPU.
+    """
+    
+    # Gradient accumulation steps = effective_batch_size / train_batch_size
+    gradient_accumulation_steps = effective_batch_size // train_batch_size
+    
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    model = AutoModelForSequenceClassification.from_pretrained(
+        model_name,
+        num_labels=2
+    )
+    
+    train_dataset = SentimentDataset(train_texts, train_labels, tokenizer)
+    
+    training_args = TrainingArguments(
+        output_dir="./ft_model",
+        num_train_epochs=epochs,
+        per_device_train_batch_size=train_batch_size,
+        gradient_accumulation_steps=gradient_accumulation_steps,
+        learning_rate=learning_rate,
+        warmup_steps=100,
+        logging_steps=50,
+        eval_strategy="steps",
+        eval_steps=500,
+        load_best_model_at_end=True,
+    )
+    
+    trainer = Trainer(
+        model=model,
+        args=training_args,
+        train_dataset=train_dataset,
+        data_collator=DataCollatorWithPadding(tokenizer),
+    )
+    
+    trainer.train()
+    return trainer
+
+# =============================================================================
+# 5. Uso - Ejemplo Con Datos Sintéticos
+# =============================================================================
+
+if __name__ == "__main__":
+    # Datos sintéticos para demostración
+    train_texts = [
+        "Este producto es increíble, lo recomiendo ampliamente",
+        "Muy mala calidad, no lo compren",
+        "Llegó a tiempo y funciona perfecto",
+        "Producto defectuoso, me decepcionó",
+        "Excelente relación calidad-precio",
+        "Pésimo servicio al cliente",
+    ] * 100  # Multiplicar para tener más datos
+    
+    train_labels = [1, 0, 1, 0, 1, 0] * 100
+    val_texts = [
+        "Buen producto, estoy satisfecho",
+        "No vale la pena, muy caro",
+        "Funciona bien por ahora",
+        "Terrible, se rompió enseguida",
+    ]
+    val_labels = [1, 0, 1, 0]
+    
+    print("Démo: Fine-tuning con dataset sintético")
+    
+    trainer = fine_tune_model(
+        model_name="bert-base-uncased",
+        train_texts=train_texts,
+        train_labels=train_labels,
+        val_texts=val_texts,
+        val_labels=val_labels,
+        output_dir="./demo_fine_tuned_model",
+        learning_rate=2e-5,
+        epochs=2,
+        batch_size=8,
+        warmup_steps=50,
+    )
 </code></pre>
+
 <hr>
-<h2>⚠️ Errores Comunes Y Cómo Evitarlos</h2>
-<h3>Error 1: No entender el orden de operaciones</h3>
-<p><strong>El problema</strong>: El orden en que se aplican las operaciones con Fine-tuning afecta el resultado.</p>
-<p><strong>La solución</strong>: Siempre verifica la dimensión y el orden de las operaciones.</p>
-<h3>Error 2: Olvidar el modo de evaluación</h3>
-<p><strong>El problema</strong>: Fine-tuning puede comportarse diferente en entrenamiento vs inferencia.</p>
-<p><strong>La solución</strong>: Usa model.eval() durante inferencia y model.train() durante entrenamiento.</p>
+<h2>⚠️ Los 3 Errores Que El 85% De Los Practitioners Cometen</h2>
+
+<h3>❌ Error 1: Learning Rate Muy Alto — Catastrophic Forgetting</h3>
+
+<p><strong>El problema:</strong> Usar un learning rate similar al de pre-training (ej: 1e-3) causa que durante fine-tuning los pesos se actualicen drásticamente, "olvidando" lo que el modelo ya aprendió.</p>
+
+<p><strong>El impacto:</strong> El modelo pierde capabilities generales mientras intenta aprender la tarea específica. En clasificación de sentimientos, por ejemplo, el modelo puede empezar a predecir random porque confunde los features de lenguaje general con features de sentimientos.</p>
+
+<p><strong>La solución:</strong></p>
+
+<pre><code class="language-python"># ❌ WRONG: Learning rate de pre-training
+training_args = TrainingArguments(
+    learning_rate=1e-3,  # ❌ Demasiado alto
+    ...
+)
+
+# ✅ CORRECT: Learning rate 10-100x menor
+training_args = TrainingArguments(
+    learning_rate=2e-5,   # ✅ Típicamente 2e-5 a 5e-5 para BERT
+    # o 1e-5 para modelos más grandes como RoBERTa-large
+    ...
+)
+
+# Regla empírica:
+# - BERT-base: 2e-5 a 5e-5
+# - BERT-large: 1e-5 a 3e-5  
+# - RoBERTa: 1e-5 a 2e-5
+# - T5: 1e-3 a 3e-3 (T5 usa different scaling)
+</code></pre>
+
+<h3>❌ Error 2: No Usar Warmup — Loss Spikes y Convergencia Inestable</h3>
+
+<p><strong>El problema:</strong> Sin warmup, el learning rate empieza en el valor máximo desde el primer step. Esto causa que los gradientes sean muy grandes al inicio, antes de que el modelo alcance una región estable del loss landscape.</p>
+
+<p><strong>El impacto:</strong></p>
+<ul>
+<li>Loss spikes durante las primeras épocas</li>
+<li>Convergencia lenta o divergencia</li>
+<li>El modelo puede quedar atrapado en óptimos locales</li>
+</ul>
+
+<p><strong>La solución:</strong></p>
+
+<pre><code class="language-python"># ❌ WRONG: Sin warmup
+training_args = TrainingArguments(
+    warmup_steps=0,  # ❌ Empieza con LR máximo
+    ...
+)
+
+# ✅ CORRECT: Warmup gradual
+training_args = TrainingArguments(
+    warmup_steps=100,  # ✅ 100-500 steps de warmup
+    # o usar warmup_ratio para especificar porcentaje:
+    # warmup_ratio=0.1  (10% de los steps totales)
+    learning_rate=2e-5,
+    ...
+)
+
+# El learning rate schedule con warmup:
+# step 0:     lr = 0
+# step 100:   lr = lr_max (warmup completo)
+# step 500:   lr = lr_max * cos((500-100)/(total-100) * π)
+</code></pre>
+
+<h3>❌ Error 3: No Guardar El Best Model — Pierdes La Mejor Versión</h3>
+
+<p><strong>El problema:</strong> Sin <code>load_best_model_at_end=True</code>, el Trainer guarda el modelo de la última época, no necessarily el mejor. Si training continúa después de que el mejor modelo fue encontrado, los pesos se sobrescriben.</p>
+
+<p><strong>El impacto:</strong> Estás desplegando un modelo subóptimo. En producción, esto significa worse performance para tus usuarios. En research, significa resultados inferiores en tu paper.</p>
+
+<p><strong>La solución:</strong></p>
+
+<pre><code class="language-python"># ❌ WRONG: Sin early stopping ni best model loading
+training_args = TrainingArguments(
+    save_strategy="epoch",  # Solo guarda, no carga el mejor
+    # load_best_model_at_end=False  (default!)
+    ...
+)
+
+# ✅ CORRECT: Early stopping + best model loading
+training_args = TrainingArguments(
+    output_dir="./my_model",
+    num_train_epochs=10,
+    save_strategy="epoch",
+    eval_strategy="epoch",
+    
+    # Critical: cargar el mejor modelo al final
+    load_best_model_at_end=True,
+    metric_for_best_model="eval_f1",  # o "eval_loss"
+    greater_is_better=True,  # Para F1, mayor es mejor
+    
+    # Early stopping para evitar overfitting
+    # (Necesitas añadir EarlyStoppingCallback)
+    ...
+)
+
+# Y en el Trainer:
+early_stopping = EarlyStoppingCallback(
+    early_stopping_patience=3,  # Para después de 3 épocas sin mejora
+    early_stopping_threshold=0.01
+)
+
+trainer = Trainer(
+    ...
+    callbacks=[early_stopping]
+)
+</code></pre>
+
 <hr>
 <h2>💡 Tips Para Producción</h2>
-<ul>
-<li>Monitorea las métricas relevantes durante el entrenamiento</li>
-<li>Usa Fine-tuning de acuerdo a la arquitectura de tu red</li>
-<li>No todas las técnicas sirven para todos los problemas</li>
-</ul>
-<hr>
-<p><em>¡Eso es todo por hoy! Nos vemos mañana en el Día 95.</em></p>
 
-  </article>
+<ul>
+<li><strong>Differential learning rates:</strong> Usa learning rates más bajos para las capas inferiores (que tienen features más generales) y más altos para las superiores. Esto preserva conocimiento mientras se especializa.</li>
+<li><strong>Gradient clipping:</strong> Añade <code>max_grad_norm=1.0</code> para evitar gradient explosion, especialmente con modelos grandes.</li>
+<li><strong>Layer-wise learning rate decay:</strong> Aplica decay exponencial a las capas más cercanas al input. Esto es especialmente efectivo para modelos grandes como BERT.</li>
+<li><strong>Data augmentation:</strong> Para tareas de clasificación con pocos datos, usa back-translation, synonym replacement, o augmentation basada en embeddings.</li>
+<li><strong>Evaluation durante training:</strong> No esperes a que termine el entrenamiento para evaluar. Usa <code>eval_strategy="steps"</code> con checkpoints intermedios.</li>
+</ul>
+
+<hr>
+<h2>📊 Resumen — Lo Que Debes Llevarte</h2>
+
+<ul>
+<li><strong>LR bajo es key:</strong> 2e-5 para la mayoría de tareas. Demasiado alto causa catastrophic forgetting.</li>
+<li><strong>Warmup no es opcional:</strong> 100-500 steps para estabilidad. Sin warmup, loss spikes guaranteed.</li>
+<li><strong>load_best_model_at_end=True:</strong> Siempre. No te quedes con el último modelo.</li>
+<li><strong>Early stopping:</strong> Añade callbacks para parar cuando la mejora se detiene.</li>
+<li><strong>Gradient accumulation:</strong> Úsalo para simular batch sizes grandes sin memory issues.</li>
+<li><strong>Metric correcto:</strong> Asegúrate que <code>greater_is_better</code> coincida con tu métrica.</li>
+</ul>
+
+<p>Pues ahí lo tiens, Colombia. Fine-tuning no es simplemente "entrenar un poco más". Es un arte que requiere entender el modelo pre-entrenado, la tarea objetivo, y cómo combinar ambos sin destruir lo que ya funciona. Con estos tips, ya sabés cómo evitar los errores que el 85% de los practitioners cometen. La próxima vez que tu modelo fine-tuneado haga predictiones peores que el modelo base, ya sabés dónde está el problema.</p>
+
+<p>Nos vemos mañana en el Día 115. Keep fine-tuning, que el que persevera reacha. 🍺</p>
+
+<p><em>— Fabián Rodríguez | #365DaysOfAI</em></p>
 
   <script>
     document.getElementById('themeToggle').addEventListener('click', function() {
