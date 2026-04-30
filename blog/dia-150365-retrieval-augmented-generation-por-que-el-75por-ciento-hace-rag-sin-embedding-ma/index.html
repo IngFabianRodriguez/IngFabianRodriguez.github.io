@@ -99,55 +99,498 @@ nav {
   </header>
 
   <article class="article-body">
-    <p>Hola, parcero. Llegamos al Día 150 y hoy vamos con RAG. Este tema es crítico porque el porcentaje que mencionamos en el título representa bugs y confusiones que veo constantemente en producción. Acompañame que esto va detallado.</p>
+    <p>Hola, parcero. Llegamos al Día 150, mitad de camino en este proyecto de 365 días. Hoy vamos con RAG — Retrieval Augmented Generation — que es básicamente cómo le das memoria de largo plazo a tu modelo. El 75% lo implementa mal porque saltea pasos críticos. Aquí va la implementación correcta.</p>
+
 <hr>
-<h2>📐 Fundamentos Teóricos</h2>
-<p>Vamos paso a paso. Entender la teoría detrás de RAG es lo que separa a alguien que copia código de alguien que realmente sabe lo que está haciendo.</p>
-<h3>Conceptos Clave</h3>
+<h2>📐 Fundamentos: ¿Qué es RAG y por qué importa?</h2>
+
+<p>RAG combina retrieval (búsqueda) con generación (el LLM). En lugar de depender únicamente del knowledge memorized en los pesos del modelo, RAG permite que el modelo acceda a información externa en tiempo real. La matemática:</p>
+
+<p>Dado un query <code>q</code>, el retriever encuentra los top-k documentos más relevantes: <code>D = retrieve(q, k)</code>. Luego el generator produce la respuesta condicionada al contexto recuperado: <code>answer ~ p(y | q, D)</code></p>
+
+<h3>¿Por qué RAG?</h3>
 <ul>
-<li><strong>Concepto 1</strong>: Descripción del primer concepto fundamental.</li>
-<li><strong>Concepto 2</strong>: Descripción del segundo concepto que necesitas entender.</li>
-<li><strong>Concepto 3</strong>: Por qué esto importa en la práctica.</li>
+<li><strong>Memorización limitada</strong>: Los modelos no pueden saber todo — especialmente datos privados, actualizados, o domain-specific.</li>
+<li><strong>Alucinaciones reducidas</strong>: Al condicionar la respuesta en documentos retrieval, el modelo tiene "evidence" para responder.</li>
+<li><strong>Actualizaciones sin retraining</strong>: Cambias los datos, el modelo inmediatamente sabe — sin tocar los pesos.</li>
+<li><strong>Interpretabilidad</strong>: Puedes verificar qué documentos contribuyen a la respuesta.</li>
 </ul>
+
+<h3>Componentes del pipeline RAG</h3>
+<ul>
+<li><strong>Embedding Model</strong>: Convierte texto en vectores densos — típicamente modelos como sentence-transformers.</li>
+<li><strong>Vector Store / Index</strong>: FAISS, ChromaDB, Pinecone — donde se guardan y buscan los embeddings.</li>
+<li><strong>Retriever</strong>: Dado un query, encuentra los chunks más relevantes.</li>
+<li><strong>Generator</strong>: El LLM que produce la respuesta final basada en el contexto recuperado.</li>
+</ul>
+
 <hr>
-<h2>💻 Implementación Práctica</h2>
-<p>Ahora vamos a lo bueno: código real que puedes usar en tus proyectos.</p>
-<pre><code class="language-python"># Ejemplo práctico de RAG
+<h2>💻 Implementación Completa de RAG en PyTorch</h2>
+
+<p>Vamos a construir un pipeline RAG completo desde cero, usando ChromaDB como vector store y un LLM local para la generación.</p>
+
+<pre><code class="language-python">"""
+RAG Pipeline Implementation in PyTorch
+Implementación completa: embedding, retrieval, generation, evaluation
+Usa ChromaDB como vector store y GPT-2 como generator
+"""
+import torch
 import numpy as np
+from typing import List, Dict, Tuple, Optional
+from dataclasses import dataclass
+import chromadb
+from chromadb.config import Settings
+from sentence_transformers import SentenceTransformer
+from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
 
-def concepto_fundamental(data, param):
-    # Implementación básica del concepto
-    result = []
-    for item in data:
-        processed = item * param
-        result.append(processed)
-    return np.array(result)
 
-data = [1, 2, 3, 4, 5]
-result = concepto_fundamental(data, 2)
-print(f"Resultado: {result}")
+@dataclass
+class Document:
+    """Representación de un documento en el pipeline RAG."""
+    content: str
+    metadata: Dict[str, str]
+    doc_id: Optional[str] = None
+
+
+@dataclass
+class RetrievalResult:
+    """Resultado de una consulta de retrieval."""
+    document: Document
+    score: float
+    chunk_id: str
+
+
+class EmbeddingModel:
+    """
+    Wrapper para el modelo de embeddings.
+    Usa sentence-transformers para generar embeddings densos.
+    """
+
+    def __init__(self, model_name: str = "all-MiniLM-L6-v2"):
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.model = SentenceTransformer(model_name, device=self.device)
+        self.dimension = self.model.get_sentence_embedding_dimension()
+
+    def encode(self, texts: List[str], batch_size: int = 32) -> np.ndarray:
+        """Genera embeddings para una lista de textos."""
+        embeddings = self.model.encode(
+            texts,
+            batch_size=batch_size,
+            show_progress_bar=True,
+            convert_to_numpy=True
+        )
+        return embeddings
+
+    def encode_query(self, query: str) -> np.ndarray:
+        """Genera embedding para una query individual."""
+        return self.model.encode(query, convert_to_numpy=True)
+
+
+class VectorStore:
+    """
+    Vector store usando ChromaDB para persistencia y búsqueda.
+    Soporta búsqueda densa (embedding similarity).
+    """
+
+    def __init__(self, collection_name: str = "rag_collection"):
+        self.client = chromadb.Client(Settings(
+            anonymized_telemetry=False,
+            allow_reset=True
+        ))
+        self.collection_name = collection_name
+        self._create_collection()
+
+    def _create_collection(self):
+        """Crea o resetea la colección."""
+        try:
+            self.client.delete_collection(name=self.collection_name)
+        except Exception:
+            pass
+        self.collection = self.client.create_collection(
+            name=self.collection_name,
+            metadata={"hnsw:space": "cosine"}  # cosine similarity
+        )
+
+    def add_documents(
+        self,
+        documents: List[Document],
+        embeddings: np.ndarray
+    ):
+        """
+        Agrega documentos al vector store.
+        ARQUITECTURA DEL CHUNKING: decisión crítica para el recall.
+        """
+        if not documents:
+            return
+
+        ids = [doc.doc_id or f"doc_{i}" for i, doc in enumerate(documents)]
+        metadatas = [doc.metadata for doc in documents]
+        contents = [doc.content for doc in documents]
+
+        self.collection.add(
+            ids=ids,
+            embeddings=embeddings.tolist(),
+            metadatas=metadatas,
+            documents=contents
+        )
+
+    def query(
+        self,
+        query_embedding: np.ndarray,
+        n_results: int = 5
+    ) -> List[RetrievalResult]:
+        """Busca los n documentos más similares a la query."""
+        results = self.collection.query(
+            query_embeddings=[query_embedding.tolist()],
+            n_results=n_results
+        )
+
+        retrieval_results = []
+        for i in range(len(results["ids"][0])):
+            doc = Document(
+                content=results["documents"][0][i],
+                metadata=results["metadatas"][0][i],
+                doc_id=results["ids"][0][i]
+            )
+            retrieval_results.append(RetrievalResult(
+                document=doc,
+                score=results["distances"][0][i],
+                chunk_id=results["ids"][0][i]
+            ))
+
+        return retrieval_results
+
+
+class RAGPipeline:
+    """
+    Pipeline completo de Retrieval-Augmented Generation.
+
+    Incluye:
+    - Indexación de documentos
+    - Retrieval con similarity search
+    - Hybrid retrieval (dense + sparse) — NO IMPLEMENTADO en esta versión simple
+    - Reranking — NO IMPLEMENTADO en esta versión simple
+    - Generación condicionada en contexto
+    """
+
+    def __init__(
+        self,
+        embedding_model_name: str = "all-MiniLM-L6-v2",
+        generator_model_name: str = "gpt2"
+    ):
+        # Embedding model
+        self.embedder = EmbeddingModel(embedding_model_name)
+
+        # Vector store
+        self.vector_store = VectorStore()
+
+        # Generator (LLM)
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.tokenizer = AutoTokenizer.from_pretrained(generator_model_name)
+        self.generator = AutoModelForCausalLM.from_pretrained(generator_model_name)
+        self.generator.to(self.device)
+        self.tokenizer.pad_token = self.tokenizer.eos_token
+
+    def index_documents(
+        self,
+        documents: List[Document],
+        chunk_size: int = 512,
+        chunk_overlap: int = 50
+    ):
+        """
+        Indexa documentos aplicando chunking strategy.
+        ¡ELEGIR BIEN EL CHUNK SIZE ES CRÍTICO!
+        """
+        # Chunking strategy: texto largo -> chunks con overlap
+        chunks = []
+        for doc in documents:
+            if len(doc.content) <= chunk_size:
+                chunks.append(doc)
+            else:
+                # Sliding window chunking
+                for i in range(0, len(doc.content), chunk_size - chunk_overlap):
+                    chunk_text = doc.content[i:i + chunk_size]
+                    if chunk_text.strip():
+                        chunk_doc = Document(
+                            content=chunk_text,
+                            metadata={**doc.metadata, "chunk_index": i // (chunk_size - overlap)},
+                            doc_id=f"{doc.doc_id}_chunk_{i // (chunk_size - overlap)}"
+                        )
+                        chunks.append(chunk_doc)
+
+        # Generar embeddings
+        print(f"Generando embeddings para {len(chunks)} chunks...")
+        texts = [c.content for c in chunks]
+        embeddings = self.embedder.encode(texts)
+
+        # Agregar al vector store
+        self.vector_store.add_documents(chunks, embeddings)
+        print(f"Indexados {len(chunks)} chunks en el vector store.")
+
+    def retrieve(self, query: str, top_k: int = 5) -> List[RetrievalResult]:
+        """Recupera los top-k documentos más relevantes."""
+        query_embedding = self.embedder.encode_query(query)
+        return self.vector_store.query(query_embedding, n_results=top_k)
+
+    def generate_with_context(
+        self,
+        query: str,
+        retrieval_results: List[RetrievalResult],
+        max_new_tokens: int = 200
+    ) -> str:
+        """
+        Genera respuesta condicionada al contexto recuperado.
+        Acá es donde sucede la magia de RAG.
+        """
+        # Construir contexto desde los documentos recuperados
+        context_parts = []
+        for i, result in enumerate(retrieval_results):
+            context_parts.append(
+                f"[Document {i+1}] {result.document.content}"
+            )
+        context = "\n\n".join(context_parts)
+
+        # Prompt con contexto
+        prompt = f"""Based on the following context, answer the question.
+
+Context:
+{context}
+
+Question: {query}
+
+Answer (based only on the context provided):"""
+
+        # Tokenizar y generar
+        inputs = self.tokenizer(prompt, return_tensors="pt", truncation=True, max_length=2048).to(self.device)
+
+        with torch.no_grad():
+            outputs = self.generator.generate(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                temperature=0.3,
+                do_sample=True,
+                pad_token_id=self.tokenizer.pad_token_id
+            )
+
+        response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+
+        # Extraer solo la respuesta después del prompt
+        answer = response.split("Answer (based only on the context provided):")[-1].strip()
+        return answer
+
+    def rag_query(
+        self,
+        query: str,
+        top_k: int = 5
+    ) -> Tuple[str, List[RetrievalResult]]:
+        """
+        Query end-to-end: retrieve + generate.
+        Retorna (respuesta, documentos_usados) para interpretabilidad.
+        """
+        # Retrieval
+        retrieval_results = self.retrieve(query, top_k=top_k)
+
+        # Generation
+        answer = self.generate_with_context(query, retrieval_results)
+
+        return answer, retrieval_results
+
+    def evaluate_recall(
+        self,
+        test_queries: List[Tuple[str, List[str]]],
+        top_k: int = 5
+    ) -> Dict[str, float]:
+        """
+        Evalúa recall del retriever.
+        test_queries: lista de (query, relevant_doc_ids)
+        """
+        total_relevant = 0
+        total_retrieved_relevant = 0
+
+        for query, relevant_ids in test_queries:
+            retrieval_results = self.retrieve(query, top_k=top_k)
+            retrieved_ids = {r.chunk_id for r in retrieval_results}
+            relevant_set = set(relevant_ids)
+
+            total_relevant += len(relevant_set)
+            total_retrieved_relevant += len(retrieved_ids & relevant_set)
+
+        recall = total_retrieved_relevant / total_relevant if total_relevant > 0 else 0
+        return {"recall_at_k": recall, "total_queries": len(test_queries)}
+
+
+# --- Demo ---
+if __name__ == "__main__":
+    print("=" * 60)
+    print("RAG Pipeline: Retrieval + Generation")
+    print("=" * 60)
+
+    # Inicializar pipeline
+    rag = RAGPipeline(
+        embedding_model_name="all-MiniLM-L6-v2",
+        generator_model_name="gpt2"
+    )
+
+    # Documentos de ejemplo — simulando una base de conocimiento
+    # En producción esto vendría de PDFs, websites, databases, etc.
+    docs = [
+        Document(
+            content="El ají ajiaco es una sopa tradicional colombiana originating from la región andina. Se prepara con pollo, papa criolla, y ají Gustoso, entre otros ingredientes. Es especialmente popular en Bogotá.",
+            metadata={"source": "cocina_colombiana", "type": "receta"}
+        ),
+        Document(
+            content="La Universidad Nacional de Colombia fue fundada en 1867 y es considerada una de las mejores universidades de Latinoamérica. Tiene campuses en Bogotá, Medellín, Palmira, Manizales y Tumaco.",
+            metadata={"source": "educacion", "type": "informacion"}
+        ),
+        Document(
+            content="El Valle de Aburrá en Antioquia tiene una población de aproximadamente 3.5 millones de personas. Medellín, su capital, es conocida como la Ciudad de la Eterna Primavera por su clima templado de 22°C promedio.",
+            metadata={"source": "geografia", "type": "informacion"}
+        ),
+        Document(
+            content="La técnica Chain-of-Thought (CoT) elicita pasos de razonamiento intermedios antes de la respuesta final. Mejora significativamente en tareas de aritmética y razonamiento lógico.",
+            metadata={"source": "ml", "type": "concepto"}
+        ),
+        Document(
+            content="RAG combina retrieval con generación. El retriever encuentra documentos relevantes y el generador produce respuestas condicionadas al contexto. Reduce alucinaciones significativamente.",
+            metadata={"source": "ml", "type": "concepto"}
+        ),
+    ]
+
+    # Indexar documentos
+    print("\n📚 Indexando documentos...")
+    rag.index_documents(docs, chunk_size=256, chunk_overlap=30)
+
+    # Queries de prueba
+    test_queries = [
+        "¿Qué es el ají ajiaco y cómo se prepara?",
+        "¿Qué universidades hay en Colombia?",
+        "¿Qué es la técnica Chain-of-Thought?",
+        "¿Cómo funciona RAG?"
+    ]
+
+    print("\n" + "=" * 60)
+    print("🔍 RAG Queries")
+    print("=" * 60)
+
+    for query in test_queries:
+        print(f"\n📝 Query: {query}")
+        answer, retrieved_docs = rag.rag_query(query, top_k=3)
+
+        print(f"🤖 Answer: {answer}")
+        print(f"📄 Retrieved {len(retrieved_docs)} documents:")
+        for i, doc in enumerate(retrieved_docs, 1):
+            print(f"  [{i}] Score: {doc.score:.4f} - {doc.document.content[:80]}...")
+
+    print("\n" + "=" * 60)
+    print("✅ RAG Pipeline completo implementado")
+    print("=" * 60)
 </code></pre>
+
 <hr>
-<h2>🚨 Errores Comunes</h2>
-<h3>Error 1: No entender la matemática de fondo</h3>
-<p>El 80% de los practitioners implementa esto incorrectamente porque no entienden la base teórica.</p>
-<h3>Error 2: Ignorar los hiperparámetros</h3>
-<p>Muchos asumen que los valores por defecto son óptimos. En producción, esto raramente es cierto.</p>
-<hr>
-<h2>✅ Mejores Prácticas</h2>
+<h2>🚨 Los 3 Errores que el 75% Commete con RAG</h2>
+
+<h3>Error 1: Sin chunking strategy adecuada — El recall suffer</h3>
+
+<p>Error típico:</p>
+<pre><code class="language-python"># ❌ MAL: chunking arbitrario sin pensamiento
+chunks = text.split("\n\n")  # Split por párrafos sin considerar tamaño
+# o peor:
+chunks = [text[i:i+1000] for i in range(0, len(text), 1000)]  # chunks gigantes
+</code></pre>
+
+<p>Si tus chunks son muy grandes, diluyes la relevancia. Si son muy pequeños, pierdes contexto. El chunk size óptimo depende de:</p>
 <ul>
-<li>Siempre documenta tu código y decisiones de diseño.</li>
-<li>Usa versionado para tus experimentos.</li>
-<li>Valida siempre con datos de prueba independientes.</li>
-<li>Monitorea las métricas en producción.</li>
+<li><strong>Tipo de documento</strong>: papers académicos vs. tweets vs. contratos legales</li>
+<li><strong>Embedding model</strong>: cada modelo tiene una "ventana" efectiva</li>
+<li><strong>Query patterns</strong>: queries cortas necesitan chunks pequeños; queries largas pueden tolerate más</li>
 </ul>
-<hr>
-<h2>📚 Recursos</h2>
+
+<p><strong>Fix:</strong> Experimenta con chunk sizes de 128, 256, 512, 768, 1024. Mide recall@K real con tus queries. Usa overlap de 10-20% para no perder contexto en los bordes.</p>
+
+<h3>Error 2: No usar hybrid search — Dense-only retrieval pierde recall</h3>
+
+<p>Error:</p>
+<pre><code class="language-python"># ❌ MAL: solo dense retrieval
+embeddings = model.encode(query)
+results = vector_store.search(embeddings, k=5)
+# Esto falla para:
+# - Palabras fuera del vocabulario del embedding model
+# - Queries muy cortas (1-2 palabras)
+# - Términos técnicos o especializados
+</code></pre>
+
+<p>Dense retrieval (basado en embeddings) es excelente para similarity semántica pero falla en casos edge. Hybrid search combina:</p>
+
 <ul>
-<li>Documentación oficial de chromadb</li>
-<li>Tutoriales prácticos en el blog</li>
-<li>Código fuente en GitHub</li>
+<li><strong>Dense retrieval</strong>: embedding similarity — captura semantic similarity</li>
+<li><strong>Sparse retrieval</strong>: BM25 / TF-IDF — captura keyword matching exacto</li>
 </ul>
+
+<p><strong>Fix:</strong> Implementa hybrid search con weighted combination:</p>
+
+<pre><code class="language-python"># ✅ BIEN: hybrid search
+dense_results = vector_store.search(embeddings, k=20)
+sparse_results = bm25.search(query, k=20)
+
+# Reciprocal Rank Fusion para combinar resultados
+# RRF score = Σ 1/(k + rank_i) donde k=60 típicamente
+combined = rrf_fusion(dense_results, sparse_results, k=60)
+final_results = combined[:top_k]
+</code></pre>
+
+<h3>Error 3: Retrieval sin reranking — Dejando quality sobre la mesa</h3>
+
+<p>Error:</p>
+<pre><code class="language-python"># ❌ MAL: usando resultados del retriever directamente en el generator
+retrieved = retriever.query(query, top_k=10)
+# Feeding los 10 resultados al LLM sin ordenarlos por relevancia real
+# El LLM recibe ruido junto con signal
+</code></pre>
+
+<p>El retriever optimiza para embedding similarity, no para answer quality. Un reranker reordena los documentos basado en:</p>
+<ul>
+<li><strong>Cross-encoder scores</strong>: más preciso que bi-encoder similarity</li>
+<li><strong>Relevance feedback</strong>: usando la query como contexto adicional</li>
+</ul>
+
+<p><strong>Fix:</strong> Añade un paso de reranking antes de enviar al generator:</p>
+
+<pre><code class="language-python"># ✅ BIEN: retrieval + reranking
+# Paso 1: Retrieval oversampling (traer más de los necesario)
+retrieved = retriever.query(query, top_k=50)
+
+# Paso 2: Reranking con cross-encoder
+reranked = cross_encoder.rerank(query, [d.content for d in retrieved], top_k=10)
+
+# Paso 3: Generar solo con los documentos relevantes
+answer = generator.generate(query, context=reranked)
+</code></pre>
+
+<hr>
+<h2>📊 RAG: Métricas de Evaluación</h2>
+
+| Métrica | Qué mide | Target |
+|---------|----------|--------|
+| Recall@K | % de documentos relevantes recuperados en top-K | >0.8 para producción |
+| MRR | Rank del primer documento relevante | >0.6 |
+| RAGAS Faithfulness | ¿La respuesta estáSupported por el contexto? | >0.9 |
+| RAGAS Answer Relevance | ¿La respuesta responde la query? | >0.85 |
+
+<hr>
+<h2>✅ Resumen y Cierre</h2>
+
+<p>Día 150 completado. RAG es probablemente la técnica más práctica para poner LLMs en producción porque resuelve el problema de knowledge cutoff sin fine-tuning. Los puntos críticos:</p>
+
+<ul>
+<li><strong>Chunking strategy define tu ceiling</strong>: invierte tiempo en experimentar con diferentes tamaños.</li>
+<li><strong>Hybrid search no es opcional en producción real</strong>: dense-only pierde queries que importan.</li>
+<li><strong>Reranking mejora significativamente la calidad</strong>: el esfuerzo extra vale la pena.</li>
+<li><strong>Evalúa el pipeline completo</strong>: retrieval metrics + generation quality.</li>
+</ul>
+
+<p>En Medellín, cuando uno va a решпор и рассчитывает las preguntas difíciles, necesita tener la información a la mano. RAG es exactamente eso para los LLMs — la diferencia entre un modelo que responde con lo que tiene y uno que responde con lo que <em>sabe que es relevante</em>.</p>
+
+<p>Mañana seguimos con más, parcero. Día 151 va a estar interesante. ⚡</p>
   </article>
 
   <script>
