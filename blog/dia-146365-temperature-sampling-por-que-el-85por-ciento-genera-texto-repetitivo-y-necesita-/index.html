@@ -99,55 +99,524 @@ nav {
   </header>
 
   <article class="article-body">
-    <p>Hola, parcero. Llegamos al Día 146 y hoy vamos con Temperature. Este tema es crítico porque el porcentaje que mencionamos en el título representa bugs y confusiones que veo constantemente en producción. Acompañame que esto va detallado.</p>
+<p>Hola, parcero. Llegamos al Día 146 y hoy vamos con Temperature Sampling. Este parámetro es probablemente el más malentendido en toda la literatura de LLMs. El 85% de los developers lo configura sin entender qué hace realmente, y el resultado es texto repetitivo, genérico, o simplemente malo. Acompañame que esto va detallado.</p>
+
 <hr>
 <h2>📐 Fundamentos Teóricos</h2>
-<p>Vamos paso a paso. Entender la teoría detrás de Temperature es lo que separa a alguien que copia código de alguien que realmente sabe lo que está haciendo.</p>
-<h3>Conceptos Clave</h3>
+
+<p>Temperature es un parámetro que controla la "aleatoriedad" de la generación. Pero la clave entender <strong>cuándo</strong> y <strong>cóm</strong> se aplica. No es un开关 on/off — es una re-escalación de probabilidades.</p>
+
+<h3>La matemática: softmax con temperature</h3>
+
+<p>Normalmente, la distribución de probabilidad sobre el vocabulario es:</p>
+
+<p class="katex-display">P_T(token_i) = \frac{e^{z_i}}{\sum_j e^{z_j}}</p>
+
+<p>Donde <code>z_i</code> son los logits (scores crudos) del modelo. Con temperature, la distribución se transforma en:</p>
+
+<p class="katex-display">P_T(token_i) = \frac{e^{z_i / T}}{\sum_j e^{z_j / T}}</p>
+
+<p><strong>Importante:</strong> Temperature se aplica DIVIDIENDO los logits ANTES del softmax, NO multiplicando después. Es un re-scaling del espacio de logits.</p>
+
+<h3>Qué hace realmente el temperature</h3>
+
 <ul>
-<li><strong>Concepto 1</strong>: Descripción del primer concepto fundamental.</li>
-<li><strong>Concepto 2</strong>: Descripción del segundo concepto que necesitas entender.</li>
-<li><strong>Concepto 3</strong>: Por qué esto importa en la práctica.</li>
+<li><strong>T → 0:</strong> La distribución se vuelve peakuda. Token con logit más alto domina con ~99% probabilidad.等价 a greedy.</li>
+<li><strong>T = 1:</strong> Distribución original del modelo. Sin modificación.</li>
+<li><strong>T > 1:</strong> La distribución se aplana. Tokens menos probables tienen más chance de ser seleccionados.</li>
 </ul>
+
+<h3>Intuición visual</h3>
+
+<p>Pensalo como un抽奖. Si tenés 10 bolillas numeradas y una tiene un premio:</p>
+
+<ul>
+<li><strong>Sin temperature (T=1):</strong> La bolilla 7 tiene 30% de chance, la 3 tiene 15%, etc. Distribución original.</li>
+<li><strong>Con T→0:</strong> La bolilla 7 tiene 99.9% de chance. Prácticamente siempre sale ella.</li>
+<li><strong>Con T>1:</strong> Todas las bolillas tienen chances más parejas. Más sorpresa, más diversidad.</li>
+</ul>
+
 <hr>
-<h2>💻 Implementación Práctica</h2>
-<p>Ahora vamos a lo bueno: código real que puedes usar en tus proyectos.</p>
-<pre><code class="language-python"># Ejemplo práctico de Temperature
+<h2>💻 Implementación Práctica en PyTorch</h2>
+
+<p>Vamos con código real que podés usar. Esta implementación muestra cómo temperature afecta la distribución de probabilidades y cuándo usar cada valor.</p>
+
+<pre><code class="language-python">import torch
+import torch.nn.functional as F
+import math
+from typing import List, Tuple, Optional
 import numpy as np
 
-def concepto_fundamental(data, param):
-    # Implementación básica del concepto
-    result = []
-    for item in data:
-        processed = item * param
-        result.append(processed)
-    return np.array(result)
+# ============================================================
+# TEMPERATURE SAMPLING — Día 146 #365DaysOfAI
+# Fabián Rodríguez @IngFabianRodriguez
+# ============================================================
 
-data = [1, 2, 3, 4, 5]
-result = concepto_fundamental(data, 2)
-print(f"Resultado: {result}")
+class MockLLM(torch.nn.Module):
+    """Modelo dummy para demostrar temperature scaling.
+    En producción reemplazás esto con tu LLaMA, GPT, etc.
+    """
+    def __init__(self, vocab_size: int = 100):
+        super().__init__()
+        self.vocab_size = vocab_size
+        # Proyecciones dummy
+        self.lm_head = torch.nn.Linear(128, vocab_size, bias=False)
+        
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Retorna logits (pre-softmax)."""
+        return self.lm_head(x)
+
+
+def apply_temperature(logits: torch.Tensor, temperature: float) -> torch.Tensor:
+    """
+    Aplica temperature scaling a los logits.
+    
+    CRÍTICO: Esto se hace ANTES del softmax, no después.
+    La fórmula es: softmax(logits / T)
+    
+    Args:
+        logits: (batch, vocab_size) — scores crudos del modelo
+        temperature: T > 0. T=0 es edge case especial (greedy)
+    
+    Returns:
+        Log-probabilities después del scaling
+    """
+    if temperature == 0:
+        # Edge case: greedy (argmax)
+        raise ValueError("temperature=0 no produce probabilidades. Usa argmax.")
+    
+    # Esto es lo que hace internamente HuggingFace cuando pasás temperature
+    scaled_logits = logits / temperature
+    log_probs = F.log_softmax(scaled_logits, dim=-1)
+    return log_probs
+
+
+def greedy_sample(logits: torch.Tensor) -> Tuple[int, float]:
+    """Sample greedy: siempre el token con mayor logit."""
+    idx = logits.argmax().item()
+    return idx, logits[idx].item()
+
+
+def temperature_sample(
+    logits: torch.Tensor,
+    temperature: float,
+    top_k: Optional[int] = None
+) -> Tuple[int, float]:
+    """
+    Temperature sampling: divide logits por T antes de softmax.
+    
+    Args:
+        logits: (vocab_size,) — scores crudos del modelo
+        temperature: T. 0=greedy, 1=original, >1=más random
+        top_k: opcional, filtra a top-k antes de sampling
+    
+    Returns:
+        (token_id, log_prob)
+    """
+    if temperature == 0:
+        return greedy_sample(logits)
+    
+    # Aplicar temperature scaling
+    # La clave: se divide ANTES del softmax
+    scaled_logits = logits / temperature
+    
+    # Opcional: top-k filtering
+    if top_k is not None and top_k > 0:
+        top_k = min(top_k, scaled_logits.size(0))
+        top_k_vals, top_k_idx = torch.topk(scaled_logits, top_k)
+        # Mask todo lo demás a -inf
+        scaled_logits = torch.full_like(scaled_logits, float('-inf'))
+        scaled_logits[top_k_idx] = top_k_vals
+    
+    # Convertir a probabilidades y sample
+    probs = F.softmax(scaled_logits, dim=-1)
+    next_token = torch.multinomial(probs, num_samples=1).item()
+    log_prob = torch.log(probs[next_token]).item()
+    
+    return next_token, log_prob
+
+
+def compare_temperature_distributions():
+    """
+    Compara cómo diferentes temperatures afectan la distribución.
+    Esto es LO QUE LA MAYORÍA NO ENTIENDE.
+    """
+    print("\n" + "="*60)
+    print("TEMPERATURE SCALING: EFECTO EN LA DISTRIBUCIÓN")
+    print("="*60)
+    
+    # Simular logits de un modelo (valores arbitrarios)
+    # Logits más altos = más probable
+    logits = torch.tensor([
+        5.0,   # token "el" — muy probable
+        4.5,   # token "la"
+        3.0,   # token "casa"
+        1.0,   # token "perro"
+        0.5,   # token "gato"
+        -1.0,  # token raro
+        -5.0,  # token muy improbable
+    ])
+    
+    token_names = ["el", "la", "casa", "perro", "gato", "raro", "muy_raro"]
+    
+    print("\nLogits originales (crudos del modelo):")
+    for name, logit in zip(token_names, logits):
+        print(f"  {name}: {logit:.2f}")
+    
+    print("\n" + "-"*40)
+    print("PROBABILIDADES CON DIFERENTES TEMPERATURES:")
+    print("-"*40)
+    
+    temperatures = [0.0, 0.3, 0.7, 1.0, 1.5, 3.0]
+    
+    for T in temperatures:
+        if T == 0:
+            # Greedy: solo el top
+            probs = torch.zeros_like(logits)
+            probs[logits.argmax()] = 1.0
+            print(f"\n🌡️  T={T} (GREEDY):")
+        else:
+            scaled = logits / T
+            probs = F.softmax(scaled, dim=-1)
+            print(f"\n🌡️  T={T}:")
+        
+        print(f"  Top-3 tokens más probables:")
+        top_probs, top_idx = torch.topk(probs, min(3, len(probs)))
+        for prob, idx in zip(top_probs, top_idx):
+            print(f"    {token_names[idx]}: {prob:.3f} ({prob.item()*100:.1f}%)")
+
+
+def generate_with_temperature(
+    model: torch.nn.Module,
+    start_token: int,
+    end_token: int,
+    temperature: float = 1.0,
+    max_len: int = 50,
+    top_k: Optional[int] = None,
+    device: str = "cpu"
+) -> Tuple[List[int], float]:
+    """
+    Generación autoregresiva con temperature sampling.
+    
+    Args:
+        model: LLM con forward() retornando logits
+        start_token: Token de inicio
+        end_token: Token de fin
+        temperature: T. 0=greedy, 1=original, >1=más diverso
+        max_len: Longitud máxima
+        top_k: Opcional, filtra a top-k antes de sample
+        device: cpu o cuda
+    
+    Returns:
+        (secuencia_generada, log_prob_total)
+    """
+    model.eval()
+    device = torch.device(device)
+    model = model.to(device)
+    
+    generated = [start_token]
+    total_log_prob = 0.0
+    
+    input_ids = torch.tensor([[start_token]], dtype=torch.long).to(device)
+    
+    with torch.no_grad():
+        for _ in range(max_len):
+            # Obtener logits del modelo
+            logits = model(input_ids)  # (1, vocab_size)
+            logits = logits.squeeze(0)  # (vocab_size,)
+            
+            # Temperature sampling
+            if temperature == 0:
+                next_token = logits.argmax().item()
+                next_log_prob = logits[next_token].item()
+            else:
+                scaled_logits = logits / temperature
+                
+                # Aplicar top-k si se especifica
+                if top_k is not None and top_k > 0:
+                    top_k_vals, top_k_idx = torch.topk(scaled_logits, top_k)
+                    mask = torch.full_like(scaled_logits, float('-inf'))
+                    mask[top_k_idx] = top_k_vals
+                    scaled_logits = mask
+                
+                probs = F.softmax(scaled_logits, dim=-1)
+                next_token = torch.multinomial(probs, num_samples=1).item()
+                next_log_prob = torch.log(probs[next_token]).item()
+            
+            if next_token == end_token:
+                total_log_prob += next_log_prob
+                break
+                
+            generated.append(next_token)
+            total_log_prob += next_log_prob
+            input_ids = torch.tensor([[next_token]], dtype=torch.long).to(device)
+    
+    return generated, total_log_prob
+
+
+def demo_temperature_vs_quality():
+    """
+    Demuestra el trade-off: temperature bajo = calidad para tareas estructuradas,
+    temperature alto = diversidad para generación creativa.
+    """
+    print("\n" + "="*60)
+    print("TEMPERATURE VS CALIDAD: ¿CUÁNDO USAR CADA UNO?")
+    print("="*60)
+    
+    print("""
+    📌 REGLA DE ORO:
+    
+    • T BAJO (0.0 - 0.5): Para tareas con UNA respuesta correcta
+      - Traducción: quieres la mejor traducción, no variaciones
+      - Code completion: quieres la función correcta
+      - Math/Logic: quieres la respuesta correcta
+      - QA estructurado: quieres la respuesta correcta
+    
+    • T MEDIO (0.7 - 1.0): Balance para uso general
+      - Chat conversational
+      - Preguntas abiertas sin respuesta única
+    
+    • T ALTO (1.0 - 1.5+): Para creatividad y diversidad
+      - Escritura creativa / storytelling
+      - Brainstorming de ideas
+      - Cuando querés explorar el espacio de outputs
+    
+    ⚠️  ATENCIÓN: T > 1.5 produce texto cada vez más caótico
+    """)
+
+
+def analyze_repetition_with_temperature():
+    """
+    Analiza por qué temperature bajo causa repetición.
+    Esto responde a: "¿por qué mi modelo repite 'el el el'?"
+    """
+    print("\n" + "="*60)
+    print("POR QUÉ TEMPERATURE BAJO CAUSA REPETICIÓN")
+    print("="*60)
+    
+    # Simular logits para un token que el modelo quiere repetir
+    print("""
+    Escenario: El modelo acaba de decir "el" y tiene que continuar.
+    
+    Logits típicos después de "el":
+    - "gato": 4.0
+    - "perro": 3.8
+    - "el":  3.5  ← quiere repetir "el" (patrón común)
+    - "casa": 2.0
+    
+    CON T=0.1 (muy bajo):
+    - scaled = [40, 38, 35, 20]  (dividido por 0.1 = ×10)
+    - softmax: "gato" tiene 99.7%, los demás 0.3%
+    - Resultado: SIEMPRE elige "gato"
+    - El modelo se ve forzado a una sola trayectoria
+    
+    CON T=1.0 (normal):
+    - scaled = [4.0, 3.8, 3.5, 2.0]
+    - softmax: "gato" 40%, "perro" 28%, "el" 18%, "casa" 8%
+    - Algo de diversidad, pero aún guiado
+    
+    CON T=1.5 (alto):
+    - scaled = [2.67, 2.53, 2.33, 1.33]
+    - softmax: "gato" 29%, "perro" 24%, "el" 20%, "casa" 12%
+    - Más chance de explorar "el" (evitando repetición)
+    
+    💡 CONCLUSION: Temperature BAJO fuerza al modelo a seguir
+       un solo camino. Si ese camino tiene loops, se repite.
+       Temperature ALTO "aplana" la distribución, permitiendo
+       escapar de patrones repetitivos.
+    """)
+
+
+def batch_temperature_demo():
+    """Demo de cómo temperature afecta múltiples samples."""
+    print("\n" + "="*60)
+    print("BATCH SAMPLING CON DIFERENTES TEMPERATURES")
+    print("="*60)
+    
+    # Simular logits
+    torch.manual_seed(42)  # Reproducibilidad
+    logits = torch.randn(50)  # 50 tokens en vocabulario
+    
+    print("\nGenerando 3 samples con cada temperature:\n")
+    
+    for T in [0.3, 0.7, 1.0, 1.5]:
+        print(f"🌡️  T={T}:")
+        for i in range(3):
+            if T == 0:
+                token = logits.argmax().item()
+            else:
+                scaled = logits / T
+                probs = F.softmax(scaled, dim=-1)
+                token = torch.multinomial(probs, 1).item()
+            print(f"   Sample {i+1}: token_{token}")
+        print()
+
+
+if __name__ == "__main__":
+    print("🎯 TEMPERATURE SAMPLING — Día 146 #365DaysOfAI")
+    print("Fabián Rodríguez @IngFabianRodriguez\n")
+    
+    # Crear modelo dummy
+    model = MockLLM(vocab_size=50)
+    
+    # 1. Comparar distribuciones con diferentes temperatures
+    compare_temperature_distributions()
+    
+    # 2. Demo: temperature vs quality
+    demo_temperature_vs_quality()
+    
+    # 3. Análisis de repetición
+    analyze_repetition_with_temperature()
+    
+    # 4. Batch sampling demo
+    batch_temperature_demo()
+    
+    print("\n" + "="*60)
+    print("EJEMPLO PRÁCTICO DE GENERACIÓN")
+    print("="*60)
+    
+    # Demo de generación con diferentes temperatures
+    for T in [0.0, 0.5, 0.8, 1.2]:
+        seq, score = generate_with_temperature(
+            model,
+            start_token=2,
+            end_token=3,
+            temperature=T,
+            max_len=20
+        )
+        print(f"\nT={T}: seq={seq[:10]}... score={score:.2f}")
 </code></pre>
+
 <hr>
-<h2>🚨 Errores Comunes</h2>
-<h3>Error 1: No entender la matemática de fondo</h3>
-<p>El 80% de los practitioners implementa esto incorrectamente porque no entienden la base teórica.</p>
-<h3>Error 2: Ignorar los hiperparámetros</h3>
-<p>Muchos asumen que los valores por defecto son óptimos. En producción, esto raramente es cierto.</p>
+<h2>📊 Guía Rápida de Temperature</h2>
+
+<table>
+<thead>
+<tr>
+<th>Temperature</th>
+<th>Efecto</th>
+<th>Uso</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>T = 0</td>
+<td>Greedy / Determinista</td>
+<td>Debugging, tareas con respuesta única</td>
+</tr>
+<tr>
+<td>T = 0.1 - 0.3</td>
+<td>Muy focalizado</td>
+<td>Code completion, traducción exacta</td>
+</tr>
+<tr>
+<td>T = 0.5 - 0.7</td>
+<td>Balance</td>
+<td>Chat general, preguntas abiertas</td>
+</tr>
+<tr>
+<td>T = 0.8 - 1.0</td>
+<td>Diversidad moderada</td>
+<td>Escritura creativa, brainstorming</td>
+</tr>
+<tr>
+<td>T = 1.2 - 1.5</td>
+<td>Alta diversidad</td>
+<td>Generación creativa, exploración</td>
+</tr>
+<tr>
+<td>T > 1.5</td>
+<td>Caótico</td>
+<td>Raro, experimental</td>
+</tr>
+</tbody>
+</table>
+
 <hr>
-<h2>✅ Mejores Prácticas</h2>
+<h2>🚨 Errores Comunes y Sus Fallas</h2>
+
+<h3>Error 1: Usar Temperature=0 Cuando Querés Diversidad</h3>
+
+<p><strong>El problema:</strong> temperature=0 es greedy, significa que siempre elegís el token con mayor probabilidad. No hay diversidad. Si tu prompt genera "el el el el", es porque T=0 te está forzando a un solo camino.</p>
+
+<pre><code class="language-python"># ❌ MAL: T=0 para chat/conversacional
+response = model.generate(
+    input_ids,
+    temperature=0,  # Esto es GREEDY
+    max_length=200
+)
+
+# ✅ BIEN: T=0.7-0.9 para chat con diversidad
+response = model.generate(
+    input_ids,
+    temperature=0.8,
+    top_p=0.9,  # Nucleus sampling combination
+    max_length=200
+)
+</code></pre>
+
+<p><strong>El fix:</strong> Para chat, usa T entre 0.7 y 1.0. Si querés reproducibility para debugging, usá T=0 con seed fija, pero no lo uses en producción para generación normal.</p>
+
+<h3>Error 2: Usar Temperature Alta Para Código</h3>
+
+<p><strong>El problema:</strong> Temperature alto introduce "aletoriedad" que en código se traduce en funciones syntacticamente correctas pero semanticamente wrong. Tu código compila pero hace cosas raras.</p>
+
+<pre><code class="language-python"># ❌ MAL: T=1.2 para generación de código
+code = model.generate(
+    input_ids,
+    temperature=1.2,  # ⚠️ Puede generar código incorrecto
+    max_length=500
+)
+
+# ✅ BIEN: T=0.2-0.4 para código — quieres precisión
+code = model.generate(
+    input_ids,
+    temperature=0.2,  # Más determinista, código más confiable
+    do_sample=True,  # Pero aún sampling (no greedy)
+    max_length=500
+)
+</code></pre>
+
+<p><strong>El fix:</strong> Para código, usá T bajo (0.1-0.4). El código necesita precisión, no creatividad. Si tu función de Python hace cosas raras con T=1.0, es normal — estás pidiendo randomización cuando deberías pedir precisión.</p>
+
+<h3>Error 3: No Entender Que Temperature Es Post-Logit, Pre-Softmax</h3>
+
+<p><strong>El problema:</strong> La mayoría cree que temperature "multiplica" o "suma" algo a las probabilidades. No — se divide los logits antes del softmax. Esto tiene consecuencias prácticas importantes.</p>
+
+<pre><code class="language-python"># ❌ CONCEPCIÓN ERRÓNEA: "temperature baja = menos random"
+# La gente piensa: "bajo T = más determinista"
+# Pero no entiende POR QUÉ
+
+# ✅ REALIDAD: T afecta la "peakkedness" de la distribución
+# T bajo = logits divididos por número pequeño = más separado
+# T alto = logits divididos por número grande = más aplanado
+
+# Math real:
+# logits = [5.0, 4.0, 3.0]
+# T=0.1 → scaled = [50, 40, 30] → probs = [0.99, 0.01, 0.00]
+# T=1.0 → scaled = [5.0, 4.0, 3.0] → probs = [0.67, 0.24, 0.09]
+# T=2.0 → scaled = [2.5, 2.0, 1.5] → probs = [0.48, 0.33, 0.19]
+</code></pre>
+
+<p><strong>El fix:</strong> Entiende que temperature es un re-scaling de logits. Si ves que tu modelo con T=0.1 siempre dice lo mismo, es porque la distribución se volvió peakuda. Si querés diversity pero T=1.0 no es suficiente, subí a 1.2-1.5 (no bajes a 0.1).</p>
+
+<hr>
+<h2>✅ Resumen y Cierre</h2>
+
+<p>Hoy aprendimos que temperature no es un "nivel de creatividad mágico". Es matemática concreta:</p>
+
 <ul>
-<li>Siempre documenta tu código y decisiones de diseño.</li>
-<li>Usa versionado para tus experimentos.</li>
-<li>Valida siempre con datos de prueba independientes.</li>
-<li>Monitorea las métricas en producción.</li>
+<li><strong>T=0</strong>: Greedy determinista — para debugging y tareas con respuesta única</li>
+<li><strong>T=0.1-0.4</strong>: Código y tareas que requieren precisión</li>
+<li><strong>T=0.7-1.0</strong>: Chat general y uso diario</li>
+<li><strong>T>1.0</strong>: Creatividad, pero con riesgo de caos</li>
 </ul>
-<hr>
-<h2>📚 Recursos</h2>
-<ul>
-<li>Documentación oficial de torch</li>
-<li>Tutoriales prácticos en el blog</li>
-<li>Código fuente en GitHub</li>
-</ul>
+
+<p>La clave: temperature es <strong>post-logit, pre-softmax</strong>. Se aplica dividiendo, no multiplicando. Y cuando tu código genera texto repetitivo, la primera pregunta no es "subo el temperature" — es "¿estoy usando T correcto para esta tarea?".</p>
+
+<p>Nos vemos mañana, parcero. 💪</p>
+
+<p><em>#365DaysOfAI #TemperatureSampling #PyTorch #LLM</em></p>
   </article>
 
   <script>
