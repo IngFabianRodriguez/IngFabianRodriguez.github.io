@@ -1,4 +1,4 @@
-// src/app.js
+// src/app.js — Apple Design Language
 
 import './components/Header.js'
 import './components/SprintSidebar.js'
@@ -13,7 +13,6 @@ import { store } from './store/TaskStore.js'
 import { eventBus, Events } from './utils/EventBus.js'
 import { notify } from './utils/Notifications.js'
 
-// App state
 let selectedTaskId = null
 let selectedTaskIds = new Set()
 
@@ -37,17 +36,16 @@ export function initApp() {
     </div>
     <task-modal></task-modal>
     <task-detail></task-detail>
-    <bulk-action-bar></bulk-action-bar>
   `
 
-  // Add styles
+  // ─── Layout styles ───
   const style = document.createElement('style')
   style.textContent = `
     .main-container {
       display: flex;
       flex: 1;
       overflow: hidden;
-      height: calc(100vh - 73px);
+      height: calc(100vh - 52px);
     }
     .content-area {
       display: flex;
@@ -55,276 +53,205 @@ export function initApp() {
       flex: 1;
       overflow: hidden;
       min-width: 0;
+      background: var(--apple-bg);
     }
     .board {
       display: flex;
-      gap: 16px;
-      padding: 20px 24px;
+      gap: var(--space-4);
+      padding: var(--space-5) var(--space-5);
       flex: 1;
       overflow-x: auto;
+      overflow-y: hidden;
       align-items: flex-start;
     }
-    .board::-webkit-scrollbar {
-      height: 6px;
-    }
-    .board::-webkit-scrollbar-track {
-      background: transparent;
-    }
-    .board::-webkit-scrollbar-thumb {
-      background: var(--bg-card);
-      border-radius: 3px;
-    }
+    .board::-webkit-scrollbar { height: 5px; }
+    .board::-webkit-scrollbar-track { background: transparent; }
+    .board::-webkit-scrollbar-thumb { background: var(--apple-surface-3); border-radius: 3px; }
 
-    /* ─── Tablet (≤1024px): sidebar narrower ─── */
+    /* ─── Bulk Action Bar (Apple floating pill) ─── */
+    .bulk-bar-wrap {
+      position: fixed;
+      bottom: 28px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 800;
+      animation: scaleIn 0.3s var(--ease-spring);
+    }
+    .bulk-bar {
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);
+      background: rgba(44, 44, 46, 0.92);
+      backdrop-filter: saturate(180%) blur(24px);
+      -webkit-backdrop-filter: saturate(180%) blur(24px);
+      border: 0.5px solid rgba(255,255,255,0.1);
+      border-radius: 14px;
+      padding: 10px 16px;
+      box-shadow: var(--shadow-elevated);
+    }
+    .bulk-count {
+      font-size: 13px;
+      font-weight: var(--font-weight-semibold);
+      color: var(--apple-label);
+      padding: 0 var(--space-2) 0 0;
+      border-right: 0.5px solid rgba(255,255,255,0.1);
+      margin-right: var(--space-1);
+    }
+    .bulk-select {
+      background: var(--apple-surface-2);
+      border: 0.5px solid rgba(255,255,255,0.08);
+      border-radius: 8px;
+      padding: 7px 28px 7px 12px;
+      font-size: 12px;
+      font-weight: var(--font-weight-medium);
+      color: var(--apple-label);
+      cursor: pointer;
+      font-family: var(--font);
+      appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%2398989d'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 10px center;
+    }
+    .bulk-select:focus { outline: none; border-color: var(--apple-blue); }
+    .bulk-btn {
+      padding: 7px 14px;
+      border: none;
+      border-radius: 8px;
+      font-size: 12px;
+      font-weight: var(--font-weight-semibold);
+      cursor: pointer;
+      transition: all 0.2s var(--ease-apple);
+      font-family: var(--font);
+    }
+    .bulk-btn.move { background: var(--apple-blue); color: #fff; }
+    .bulk-btn.move:hover { background: #2593ff; transform: scale(1.02); }
+    .bulk-btn.delete { background: transparent; border: 0.5px solid rgba(255,69,58,0.3); color: var(--apple-red); }
+    .bulk-btn.delete:hover { background: rgba(255,69,58,0.1); }
+    .bulk-btn.clear { background: var(--apple-surface-2); color: var(--apple-secondary); }
+    .bulk-btn.clear:hover { background: var(--apple-surface-3); color: var(--apple-label); }
+
+    /* ─── Tablet ─── */
     @media (max-width: 1024px) {
-      sprint-sidebar {
-        width: 220px !important;
-        min-width: 220px !important;
-      }
+      sprint-sidebar { width: 220px !important; min-width: 220px !important; }
     }
 
-    /* ─── Mobile (≤768px): sidebar collapses to top bar ─── */
+    /* ─── Mobile ─── */
     @media (max-width: 768px) {
-      .main-container {
-        flex-direction: column;
-        height: auto;
-        overflow: visible;
-      }
+      .main-container { flex-direction: column; height: auto; overflow: visible; }
       sprint-sidebar {
-        width: 100% !important;
-        min-width: unset !important;
-        height: auto;
-        max-height: none;
-        border-right: none !important;
-        border-bottom: 1px solid #313244;
+        width: 100% !important; min-width: unset !important;
+        height: auto; max-height: none;
+        border-right: none !important; border-bottom: 0.5px solid rgba(255,255,255,0.06);
         flex-shrink: 0;
       }
-      .sidebar-body {
-        max-height: 300px;
-        overflow-y: auto;
-      }
-      .content-area {
-        overflow: visible;
-        min-height: 0;
-      }
+      .content-area { overflow: visible; }
       .board {
         flex-direction: column;
-        padding: 12px 16px;
+        padding: var(--space-4);
         overflow-x: unset;
+        overflow-y: unset;
         min-height: 0;
+        gap: var(--space-3);
       }
+      .bulk-bar-wrap { bottom: 16px; }
+      .bulk-bar { padding: 8px 12px; gap: var(--space-2); }
     }
 
-    /* ─── Small mobile (≤480px): everything stacked ─── */
     @media (max-width: 480px) {
-      .board {
-        padding: 8px 12px;
-        gap: 12px;
-      }
+      .board { padding: var(--space-3); gap: var(--space-3); }
+      .bulk-bar { flex-wrap: wrap; justify-content: center; }
     }
   `
   app.appendChild(style)
 
-  // Task detail panel
   const taskDetail = app.querySelector('task-detail')
 
-  // Bulk action bar component
-  class BulkActionBar extends HTMLElement {
-    constructor() {
-      super()
-      this.attachShadow({ mode: 'open' })
-    }
+  // ─── Bulk action bar ───
+  const bulkBar = document.createElement('div')
+  bulkBar.className = 'bulk-bar-wrap'
+  bulkBar.style.display = 'none'
+  app.appendChild(bulkBar)
 
-    connectedCallback() {
-      this.render()
-      window.addEventListener('update-bulk-bar', () => this.render())
-    }
-
-    render() {
-      const count = selectedTaskIds.size
-      this.shadowRoot.innerHTML = `
-        <style>
-          :host {
-            position: fixed;
-            bottom: 20px;
-            left: 50%;
-            transform: translateX(-50%);
-            z-index: 800;
-            display: ${count > 0 ? 'block' : 'none'};
-          }
-          .bulk-bar {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            background: #1e1e2e;
-            border: 1px solid #313244;
-            border-radius: 12px;
-            padding: 12px 20px;
-            box-shadow: 0 8px 32px rgba(0,0,0,0.4);
-          }
-          .bulk-count {
-            font-size: 14px;
-            font-weight: 600;
-            color: #cdd6f4;
-            white-space: nowrap;
-          }
-          .bulk-select {
-            background: #11111b;
-            border: 1px solid #313244;
-            border-radius: 6px;
-            padding: 8px 12px;
-            font-size: 13px;
-            color: #cdd6f4;
-            cursor: pointer;
-          }
-          .bulk-btn {
-            padding: 8px 16px;
-            border: none;
-            border-radius: 6px;
-            font-size: 13px;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.2s;
-          }
-          .bulk-btn.move {
-            background: #89b4fa;
-            color: #11111b;
-          }
-          .bulk-btn.delete {
-            background: transparent;
-            border: 1px solid #f38ba8;
-            color: #f38ba8;
-          }
-          .bulk-btn.clear {
-            background: #313244;
-            color: #cdd6f4;
-          }
-          .bulk-btn:hover {
-            opacity: 0.9;
-          }
-        </style>
-        <div class="bulk-bar">
-          <span class="bulk-count">${count} seleccionada${count !== 1 ? 's' : ''}</span>
-          <select class="bulk-select" id="bulkMoveSelect">
-            <option value="">Mover a...</option>
-            <option value="todo">📋 To Do</option>
-            <option value="in_progress">⚡ In Progress</option>
-            <option value="done">✅ Done</option>
-          </select>
-          <button class="bulk-btn delete" id="bulkDeleteBtn">🗑️ Eliminar</button>
-          <button class="bulk-btn clear" id="bulkClearBtn">Limpiar</button>
-        </div>
-      `
-
-      this.setupListeners()
-    }
-
-    setupListeners() {
-      const moveSelect = this.shadowRoot.getElementById('bulkMoveSelect')
-      moveSelect?.addEventListener('change', (e) => {
-        if (e.target.value) {
-          selectedTaskIds.forEach(id => {
-            store.moveTask(id, e.target.value)
-          })
-          notify.success(`${selectedTaskIds.size} tareas movidas`)
-          clearSelection()
-        }
-      })
-
-      const deleteBtn = this.shadowRoot.getElementById('bulkDeleteBtn')
-      deleteBtn?.addEventListener('click', () => {
-        if (confirm(`¿Eliminar ${selectedTaskIds.size} tareas?`)) {
-          const count = selectedTaskIds.size
-          selectedTaskIds.forEach(id => {
-            store.deleteTask(id)
-          })
-          notify.info(`${count} tareas eliminadas`)
-          clearSelection()
-        }
-      })
-
-      const clearBtn = this.shadowRoot.getElementById('bulkClearBtn')
-      clearBtn?.addEventListener('click', () => {
+  function renderBulkBar() {
+    const count = selectedTaskIds.size
+    bulkBar.style.display = count > 0 ? 'block' : 'none'
+    bulkBar.innerHTML = `
+      <div class="bulk-bar">
+        <span class="bulk-count">${count} seleccionada${count !== 1 ? 's' : ''}</span>
+        <select class="bulk-select" id="bulkMoveSelect">
+          <option value="">Mover a…</option>
+          <option value="todo">◻ Por hacer</option>
+          <option value="in_progress">◉ En curso</option>
+          <option value="done">✓ Hecho</option>
+        </select>
+        <button class="bulk-btn delete" id="bulkDeleteBtn">🗑 Eliminar</button>
+        <button class="bulk-btn clear" id="bulkClearBtn">Limpiar</button>
+      </div>
+    `
+    bulkBar.querySelector('#bulkMoveSelect')?.addEventListener('change', e => {
+      if (e.target.value) {
+        selectedTaskIds.forEach(id => store.moveTask(id, e.target.value))
+        notify.success(`${selectedTaskIds.size} tareas movidas`)
         clearSelection()
-      })
-    }
+      }
+    })
+    bulkBar.querySelector('#bulkDeleteBtn')?.addEventListener('click', () => {
+      if (confirm(`¿Eliminar ${selectedTaskIds.size} tareas?`)) {
+        selectedTaskIds.forEach(id => store.deleteTask(id))
+        notify.info(`${selectedTaskIds.size} tareas eliminadas`)
+        clearSelection()
+      }
+    })
+    bulkBar.querySelector('#bulkClearBtn')?.addEventListener('click', clearSelection)
   }
-  customElements.define('bulk-action-bar', BulkActionBar)
 
-  // Task selection and detail handling
-  window.addEventListener('open-task-detail', (e) => {
-    taskDetail?.show(e.detail.taskId)
-  })
+  // ─── Events ───
+  window.addEventListener('open-task-detail', e => taskDetail?.show(e.detail.taskId))
+  window.addEventListener('toggle-task-selection', e => toggleTaskSelection(e.detail.taskId))
 
-  // Toggle task selection
-  window.addEventListener('toggle-task-selection', (e) => {
-    toggleTaskSelection(e.detail.taskId)
-  })
-
-  // Keyboard shortcuts
-  document.addEventListener('keydown', (e) => {
-    const target = e.target
-    const isInput = target.matches('input, textarea, select')
-
-    // Escape - close panels
+  // ─── Keyboard shortcuts ───
+  document.addEventListener('keydown', e => {
+    const isInput = e.target.matches('input, textarea, select')
     if (e.key === 'Escape') {
       taskDetail?.hide()
       document.querySelector('task-modal')?.hide()
       clearSelection()
       return
     }
-
-    // Don't handle shortcuts when typing in inputs
     if (isInput) return
-
-    // N - new task modal
     if (e.key === 'n' || e.key === 'N') {
       e.preventDefault()
       app.querySelector('task-modal')?.dispatchEvent(new CustomEvent('open-create-modal'))
       return
     }
-
-    // F or / - focus search
-    if (e.key === 'f' || e.key === 'F' || e.key === '/') {
+    if ((e.key === 'f' || e.key === 'F' || e.key === '/')) {
       e.preventDefault()
       document.querySelector('filter-bar')?.focusSearch()
       return
     }
-
-    // 1/2/3 - move selected task to column
     if (e.key === '1' && selectedTaskId) {
-      e.preventDefault()
       store.moveTask(selectedTaskId, TaskStatus.TODO)
-      notify.success('Tarea movida a To Do')
+      notify.success('Movida a Por hacer')
       eventBus.emit(Events.TASK_MOVED, { taskId: selectedTaskId, newStatus: TaskStatus.TODO })
       return
     }
     if (e.key === '2' && selectedTaskId) {
-      e.preventDefault()
       store.moveTask(selectedTaskId, TaskStatus.IN_PROGRESS)
-      notify.success('Tarea movida a In Progress')
+      notify.success('Movida a En curso')
       eventBus.emit(Events.TASK_MOVED, { taskId: selectedTaskId, newStatus: TaskStatus.IN_PROGRESS })
       return
     }
     if (e.key === '3' && selectedTaskId) {
-      e.preventDefault()
       store.moveTask(selectedTaskId, TaskStatus.DONE)
-      notify.success('Tarea movida a Done')
+      notify.success('Movida a Hecho')
       eventBus.emit(Events.TASK_MOVED, { taskId: selectedTaskId, newStatus: TaskStatus.DONE })
       return
     }
-
-    // E - edit selected task
     if ((e.key === 'e' || e.key === 'E') && selectedTaskId) {
       e.preventDefault()
-      app.querySelector('task-modal')?.dispatchEvent(new CustomEvent('task-edit', { 
-        detail: { id: selectedTaskId },
-        bubbles: true
-      }))
+      app.querySelector('task-modal')?.dispatchEvent(new CustomEvent('task-edit', { detail: { id: selectedTaskId }, bubbles: true }))
       return
     }
-
-    // Delete/Backspace - delete selected task
     if ((e.key === 'Delete' || e.key === 'Backspace') && selectedTaskId) {
       e.preventDefault()
       if (confirm('¿Eliminar esta tarea?')) {
@@ -332,55 +259,41 @@ export function initApp() {
         notify.info('Tarea eliminada')
         selectedTaskId = null
       }
-      return
     }
   })
 
-  // Helper functions
   function toggleTaskSelection(taskId) {
     if (selectedTaskIds.has(taskId)) {
       selectedTaskIds.delete(taskId)
     } else {
       selectedTaskIds.add(taskId)
     }
-    
-    // Update selectedTaskId for keyboard shortcuts
-    if (selectedTaskIds.size === 1) {
-      selectedTaskId = Array.from(selectedTaskIds)[0]
-    } else if (selectedTaskIds.size === 0) {
-      selectedTaskId = null
-    }
-    
-    // Update card visual states
+    if (selectedTaskIds.size === 1) selectedTaskId = Array.from(selectedTaskIds)[0]
+    else if (selectedTaskIds.size === 0) selectedTaskId = null
+
     document.querySelectorAll('task-card').forEach(card => {
       const id = card.getAttribute('task-id')
       card.selected = id === selectedTaskId
       card.checked = selectedTaskIds.has(id)
     })
-    
-    // Update bulk action bar
-    window.dispatchEvent(new CustomEvent('update-bulk-bar'))
+    renderBulkBar()
   }
 
   function clearSelection() {
     selectedTaskIds.clear()
     selectedTaskId = null
-    
     document.querySelectorAll('task-card').forEach(card => {
       card.selected = false
       card.checked = false
     })
-    
-    window.dispatchEvent(new CustomEvent('update-bulk-bar'))
+    renderBulkBar()
   }
 
-  // Subscribe to store changes to update card selection state
   store.subscribe(() => {
-    // Clear selection if selected tasks no longer exist
     if (selectedTaskId && !store.getTask(selectedTaskId)) {
       selectedTaskId = null
       selectedTaskIds.clear()
-      window.dispatchEvent(new CustomEvent('update-bulk-bar'))
+      renderBulkBar()
     }
   })
 }

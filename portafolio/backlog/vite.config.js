@@ -1,13 +1,19 @@
 import { defineConfig } from 'vite'
+import { resolve } from 'path'
 
 export default defineConfig({
-  base: '/portafolio/backlog/',
+  root: '.',
+  base: './',
+  publicDir: 'public',
   build: {
-    assetsDir: 'assets'
+    outDir: 'dist',
+    emptyOutDir: true,
+    rollupOptions: {
+      input: resolve(__dirname, 'index.html')
+    }
   },
-  test: {
-    globals: true,
-    environment: 'jsdom',
-    setupFiles: ['./vitest.setup.js']
+  server: {
+    port: 3000,
+    open: true
   }
 })

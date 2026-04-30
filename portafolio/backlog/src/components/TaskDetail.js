@@ -1,7 +1,6 @@
-// src/components/TaskDetail.js
+// src/components/TaskDetail.js — Apple Design Language
 
 import { TaskStatus, TaskPriority } from '../models/Task.js'
-import { SprintStatus } from '../models/Sprint.js'
 import { store } from '../store/TaskStore.js'
 import { eventBus, Events } from '../utils/EventBus.js'
 import { notify } from '../utils/Notifications.js'
@@ -11,10 +10,7 @@ export class TaskDetail extends HTMLElement {
   #isEditMode = false
   #unsubscribe = null
 
-  constructor() {
-    super()
-    this.attachShadow({ mode: 'open' })
-  }
+  constructor() { super(); this.attachShadow({ mode: 'open' }) }
 
   connectedCallback() {
     this.#unsubscribe = store.subscribe(() => this.refresh())
@@ -27,9 +23,7 @@ export class TaskDetail extends HTMLElement {
   }
 
   handleKeydown(e) {
-    if (e.key === 'Escape' && this.style.display !== 'none') {
-      this.hide()
-    }
+    if (e.key === 'Escape' && this.style.display !== 'none') this.hide()
   }
 
   show(taskId) {
@@ -38,19 +32,17 @@ export class TaskDetail extends HTMLElement {
     this.#isEditMode = false
     this.style.display = 'flex'
     this.render()
-    requestAnimationFrame(() => {
-      this.querySelector('.detail-backdrop')?.classList.add('active')
-    })
+    requestAnimationFrame(() => this.shadowRoot.querySelector('.detail-backdrop')?.classList.add('active'))
   }
 
   hide() {
-    const backdrop = this.querySelector('.detail-backdrop')
+    const backdrop = this.shadowRoot.querySelector('.detail-backdrop')
     if (backdrop) {
       backdrop.classList.remove('active')
       setTimeout(() => {
         this.style.display = 'none'
-        this.innerHTML = ''
-      }, 200)
+        this.shadowRoot.innerHTML = ''
+      }, 250)
     } else {
       this.style.display = 'none'
     }
@@ -61,9 +53,7 @@ export class TaskDetail extends HTMLElement {
       const updated = store.getTask(this.#task.id)
       if (updated) {
         this.#task = updated
-        if (!this.#isEditMode) {
-          this.render()
-        }
+        if (!this.#isEditMode) this.render()
       } else {
         this.hide()
       }
@@ -72,23 +62,8 @@ export class TaskDetail extends HTMLElement {
 
   render() {
     if (!this.#task) return
-
     const { id, title, description, status, priority, storyPoints, tags, sprintId, createdAt, updatedAt } = this.#task
     const sprint = sprintId ? store.getSprint(sprintId) : null
-    const sprintName = sprint ? sprint.name : 'Backlog'
-
-    const priorityLabels = {
-      low: '🟢 Baja',
-      medium: '🟡 Media',
-      high: '🟠 Alta',
-      critical: '🔴 Crítica'
-    }
-
-    const statusLabels = {
-      todo: '📋 To Do',
-      in_progress: '⚡ In Progress',
-      done: '✅ Done'
-    }
 
     this.innerHTML = `
       <style>
@@ -103,340 +78,367 @@ export class TaskDetail extends HTMLElement {
           position: absolute;
           inset: 0;
           background: rgba(0,0,0,0.5);
+          backdrop-filter: blur(4px);
+          -webkit-backdrop-filter: blur(4px);
           opacity: 0;
-          transition: opacity 0.2s;
+          transition: opacity 0.25s;
         }
-        .detail-backdrop.active {
-          opacity: 1;
-        }
+        .detail-backdrop.active { opacity: 1; }
+
+        /* ─── Panel ─── */
         .detail-panel {
           position: relative;
-          width: 400px;
+          width: 380px;
           max-width: 100%;
           height: 100%;
-          background: #1e1e2e;
-          border-left: 1px solid #313244;
+          background: var(--apple-surface-1);
+          border-left: 0.5px solid rgba(255,255,255,0.06);
           overflow-y: auto;
           transform: translateX(100%);
-          transition: transform 0.2s;
+          transition: transform 0.3s cubic-bezier(0.25, 0.1, 0.25, 1);
           display: flex;
           flex-direction: column;
         }
         .detail-backdrop.active .detail-panel {
           transform: translateX(0);
         }
+
+        /* ─── Header ─── */
         .detail-header {
           display: flex;
-          justify-content: space-between;
           align-items: center;
-          padding: 16px 20px;
-          border-bottom: 1px solid #313244;
-          background: #181825;
+          justify-content: space-between;
+          padding: var(--space-4) var(--space-5);
+          border-bottom: 0.5px solid rgba(255,255,255,0.06);
+          flex-shrink: 0;
+          background: rgba(0,0,0,0.2);
         }
-        .detail-title {
-          font-size: 16px;
-          font-weight: 700;
-          color: #cdd6f4;
-          margin: 0;
+        .detail-label-tag {
+          font-size: 10px;
+          font-weight: var(--font-weight-semibold);
+          letter-spacing: 0.08em;
+          text-transform: uppercase;
+          color: var(--apple-tertiary);
         }
         .btn-close {
-          background: none;
+          width: 28px; height: 28px;
+          display: flex; align-items: center; justify-content: center;
+          background: transparent;
           border: none;
-          color: #6c7086;
-          font-size: 20px;
+          border-radius: 7px;
+          color: var(--apple-secondary);
           cursor: pointer;
-          padding: 4px 8px;
-          border-radius: 6px;
+          font-size: 14px;
           transition: all 0.2s;
         }
-        .btn-close:hover {
-          background: #313244;
-          color: #cdd6f4;
-        }
+        .btn-close:hover { background: var(--apple-surface-2); color: var(--apple-label); }
+
+        /* ─── Body ─── */
         .detail-body {
           flex: 1;
-          padding: 20px;
+          padding: var(--space-5);
           overflow-y: auto;
         }
-        .detail-section {
-          margin-bottom: 20px;
-        }
-        .detail-label {
-          font-size: 11px;
-          font-weight: 600;
-          color: #6c7086;
+        .section { margin-bottom: var(--space-5); }
+        .section-title {
+          font-size: 10px;
+          font-weight: var(--font-weight-semibold);
+          letter-spacing: 0.08em;
           text-transform: uppercase;
-          letter-spacing: 0.5px;
-          margin-bottom: 6px;
+          color: var(--apple-tertiary);
+          margin-bottom: var(--space-2);
         }
-        .detail-value {
-          font-size: 14px;
-          color: #cdd6f4;
-          line-height: 1.5;
+        .task-title {
+          font-size: 20px;
+          font-weight: var(--font-weight-semibold);
+          color: var(--apple-label);
+          letter-spacing: -0.015em;
+          line-height: 1.3;
+          margin: 0;
         }
-        .detail-value.title-value {
-          font-size: 18px;
-          font-weight: 600;
+        .task-desc {
+          font-size: 13px;
+          color: var(--apple-secondary);
+          line-height: 1.6;
+          margin: var(--space-2) 0 0;
         }
-        .detail-meta {
+
+        /* ─── Badges row ─── */
+        .badges-row {
           display: flex;
-          gap: 16px;
+          gap: var(--space-2);
           flex-wrap: wrap;
         }
-        .meta-item {
+        .badge {
           display: flex;
-          flex-direction: column;
-          gap: 4px;
-        }
-        .meta-badge {
-          display: inline-flex;
           align-items: center;
-          gap: 4px;
-          padding: 4px 10px;
-          border-radius: 6px;
-          font-size: 12px;
-          font-weight: 500;
+          gap: 5px;
+          padding: 5px 10px;
+          border-radius: 8px;
+          font-size: 11px;
+          font-weight: var(--font-weight-semibold);
+          letter-spacing: 0.01em;
         }
-        .meta-badge.priority-low { background: #22c55e22; color: #22c55e; }
-        .meta-badge.priority-medium { background: #f59e0b22; color: #f59e0b; }
-        .meta-badge.priority-high { background: #f9731622; color: #f97316; }
-        .meta-badge.priority-critical { background: #ef444422; color: #ef4444; }
-        .meta-badge.status-todo { background: #89b4fa22; color: #89b4fa; }
-        .meta-badge.status-in_progress { background: #f9e2af22; color: #f9e2af; }
-        .meta-badge.status-done { background: #a6e3a122; color: #a6e3a1; }
-        .meta-badge.points { background: #fab38722; color: #fab387; }
-        .tag-list {
+        .badge-priority {
+          background: var(--apple-surface-2);
+          color: var(--apple-secondary);
+        }
+        .badge-points {
+          background: var(--apple-surface-2);
+          color: var(--apple-secondary);
+        }
+
+        /* ─── Tags ─── */
+        .tags-wrap {
           display: flex;
           flex-wrap: wrap;
-          gap: 6px;
+          gap: var(--space-2);
         }
         .tag {
           font-size: 11px;
-          padding: 3px 8px;
-          background: #313244;
-          border-radius: 4px;
-          color: #a6adc8;
+          padding: 4px 10px;
+          background: var(--apple-surface-2);
+          border-radius: 6px;
+          color: var(--apple-secondary);
+          font-weight: var(--font-weight-medium);
         }
-        .detail-actions {
+
+        /* ─── Meta info ─── */
+        .meta-grid {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: var(--space-3);
+        }
+        .meta-cell {
+          background: var(--apple-surface-2);
+          border-radius: var(--radius-sm);
+          padding: var(--space-3);
+        }
+        .meta-cell-label {
+          font-size: 10px;
+          font-weight: var(--font-weight-semibold);
+          letter-spacing: 0.06em;
+          text-transform: uppercase;
+          color: var(--apple-tertiary);
+          margin-bottom: 4px;
+        }
+        .meta-cell-value {
+          font-size: 13px;
+          font-weight: var(--font-weight-medium);
+          color: var(--apple-label);
+        }
+
+        /* ─── Footer actions ─── */
+        .detail-footer {
           display: flex;
-          gap: 8px;
-          padding: 16px 20px;
-          border-top: 1px solid #313244;
-          background: #181825;
+          gap: var(--space-2);
+          padding: var(--space-4) var(--space-5);
+          border-top: 0.5px solid rgba(255,255,255,0.06);
+          background: rgba(0,0,0,0.15);
+          flex-shrink: 0;
         }
         .btn {
           flex: 1;
-          padding: 10px 16px;
+          padding: 10px;
           border: none;
-          border-radius: 8px;
+          border-radius: var(--radius-sm);
           font-size: 13px;
-          font-weight: 600;
+          font-weight: var(--font-weight-semibold);
           cursor: pointer;
-          transition: all 0.2s;
+          transition: all 0.2s var(--ease-apple);
+          font-family: var(--font);
           display: flex;
           align-items: center;
           justify-content: center;
           gap: 6px;
         }
-        .btn-edit {
-          background: #89b4fa;
-          color: #11111b;
-        }
-        .btn-edit:hover {
-          background: #b4befe;
-        }
-        .btn-delete {
-          background: transparent;
-          border: 1px solid #f38ba8;
-          color: #f38ba8;
-        }
-        .btn-delete:hover {
-          background: #f38ba822;
-        }
-        .btn-save {
-          background: #a6e3a1;
-          color: #11111b;
-        }
-        .btn-save:hover {
-          background: #94e2d5;
-        }
-        .btn-cancel {
-          background: #313244;
-          color: #cdd6f4;
-        }
-        .btn-cancel:hover {
-          background: #45475a;
-        }
+        .btn-primary { background: var(--apple-blue); color: #fff; }
+        .btn-primary:hover { background: #2593ff; transform: scale(1.01); }
+        .btn-secondary { background: var(--apple-surface-2); color: var(--apple-label); border: 0.5px solid rgba(255,255,255,0.08); }
+        .btn-secondary:hover { background: var(--apple-surface-3); }
+        .btn-danger { background: transparent; border: 0.5px solid rgba(255,69,58,0.3); color: var(--apple-red); }
+        .btn-danger:hover { background: rgba(255,69,58,0.1); }
+
+        /* ─── Move select ─── */
         .move-select {
-          background: #181825;
-          border: 1px solid #313244;
-          border-radius: 6px;
-          padding: 8px 12px;
+          background: var(--apple-surface-2);
+          border: 0.5px solid rgba(255,255,255,0.08);
+          border-radius: var(--radius-sm);
+          padding: 10px 12px;
           font-size: 13px;
-          color: #cdd6f4;
+          color: var(--apple-label);
           cursor: pointer;
+          font-family: var(--font);
           flex: 1;
+          appearance: none;
+          background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%2398989d'/%3E%3C/svg%3E");
+          background-repeat: no-repeat;
+          background-position: right 12px center;
         }
-        .move-select:focus {
-          outline: none;
-          border-color: #89b4fa;
-        }
-        /* Edit mode */
-        .edit-form .form-group {
-          margin-bottom: 16px;
-        }
-        .edit-form label {
+        .move-select:focus { outline: none; border-color: var(--apple-blue); }
+
+        /* ─── Edit form ─── */
+        .edit-form { }
+        .form-group { margin-bottom: var(--space-4); }
+        .form-group label {
           display: block;
           font-size: 11px;
-          font-weight: 600;
-          color: #6c7086;
+          font-weight: var(--font-weight-semibold);
+          letter-spacing: 0.06em;
           text-transform: uppercase;
+          color: var(--apple-tertiary);
           margin-bottom: 6px;
         }
-        .edit-form input,
-        .edit-form textarea,
-        .edit-form select {
+        .form-group input,
+        .form-group textarea {
           width: 100%;
-          background: #11111b;
-          border: 1px solid #313244;
-          border-radius: 6px;
-          padding: 10px;
+          background: var(--apple-bg);
+          border: 0.5px solid rgba(255,255,255,0.1);
+          border-radius: var(--radius-sm);
+          padding: 10px 12px;
           font-size: 14px;
-          color: #cdd6f4;
+          color: var(--apple-label);
+          font-family: var(--font);
           box-sizing: border-box;
+          transition: border-color 0.2s;
         }
-        .edit-form input:focus,
-        .edit-form textarea:focus,
-        .edit-form select:focus {
+        .form-group input:focus,
+        .form-group textarea:focus {
           outline: none;
-          border-color: #89b4fa;
+          border-color: var(--apple-blue);
         }
-        .edit-form textarea {
-          resize: vertical;
-          min-height: 80px;
-        }
+        .form-group textarea { resize: vertical; min-height: 80px; }
         .priority-options {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: var(--space-2);
+        }
+        .priority-opt {
           display: flex;
-          gap: 8px;
-        }
-        .priority-option {
-          flex: 1;
-          padding: 8px;
-          border: 1px solid #313244;
-          border-radius: 6px;
-          background: #11111b;
-          color: #6c7086;
-          font-size: 11px;
-          font-weight: 600;
-          text-align: center;
+          align-items: center;
+          justify-content: center;
+          gap: 6px;
+          padding: 10px;
+          background: var(--apple-surface-2);
+          border: 0.5px solid rgba(255,255,255,0.06);
+          border-radius: var(--radius-sm);
           cursor: pointer;
-          transition: all 0.2s;
+          font-size: 12px;
+          font-weight: var(--font-weight-medium);
+          color: var(--apple-secondary);
+          transition: all 0.15s;
+          font-family: var(--font);
         }
-        .priority-option:hover {
-          border-color: #585b70;
+        .priority-opt:hover { background: var(--apple-surface-3); color: var(--apple-label); }
+        .priority-opt.selected {
+          border-color: var(--apple-blue);
+          background: var(--apple-blue-fill);
+          color: var(--apple-blue);
         }
-        .priority-option.selected {
-          border-color: currentColor;
-        }
-        .priority-option[data-priority="low"] { color: #22c55e; }
-        .priority-option[data-priority="medium"] { color: #f59e0b; }
-        .priority-option[data-priority="high"] { color: #f97316; }
-        .priority-option[data-priority="critical"] { color: #ef4444; }
-        .priority-option.selected {
-          background: currentColor;
-        }
-        .priority-option.selected span {
-          color: #11111b;
+        .priority-opt[data-priority="low"].selected { border-color: var(--apple-green); background: rgba(48,209,88,0.12); color: var(--apple-green); }
+        .priority-opt[data-priority="medium"].selected { border-color: var(--apple-yellow); background: rgba(255,214,10,0.12); color: var(--apple-yellow); }
+        .priority-opt[data-priority="high"].selected { border-color: var(--apple-orange); background: rgba(255,159,10,0.12); color: var(--apple-orange); }
+        .priority-opt[data-priority="critical"].selected { border-color: var(--apple-red); background: rgba(255,69,58,0.12); color: var(--apple-red); }
+
+        /* ─── Mobile ─── */
+        @media (max-width: 480px) {
+          .detail-panel { width: 100%; }
         }
       </style>
-      
+
       <div class="detail-backdrop">
         <div class="detail-panel">
           <div class="detail-header">
-            <h2 class="detail-title">${this.#isEditMode ? '✏️ Editar tarea' : '📋 Detalle'}</h2>
+            <span class="detail-label-tag">${this.#isEditMode ? 'Editar' : 'Detalle'}</span>
             <button class="btn-close" id="closeBtn">✕</button>
           </div>
-          
-          ${this.#isEditMode ? this.renderEditForm() : this.renderViewMode(id, title, description, status, priority, storyPoints, tags, sprintName, createdAt, updatedAt, sprintLabels)}
-          
-          <div class="detail-actions">
+
+          ${this.#isEditMode ? this.#renderEditForm() : this.#renderViewMode()}
+
+          <div class="detail-footer">
             ${this.#isEditMode ? `
-              <button class="btn btn-cancel" id="cancelBtn">Cancelar</button>
-              <button class="btn btn-save" id="saveBtn">💾 Guardar</button>
+              <button class="btn btn-secondary" id="cancelBtn">Cancelar</button>
+              <button class="btn btn-primary" id="saveBtn">Guardar</button>
             ` : `
               <select class="move-select" id="moveSelect">
-                <option value="">Mover a...</option>
-                <option value="todo" ${status === 'todo' ? 'disabled' : ''}>📋 To Do</option>
-                <option value="in_progress" ${status === 'in_progress' ? 'disabled' : ''}>⚡ In Progress</option>
-                <option value="done" ${status === 'done' ? 'disabled' : ''}>✅ Done</option>
+                <option value="">Mover a…</option>
+                <option value="todo" ${status==='todo'?'disabled':''}>◻ Por hacer</option>
+                <option value="in_progress" ${status==='in_progress'?'disabled':''}>◉ En curso</option>
+                <option value="done" ${status==='done'?'disabled':''}>✓ Hecho</option>
               </select>
-              <button class="btn btn-edit" id="editBtn">✏️ Editar</button>
-              <button class="btn btn-delete" id="deleteBtn">🗑️</button>
+              <button class="btn btn-secondary" id="editBtn">Editar</button>
+              <button class="btn btn-danger" id="deleteBtn">🗑</button>
             `}
           </div>
         </div>
       </div>
     `
 
-    this.setupEventListeners()
+    this.#setupEventListeners()
   }
 
-  renderViewMode(id, title, description, status, priority, storyPoints, tags, sprintName, createdAt, updatedAt) {
-    const priorityLabels = { low: '🟢 Baja', medium: '🟡 Media', high: '🟠 Alta', critical: '🔴 Crítica' }
-    const statusLabels = { todo: '📋 To Do', in_progress: '⚡ In Progress', done: '✅ Done' }
+  #renderViewMode() {
+    const { title, description, status, priority, storyPoints, tags, sprintId, createdAt, updatedAt } = this.#task
+    const sprint = sprintId ? store.getSprint(sprintId) : null
+    const sprintName = sprint?.name ?? 'Backlog'
+
+    const priorityLabel = { low: 'Baja', medium: 'Media', high: 'Alta', critical: 'Crítica' }[priority] || 'Media'
+    const priorityColor = { low: 'var(--apple-green)', medium: 'var(--apple-yellow)', high: 'var(--apple-orange)', critical: 'var(--apple-red)' }[priority] || 'var(--apple-secondary)'
+
+    const statusLabel = { todo: 'Por hacer', in_progress: 'En curso', done: 'Hecho' }[status] || status
+    const statusIcon = { todo: '◻', in_progress: '◉', done: '✓' }[status] || '◻'
 
     return `
       <div class="detail-body">
-        <div class="detail-section">
-          <div class="detail-value title-value">${this.escapeHtml(title)}</div>
+        <div class="section">
+          <p class="task-title">${this.escapeHtml(title)}</p>
         </div>
-        
-        <div class="detail-section">
-          <div class="detail-label">Descripción</div>
-          <div class="detail-value">${description ? this.escapeHtml(description) : '<em style="color:#6c7086">Sin descripción</em>'}</div>
-        </div>
-        
-        <div class="detail-section">
-          <div class="detail-label">Estado</div>
-          <span class="meta-badge status-${status}">${statusLabels[status]}</span>
-        </div>
-        
-        <div class="detail-section">
-          <div class="detail-label">Prioridad</div>
-          <span class="meta-badge priority-${priority}">${priorityLabels[priority]}</span>
-        </div>
-        
-        ${storyPoints !== null ? `
-          <div class="detail-section">
-            <div class="detail-label">Story Points</div>
-            <span class="meta-badge points">⭐ ${storyPoints}</span>
+
+        ${description ? `
+          <div class="section">
+            <div class="section-title">Descripción</div>
+            <p class="task-desc">${this.escapeHtml(description)}</p>
           </div>
         ` : ''}
-        
-        ${tags && tags.length > 0 ? `
-          <div class="detail-section">
-            <div class="detail-label">Tags</div>
-            <div class="tag-list">
-              ${tags.map(tag => `<span class="tag">${this.escapeHtml(tag)}</span>`).join('')}
+
+        <div class="section">
+          <div class="section-title">Estado y Prioridad</div>
+          <div class="badges-row">
+            <span class="badge" style="background:rgba(10,132,255,0.12);color:var(--apple-blue)">${statusIcon} ${statusLabel}</span>
+            <span class="badge badge-priority" style="color:${priorityColor}">
+              <span style="width:6px;height:6px;border-radius:50%;background:${priorityColor};display:inline-block"></span>
+              ${priorityLabel}
+            </span>
+            ${storyPoints !== null ? `<span class="badge badge-points">${storyPoints} pt</span>` : ''}
+          </div>
+        </div>
+
+        ${tags?.length ? `
+          <div class="section">
+            <div class="section-title">Etiquetas</div>
+            <div class="tags-wrap">
+              ${tags.map(t => `<span class="tag">${this.escapeHtml(t)}</span>`).join('')}
             </div>
           </div>
         ` : ''}
-        
-        <div class="detail-section">
-          <div class="detail-label">Sprint</div>
-          <div class="detail-value">${this.escapeHtml(sprintName)}</div>
+
+        <div class="section">
+          <div class="section-title">Sprint</div>
+          <div class="badges-row">
+            <span class="badge badge-priority">🎯 ${this.escapeHtml(sprintName)}</span>
+          </div>
         </div>
-        
-        <div class="detail-section">
-          <div class="detail-label">Fechas</div>
-          <div class="detail-meta">
-            <div class="meta-item">
-              <span class="detail-label" style="margin-bottom:2px">Creado</span>
-              <span class="detail-value">${new Date(createdAt).toLocaleDateString('es-ES')}</span>
+
+        <div class="section">
+          <div class="section-title">Tiempos</div>
+          <div class="meta-grid">
+            <div class="meta-cell">
+              <div class="meta-cell-label">Creado</div>
+              <div class="meta-cell-value">${new Date(createdAt).toLocaleDateString('es-ES', { day: 'numeric', month: 'short', year: 'numeric' })}</div>
             </div>
-            <div class="meta-item">
-              <span class="detail-label" style="margin-bottom:2px">Actualizado</span>
-              <span class="detail-value">${new Date(updatedAt).toLocaleDateString('es-ES')}</span>
+            <div class="meta-cell">
+              <div class="meta-cell-label">Actualizado</div>
+              <div class="meta-cell-value">${new Date(updatedAt).toLocaleDateString('es-ES', { day: 'numeric', month: 'short', year: 'numeric' })}</div>
             </div>
           </div>
         </div>
@@ -444,7 +446,7 @@ export class TaskDetail extends HTMLElement {
     `
   }
 
-  renderEditForm() {
+  #renderEditForm() {
     const t = this.#task
     return `
       <div class="detail-body edit-form">
@@ -457,112 +459,84 @@ export class TaskDetail extends HTMLElement {
           <textarea id="editDescription">${this.escapeAttr(t.description || '')}</textarea>
         </div>
         <div class="form-group">
-          <label>Prioridad</label>
-          <div class="priority-options" id="priorityOptions">
-            <button type="button" class="priority-option ${t.priority === 'low' ? 'selected' : ''}" data-priority="low"><span>🟢 Baja</span></button>
-            <button type="button" class="priority-option ${t.priority === 'medium' ? 'selected' : ''}" data-priority="medium"><span>🟡 Media</span></button>
-            <button type="button" class="priority-option ${t.priority === 'high' ? 'selected' : ''}" data-priority="high"><span>🟠 Alta</span></button>
-            <button type="button" class="priority-option ${t.priority === 'critical' ? 'selected' : ''}" data-priority="critical"><span>🔴 Crítica</span></button>
-          </div>
+          <label>Puntos</label>
+          <input type="number" id="editPoints" value="${t.storyPoints ?? ''}" min="0" max="100" />
         </div>
         <div class="form-group">
-          <label>Story Points</label>
-          <input type="number" id="editPoints" value="${t.storyPoints ?? ''}" min="0" max="100" />
+          <label>Prioridad</label>
+          <div class="priority-options">
+            ${['low','medium','high','critical'].map(p => `
+              <button type="button" class="priority-opt ${t.priority === p ? 'selected' : ''}" data-priority="${p}">
+                ${p === 'low' ? '🟢' : p === 'medium' ? '🟡' : p === 'high' ? '🟠' : '🔴'}
+                ${p === 'low' ? 'Baja' : p === 'medium' ? 'Media' : p === 'high' ? 'Alta' : 'Crítica'}
+              </button>
+            `).join('')}
+          </div>
         </div>
       </div>
     `
   }
 
-  setupEventListeners() {
-    this.querySelector('#closeBtn')?.addEventListener('click', () => this.hide())
-    
-    this.querySelector('.detail-backdrop')?.addEventListener('click', (e) => {
+  #setupEventListeners() {
+    this.shadowRoot.getElementById('closeBtn')?.addEventListener('click', () => this.hide())
+    this.shadowRoot.querySelector('.detail-backdrop')?.addEventListener('click', e => {
       if (e.target.classList.contains('detail-backdrop')) this.hide()
     })
 
-    const editBtn = this.querySelector('#editBtn')
-    editBtn?.addEventListener('click', () => {
-      this.#isEditMode = true
-      this.render()
+    this.shadowRoot.getElementById('editBtn')?.addEventListener('click', () => {
+      this.#isEditMode = true; this.render()
     })
 
-    const deleteBtn = this.querySelector('#deleteBtn')
-    deleteBtn?.addEventListener('click', () => {
+    this.shadowRoot.getElementById('deleteBtn')?.addEventListener('click', () => {
       if (confirm('¿Eliminar esta tarea?')) {
-        const taskId = this.#task.id
-        const taskTitle = this.#task.title
-        const taskData = { ...this.#task }
-        store.deleteTask(taskId)
-        notify.delete(`Tarea "${taskTitle}" eliminada`, () => {
-          // Undo delete
-          try {
-            store.addTask(taskData)
-          } catch (e) {
-            notify.error('No se pudo deshacer')
-          }
+        const data = { ...this.#task }
+        store.deleteTask(this.#task.id)
+        notify.delete(`"${this.#task.title}" eliminada`, () => {
+          try { store.addTask(data) } catch { notify.error('No se pudo deshacer') }
         })
         this.hide()
       }
     })
 
-    const moveSelect = this.querySelector('#moveSelect')
-    moveSelect?.addEventListener('change', (e) => {
+    this.shadowRoot.getElementById('moveSelect')?.addEventListener('change', e => {
       if (e.target.value) {
         store.moveTask(this.#task.id, e.target.value)
-        notify.success(`Tarea movida a ${e.target.options[e.target.selectedIndex].text}`)
+        notify.success('Tarea movida')
         eventBus.emit(Events.TASK_MOVED, { taskId: this.#task.id, newStatus: e.target.value })
       }
     })
 
-    // Edit mode handlers
-    const cancelBtn = this.querySelector('#cancelBtn')
-    cancelBtn?.addEventListener('click', () => {
-      this.#isEditMode = false
-      this.render()
+    // Edit mode
+    this.shadowRoot.getElementById('cancelBtn')?.addEventListener('click', () => {
+      this.#isEditMode = false; this.render()
     })
 
-    const saveBtn = this.querySelector('#saveBtn')
-    saveBtn?.addEventListener('click', () => {
-      const title = this.querySelector('#editTitle')?.value.trim()
-      const description = this.querySelector('#editDescription')?.value.trim() || ''
-      const points = this.querySelector('#editPoints')?.value
-      const priority = this.querySelector('.priority-option.selected')?.dataset.priority
-
-      if (!title) {
-        notify.error('El título es requerido')
-        return
-      }
-
+    this.shadowRoot.getElementById('saveBtn')?.addEventListener('click', () => {
+      const title = this.shadowRoot.getElementById('editTitle')?.value.trim()
+      const description = this.shadowRoot.getElementById('editDescription')?.value.trim() || ''
+      const points = this.shadowRoot.getElementById('editPoints')?.value
+      const priority = this.shadowRoot.querySelector('.priority-opt.selected')?.dataset.priority
+      if (!title) { notify.error('El título es requerido'); return }
       try {
-        store.updateTask(this.#task.id, {
-          title,
-          description,
-          storyPoints: points ? parseInt(points, 10) : null,
-          priority
-        })
+        store.updateTask(this.#task.id, { title, description, storyPoints: points ? parseInt(points) : null, priority })
         this.#isEditMode = false
         notify.success('Tarea actualizada')
         this.render()
-      } catch (err) {
-        notify.error(err.message)
-      }
+      } catch (e) { notify.error(e.message) }
     })
 
-    // Priority option selection in edit mode
-    this.querySelectorAll('.priority-option').forEach(btn => {
+    // Priority selection in edit mode
+    this.shadowRoot.querySelectorAll('.priority-opt').forEach(btn => {
       btn.addEventListener('click', () => {
-        this.querySelectorAll('.priority-option').forEach(b => b.classList.remove('selected'))
+        this.shadowRoot.querySelectorAll('.priority-opt').forEach(b => b.classList.remove('selected'))
         btn.classList.add('selected')
       })
     })
   }
 
   escapeHtml(text) {
-    const div = document.createElement('div')
-    div.textContent = text
-    return div.innerHTML
+    const d = document.createElement('div'); d.textContent = text; return d.innerHTML
   }
-
   escapeAttr(text) {
     return (text || '').replace(/"/g, '&quot;').replace(/'/g, '&#39;')
   }

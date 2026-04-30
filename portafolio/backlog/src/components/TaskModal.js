@@ -1,4 +1,4 @@
-// src/components/TaskModal.js
+// src/components/TaskModal.js — Apple Design Language
 
 import { TaskStatus, TaskPriority } from '../models/Task.js'
 import { store } from '../store/TaskStore.js'
@@ -10,17 +10,11 @@ export class TaskModal extends HTMLElement {
   connectedCallback() {
     this.addEventListener('task-edit', (e) => {
       const task = store.getTask(e.detail.id)
-      if (task) {
-        this.#task = task
-        this.#isEdit = true
-        this.show()
-      }
+      if (task) { this.#task = task; this.#isEdit = true; this.show() }
     })
 
     this.addEventListener('open-create-modal', () => {
-      this.#task = null
-      this.#isEdit = false
-      this.show()
+      this.#task = null; this.#isEdit = false; this.show()
     })
 
     this.addEventListener('keydown', (e) => {
@@ -31,9 +25,7 @@ export class TaskModal extends HTMLElement {
   show() {
     this.style.display = 'flex'
     this.render()
-    requestAnimationFrame(() => {
-      this.querySelector('.modal-backdrop')?.classList.add('active')
-    })
+    requestAnimationFrame(() => this.querySelector('.modal-backdrop')?.classList.add('active'))
   }
 
   hide() {
@@ -43,7 +35,7 @@ export class TaskModal extends HTMLElement {
       setTimeout(() => {
         this.style.display = 'none'
         this.innerHTML = ''
-      }, 200)
+      }, 250)
     } else {
       this.style.display = 'none'
     }
@@ -51,12 +43,8 @@ export class TaskModal extends HTMLElement {
 
   render() {
     const t = this.#task || {
-      title: '',
-      description: '',
-      status: TaskStatus.TODO,
-      priority: TaskPriority.MEDIUM,
-      storyPoints: null,
-      tags: []
+      title: '', description: '', status: TaskStatus.TODO,
+      priority: TaskPriority.MEDIUM, storyPoints: null, tags: []
     }
 
     this.innerHTML = `
@@ -72,168 +60,196 @@ export class TaskModal extends HTMLElement {
         .modal-backdrop {
           position: absolute;
           inset: 0;
-          background: rgba(0,0,0,0.6);
-          backdrop-filter: blur(4px);
+          background: rgba(0,0,0,0.65);
+          backdrop-filter: blur(6px) saturate(150%);
+          -webkit-backdrop-filter: blur(6px) saturate(150%);
           opacity: 0;
-          transition: opacity 0.2s;
+          transition: opacity 0.25s;
         }
-        .modal-backdrop.active {
-          opacity: 1;
-        }
+        .modal-backdrop.active { opacity: 1; }
+
         .modal {
           position: relative;
-          background: #1e1e2e;
-          border: 1px solid #313244;
-          border-radius: 16px;
-          padding: 24px;
+          background: var(--apple-surface-1);
+          border: 0.5px solid rgba(255,255,255,0.1);
+          border-radius: var(--radius-xl);
+          padding: var(--space-6);
           width: 90%;
-          max-width: 560px;
-          box-shadow: 0 20px 60px rgba(0,0,0,0.5);
-          transform: translateY(20px);
-          transition: transform 0.2s;
+          max-width: 540px;
+          box-shadow: var(--shadow-modal);
+          transform: translateY(16px) scale(0.97);
+          transition: transform 0.3s cubic-bezier(0.34,1.2,0.64,1);
+          max-height: 90vh;
+          overflow-y: auto;
         }
         .modal-backdrop.active .modal {
-          transform: translateY(0);
+          transform: translateY(0) scale(1);
         }
+
+        /* ─── Header ─── */
         .modal-header {
           display: flex;
-          justify-content: space-between;
           align-items: center;
-          margin-bottom: 20px;
+          justify-content: space-between;
+          margin-bottom: var(--space-5);
         }
         .modal-title {
-          font-size: 18px;
-          font-weight: 700;
-          color: #cdd6f4;
+          font-size: 20px;
+          font-weight: var(--font-weight-semibold);
+          color: var(--apple-label);
+          letter-spacing: -0.015em;
           margin: 0;
         }
         .btn-close {
-          background: none;
+          width: 28px; height: 28px;
+          display: flex; align-items: center; justify-content: center;
+          background: transparent;
           border: none;
-          color: #6c7086;
-          font-size: 20px;
+          border-radius: 7px;
+          color: var(--apple-tertiary);
           cursor: pointer;
-          padding: 4px 8px;
-          border-radius: 6px;
+          font-size: 14px;
           transition: all 0.2s;
         }
         .btn-close:hover {
-          background: #313244;
-          color: #cdd6f4;
+          background: var(--apple-surface-2);
+          color: var(--apple-label);
         }
-        .form-group {
-          margin-bottom: 16px;
-        }
-        label {
+
+        /* ─── Form ─── */
+        .form-group { margin-bottom: var(--space-4); }
+        .form-group label {
           display: block;
-          font-size: 12px;
-          font-weight: 600;
-          color: #a6adc8;
-          margin-bottom: 6px;
+          font-size: 11px;
+          font-weight: var(--font-weight-semibold);
+          letter-spacing: 0.06em;
           text-transform: uppercase;
-          letter-spacing: 0.5px;
+          color: var(--apple-tertiary);
+          margin-bottom: 6px;
         }
-        input, textarea, select {
+        .form-group input,
+        .form-group textarea,
+        .form-group select {
           width: 100%;
-          background: #11111b;
-          border: 1px solid #313244;
-          border-radius: 8px;
-          padding: 10px 12px;
+          background: var(--apple-bg);
+          border: 0.5px solid rgba(255,255,255,0.1);
+          border-radius: var(--radius-sm);
+          padding: 11px 14px;
           font-size: 14px;
-          color: #cdd6f4;
-          font-family: inherit;
+          color: var(--apple-label);
+          font-family: var(--font);
           box-sizing: border-box;
           transition: border-color 0.2s;
+          appearance: none;
         }
-        input:focus, textarea:focus, select:focus {
+        .form-group input::placeholder,
+        .form-group textarea::placeholder { color: var(--apple-tertiary); }
+        .form-group input:focus,
+        .form-group textarea:focus,
+        .form-group select:focus {
           outline: none;
-          border-color: #89b4fa;
+          border-color: var(--apple-blue);
         }
-        textarea {
+        .form-group textarea {
           resize: vertical;
           min-height: 80px;
         }
-        select {
-          cursor: pointer;
-        }
+
         .row {
           display: flex;
-          gap: 12px;
+          gap: var(--space-3);
         }
-        .row .form-group {
-          flex: 1;
+        .row .form-group { flex: 1; }
+
+        /* ─── Priority grid ─── */
+        .priority-grid {
+          display: grid;
+          grid-template-columns: repeat(4, 1fr);
+          gap: var(--space-2);
         }
-        .priority-options {
+        .priority-opt {
           display: flex;
-          gap: 8px;
-        }
-        .priority-option {
-          flex: 1;
-          padding: 8px;
-          border: 1px solid #313244;
-          border-radius: 6px;
-          background: #11111b;
-          color: #6c7086;
-          font-size: 12px;
-          font-weight: 600;
-          text-align: center;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          gap: 4px;
+          padding: 10px 6px;
+          background: var(--apple-surface-2);
+          border: 0.5px solid rgba(255,255,255,0.06);
+          border-radius: var(--radius-sm);
           cursor: pointer;
-          transition: all 0.2s;
-          font-family: inherit;
+          font-size: 10px;
+          font-weight: var(--font-weight-semibold);
+          color: var(--apple-secondary);
+          transition: all 0.2s var(--ease-apple);
+          font-family: var(--font);
         }
-        .priority-option:hover {
-          border-color: #585b70;
+        .priority-opt:hover {
+          background: var(--apple-surface-3);
+          color: var(--apple-label);
         }
-        .priority-option.selected {
-          border-color: currentColor;
-          background: currentColor;
+        .priority-opt.selected {
+          border-color: var(--apple-blue);
+          background: var(--apple-blue-fill);
+          color: var(--apple-blue);
         }
-        .priority-option[data-priority="low"] { color: #22c55e; }
-        .priority-option[data-priority="medium"] { color: #f59e0b; }
-        .priority-option[data-priority="high"] { color: #f97316; }
-        .priority-option[data-priority="critical"] { color: #ef4444; }
-        .priority-option.selected span {
-          color: #11111b;
-          display: block;
+        .priority-opt[data-priority="low"].selected {
+          border-color: var(--apple-green);
+          background: rgba(48,209,88,0.12);
+          color: var(--apple-green);
         }
-        .priority-option span {
-          display: block;
+        .priority-opt[data-priority="medium"].selected {
+          border-color: var(--apple-yellow);
+          background: rgba(255,214,10,0.12);
+          color: var(--apple-yellow);
         }
+        .priority-opt[data-priority="high"].selected {
+          border-color: var(--apple-orange);
+          background: rgba(255,159,10,0.12);
+          color: var(--apple-orange);
+        }
+        .priority-opt[data-priority="critical"].selected {
+          border-color: var(--apple-red);
+          background: rgba(255,69,58,0.12);
+          color: var(--apple-red);
+        }
+        .priority-icon { font-size: 18px; line-height: 1; }
+
+        /* ─── Tags input ─── */
         .tags-input {
           display: flex;
           flex-wrap: wrap;
-          gap: 6px;
-          padding: 8px;
-          background: #11111b;
-          border: 1px solid #313244;
-          border-radius: 8px;
-          min-height: 42px;
+          gap: var(--space-2);
+          padding: 9px 12px;
+          background: var(--apple-bg);
+          border: 0.5px solid rgba(255,255,255,0.1);
+          border-radius: var(--radius-sm);
+          min-height: 44px;
+          transition: border-color 0.2s;
         }
-        .tags-input:focus-within {
-          border-color: #89b4fa;
-        }
+        .tags-input:focus-within { border-color: var(--apple-blue); }
         .tag-item {
           display: flex;
           align-items: center;
           gap: 4px;
-          background: #313244;
-          padding: 2px 8px;
-          border-radius: 4px;
+          background: var(--apple-surface-2);
+          padding: 3px 8px 3px 10px;
+          border-radius: 6px;
           font-size: 12px;
-          color: #cdd6f4;
+          font-weight: var(--font-weight-medium);
+          color: var(--apple-label);
         }
         .tag-remove {
           background: none;
           border: none;
-          color: #6c7086;
+          color: var(--apple-tertiary);
           cursor: pointer;
-          font-size: 12px;
+          font-size: 13px;
           padding: 0;
           line-height: 1;
+          transition: color 0.15s;
         }
-        .tag-remove:hover {
-          color: #f38ba8;
-        }
+        .tag-remove:hover { color: var(--apple-red); }
         .tag-input-field {
           flex: 1;
           min-width: 80px;
@@ -241,82 +257,139 @@ export class TaskModal extends HTMLElement {
           border: none;
           padding: 4px;
           font-size: 13px;
-          color: #cdd6f4;
+          color: var(--apple-label);
+          font-family: var(--font);
         }
-        .tag-input-field:focus {
-          outline: none;
-        }
+        .tag-input-field:focus { outline: none; }
+
+        /* ─── Submit ─── */
         .btn-submit {
           width: 100%;
-          background: #89b4fa;
-          color: #11111b;
+          background: var(--apple-blue);
+          color: #fff;
           border: none;
-          padding: 12px;
-          border-radius: 8px;
-          font-size: 15px;
-          font-weight: 600;
+          padding: 13px;
+          border-radius: var(--radius-sm);
+          font-size: 14px;
+          font-weight: var(--font-weight-semibold);
           cursor: pointer;
-          transition: all 0.2s;
-          margin-top: 8px;
+          transition: all 0.2s var(--ease-apple);
+          margin-top: var(--space-3);
+          letter-spacing: 0.01em;
+          font-family: var(--font);
         }
         .btn-submit:hover {
-          background: #b4befe;
+          background: #2593ff;
+          transform: scale(1.005);
         }
+        .btn-submit:active { transform: scale(0.995); }
+
+        /* ─── Status select ─── */
+        .status-select-wrap {
+          position: relative;
+        }
+        .status-select-wrap select {
+          padding-right: 32px;
+          background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%2398989d'/%3E%3C/svg%3E");
+          background-repeat: no-repeat;
+          background-position: right 12px center;
+        }
+
+        /* ─── Error ─── */
         .error-message {
-          color: #f38ba8;
+          color: var(--apple-red);
           font-size: 12px;
           margin-top: 4px;
+          display: none;
+        }
+        .error-message.visible { display: block; }
+
+        /* ─── Mobile ─── */
+        @media (max-width: 540px) {
+          .modal { padding: var(--space-5); border-radius: var(--radius-lg); }
+          .priority-grid { grid-template-columns: repeat(2, 1fr); }
+          .row { flex-direction: column; }
         }
       </style>
+
       <div class="modal-backdrop">
         <div class="modal">
           <div class="modal-header">
-            <h2 class="modal-title">${this.#isEdit ? '✏️ Editar tarea' : '➕ Nueva tarea'}</h2>
+            <h2 class="modal-title">${this.#isEdit ? 'Editar tarea' : 'Nueva tarea'}</h2>
             <button class="btn-close" id="closeBtn">✕</button>
           </div>
-          <form id="taskForm">
+
+          <form id="taskForm" novalidate>
             <div class="form-group">
-              <label for="title">Título *</label>
-              <input type="text" id="title" name="title" value="${this.escapeAttr(t.title)}" placeholder="¿Qué necesitas hacer?" maxlength="200" required />
+              <label for="title">Título</label>
+              <input type="text" id="title" name="title"
+                value="${this.escapeAttr(t.title)}"
+                placeholder="¿Qué necesitas hacer?"
+                maxlength="200" required />
+              <div class="error-message" id="titleError">El título es requerido</div>
             </div>
+
             <div class="form-group">
               <label for="description">Descripción</label>
-              <textarea id="description" name="description" placeholder="Detalles adicionales, links, notas...">${this.escapeAttr(t.description)}</textarea>
+              <textarea id="description" name="description"
+                placeholder="Detalles adicionales, links, notas…">${this.escapeAttr(t.description)}</textarea>
             </div>
+
             <div class="row">
               <div class="form-group">
-                <label for="status">Estado</label>
-                <select id="status" name="status">
-                  <option value="todo" ${t.status === 'todo' ? 'selected' : ''}>📋 To Do</option>
-                  <option value="in_progress" ${t.status === 'in_progress' ? 'selected' : ''}>⚡ In Progress</option>
-                  <option value="done" ${t.status === 'done' ? 'selected' : ''}>✅ Done</option>
-                </select>
+                <label>Estado</label>
+                <div class="status-select-wrap">
+                  <select id="status" name="status">
+                    <option value="todo" ${t.status === 'todo' ? 'selected' : ''}>◻ Por hacer</option>
+                    <option value="in_progress" ${t.status === 'in_progress' ? 'selected' : ''}>◉ En curso</option>
+                    <option value="done" ${t.status === 'done' ? 'selected' : ''}>✓ Hecho</option>
+                  </select>
+                </div>
               </div>
               <div class="form-group">
                 <label for="storyPoints">Story Points</label>
-                <input type="number" id="storyPoints" name="storyPoints" value="${t.storyPoints ?? ''}" placeholder="0" min="0" max="100" />
+                <input type="number" id="storyPoints" name="storyPoints"
+                  value="${t.storyPoints ?? ''}"
+                  placeholder="0" min="0" max="100" />
               </div>
             </div>
+
             <div class="form-group" id="sprintFormGroup" style="display:${store.getActiveProjectId() ? 'block' : 'none'}">
               <label for="sprintSelect">Sprint</label>
               <select id="sprintSelect" name="sprint">
                 <option value="">— Sin sprint —</option>
                 ${store.getSprints(store.getActiveProjectId()).map(s => `
-                  <option value="${s.id}" ${(t.sprintId ?? store.getActiveSprintId()) === s.id ? 'selected' : ''}>${this.escapeHtml(s.name)}</option>
+                  <option value="${s.id}" ${(t.sprintId ?? store.getActiveSprintId()) === s.id ? 'selected' : ''}>
+                    ${this.escapeHtml(s.name)}
+                  </option>
                 `).join('')}
               </select>
             </div>
+
             <div class="form-group">
               <label>Prioridad</label>
-              <div class="priority-options">
-                <button type="button" class="priority-option ${t.priority === 'low' ? 'selected' : ''}" data-priority="low"><span>🟢 Baja</span></button>
-                <button type="button" class="priority-option ${t.priority === 'medium' ? 'selected' : ''}" data-priority="medium"><span>🟡 Media</span></button>
-                <button type="button" class="priority-option ${t.priority === 'high' ? 'selected' : ''}" data-priority="high"><span>🟠 Alta</span></button>
-                <button type="button" class="priority-option ${t.priority === 'critical' ? 'selected' : ''}" data-priority="critical"><span>🔴 Crítica</span></button>
+              <div class="priority-grid">
+                <button type="button" class="priority-opt ${t.priority === 'low' ? 'selected' : ''}" data-priority="low">
+                  <span class="priority-icon">🟢</span>
+                  Baja
+                </button>
+                <button type="button" class="priority-opt ${t.priority === 'medium' ? 'selected' : ''}" data-priority="medium">
+                  <span class="priority-icon">🟡</span>
+                  Media
+                </button>
+                <button type="button" class="priority-opt ${t.priority === 'high' ? 'selected' : ''}" data-priority="high">
+                  <span class="priority-icon">🟠</span>
+                  Alta
+                </button>
+                <button type="button" class="priority-opt ${t.priority === 'critical' ? 'selected' : ''}" data-priority="critical">
+                  <span class="priority-icon">🔴</span>
+                  Crítica
+                </button>
               </div>
             </div>
+
             <div class="form-group">
-              <label>Tags</label>
+              <label>Etiquetas</label>
               <div class="tags-input" id="tagsInput">
                 ${(t.tags || []).map(tag => `
                   <span class="tag-item">
@@ -324,11 +397,12 @@ export class TaskModal extends HTMLElement {
                     <button type="button" class="tag-remove" data-tag="${this.escapeAttr(tag)}">✕</button>
                   </span>
                 `).join('')}
-                <input type="text" class="tag-input-field" placeholder="Agregar tag..." id="tagInputField" />
+                <input type="text" class="tag-input-field" placeholder="Agregar tag y presionar Enter…" id="tagInputField" />
               </div>
             </div>
+
             <button type="submit" class="btn-submit">
-              ${this.#isEdit ? '💾 Guardar cambios' : '🚀 Crear tarea'}
+              ${this.#isEdit ? 'Guardar cambios' : 'Crear tarea'}
             </button>
           </form>
         </div>
@@ -340,20 +414,19 @@ export class TaskModal extends HTMLElement {
 
   setupEventListeners() {
     this.querySelector('#closeBtn')?.addEventListener('click', () => this.hide())
-
-    this.querySelector('.modal-backdrop')?.addEventListener('click', (e) => {
+    this.querySelector('.modal-backdrop')?.addEventListener('click', e => {
       if (e.target.classList.contains('modal-backdrop')) this.hide()
     })
 
-    // Priority buttons
-    this.querySelectorAll('.priority-option').forEach(btn => {
+    // Priority
+    this.querySelectorAll('.priority-opt').forEach(btn => {
       btn.addEventListener('click', () => {
-        this.querySelectorAll('.priority-option').forEach(b => b.classList.remove('selected'))
+        this.querySelectorAll('.priority-opt').forEach(b => b.classList.remove('selected'))
         btn.classList.add('selected')
       })
     })
 
-    // Tags input
+    // Tags
     const tagInputField = this.querySelector('#tagInputField')
     tagInputField?.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' || e.key === ',') {
@@ -367,12 +440,10 @@ export class TaskModal extends HTMLElement {
     })
 
     this.querySelectorAll('.tag-remove').forEach(btn => {
-      btn.addEventListener('click', () => {
-        btn.parentElement.remove()
-      })
+      btn.addEventListener('click', () => btn.parentElement.remove())
     })
 
-    // Form submit
+    // Form
     this.querySelector('#taskForm')?.addEventListener('submit', (e) => {
       e.preventDefault()
       this.handleSubmit()
@@ -383,65 +454,59 @@ export class TaskModal extends HTMLElement {
     const tagsInput = this.querySelector('#tagsInput')
     const tagInputField = this.querySelector('#tagInputField')
     if (!tagsInput) return
-
-    const existing = Array.from(tagsInput.querySelectorAll('.tag-item')).map(t => t.textContent.replace('✕', '').trim())
+    const existing = Array.from(tagsInput.querySelectorAll('.tag-item'))
+      .map(t => t.textContent.replace('✕', '').trim())
     if (existing.includes(tag)) return
-
     const tagEl = document.createElement('span')
     tagEl.className = 'tag-item'
     tagEl.innerHTML = `${this.escapeHtml(tag)}<button type="button" class="tag-remove" data-tag="${this.escapeAttr(tag)}">✕</button>`
     tagsInput.insertBefore(tagEl, tagInputField)
-
     tagEl.querySelector('.tag-remove')?.addEventListener('click', () => tagEl.remove())
   }
 
   handleSubmit() {
     const title = this.querySelector('#title')?.value.trim()
+    const titleError = this.querySelector('#titleError')
+
+    if (!title) {
+      this.querySelector('#title')?.focus()
+      titleError?.classList.add('visible')
+      return
+    }
+    titleError?.classList.remove('visible')
+
     const description = this.querySelector('#description')?.value.trim() || ''
     const status = this.querySelector('#status')?.value || 'todo'
     const storyPoints = this.querySelector('#storyPoints')?.value
-    const priority = this.querySelector('.priority-option.selected')?.dataset.priority || 'medium'
-    const tags = Array.from(this.querySelectorAll('.tag-item')).map(t => t.textContent.replace('✕', '').trim())
+    const priority = this.querySelector('.priority-opt.selected')?.dataset.priority || 'medium'
+    const tags = Array.from(this.querySelectorAll('.tag-item'))
+      .map(t => t.textContent.replace('✕', '').trim())
     const sprintId = this.querySelector('#sprintSelect')?.value || null
-
-    const taskData = {
-      title,
-      description,
-      status,
-      priority,
-      storyPoints: storyPoints ? parseInt(storyPoints, 10) : null,
-      tags,
-      sprintId
-    }
 
     try {
       if (this.#isEdit) {
-        store.updateTask(this.#task.id, taskData)
+        store.updateTask(this.#task.id, {
+          title, description, status, priority,
+          storyPoints: storyPoints ? parseInt(storyPoints, 10) : null,
+          tags, sprintId
+        })
       } else {
-        store.addTask(taskData)
+        store.addTask({ title, description, status, priority,
+          storyPoints: storyPoints ? parseInt(storyPoints, 10) : null,
+          tags, sprintId })
       }
       this.hide()
     } catch (err) {
-      const errorEl = this.querySelector('.error-message') || this.insertErrorEl()
-      if (errorEl) errorEl.textContent = err.message
+      const errEl = this.querySelector('#titleError')
+      if (errEl) { errEl.textContent = err.message; errEl.classList.add('visible') }
     }
   }
 
-  insertErrorEl() {
-    const errorEl = document.createElement('div')
-    errorEl.className = 'error-message'
-    this.querySelector('#taskForm')?.appendChild(errorEl)
-    return errorEl
-  }
-
   escapeHtml(text) {
-    const div = document.createElement('div')
-    div.textContent = text
-    return div.innerHTML
+    const d = document.createElement('div'); d.textContent = text; return d.innerHTML
   }
-
   escapeAttr(text) {
-    return text.replace(/"/g, '&quot;').replace(/'/g, '&#39;')
+    return (text || '').replace(/"/g, '&quot;').replace(/'/g, '&#39;')
   }
 }
 

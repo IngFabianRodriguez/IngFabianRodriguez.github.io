@@ -1,4 +1,4 @@
-// src/components/Column.js
+// src/components/Column.js — Apple Design Language
 
 import { TaskStatus } from '../models/Task.js'
 import { eventBus, Events } from '../utils/EventBus.js'
@@ -6,9 +6,9 @@ import { store } from '../store/TaskStore.js'
 import { notify } from '../utils/Notifications.js'
 
 const columnConfig = {
-  [TaskStatus.TODO]: { title: '📋 To Do', color: '#89b4fa' },
-  [TaskStatus.IN_PROGRESS]: { title: '⚡ In Progress', color: '#f9e2af' },
-  [TaskStatus.DONE]: { title: '✅ Done', color: '#a6e3a1' }
+  [TaskStatus.TODO]:         { title: 'Por hacer',  icon: '◻', color: 'var(--apple-secondary)' },
+  [TaskStatus.IN_PROGRESS]: { title: 'En curso',   icon: '◉', color: 'var(--apple-orange)' },
+  [TaskStatus.DONE]:        { title: 'Hecho',      icon: '✓', color: 'var(--apple-green)' }
 }
 
 export class TaskColumn extends HTMLElement {
@@ -16,12 +16,8 @@ export class TaskColumn extends HTMLElement {
   #tasks = []
   #unsubscribe = null
   #quickAddMode = false
-  #dragSourceIndex = null
-  #dragSourceStatus = null
 
-  static get observedAttributes() {
-    return ['status']
-  }
+  static get observedAttributes() { return ['status'] }
 
   constructor() {
     super()
@@ -34,9 +30,7 @@ export class TaskColumn extends HTMLElement {
     this.refresh()
   }
 
-  disconnectedCallback() {
-    this.#unsubscribe?.()
-  }
+  disconnectedCallback() { this.#unsubscribe?.() }
 
   attributeChangedCallback(name, oldVal, newVal) {
     if (name === 'status' && oldVal !== newVal) {
@@ -45,24 +39,13 @@ export class TaskColumn extends HTMLElement {
     }
   }
 
-  set status(val) {
-    this.#status = val
-    this.refresh()
-  }
-
   refresh() {
     if (!this.#status) return
-
     const criteria = store.getFilterCriteria()
     const filteredTasks = store.getFilteredTasks(criteria)
-
-    // Get tasks for this column, filtered and sorted
-    let columnTasks = filteredTasks.filter(t => t.status === this.#status)
-
-    // Sort by position
-    columnTasks = columnTasks.sort((a, b) => (a.position || 0) - (b.position || 0))
-
-    this.#tasks = columnTasks
+    this.#tasks = filteredTasks
+      .filter(t => t.status === this.#status)
+      .sort((a, b) => (a.position || 0) - (b.position || 0))
     this.render()
     this.setupDropZone()
   }
@@ -72,28 +55,21 @@ export class TaskColumn extends HTMLElement {
     const taskList = this.shadowRoot.querySelector('.task-list')
     if (!column || !taskList) return
 
-    column.addEventListener('dragover', (e) => {
+    column.addEventListener('dragover', e => {
       e.preventDefault()
       e.dataTransfer.dropEffect = 'move'
       column.classList.add('drag-over')
-      
-      // Find drop position indicator
       const cards = Array.from(taskList.querySelectorAll('task-card'))
       const afterElement = this.getDragAfterElement(cards, e.clientY)
-      
-      // Remove existing indicators
       taskList.querySelectorAll('.drop-indicator').forEach(el => el.remove())
-      
-      // Add indicator
       const indicator = document.createElement('div')
       indicator.className = 'drop-indicator'
       indicator.style.cssText = `
-        height: 3px;
-        background: ${columnConfig[this.#status]?.color || '#89b4fa'};
-        border-radius: 2px;
+        height: 2px;
+        background: ${columnConfig[this.#status]?.color};
+        border-radius: 1px;
         margin: 4px 0;
       `
-      
       if (afterElement) {
         taskList.insertBefore(indicator, afterElement)
       } else {
@@ -101,51 +77,33 @@ export class TaskColumn extends HTMLElement {
       }
     })
 
-    column.addEventListener('dragleave', (e) => {
-      // Only remove if leaving the column entirely
+    column.addEventListener('dragleave', e => {
       if (!column.contains(e.relatedTarget)) {
         column.classList.remove('drag-over')
         taskList.querySelectorAll('.drop-indicator').forEach(el => el.remove())
       }
     })
 
-    column.addEventListener('drop', (e) => {
+    column.addEventListener('drop', e => {
       e.preventDefault()
       column.classList.remove('drag-over')
       taskList.querySelectorAll('.drop-indicator').forEach(el => el.remove())
-      
       const taskId = e.dataTransfer.getData('text/plain')
       if (!taskId) return
-      
       const task = store.getTask(taskId)
       if (!task) return
-      
-      // Calculate drop position
       const cards = Array.from(taskList.querySelectorAll('task-card'))
       const afterElement = this.getDragAfterElement(cards, e.clientY)
-      let newIndex = 0
-      
-      if (afterElement) {
-        const afterCardIndex = cards.indexOf(afterElement)
-        newIndex = afterCardIndex
-      } else {
-        newIndex = cards.length
-      }
-      
-      // Check if it's the same column
+      let newIndex = afterElement
+        ? cards.indexOf(afterElement)
+        : cards.length
       if (task.status === this.#status) {
-        // Reorder within same column
         store.reorderTask(taskId, this.#status, newIndex)
       } else {
-        // Move to different column
         store.moveTask(taskId, this.#status)
-        // If dropped at specific position, reorder
-        if (newIndex > 0) {
-          store.reorderTask(taskId, this.#status, newIndex)
-        }
+        if (newIndex > 0) store.reorderTask(taskId, this.#status, newIndex)
       }
-      
-      notify.success(`Tarea movida a ${columnConfig[this.#status]?.title || this.#status}`)
+      notify.success(`Tarea movida a ${columnConfig[this.#status]?.title}`)
       eventBus.emit(Events.TASK_MOVED, { taskId, newStatus: this.#status })
     })
   }
@@ -154,7 +112,6 @@ export class TaskColumn extends HTMLElement {
     return cards.reduce((closest, card) => {
       const box = card.getBoundingClientRect()
       const offset = y - box.top - box.height / 2
-      
       if (offset < 0 && offset > closest.offset) {
         return { offset, element: card }
       }
@@ -163,7 +120,7 @@ export class TaskColumn extends HTMLElement {
   }
 
   render() {
-    const config = columnConfig[this.#status] || { title: 'Unknown', color: '#6c7086' }
+    const config = columnConfig[this.#status] || { title: '—', icon: '', color: 'var(--apple-secondary)' }
     const columnPoints = this.#tasks.reduce((sum, t) => sum + (t.storyPoints || 0), 0)
     const isEmpty = this.#tasks.length === 0
 
@@ -173,11 +130,161 @@ export class TaskColumn extends HTMLElement {
           display: flex;
           flex-direction: column;
           flex: 1;
-          min-width: 300px;
-          max-width: 400px;
+          min-width: 280px;
+          max-width: 360px;
+          animation: fadeInUp 0.3s var(--ease-apple);
         }
 
-        /* Mobile: full width columns, stacked */
+        /* ─── Column card ─── */
+        .column {
+          background: var(--apple-surface-1);
+          border: 0.5px solid rgba(255,255,255,0.06);
+          border-radius: var(--radius-lg);
+          display: flex;
+          flex-direction: column;
+          gap: 0;
+          height: fit-content;
+          min-height: 160px;
+          transition: border-color 0.2s, box-shadow 0.2s;
+          overflow: hidden;
+        }
+        .column.drag-over {
+          border-color: var(--apple-blue);
+          box-shadow: 0 0 0 1px var(--apple-blue), var(--shadow-elevated);
+        }
+
+        /* ─── Column header ─── */
+        .column-header {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          padding: var(--space-4) var(--space-4) var(--space-3);
+          border-bottom: 0.5px solid rgba(255,255,255,0.06);
+        }
+        .column-title {
+          display: flex;
+          align-items: center;
+          gap: var(--space-2);
+        }
+        .column-icon {
+          font-size: 14px;
+          color: ${config.color};
+        }
+        .column-name {
+          font-size: 13px;
+          font-weight: var(--font-weight-semibold);
+          color: var(--apple-label);
+          letter-spacing: 0.01em;
+        }
+        .column-count {
+          font-size: 11px;
+          font-weight: var(--font-weight-semibold);
+          color: var(--apple-tertiary);
+          background: var(--apple-surface-2);
+          padding: 2px 8px;
+          border-radius: 10px;
+          min-width: 24px;
+          text-align: center;
+        }
+        .column-right {
+          display: flex;
+          align-items: center;
+          gap: var(--space-2);
+        }
+        .points-badge {
+          font-size: 10px;
+          font-weight: var(--font-weight-medium);
+          color: var(--apple-tertiary);
+          background: var(--apple-surface-2);
+          padding: 2px 7px;
+          border-radius: 6px;
+        }
+        .col-btn {
+          width: 26px;
+          height: 26px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          background: transparent;
+          border: none;
+          border-radius: 7px;
+          color: var(--apple-tertiary);
+          cursor: pointer;
+          font-size: 13px;
+          transition: all 0.2s var(--ease-apple);
+        }
+        .col-btn:hover {
+          background: var(--apple-surface-2);
+          color: var(--apple-label);
+        }
+
+        /* ─── Task list ─── */
+        .task-list {
+          display: flex;
+          flex-direction: column;
+          gap: var(--space-2);
+          padding: var(--space-3) var(--space-3);
+          min-height: 100px;
+        }
+        .task-list.empty {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          min-height: 100px;
+        }
+        .empty-state {
+          text-align: center;
+          padding: var(--space-6);
+        }
+        .empty-icon {
+          font-size: 28px;
+          margin-bottom: var(--space-2);
+          opacity: 0.4;
+        }
+        .empty-text {
+          font-size: 12px;
+          color: var(--apple-tertiary);
+          line-height: 1.5;
+        }
+
+        /* ─── Quick add ─── */
+        .quick-add {
+          margin: 0 var(--space-3) var(--space-3);
+          display: flex;
+          gap: var(--space-2);
+          animation: fadeInUp 0.2s var(--ease-apple);
+        }
+        .quick-add-input {
+          flex: 1;
+          background: var(--apple-bg);
+          border: 0.5px solid rgba(255,255,255,0.1);
+          border-radius: var(--radius-sm);
+          padding: 9px 12px;
+          font-size: 13px;
+          color: var(--apple-label);
+          font-family: var(--font);
+          transition: border-color 0.2s;
+        }
+        .quick-add-input:focus {
+          outline: none;
+          border-color: ${config.color};
+        }
+        .quick-add-input::placeholder { color: var(--apple-tertiary); }
+        .quick-add-btn {
+          padding: 9px 14px;
+          background: ${config.color};
+          border: none;
+          border-radius: var(--radius-sm);
+          color: #000;
+          font-size: 14px;
+          font-weight: var(--font-weight-semibold);
+          cursor: pointer;
+          transition: all 0.2s var(--ease-apple);
+        }
+        .quick-add-btn:hover { opacity: 0.85; transform: scale(1.03); }
+        .quick-add-btn:active { transform: scale(0.97); }
+
+        /* ─── Mobile ─── */
         @media (max-width: 768px) {
           :host {
             min-width: unset;
@@ -185,183 +292,42 @@ export class TaskColumn extends HTMLElement {
             width: 100%;
           }
         }
-        .column {
-          background: #181825;
-          border-radius: 12px;
-          padding: 16px;
-          display: flex;
-          flex-direction: column;
-          gap: 12px;
-          height: fit-content;
-          min-height: 200px;
-          transition: all 0.2s ease;
-        }
-        .column.drag-over {
-          background: #1e1e2e;
-          border: 2px dashed ${config.color};
-        }
-        .column-header {
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          padding-bottom: 8px;
-          border-bottom: 2px solid ${config.color}33;
-        }
-        .column-title {
-          font-size: 15px;
-          font-weight: 600;
-          color: #cdd6f4;
-          display: flex;
-          align-items: center;
-          gap: 8px;
-        }
-        .task-count {
-          background: ${config.color}22;
-          color: ${config.color};
-          font-size: 12px;
-          font-weight: 600;
-          padding: 2px 8px;
-          border-radius: 10px;
-        }
-        .points-badge {
-          font-size: 11px;
-          color: #6c7086;
-          background: #313244;
-          padding: 2px 8px;
-          border-radius: 4px;
-        }
-        .column-actions {
-          display: flex;
-          align-items: center;
-          gap: 4px;
-        }
-        .btn-add-task {
-          background: none;
-          border: none;
-          color: #6c7086;
-          font-size: 16px;
-          cursor: pointer;
-          padding: 4px 8px;
-          border-radius: 4px;
-          transition: all 0.2s;
-        }
-        .btn-add-task:hover {
-          background: #313244;
-          color: #cdd6f4;
-        }
-        .btn-select-all {
-          background: none;
-          border: none;
-          color: #6c7086;
-          font-size: 12px;
-          cursor: pointer;
-          padding: 2px 6px;
-          border-radius: 4px;
-          transition: all 0.2s;
-        }
-        .btn-select-all:hover {
-          background: #313244;
-          color: #cdd6f4;
-        }
-        .task-list {
-          display: flex;
-          flex-direction: column;
-          gap: 10px;
-          min-height: 100px;
-        }
-        .task-list.empty {
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          color: #45475a;
-          font-size: 13px;
-          border: 2px dashed #313244;
-          border-radius: 8px;
-          min-height: 100px;
-        }
-        .empty-content {
-          text-align: center;
-          padding: 20px;
-        }
-        .empty-icon {
-          font-size: 32px;
-          margin-bottom: 8px;
-        }
-        .empty-message {
-          font-size: 13px;
-          color: #6c7086;
-        }
-        .quick-add-form {
-          display: flex;
-          gap: 6px;
-          padding: 8px;
-          background: #1e1e2e;
-          border-radius: 8px;
-          border: 1px solid ${config.color}44;
-        }
-        .quick-add-input {
-          flex: 1;
-          background: #11111b;
-          border: 1px solid #313244;
-          border-radius: 6px;
-          padding: 8px;
-          font-size: 13px;
-          color: #cdd6f4;
-        }
-        .quick-add-input:focus {
-          outline: none;
-          border-color: ${config.color};
-        }
-        .quick-add-input::placeholder {
-          color: #6c7086;
-        }
-        .quick-add-btn {
-          background: ${config.color};
-          border: none;
-          border-radius: 6px;
-          padding: 8px 12px;
-          font-size: 13px;
-          cursor: pointer;
-          color: #11111b;
-        }
-        .quick-add-btn:hover {
-          opacity: 0.9;
-        }
       </style>
+
       <div class="column">
         <div class="column-header">
-          <span class="column-title">
-            ${config.title}
-            <span class="task-count">${this.#tasks.length}</span>
-          </span>
-          <div class="column-actions">
+          <div class="column-title">
+            <span class="column-icon">${config.icon}</span>
+            <span class="column-name">${config.title}</span>
+            <span class="column-count">${this.#tasks.length}</span>
+          </div>
+          <div class="column-right">
             <span class="points-badge">${columnPoints} pts</span>
-            <button class="btn-add-task" id="quickAddBtn" title="Agregar tarea">➕</button>
-            <button class="btn-select-all" id="selectAllBtn" title="Seleccionar todos">☐</button>
+            <button class="col-btn" id="quickAddBtn" title="Agregar tarea">+</button>
+            <button class="col-btn" id="selectAllBtn" title="Seleccionar">☐</button>
           </div>
         </div>
-        
+
         ${this.#quickAddMode ? `
-          <div class="quick-add-form">
-            <input type="text" class="quick-add-input" id="quickAddInput" placeholder="Nombre de la tarea..." />
-            <button class="quick-add-btn" id="quickAddSubmit">+</button>
+          <div class="quick-add">
+            <input type="text" class="quick-add-input" id="quickAddInput"
+              placeholder="Nombre de la tarea..." autofocus />
+            <button class="quick-add-btn" id="quickAddSubmit">✓</button>
           </div>
         ` : ''}
-        
+
         <div class="task-list ${isEmpty ? 'empty' : ''}">
           ${isEmpty && !this.#quickAddMode ? `
-            <div class="empty-content">
-              <div class="empty-icon">📭</div>
-              <div class="empty-message">Sin tareas</div>
-              <div class="empty-message" style="margin-top:4px;font-size:11px">Arrastra aquí o presiona N</div>
+            <div class="empty-state">
+              <div class="empty-icon">${config.icon === '✓' ? '🎉' : '📭'}</div>
+              <div class="empty-text">Sin tareas<br><span style="font-size:10px;opacity:0.6">Arrastra o presiona +</span></div>
             </div>
           ` : isEmpty ? `
-            <div class="empty-content">
+            <div class="empty-state">
               <div class="empty-icon">📭</div>
-              <div class="empty-message">Sin tareas</div>
+              <div class="empty-text">Sin tareas</div>
             </div>
-          ` : this.#tasks.map(task => `<task-card task-id="${task.id}"></task-card>`).join('')
-          }
+          ` : this.#tasks.map(task => `<task-card task-id="${task.id}"></task-card>`).join('')}
         </div>
       </div>
     `
@@ -371,24 +337,17 @@ export class TaskColumn extends HTMLElement {
   }
 
   setupEventListeners() {
-    // Quick add button
     this.shadowRoot.getElementById('quickAddBtn')?.addEventListener('click', () => {
       this.#quickAddMode = true
       this.render()
-      setTimeout(() => {
-        this.shadowRoot.getElementById('quickAddInput')?.focus()
-      }, 10)
+      setTimeout(() => this.shadowRoot.getElementById('quickAddInput')?.focus(), 10)
     })
 
-    // Quick add input
-    const quickAddInput = this.shadowRoot.getElementById('quickAddInput')
-    quickAddInput?.addEventListener('keydown', (e) => {
+    const input = this.shadowRoot.getElementById('quickAddInput')
+    input?.addEventListener('keydown', e => {
       if (e.key === 'Enter') {
         const title = e.target.value.trim()
-        if (title) {
-          store.addTaskQuick(title, this.#status)
-          notify.success('Tarea creada')
-        }
+        if (title) { store.addTaskQuick(title, this.#status); notify.success('Tarea creada') }
         this.#quickAddMode = false
         this.refresh()
       } else if (e.key === 'Escape') {
@@ -397,19 +356,13 @@ export class TaskColumn extends HTMLElement {
       }
     })
 
-    // Quick add submit button
     this.shadowRoot.getElementById('quickAddSubmit')?.addEventListener('click', () => {
-      const input = this.shadowRoot.getElementById('quickAddInput')
       const title = input?.value.trim()
-      if (title) {
-        store.addTaskQuick(title, this.#status)
-        notify.success('Tarea creada')
-      }
+      if (title) { store.addTaskQuick(title, this.#status); notify.success('Tarea creada') }
       this.#quickAddMode = false
       this.refresh()
     })
 
-    // Select all button
     this.shadowRoot.getElementById('selectAllBtn')?.addEventListener('click', () => {
       this.#tasks.forEach(task => {
         window.dispatchEvent(new CustomEvent('toggle-task-selection', { detail: { taskId: task.id } }))

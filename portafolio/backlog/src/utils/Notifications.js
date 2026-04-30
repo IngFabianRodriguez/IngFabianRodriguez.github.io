@@ -1,28 +1,25 @@
-// src/utils/Notifications.js
+// src/utils/Notifications.js — Apple Design Language
 
 class NotificationSystem {
   #container = null
   #toasts = []
   #maxToasts = 3
-  #defaultDuration = 3000
+  #defaultDuration = 2800
 
-  constructor() {
-    this.#initContainer()
-  }
+  constructor() { this.#initContainer() }
 
   #initContainer() {
     if (this.#container) return
-    
     this.#container = document.createElement('div')
     this.#container.id = 'notifications-container'
     this.#container.style.cssText = `
       position: fixed;
-      bottom: 20px;
+      bottom: 28px;
       right: 20px;
       display: flex;
       flex-direction: column;
       gap: 8px;
-      z-index: 10000;
+      z-index: 9999;
       pointer-events: none;
     `
     document.body.appendChild(this.#container)
@@ -30,145 +27,125 @@ class NotificationSystem {
 
   notify(message, type = 'info', duration = this.#defaultDuration) {
     this.#initContainer()
-    
-    // Remove oldest if at max
+
     if (this.#toasts.length >= this.#maxToasts) {
       const oldest = this.#toasts.shift()
-      if (oldest) {
-        oldest.element.classList.add('toast-exit')
-        setTimeout(() => oldest.element.remove(), 200)
-      }
+      oldest?.element.classList.add('toast-exit')
+      setTimeout(() => oldest?.element.remove(), 200)
     }
 
     const toast = document.createElement('div')
     toast.className = `toast toast-${type}`
     toast.style.cssText = `
       background: ${this.#getColor(type)};
-      color: #11111b;
-      padding: 12px 20px;
-      border-radius: 8px;
-      font-size: 14px;
-      font-weight: 500;
-      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+      color: #000;
+      padding: 11px 16px;
+      border-radius: 12px;
+      font-size: 13px;
+      font-weight: 5100;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.4), 0 0 1px rgba(0,0,0,0.3);
       pointer-events: auto;
-      animation: toast-enter 0.2s ease;
+      animation: toastIn 0.3s cubic-bezier(0.34,1.56,0.64,1);
       display: flex;
       align-items: center;
       gap: 8px;
-      max-width: 320px;
+      max-width: 300px;
+      font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif;
+      backdrop-filter: blur(8px);
     `
 
-    const icon = this.#getIcon(type)
-    toast.innerHTML = `<span>${icon}</span><span>${this.escapeHtml(message)}</span>`
+    toast.innerHTML = `
+      <span style="font-size:14px">${this.#getIcon(type)}</span>
+      <span style="font-weight:500">${this.escapeHtml(message)}</span>
+    `
 
-    // Add undo button for delete notifications
-    if (type === 'delete') {
-      const undoBtn = document.createElement('button')
-      undoBtn.textContent = '↩︎ Deshacer'
-      undoBtn.style.cssText = `
-        background: rgba(0,0,0,0.2);
-        border: none;
-        color: #11111b;
-        padding: 4px 8px;
-        border-radius: 4px;
-        cursor: pointer;
-        font-size: 12px;
-        font-weight: 600;
-        margin-left: 8px;
-      `
-      undoBtn.onclick = () => {
-        if (this.onUndo) this.onUndo()
-        this.dismiss(toast)
-      }
-      toast.appendChild(undoBtn)
-    }
-
-    const dismissBtn = document.createElement('button')
-    dismissBtn.innerHTML = '✕'
-    dismissBtn.style.cssText = `
-      background: none;
+    const closeBtn = document.createElement('button')
+    closeBtn.innerHTML = '✕'
+    closeBtn.style.cssText = `
+      background: rgba(0,0,0,0.12);
       border: none;
-      color: #11111b;
+      color: #000;
       cursor: pointer;
-      font-size: 14px;
-      opacity: 0.7;
-      padding: 0;
+      font-size: 11px;
+      padding: 3px 7px;
+      border-radius: 6px;
       margin-left: 4px;
+      opacity: 0.7;
+      transition: opacity 0.15s;
     `
-    dismissBtn.onclick = () => this.dismiss(toast)
-    toast.appendChild(dismissBtn)
+    closeBtn.onmouseover = () => closeBtn.style.opacity = '1'
+    closeBtn.onmouseout = () => closeBtn.style.opacity = '0.7'
+    closeBtn.onclick = () => this.dismiss(toast)
+    toast.appendChild(closeBtn)
 
     this.#container.appendChild(toast)
-
     const toastObj = { element: toast, message, type }
     this.#toasts.push(toastObj)
 
-    // Auto dismiss
     if (duration > 0) {
       setTimeout(() => this.dismiss(toast), duration)
     }
-
     return toast
   }
 
   dismiss(toast) {
-    if (!toast || !toast.parentElement) return
-    
+    if (!toast?.parentElement) return
     toast.classList.add('toast-exit')
     setTimeout(() => {
       toast.remove()
       this.#toasts = this.#toasts.filter(t => t.element !== toast)
-    }, 200)
+    }, 250)
   }
 
   #getColor(type) {
-    const colors = {
-      success: '#a6e3a1',
-      error: '#f38ba8',
-      info: '#89b4fa',
-      warning: '#f9e2af'
-    }
-    return colors[type] || colors.info
+    return {
+      success: 'rgba(48, 209, 88, 0.95)',
+      error:   'rgba(255, 69, 58, 0.95)',
+      info:    'rgba(10, 132, 255, 0.95)',
+      warning: 'rgba(255, 159, 10, 0.95)',
+      delete:  'rgba(255, 69, 58, 0.95)'
+    }[type] || 'rgba(10,132,255,0.95)'
   }
 
   #getIcon(type) {
-    const icons = {
-      success: '✅',
-      error: '❌',
-      info: 'ℹ️',
-      warning: '⚠️',
-      delete: '🗑️'
-    }
-    return icons[type] || icons.info
+    return {
+      success: '✓',
+      error:   '✕',
+      info:    'ℹ',
+      warning: '⚠',
+      delete:  '🗑'
+    }[type] || 'ℹ'
   }
 
   escapeHtml(text) {
-    const div = document.createElement('div')
-    div.textContent = text
-    return div.innerHTML
+    const d = document.createElement('div')
+    d.textContent = text
+    return d.innerHTML
   }
 
-  // Convenience methods
-  success(message, duration) {
-    return this.notify(message, 'success', duration)
-  }
+  success(message, duration) { return this.notify(message, 'success', duration) }
+  error(message, duration)   { return this.notify(message, 'error', duration) }
+  info(message, duration)    { return this.notify(message, 'info', duration) }
+  warning(message, duration)  { return this.notify(message, 'warning', duration) }
+  delete(message, onUndo)    { return this.notify(message, 'delete', 5000) }
+}
 
-  error(message, duration) {
-    return this.notify(message, 'error', duration)
-  }
-
-  info(message, duration) {
-    return this.notify(message, 'info', duration)
-  }
-
-  warning(message, duration) {
-    return this.notify(message, 'warning', duration)
-  }
-
-  delete(message, onUndo) {
-    this.onUndo = onUndo
-    return this.notify(message, 'delete', 5000)
-  }
+// Inject toast animation
+if (typeof document !== 'undefined') {
+  const s = document.createElement('style')
+  s.textContent = `
+    @keyframes toastIn {
+      from { opacity: 0; transform: translateY(16px) scale(0.92); }
+      to   { opacity: 1; transform: translateY(0) scale(1); }
+    }
+    .toast-exit {
+      animation: toastOut 0.25s ease forwards !important;
+    }
+    @keyframes toastOut {
+      to { opacity: 0; transform: translateY(8px) scale(0.95); }
+    }
+  `
+  document.head?.appendChild(s)
 }
 
 export const notify = new NotificationSystem()
