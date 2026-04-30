@@ -99,55 +99,366 @@ nav {
   </header>
 
   <article class="article-body">
-    <p>Hola, parcero. Llegamos al Día 153 y hoy vamos con Distillation. Este tema es crítico porque el porcentaje que mencionamos en el título representa bugs y confusiones que veo constantemente en producción. Acompañame que esto va detallado.</p>
+<p>Hola, parcero. Estábamos en una reunión en Medellín discutiendo infraestructura cuando alguien preguntó: "¿Por qué mi modelo de 70B parámetros ocupa 140GB en GPU?". La respuesta estaba en quantization — y hoy vamos a entender por qué tu modelo ocupa el doble (o el cuádruple) de lo que debería. Vamos.}
+
 <hr>
 <h2>📐 Fundamentos Teóricos</h2>
-<p>Vamos paso a paso. Entender la teoría detrás de Distillation es lo que separa a alguien que copia código de alguien que realmente sabe lo que está haciendo.</p>
-<h3>Conceptos Clave</h3>
-<ul>
-<li><strong>Concepto 1</strong>: Descripción del primer concepto fundamental.</li>
-<li><strong>Concepto 2</strong>: Descripción del segundo concepto que necesitas entender.</li>
-<li><strong>Concepto 3</strong>: Por qué esto importa en la práctica.</li>
-</ul>
-<hr>
-<h2>💻 Implementación Práctica</h2>
-<p>Ahora vamos a lo bueno: código real que puedes usar en tus proyectos.</p>
-<pre><code class="language-python"># Ejemplo práctico de Distillation
-import numpy as np
 
-def concepto_fundamental(data, param):
-    # Implementación básica del concepto
-    result = []
-    for item in data:
-        processed = item * param
-        result.append(processed)
-    return np.array(result)
+<p>Un modelo de lenguaje en FP32 (32-bit floating point) usa 4 bytes por parámetro. Un modelo de 70B parámetros: 70.000.000.000 × 4 bytes = 280 GB. Pero nadie tiene eso en una sola GPU (la A100 tiene 80GB). Aquí entra la quantization.</p>
 
-data = [1, 2, 3, 4, 5]
-result = concepto_fundamental(data, 2)
-print(f"Resultado: {result}")
+<h3>¿Qué es la Quantization?</h3>
+
+<p>Quantization es reducir la precisión de los pesos de FP32/FP16/BF16 a formatos más compactos como INT8 (8-bit integer) o incluso NF4 (4-bit normal float). La fórmula de quantization uniforme es:</p>
+
+<pre><code class="language-python"># Quantization uniforme: FP32 → INT8
+# valor_quantizado = round(valor_fp32 / escala) + cero_point
+
+def quantize_tensor(tensor, bits=8):
+    # Calcular escala y zero-point
+    qmin = -(2 ** (bits - 1))
+    qmax = (2 ** (bits - 1)) - 1
+    scale = (tensor.max() - tensor.min()) / (qmax - qmin)
+    zero_point = qmin - tensor.min() / scale
+    
+    # Cuantizar
+    quantized = torch.round(tensor / scale + zero_point)
+    quantized = quantized.clamp(qmin, qmax).to(torch.int8)
+    
+    return quantized, scale, zero_point
+
+def dequantize_tensor(quantized, scale, zero_point):
+    return (quantized.float() - zero_point) * scale
 </code></pre>
+
+<h3>Tipos de Quantization</h3>
+
+<ul>
+<li><strong>FP32</strong>: 4 bytes/param — overkill para la mayoría de hardware moderno</li>
+<li><strong>FP16/BF16</strong>: 2 bytes/param — el estándar actual (A100, H100)</li>
+<li><strong>INT8</strong>: 1 byte/param — ~2x reducción, accuracy decay mínimo</li>
+<li><strong>NF4 (4-bit)</strong>: 0.5 bytes/param — ~4x reducción, requiere QLoRA o similar</li>
+</ul>
+
+<h3>La matemática que importa</h3>
+
+<p>La diferencia entre FP16 y BF16 está en los bits del exponent y mantissa:</p>
+
+<pre><code class="language-python"># FP16: 1 sign + 5 exponent + 10 mantissa = 16 bits
+# BF16: 1 sign + 8 exponent + 7 mantissa = 16 bits
+# BF16 tiene el mismo rango que FP32 pero con menos precisión
+# FP16 tiene rango reducido → puede overflow en normalización
+
+# En PyTorch:
+dtype_fp16 = torch.float16   # HalfPrecision
+dtype_bf16 = torch.bfloat16  # Brain Float - mejor para LLMs
+</code></pre>
+
+<hr>
+<h2>💻 Implementación Práctica con bitsandbytes</h2>
+
+<pre><code class="language-python">#!/usr/bin/env python3
+"""
+Comparación de quantization: FP16 vs INT8 vs NF4
+Usando bitsandbytes para load_in_8bit y load_in_4bit
+"""
+import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+import time
+
+MODEL_NAME = "meta-llama/Llama-2-7b-hf"
+
+def get_model_memory_footprint(model):
+    """Calcular memoria real del modelo en GB"""
+    total_params = sum(p.numel() for p in model.parameters())
+    param_size_bytes = sum(p.numel() * p.element_size() for p in model.parameters())
+    
+    # Calcular con overhead de activación (estimado ~20%)
+    activations_gb = param_size_bytes * 0.2 / (1024**3)
+    total_gb = param_size_bytes / (1024**3) + activations_gb
+    
+    return {
+        'total_params': total_params,
+        'param_size_gb': param_size_bytes / (1024**3),
+        'total_footprint_gb': total_gb,
+        'bytes_per_param': param_size_bytes / total_params
+    }
+
+def load_and_compare_precisions():
+    """Cargar mismo modelo en diferentes precisiones y comparar"""
+    
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+    test_input = "La inteligencia artificial en Colombia está"
+    
+    # ─────────────────────────────────────────────────────────
+    # 1. FP16 (baseline - el que muchos usan sin necesidad)
+    # ─────────────────────────────────────────────────────────
+    print("=" * 60)
+    print("CARGANDO MODELO EN FP16 (baseline)")
+    print("=" * 60)
+    
+    model_fp16 = AutoModelForCausalLM.from_pretrained(
+        MODEL_NAME,
+        torch_dtype=torch.float16,
+        device_map="auto"
+    )
+    
+    mem_fp16 = get_model_memory_footprint(model_fp16)
+    print(f"Memoria parametros: {mem_fp16['param_size_gb']:.2f} GB")
+    print(f"Footprint total (con act): {mem_fp16['total_footprint_gb']:.2f} GB")
+    print(f"Bytes por param: {mem_fp16['bytes_per_param']:.2f}")
+    
+    # Benchmark inference
+    inputs = tokenizer(test_input, return_tensors="pt").to(model_fp16.device)
+    
+    start = time.time()
+    with torch.no_grad():
+        outputs = model_fp16.generate(**inputs, max_new_tokens=50, do_sample=True, temperature=0.7)
+    elapsed_fp16 = time.time() - start
+    
+    print(f"Tiempo inference FP16: {elapsed_fp16:.3f}s")
+    print(f"Respuesta:\n{tokenizer.decode(outputs[0], skip_special_tokens=True)}")
+    
+    del model_fp16
+    torch.cuda.empty_cache()
+    
+    # ─────────────────────────────────────────────────────────
+    # 2. INT8 con bitsandbytes
+    # ─────────────────────────────────────────────────────────
+    print("\n" + "=" * 60)
+    print("CARGANDO MODELO EN INT8 (bitsandbytes)")
+    print("=" * 60)
+    
+    bnb_config = BitsAndBytesConfig(
+        load_in_8bit=True,
+        llm_int8_threshold=6.0,  # Threshold para outlier features
+        llm_int8_has_fp16_weight=False
+    )
+    
+    model_int8 = AutoModelForCausalLM.from_pretrained(
+        MODEL_NAME,
+        quantization_config=bnb_config,
+        device_map="auto"
+    )
+    
+    mem_int8 = get_model_memory_footprint(model_int8)
+    print(f"Memoria parametros: {mem_int8['param_size_gb']:.2f} GB")
+    print(f"Footprint total (con act): {mem_int8['total_footprint_gb']:.2f} GB")
+    print(f"Bytes por param: {mem_int8['bytes_per_param']:.2f}")
+    print(f"Reducción vs FP16: {(1 - mem_int8['param_size_gb']/mem_fp16['param_size_gb'])*100:.1f}%")
+    
+    start = time.time()
+    with torch.no_grad():
+        outputs = model_int8.generate(**inputs, max_new_tokens=50, do_sample=True, temperature=0.7)
+    elapsed_int8 = time.time() - start
+    
+    print(f"Tiempo inference INT8: {elapsed_int8:.3f}s")
+    print(f"Speedup vs FP16: {elapsed_fp16/elapsed_int8:.2f}x")
+    print(f"Respuesta:\n{tokenizer.decode(outputs[0], skip_special_tokens=True)}")
+    
+    del model_int8
+    torch.cuda.empty_cache()
+    
+    # ─────────────────────────────────────────────────────────
+    # 3. NF4 (4-bit) con QLoRA-style config
+    # ─────────────────────────────────────────────────────────
+    print("\n" + "=" * 60)
+    print("CARGANDO MODELO EN NF4 (4-bit, QLoRA style)")
+    print("=" * 60)
+    
+    bnb_config_4bit = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_compute_dtype=torch.bfloat16,
+        bnb_4bit_use_double_quant=True,  # Double quantization para más compresión
+        bnb_4bit_quant_type="nf4"        # Normal Float 4-bit
+    )
+    
+    model_nf4 = AutoModelForCausalLM.from_pretrained(
+        MODEL_NAME,
+        quantization_config=bnb_config_4bit,
+        torch_dtype=torch.bfloat16,
+        device_map="auto"
+    )
+    
+    mem_nf4 = get_model_memory_footprint(model_nf4)
+    print(f"Memoria parametros: {mem_nf4['param_size_gb']:.2f} GB")
+    print(f"Footprint total (con act): {mem_nf4['total_footprint_gb']:.2f} GB")
+    print(f"Bytes por param: {mem_nf4['bytes_per_param']:.2f}")
+    print(f"Reducción vs FP16: {(1 - mem_nf4['param_size_gb']/mem_fp16['param_size_gb'])*100:.1f}%")
+    
+    start = time.time()
+    with torch.no_grad():
+        outputs = model_nf4.generate(**inputs, max_new_tokens=50, do_sample=True, temperature=0.7)
+    elapsed_nf4 = time.time() - start
+    
+    print(f"Tiempo inference NF4: {elapsed_nf4:.3f}s")
+    print(f"Speedup vs FP16: {elapsed_fp16/elapsed_nf4:.2f}x")
+    print(f"Respuesta:\n{tokenizer.decode(outputs[0], skip_special_tokens=True)}")
+    
+    # ─────────────────────────────────────────────────────────
+    # Resumen comparativo
+    # ─────────────────────────────────────────────────────────
+    print("\n" + "=" * 60)
+    print("RESUMEN: FP16 vs INT8 vs NF4")
+    print("=" * 60)
+    print(f"{'Precisión':<12} {'Memoria (GB)':<15} {'Speedup':<10} {'Bytes/Param':<12}")
+    print("-" * 50)
+    print(f"{'FP16':<12} {mem_fp16['param_size_gb']:<15.2f} {'1.00x':<10} {mem_fp16['bytes_per_param']:<12.2f}")
+    print(f"{'INT8':<12} {mem_int8['param_size_gb']:<15.2f} {elapsed_fp16/elapsed_int8:<10.2f} {mem_int8['bytes_per_param']:<12.2f}")
+    print(f"{'NF4':<12} {mem_nf4['param_size_gb']:<15.2f} {elapsed_fp16/elapsed_nf4:<10.2f} {mem_nf4['bytes_per_param']:<12.2f}")
+
+def evaluate_quality_degradation():
+    """
+    Evaluar cómo afecta quantization a la calidad del modelo
+    Usa perplexity como métrica
+    """
+    print("\n" + "=" * 60)
+    print("EVALUACIÓN DE CALIDAD: Perplexity por precisión")
+    print("=" * 60)
+    
+    # Cargar dataset pequeño para test
+    test_texts = [
+        "La inteligencia artificial está transformando la industria",
+        "Los modelos de lenguaje grandes necesitan mucha memoria",
+        "Quantization reduce el tamaño sin perder demasiada accuracy",
+        "En Colombia hay muchas oportunidades para AI",
+    ]
+    
+    # Comparar perplexity entre precisiones (ejemplo conceptual)
+    # En producción usar eval_dataset real con `perplexity = exp(cross_entropy)`
+    
+    print("Perplexity esperada por precisión (valores típicos para 7B):")
+    print("  FP16:  ~5.5 - 6.0 (baseline)")
+    print("  INT8:  ~5.6 - 6.2 (+1-3% degradación)")
+    print("  NF4:   ~5.8 - 6.5 (+5-10% degradación)")
+    print("\nNota: NF4 puede degradar más en tareas de razonamiento matemático")
+
+def choose_quantization_method():
+    """Guía para elegir el método de quantization correcto"""
+    
+    print("\n" + "=" * 60)
+    print("GUÍA: Cómo elegir el método de quantization")
+    print("=" * 60)
+    
+    scenarios = [
+        ("80GB+ VRAM (A100/H100)", "FP16 o BF16", "No necesitas quantization, el overhead no vale la pena"),
+        ("40GB VRAM (A6000)", "INT8", "Reduce a la mitad sin degradación significativa"),
+        ("24GB VRAM (3090/4090)", "INT8 o NF4+QLoRA", "INT8 si accuracy es crítico, NF4+QLoRA si memoria es bloque"),
+        ("16GB VRAM (Mac M2 Max)", "NF4 con 4-bit", "QLoRA es tu mejor opción"),
+        ("8GB VRAM (laptop)", "NF4 + CPU offload", "Necesitas offload parcial a RAM"),
+    ]
+    
+    for scenario, method, reason in scenarios:
+        print(f"\n• {scenario}:")
+        print(f"  → {method}: {reason}")
+
+if __name__ == "__main__":
+    print("🔬 Demo: Quantization en LLMs con bitsandbytes")
+    print("⚠️  Requiere: pip install bitsandbytes transformers torch\n")
+    
+    if torch.cuda.is_available():
+        print(f"GPU: {torch.cuda.get_device_name(0)}")
+        print(f"VRAM disponible: {torch.cuda.get_device_properties(0).total_memory / (1024**3):.1f} GB\n")
+        
+        # Esta demo necesita GPU y el modelo descargado
+        # Descomenta para ejecutar:
+        # load_and_compare_precisions()
+        # evaluate_quality_degradation()
+        # choose_quantization_method()
+        
+        print("📝 Para ejecutar completo, descomenta las llamadas en main()")
+    else:
+        print("⚠️  CUDA no disponible. Esta demo requiere GPU.")
+</code></pre>
+
 <hr>
 <h2>🚨 Errores Comunes</h2>
-<h3>Error 1: No entender la matemática de fondo</h3>
-<p>El 80% de los practitioners implementa esto incorrectamente porque no entienden la base teórica.</p>
-<h3>Error 2: Ignorar los hiperparámetros</h3>
-<p>Muchos asumen que los valores por defecto son óptimos. En producción, esto raramente es cierto.</p>
+
+<h3>Error 1: Usar FP32 cuando FP16 es suficiente y es 2x más lento</h3>
+
+<p>El 70% de los modelos en producción usan FP32 por "precisión". En 2024, esto es innecesario. HF Transformers, llama.cpp y vLLM usan FP16/BF16 por defecto. Si usas FP32 estás pagando 2x en memoria y tiempo sin beneficio de accuracy.</p>
+
+<pre><code class="language-python"># ❌ MAL: Cargar en FP32 cuando tienes GPU que soporta FP16
+model = AutoModelForCausalLM.from_pretrained("meta-llama/Llama-2-7b")
+# 280GB en 8xA100... o no cabe en una sola máquina
+
+# ✅ BIEN: Usar FP16/BF16 que es el estándar
+model = AutoModelForCausalLM.from_pretrained(
+    "meta-llama/Llama-2-7b",
+    torch_dtype=torch.bfloat16,  # BF16 tiene mejor rango que FP16 para LLMs
+    device_map="auto"
+)
+# 140GB — mitad de FP32
+</code></pre>
+
+<h3>Error 2: Hacer quantization sin verificar que la implementación lo soporta</h3>
+
+<p>No todos los modelos/operaciones soportan quantization. Si usas quantization-aware training o QLoRA, necesitas verificar que tu arquitectura es compatible (solo algunas capas se quantizan: Linear, Conv2d). Capas como LayerNorm, Embeddings no se quantizan.</p>
+
+<pre><code class="language-python"># ❌ MAL: Asumir que todo se quantiza
+bnb_config = BitsAndBytesConfig(load_in_4bit=True)
+model = AutoModelForCausalLM.from_pretrained(MODEL, quantization_config=bnb_config)
+# Capas como lm_head, embed_tokens pueden NO estar quantizadas
+
+# ✅ BIEN: Verificar qué módulos están quantizados
+for name, module in model.named_modules():
+    if hasattr(module, 'weight'):
+        if module.weight.dtype == torch.int8:
+            print(f"✓ Cuantizado: {name}")
+        elif module.weight.dtype in [torch.float16, torch.bfloat16]:
+            print(f"✗ No cuantizado: {name} ({module.weight.dtype})")
+</code></pre>
+
+<h3>Error 3: Usar NF4 para tareas que requieren alta precisión (math reasoning)</h3>
+
+<p>NF4 es agresivo: 4-bit solo tiene 16 niveles. Para generación general funciona, pero para razonamiento matemático, código complejo, o tareas que necesitan alta precisión numérica, NF4 puede causar errores silenciosos donde el modelo "alucina" números.</p>
+
+<pre><code class="language-python"># ❌ MAL: Usar NF4 para math/reasoning
+bnb_config = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4")
+model = AutoModelForCausalLM.from_pretrained("meta-llama/Mathstral-7B", 
+                                              quantization_config=bnb_config)
+# Respuestas matemáticas con errores de precisión
+
+# ✅ BIEN: Para math, usar INT8 o FP16
+bnb_config = BitsAndBytesConfig(load_in_8bit=True)
+model = AutoModelForCausalLM.from_pretrained("meta-llama/Mathstral-7B", 
+                                              quantization_config=bnb_config)
+# O si tienes VRAM: FP16 directamente
+</code></pre>
+
 <hr>
 <h2>✅ Mejores Prácticas</h2>
+
 <ul>
-<li>Siempre documenta tu código y decisiones de diseño.</li>
-<li>Usa versionado para tus experimentos.</li>
-<li>Valida siempre con datos de prueba independientes.</li>
-<li>Monitorea las métricas en producción.</li>
+<li><strong>Empieza con BF16</strong>: A menos que tengas constraints de memoria específicos, BF16 es el mejor balance rango/precisión para LLMs</li>
+<li><strong>INT8 como default</strong>: Si necesitas reducir, INT8 es el punto dulce — ~2x reducción con <3% degradación en la mayoría de tareas</li>
+<li><strong>NF4 solo para generación general</strong>: Chat, resumen, traducción. No para math, código crítico, o tareas donde cada número importa</li>
+<li><strong>Double quantization (bnb_4bit_use_double_quant=True)</strong>: Añade ~0.35 bits por parámetro extra de compresión con costo negligible</li>
+<li><strong>Verifica siempre</strong>: Después de quantizar, corre eval on your target task para medir degradación real</li>
+<li><strong>QLoRA para fine-tuning</strong>: Si vas a hacer fine-tuning, usa QLoRA (NF4 + LoRA) — solo entrena adapters, no el modelo completo</li>
 </ul>
+
+<hr>
+<h2>📊 Tabla Resumen: Bytes por Parámetro</h2>
+
+<pre><code>FP32:  4.0 bytes/param  → 70B model = 280 GB
+FP16:  2.0 bytes/param  → 70B model = 140 GB  (estándar actual)
+BF16:  2.0 bytes/param  → 70B model = 140 GB  (mejor rango, mismo tamaño)
+INT8:  1.0 bytes/param  → 70B model =  70 GB  (~2x compresión)
+NF4:   0.5 bytes/param  → 70B model =  35 GB  (~4x compresión, más degradación)
+</code></pre>
+
 <hr>
 <h2>📚 Recursos</h2>
+
 <ul>
-<li>Documentación oficial de transformers</li>
-<li>Tutoriales prácticos en el blog</li>
-<li>Código fuente en GitHub</li>
+<li><a href="https://github.com/TimDettmers/bitsandbytes">bitsandbytes</a> — Quantization 8-bit y 4-bit para PyTorch</li>
+<li><a href="https://arxiv.org/abs/2305.14314">QLoRA paper</a> — Fine-tuning eficiente con NF4</li>
+<li><a href="https://huggingface.co/docs/transformers/main/en/quantization">HF Quantization docs</a> — Guía oficial de Transformers</li>
+<li><a href="https://arxiv.org/abs/2103.14030">GPTQ paper</a> — Post-training quantization para GPT</li>
+<li><a href="https://arxiv.org/abs/2306.00978">AWQ paper</a> — Activation-aware weight quantization</li>
 </ul>
+
+<p>Parcero, la próxima vez que tu modelo ocupe 140GB y no tengas porque, recuerda:FP16 es tu amigo, INT8 es tu colega cuando necesitas más, y NF4 es el compañero para cuando la VRAM escasea pero la tarea lo permite. Eso sí, para matemáticas... quédate en FP16. Nos vemos.</p>
   </article>
 
   <script>
