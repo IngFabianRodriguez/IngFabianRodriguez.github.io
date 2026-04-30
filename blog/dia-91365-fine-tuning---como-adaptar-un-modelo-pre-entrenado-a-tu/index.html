@@ -118,8 +118,592 @@ nav {
   </header>
 
   <article class="article-body">
-    <h1>Fine-tuning - Cómo Adaptar un Modelo Pre-entrenado a tu Caso sin Perder el Poder del Original</h1>
-<p>Contenido del Día 91 - Esta entrada aún está en construcción. ¡Vuelve pronto!</p>
+<h2>¿Qué es el Fine-Tuning y Por Qué es la Joya de la Corona?</h2>
+
+<p>Aquí en Colombia, cuando alguien aprende a tocar Vallenato, no empieza de cero cada vez que cambia de canción — usa los ritmos que ya tiene y los adapta. Eso es exactamente lo que hace <strong>fine-tuning</strong> en machine learning: tomar un modelo que ya sabe mucho (pre-entrenado) y especializarlo en tu tarea particular sin destruir todo lo que aprendió antes.</p>
+
+<p>Un modelo pre-entrenado como <code>Llama-3</code> o <code>Mistral</code> viene cargado con conocimiento general del mundo. Fine-tuning es el proceso de continuar el entrenamiento <em>sobre tu dataset específico</em> para que el modelo responda mejor a tu dominio: soporte técnico médico, análisis de contratos legales, clasificación de reseñas de productos colombianos, o lo que necesites.</p>
+
+<h2>Full Fine-Tuning vs PEFT: La Batalla Central</h2>
+
+<h3>Full Fine-Tuning: Todo el Poder, Todos los Problemas</h3>
+
+<p>Full fine-tuning significa entrenar <strong>todos</strong> los parámetros del modelo. Si tienes un modelo de 7 mil millones de parámetros (7B), estás actualizando los 7B. El resultado es excelente en calidad, pero:</p>
+
+<ul>
+<li>❌ <strong>Costo显存</strong>: 7B × FP32 = ~28 GB solo para pesos. Con gradientes y optimizador, fácil 80+ GB.</li>
+<li>❌ <strong>Tiempo</strong>: Entrenar semanas en GPUs potentes.</li>
+<li>❌ <strong>Catastrophic forgetting</strong>: Puedes hacer que el modelo olvide capacidades generales.</li>
+<li>❌ <strong>Despliegue difícil</strong>: Cada tarea necesitaría un modelo completo separado.</li>
+</ul>
+
+<h3>PEFT: Entrena Poco, Obtén Mucho</h3>
+
+<p><strong>PEFT</strong> (Parameter-Efficient Fine-Tuning) cambia la ecuación radicalmente. En lugar de entrenar todos los parámetros, solo entrenas un conjunto pequeño de <em>nuevos parámetros</em> agregados al modelo original. Los pesos pre-entrenados se <strong>congelan</strong>.</p>
+
+<p>Las técnicas principales:</p>
+
+<ul>
+<li><strong>LoRA</strong> (Low-Rank Adaptation): Añade pares de matrices descomprimidas cerca de las capas de atención.</li>
+<li><strong>QLoRA</strong>: LoRA sobre modelos cuantizados (4-bit NormalFloat).</li>
+<li><strong>Adapter Layers</strong>: Pequeñas redes feed-forward insertadas entre capas del transformer.</li>
+</ul>
+
+<h2>LoRA en Detalle: La Matemática del Ajuste Eficiente</h2>
+
+<p>La idea central de LoRA es elegante. Una capa lineal original tiene:</p>
+
+<pre><code class="language-python">Y = W · X + b</code></pre>
+
+<p>Donde <code>W ∈ ℝ<sup>d×k</sup></code>. En fine-tuning normal, actualizas <code>W</code> directamente: <code>W' = W + ΔW</code>. El problema es que <code>ΔW</code> tiene la misma forma que <code>W</code> — potencialmente enorme.</p>
+
+<p>LoRA propone descomponer <code>ΔW</code> como producto de dos matrices pequeñas:</p>
+
+<pre><code class="language-python">ΔW = B · A   donde  B ∈ ℝ<sup>d×r</sup>,  A ∈ ℝ<sup>r×k</sup></code></pre>
+
+<p>Con <code>r << min(d, k)</code> (el <em>rank</em>). Entonces:</p>
+
+<pre><code class="language-python">Y = W · X + B · A · X + b</code></pre>
+
+<p>Solo entrenas <code>B</code> y <code>A</code>. Las dimensions de entrenamiento pasan de <code>d×k</code> a <code>d×r + r×k = r(d+k)</code>. Para <code>d=4096, k=4096, r=8</code>: de 16M parámetros a solo 65K. <strong>250x menos</strong>.</p>
+
+<h3>Configuración Clave de LoRA</h3>
+
+<pre><code class="language-python"># Configuración típica de LoRA
+lora_config = {
+    "r": 8,                    # rank — mayor = más capacidad, más params
+    "lora_alpha": 16,          # scaling factor — típicamente 2x el rank
+    "target_modules": ["q_proj", "v_proj"],  # capas donde aplicar LoRA
+    "lora_dropout": 0.05,      # regularización
+    "bias": "none",            # no entrenar sesgos
+    "task_type": "CAUSAL_LM",  # tipo de tarea
+}
+</code></pre>
+
+<p>La scaling factor <code>lora_alpha</code> controla cuánto impacto tienen las adaptaciones LoRA. El scaling real es <code>lora_alpha / r</code>, entonces con <code>r=8, alpha=16</code> el scaling es 2.0.</p>
+
+<blockquote>💡 <strong>Regla de oro</strong>: lora_alpha = 2 × r es un punto de partida sólido. Esto da un scaling de 2.0 que balancea conservación del pre-entrenamiento con adaptación a la tarea.</blockquote>
+
+<h2>QLoRA: LoRA Cuantizado — Más Poder con Menos VRAM</h2>
+
+<p>QLoRA (Quantized Low-Rank Adaptation), propuesto por Tim Dettmers, lleva la eficiencia un paso más allá. Primero se carga el modelo completo en 4-bit NormalFloat (NF4), y luego se aplica LoRA sobre esa base cuantizada.</p>
+
+<h3>¿Por qué 4-bit NormalFloat?</h3>
+
+<p>NF4 no es una cuantización uniforme. Está diseñada específicamente para que los valores de los pesos de redes neuronales (que siguen una distribución cercana a N(0, 0.02)) se distribuyan equitativamente en los 16 niveles de 4-bit. Esto minimiza el error de cuantización.</p>
+
+<p>El pipeline QLoRA:</p>
+
+<pre><code class="language-python"># 1. Cargar modelo base en 4-bit NF con bitsandbytes
+bnb_config = BitsAndBytesConfig(
+    load_in_4bit=True,
+    bnb_4bit_quant_type="nf4",          # NormalFloat 4-bit
+    bnb_4bit_compute_dtype=torch.bfloat16,
+    bnb_4bit_use_double_quant=True,      # cuantización anidada
+)
+
+# 2. Aplicar LoRA sobre el modelo cuantizado
+model = AutoModelForCausalLM.from_pretrained(
+    "meta-llama/Llama-3-8b",
+    quantization_config=bnb_config,
+    device_map="auto",
+)
+
+# 3. Solo se descurtan los adaptadores LoRA en FP16/BF16
+# Los pesos base permanecen en 4-bit
+</code></pre>
+
+<p>El resultado: un modelo de 8B en ~4-5 GB de VRAM. Sin QLoRA necesitarías 40+ GB.</p>
+
+<h2>Adapters: Otra Forma de PEFT</h2>
+
+<p>Los <strong>Adapter Layers</strong> son pequeñas redes feed-forward insertadas después de las capas de atención en cada bloque transformer. A diferencia de LoRA que modifica las conexiones existentes, los adapters <em>agregan</em> capacidad computacional.</p>
+
+<pre><code class="language-python"># Arquitectura adapter típica
+class AdapterLayer(nn.Module):
+    def __init__(self, d_model, reduction_factor=16):
+        super().__init__()
+        self.down = nn.Linear(d_model, d_model // reduction_factor)
+        self.activation = nn.GELU()
+        self.up = nn.Linear(d_model // reduction_factor, d_model)
+        self.layer_norm = nn.LayerNorm(d_model)
+
+    def forward(self, x):
+        residual = x
+        x = self.layer_norm(x)
+        x = self.down(x)
+        x = self.activation(x)
+        x = self.up(x)
+        return x + residual  # conexión residual
+</code></pre>
+
+<p>Los adapters son menos comunes que LoRA en 2026 porque LoRA tiene mejor soporte y resultados más consistentes, pero siguen siendo útiles para multi-task learning donde quieres un adapter por tarea.</p>
+
+<h2>¿Cuándo Fine-Tunar vs RAG vs Prompting?</h2>
+
+<p>Esta es la pregunta del millón y la respuesta define proyectos enteros:</p>
+
+<h3>✅ Usa Prompting Simple (Zero/Few-Shot)</h3>
+
+<ul>
+<li>El modelo ya sabe la tarea bien</li>
+<li>No tienes datos etiquetados</li>
+<li>Es una tarea abierta o creativa</li>
+<li>Necesitas flexibilidad máxima</li>
+</ul>
+
+<h3>✅ Usa RAG (Retrieval-Augmented Generation)</h3>
+
+<ul>
+<li>El modelo necesita información específica y actualizada</li>
+<li>Tienes documentos de referencia grandes</li>
+<li>Necesitas citas y verificabilidad</li>
+<li>La tarea es más de búsqueda que de generación pura</li>
+</ul>
+
+<blockquote>⚠️ <strong>Error común colombiano</strong>: "Tengo muchos datos de soporte técnico, voy a fine-tunear". ¡Espera! Si tus datos son knowledge-heavy (documentación, manuales, knowledge base), RAG probablemente es mejor. Fine-tuning es para <em>estilos, formatos y patrones</em>, no para meter hechos en el modelo.</blockquote>
+
+<h3>✅ Usa Fine-Tuning (preferiblemente LoRA/QLoRA)</h3>
+
+<ul>
+<li>Quieres enseñarle un nuevo formato de salida</li>
+<li>Necesitas que el modelo siga instrucciones muy específicas</li>
+<li>Tienes datos etiquetados de calidad</li>
+<li>Quieres que el modelo adopte un tono o estilo particular</li>
+<li>La inferencia debe ser barata y rápida (despliegue de adapters)</li>
+</ul>
+
+<h2>El Error Crítico: Learning Rate 10x Mayor para la Cabeza</h2>
+
+<p>Este es probablemente el error más frecuente en fine-tuning que veo, incluso en tutoriales publicados. Cuando aplicas LoRA o full fine-tuning:</p>
+
+<pre><code class="language-python"># ❌ MAL: mismo learning rate para todo
+optimizer = torch.optim.AdamW(model.parameters(), lr=2e-4)
+
+# ✅ BIEN: learning rate 10x mayor para la cabeza (output layer)
+optimizer = torch.optim.AdamW(
+    [
+        {"params": model.model.parameters(), "lr": 2e-4},   # backbone
+        {"params": model.lm_head.parameters(), "lr": 2e-3}, # cabeza — 10x
+    ]
+)
+</code></pre>
+
+<p>¿Por qué? La cabeza (<code>lm_head</code>) es la que aprende a proyectar representaciones a tokens. Los pesos pre-entrenados del backbone ya tienen buenas representaciones — solo necesitan ajustarse suavemente. Pero la cabeza necesita aprender desde cero mappings que probablemente son muy diferentes a los del pre-entrenamiento (especialmente si cambias el vocabulario o el formato de salida).</p>
+
+<p>Matemáticamente, el gradiente de la cabeza es <strong>∼10x más grande en magnitud</strong> al inicio del entrenamiento. Usar el mismo LR causa que la cabeza se mueva erráticamente mientras el backbone se arrastra. Separar los LR corrige este desbalance.</p>
+
+<pre><code class="language-python"># Con LoRA, losadamward parameters se dividen así:
+optimizer = torch.optim.AdamW(
+    [
+        {"params": model.model.lora.parameters(), "lr": 2e-4},  # LoRA adapters
+        {"params": model.lm_head.parameters(), "lr": 2e-3},     # cabeza — 10x
+    ]
+)
+</code></pre>
+
+<h2>Implementación Completa: LoRA + QLoRA en PyTorch</h2>
+
+<pre><code class="language-python">"""
+Fine-tuning con LoRA y QLoRA — Día 91 #365DaysOfAI
+Implementación completa: modelo cuantizado + LoRA + training loop
+"""
+import torch
+import torch.nn as nn
+from transformers import (
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    BitsAndBytesConfig,
+    TrainingArguments,
+    Trainer,
+)
+from peft import LoraConfig, get_peft_model, TaskType
+import bitsandbytes as bnb
+from typing import List, Dict
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+
+# ─── 1. CONFIGURACIÓN DE QLoRA ────────────────────────────────────────────
+def get_bnb_config() -> BitsAndBytesConfig:
+    """Configuración bitsandbytes para cuantización 4-bit NormalFloat."""
+    return BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_quant_type="nf4",             # NormalFloat de 4-bit
+        bnb_4bit_compute_dtype=torch.bfloat16, # Precisión para cálculos
+        bnb_4bit_use_double_quant=True,       # Cuantización anidada (ahorra ~0.4 bits/param)
+    )
+
+
+# ─── 2. CONFIGURACIÓN DE LORA ───────────────────────────────────────────────
+def get_lora_config() -> LoraConfig:
+    """
+    Configuración de LoRA.
+    r (rank): dimensiones de las matrices de descomposición.
+      - r=4: muy eficiente, riesgo de underfitting en tareas complejas
+      - r=8: balance bueno para la mayoría de casos
+      - r=16/32: para tareas que requieren máxima capacidad
+    lora_alpha: scaling factor. Alpha = 2*r es el punto de partida estándar.
+    target_modules: módulos específicos donde aplicar LoRA.
+      - q_proj, v_proj: atención multi-head (lo más común y efectivo)
+      - k_proj, o_proj: complementan q/v para atención completa
+      - gate_proj, up_proj, down_proj: capas FFN (para modelos grandes)
+    """
+    return LoraConfig(
+        r=8,                           # Rank de descomposición
+        lora_alpha=16,                 # Scaling = alpha/r = 2.0
+        target_modules=[               # Módulos donde injectar LoRA
+            "q_proj",                  # Proyección de queries
+            "v_proj",                  # Proyección de valores
+            # "k_proj", "o_proj",      # Descomentar para atención completa
+        ],
+        lora_dropout=0.05,             # Dropout para regularización
+        bias="none",                   # No entrenar biases
+        task_type=TaskType.CAUSAL_LM,  # Modelo de lenguaje causal
+    )
+
+
+# ─── 3. CARGA DEL MODELO CON QLoRA ─────────────────────────────────────────
+def load_model_with_qlora(model_name: str, lora_config: LoraConfig):
+    """
+    Carga un modelo con cuantización 4-bit y aplica LoRA.
+    
+    Flujo:
+    1. Cargar tokenizer
+    2. Cargar modelo base cuantizado a 4-bit NF
+    3. Preparar modelo para k-bit training (冻结 pesos cuantizados)
+    4. Aplicar LoRA sobre el modelo preparado
+    5. Contar parámetros entrenables
+    """
+    logger.info(f"Cargando modelo base: {model_name}")
+    
+    # Tokenizer
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    tokenizer.pad_token = tokenizer.eos_token
+    
+    # Configuración bitsandbytes
+    bnb_config = get_bnb_config()
+    
+    # Carga cuantizada — los pesos quedan en 4-bit NF
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name,
+        quantization_config=bnb_config,
+        device_map="auto",
+        trust_remote_code=True,
+    )
+    
+    logger.info("Modelo cargado en 4-bit NormalFloat")
+    
+    # ─── PREPARAR PARA K-BIT TRAINING ────────────────────────────────────
+    # Esto marca los pesos 4-bit como frozen y solo entrena los de 16/32-bit
+    from peft import prepare_model_for_kbit_training
+    model = prepare_model_for_kbit_training(
+        model,
+        use_gradient_checkpointing=True,  # Trade VRAM por compute
+    )
+    
+    # ─── APLICAR LORA ─────────────────────────────────────────────────────
+    logger.info("Aplicando LoRA adaptadores...")
+    model = get_peft_model(model, lora_config)
+    
+    # ─── CONTEO DE PARÁMETROS ─────────────────────────────────────────────
+    trainable_params, all_params = 0, 0
+    for _, param in model.named_parameters():
+        all_params += param.numel()
+        if param.requires_grad:
+            trainable_params += param.numel()
+    
+    logger.info(
+        f"Parámetros entrenables: {trainable_params:,} / {all_params:,} "
+        f"({100 * trainable_params / all_params:.2f}%)"
+    )
+    
+    return model, tokenizer
+
+
+# ─── 4. TRAINING LOOP MANUAL (alternativa al Trainer) ──────────────────────
+def training_loop_qlora(
+    model,
+    tokenizer,
+    train_data: List[Dict[str, str]],
+    num_epochs: int = 3,
+    batch_size: int = 4,
+    gradient_accumulation_steps: int = 4,
+    base_lr: float = 2e-4,
+    head_lr: float = 2e-3,        # 10x mayor para la cabeza
+    warmup_steps: int = 100,
+    max_length: int = 512,
+):
+    """
+    Training loop manual para QLoRA con separación de LR.
+    
+    Args:
+        model: modelo PEFT preparado
+        tokenizer: tokenizer del modelo
+        train_data: lista de dicts con {"prompt": ..., "completion": ...}
+        num_epochs: épocas de entrenamiento
+        batch_size: tamaño de batch
+        gradient_accumulation_steps: pasos de acumulación de gradiente
+        base_lr: learning rate para adaptadores LoRA
+        head_lr: learning rate para lm_head (10x base_lr)
+        warmup_steps: pasos de warmup
+        max_length: longitud máxima de secuencia
+    """
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = model.to(device)
+    model.train()
+    
+    # ─── SEPARACIÓN DE PARÁMETROS POR LR ─────────────────────────────────
+    # Error #1 que corregimos aquí: LR diferenciado para cabeza vs backbone
+    optimizer_parameters = [
+        {
+            "params": model.model.parameters(),   # backbone / LoRA adapters
+            "lr": base_lr,
+        },
+        {
+            "params": model.lm_head.parameters(),  # cabeza de predicción
+            "lr": head_lr,                         # 10x mayor — crítico
+        },
+    ]
+    
+    optimizer = torch.optim.AdamW(optimizer_parameters, weight_decay=0.01)
+    
+    # Learning rate scheduler con warmup
+    def lr_lambda(step):
+        if step < warmup_steps:
+            return step / warmup_steps
+        return max(0.1, 1.0 - (step - warmup_steps) / (len(train_data) * num_epochs))
+    
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+    
+    # Loss function
+    loss_fn = nn.CrossEntropyLoss(ignore_index=tokenizer.pad_token_id)
+    
+    # Collation
+    def collate_fn(batch):
+        prompts = [item["prompt"] for item in batch]
+        completions = [item["completion"] for item in batch]
+        
+        # Tokenizar
+        encoded = tokenizer(
+            prompts,
+            truncation=True,
+            max_length=max_length,
+            padding="max_length",
+            return_tensors="pt",
+        )
+        target_encoded = tokenizer(
+            completions,
+            truncation=True,
+            max_length=max_length,
+            padding="max_length",
+            return_tensors="pt",
+        )
+        
+        # Concatenar para formato de lenguaje causal
+        input_ids = torch.cat([encoded["input_ids"], target_encoded["input_ids"]], dim=1)
+        attention_mask = torch.cat(
+            [encoded["attention_mask"], target_encoded["attention_mask"]], dim=1
+        )
+        labels = input_ids.clone()
+        # Maskear los prompt tokens para que no se predigan
+        labels[:, :encoded["input_ids"].size(1)] = -100
+        
+        return {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "labels": labels,
+        }
+    
+    logger.info(f"Iniciando entrenamiento: {num_epochs} épocas, batch_size={batch_size}")
+    global_step = 0
+    
+    for epoch in range(num_epochs):
+        epoch_loss = 0.0
+        num_batches = 0
+        
+        # Shuffle de datos
+        indices = torch.randperm(len(train_data)).tolist()
+        
+        for i in range(0, len(train_data), batch_size):
+            batch_indices = indices[i : i + batch_size]
+            batch = [train_data[j] for j in batch_indices]
+            batch = collate_fn(batch)
+            
+            input_ids = batch["input_ids"].to(device)
+            attention_mask = batch["attention_mask"].to(device)
+            labels = batch["labels"].to(device)
+            
+            # Forward pass
+            outputs = model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+            )
+            
+            # Shift para language modeling causal
+            # Predecir el siguiente token, no el actual
+            shift_logits = outputs.logits[:, :-1, :].contiguous()
+            shift_labels = labels[:, 1:].contiguous()
+            
+            loss = loss_fn(
+                shift_logits.view(-1, shift_logits.size(-1)),
+                shift_labels.view(-1),
+            )
+            
+            # Scale por acumulación
+            loss = loss / gradient_accumulation_steps
+            loss.backward()
+            
+            # Actualizar cada gradient_accumulation_steps
+            if (global_step + 1) % gradient_accumulation_steps == 0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                optimizer.step()
+                scheduler.step()
+                optimizer.zero_grad()
+            
+            epoch_loss += loss.item() * gradient_accumulation_steps
+            num_batches += 1
+            global_step += 1
+            
+            if global_step % 10 == 0:
+                logger.info(
+                    f"Epoch {epoch+1}/{num_epochs} | Step {global_step} | "
+                    f"Loss: {epoch_loss/num_batches:.4f} | "
+                    f"LR (head): {scheduler.get_last_lr()[1]:.2e}"
+                )
+        
+        avg_epoch_loss = epoch_loss / num_batches
+        logger.info(f"=== Epoch {epoch+1} completado | Loss promedio: {avg_epoch_loss:.4f} ===")
+    
+    logger.info("Entrenamiento completado")
+    return model
+
+
+# ─── 5. INFERENCIA CON MODELO FINE-TUNED ──────────────────────────────────
+@torch.no_grad()
+def generate_with_lora(
+    model,
+    tokenizer,
+    prompt: str,
+    max_new_tokens: int = 256,
+    temperature: float = 0.7,
+    top_p: float = 0.9,
+) -> str:
+    """Genera texto usando el modelo fine-tuned con LoRA."""
+    device = next(model.parameters()).device
+    
+    inputs = tokenizer(prompt, return_tensors="pt").to(device)
+    
+    outputs = model.generate(
+        **inputs,
+        max_new_tokens=max_new_tokens,
+        temperature=temperature,
+        top_p=top_p,
+        do_sample=True,
+        pad_token_id=tokenizer.pad_token_id,
+        eos_token_id=tokenizer.eos_token_id,
+    )
+    
+    # Solo devolver la nueva generación, no el prompt
+    generated = outputs[0][inputs["input_ids"].size(1):]
+    return tokenizer.decode(generated, skip_special_tokens=True)
+
+
+# ─── 6. EJEMPLO DE USO ─────────────────────────────────────────────────────
+if __name__ == "__main__":
+    # Datos de ejemplo — reemplaza con tu dataset
+    example_data = [
+        {
+            "prompt": "Analiza este sentimiento: 'El servicio fue terrible, nunca más'",
+            "completion": " Negativo. El cliente expresa insatisfacción total con el servicio recibido."
+        },
+        {
+            "prompt": "Clasifica: '¡Excelente producto, superó mis expectativas!'",
+            "completion": " Positivo. El cliente está muy satisfecho con el producto."
+        },
+    ]
+    
+    # Para probar localmente (requiere GPU con ~6GB VRAM libre mínimo)
+    model_name = "meta-llama/Llama-3-8b"  # o "mistralai/Mistral-7B-v0.1"
+    
+    try:
+        model, tokenizer = load_model_with_qlora(model_name, get_lora_config())
+        model = training_loop_qlora(
+            model,
+            tokenizer,
+            example_data,
+            num_epochs=3,
+            batch_size=2,
+            gradient_accumulation_steps=4,
+        )
+        
+        # Test
+        result = generate_with_lora(model, tokenizer, example_data[0]["prompt"])
+        print(f"Generación: {result}")
+        
+    except Exception as e:
+        logger.error(f"Error durante el fine-tuning: {e}")
+        raise
+</code></pre>
+
+<h2>Errores Comunes y sus Soluciones</h2>
+
+<h3>Error 1: Olvidar descongelar la Layer Norm al hacer LoRA</h3>
+
+<pre><code class="language-python"># ❌ MAL: la layer norm puede quedar congelada con model.print_trainable_parameters()
+# que solo muestra params con requires_grad=True, pero no todos los necesarios
+
+# ✅ BIEN: asegurar que las capas necesarias se descongelan explícitamente
+for name, param in model.named_parameters():
+    if "LayerNorm" in name or "bias" in name:
+        param.requires_grad = True  # Descongelar explícitamente
+</code></pre>
+
+<h3>Error 2: LR demasiado alto para LoRA → diverge el entrenamiento</h3>
+
+<pre><code class="language-python"># ❌ MAL: usar 1e-3 como en fine-tuning completo
+# LoRA tiene menos parámetros, necesita LR más pequeño
+
+# ✅ BIEN: LR típico para LoRA es 1e-4 a 3e-4
+optimizer = torch.optim.AdamW(
+    [{"params": model.model.parameters(), "lr": 2e-4}],
+)
+
+# Si entrenas con gradient accumulation grande, reduce LR proporcionalmente:
+# effective_batch_size = batch_size * gradient_accumulation_steps * num_gpus
+# Si duplicas accum, divide LR entre 2 (linear scaling rule)
+</code></pre>
+
+<h3>Error 3: No usar gradient checkpointing en QLoRA → OOM</h3>
+
+<pre><code class="language-python"># ❌ MAL: cargar modelo sin gradient checkpointing en QLoRA con modelos grandes
+
+# ✅ BIEN: habilitar gradient checkpointing para ahorrar ~60% VRAM
+model.gradient_checkpointing_enable()
+model.enable_input_require_grads()  # Necesario para LoRA con gradient checkpointing
+</code></pre>
+
+<h2>Resumen: El Arte de Adaptar sin Destruir</h2>
+
+<p>Fine-tuning es la herramienta para cuando necesitas que un modelo <em>haga algo específico</em> que no logra con prompting o RAG. LoRA y QLoRA hicieron que esta técnica fuera accesible para cualquiera con una GPU decente — ya no necesitas un cluster de H100 para especializar un modelo de 7B parámetros.</p>
+
+<p>Las claves para que no te salga el tiro por la culata:</p>
+
+<ul>
+<li>Si tienes menos de 1,000 ejemplos etiquetados de calidad, no fine-tunear — usa few-shot prompting.</li>
+<li>Si tu tarea es knowledge-heavy con documentos grandes, RAG es tu amigo.</li>
+<li>Si necesitas cambiar formato, estilo o comportamiento, fine-tunea con LoRA.</li>
+<li>Recuerda siempre el LR 10x mayor para la cabeza.</li>
+<li>Cuantiza a 4-bit NF con bitsandbytes antes de aplicar LoRA (QLoRA).</li>
+</ul>
+
+<p>En Colombia tenemos la ventaja de que el español es una lengua con recursos limitados comparado con el inglés. Fine-tuning de modelos en español no solo mejora la calidad — <strong>devuelve identidad lingüística a la tecnología</strong>. Un modelo que responde en jerga colombiana, que entiende el contexto criollo, es infinitamente más útil para nosotros que uno que solo conoce expresiones de Silicon Valley.</p>
+
+<p>La próxima vez que tengas un problema de ML y pienses "voy a fine-tunear", respira hondo, mira los puntos anteriores y pregúntate: ¿es realmente fine-tuning lo que necesito, o estoy frente a un problema que se resuelve con un buen prompt?</p>
+
+<p><em>Nos vemos el Día 92 hablando de Prompt Engineering — porque a veces la mejor técnica es la que no necesitas entrenar.</em></p>
   </article>
 </body>
 </html>
