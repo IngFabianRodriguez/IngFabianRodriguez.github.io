@@ -118,75 +118,419 @@ nav {
   </header>
 
   <article class="article-body">
-    <h1>Prompt Engineering - El Arte De Hablarle A La IA</h1>
+<p>Parcero, día 218 y hoy hablamos de algo que el 80% de equipos de ML ignoran hasta que les pega en la cara: Model Registry. Ese momento cuando necesitas hacer rollback a un modelo anterior porque el nuevo está prediciendo puro disparate, y te das cuenta de que nadie sabe qué modelo estaba en producción ni de dónde vino. Esa vaina no te va a pasar hoy, porque读完 este artículo vas a saber exactamente cómo estructurar tu model registry desde day one.</p>
 
-<p>Hagale pues, parcero. Hoy es el Dia 218 y hablamos de Prompt Engineering, el arte de comunicarse efectivamente con modelos de lenguaje. Cafe arriba.</p>
+<p>El problema es que la mayoría de equipos guardan modelos como `model_final_v3_REAL.pkl` o `classifier_best_2024_01_15_FINAL.pkl`. Sin metadata, sin version tracking, sin lineage. Cuando necesitas auditar qué modelo se deployó hace 3 meses, o reproducir un experimento específico, estás frito. El model registry existe para resolver ese problema de raíz.</p>
+
 <hr>
-<h2>🎯 Que Es Prompt Engineering?</h2>
-<p>Prompt engineering es el proceso de disenar y optimizar prompts para obtener mejores resultados de modelos de lenguaje. Un buen prompt puede marcar la diferencia entre una respuesta util y una inutil.</p>
-<h3>Elementos de un buen prompt:</h3>
+<h2>🎯 Por Qué Necesitas Un Model Registry</h2>
+
+<p>Un model registry es un repositorio centralizado donde almacenas:</p>
+
 <ul>
-<li><strong>Instruccion clara</strong>: Que quieres que haga el modelo</li>
-<li><strong>Contexto</strong>: Informacion de fondo necesaria</li>
-<li><strong>Formato</strong>: Como quieres la respuesta</li>
-<li><strong>Ejemplos</strong>: Few-shot examples cuando ayudan</li>
+<li><strong>Versiones del modelo</strong>: Cada training run produce una nueva versión.</li>
+<li><strong>Metadata del entrenamiento</strong>: hyperparameters, dataset usado, metrics, duración.</li>
+<li><strong>Lineage completo</strong>: de dónde vino el modelo, qué datos lo produjeron.</li>
+<li><strong>Stage del modelo</strong>: development, staging, production, archived.</li>
+<li><strong>Artifact del modelo</strong>: los pesos/archivos del modelo en sí.</li>
 </ul>
+
+<p>Sin esto, estás operando a ciegas. No sabes cuál modelo tienes deployado, no puedes hacer rollback limpio, y cuando tu modelo empieza a hacer cosas raras en producción, no tienes forma de investigar qué cambió.</p>
+
+<p>Las dos herramientas más usadas para esto son:</p>
+
+<ul>
+<li><strong>MLflow Model Registry</strong>: La opción más popular, integrate con MLflow tracking.</li>
+<li><strong>DVC</strong>: Git-like versioning para modelos y datasets, integra con git.</li>
+</ul>
+
 <hr>
-<h2>📐 Tecnicas De Prompting</h2>
-<pre><code># Zero-shot prompt
-prompt = """Clasifica el sentimiento de esta resena:
-"La pelicula fue aburridisima, no la recomiendo."
-Sentimiento: """
+<h2>📐 La Matemática Del Model Lifecycle</h2>
 
-# Few-shot prompt
-prompt = """Clasifica el sentimiento de resenas de peliculas:
+<p>Podemos modelar el lifecycle de un modelo como una máquina de estados:</p>
 
-Resena: "Que pelicula mas buena, me encanta!"
-Sentimiento: Positivo
+<p>$$M_{{v}} \in \{{Development, Staging, Production, Archived, Deprecated\}}$$</p>
 
-Resena: "No me gusto para nada, una perda de tiempo"
-Sentimiento: Negativo
+<p>con transiciones definidas:</p>
 
-Resena: "La pelicula estuvo decente, nada especial"
-Sentimiento: Neutral
+<ul>
+<li>$M_{{v}}: Development \rightarrow Staging$ cuando pasa validación</li>
+<li>$M_{{v}}: Staging \rightarrow Production$ cuando supera A/B test o gate de calidad</li>
+<li>$M_{{v}}: Production \rightarrow Archived$ cuando es reemplazado por versión más nueva</li>
+<li>$M_{{v}}: Archived \rightarrow Production$ (rollback manual)</li>
+</ul>
 
-Resena: "Increible, una obra maestra del cine"
-Sentimiento: Positivo
+<p>El objetivo: mantener un historial completo de transiciones para poder auditar y hacer rollback. Cada transición debe registrar: timestamp, usuario que hizo el cambio, razón del cambio, y métricas del modelo en ese momento.</p>
 
-Resena: "Muy mala, no la vean"
-Sentimiento:"""
-</code></pre>
 <hr>
-<h2>🚀 Estructura De Prompts Efectivos</h2>
-<pre><code># Template de prompt estructurado
-def create_prompt(task, context, format_example, query):
-    return f"""Eres un {task} especializado.
+<h2>💻 Implementando Model Registry Con MLflow</h2>
 
-Contexto:
-{context}
+<p>MLflow tiene un Model Registry built-in que se integra perfectamente con MLflow Tracking. Aquí está cómo usarlo de forma production-ready:</p>
 
-Formato de respuesta:
-{format_example}
+<pre><code>import mlflow
+from mlflow.tracking import MlflowClient
+from mlflow.models import Model
+import sklearn
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+import pandas as pd
+import numpy as np
 
-Pregunta:
-{query}
+# Configurar MLflow
+MLFLOW_TRACKING_URI = "http://localhost:5000"
+mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+mlflow.set_experiment("prod-classifier")
 
-Respuesta:"""
+client = MlflowClient()
 
-prompt = create_prompt(
-    task="analista de sentimiento",
-    context="Datos de resenas de usuarios de un restaurant",
-    format_example="Solo responde: Positivo, Negativo o Neutral",
-    query="La comida estaba fria y el servicio lento"
-)
+
+class ModelRegistry:
+    """
+    Model Registry wrapper para gestionar modelos en MLflow.
+    Proporciona una interfaz de más alto nivel para registro y tracking.
+    """
+    
+    def __init__(self, model_name: str):
+        self.model_name = model_name
+        self.client = MlflowClient()
+    
+    def register_model(
+        self,
+        run_id: str,
+        accuracy: float,
+        precision: float,
+        recall: float,
+        f1: float,
+        training_config: dict,
+        dataset_info: dict,
+    ) -> str:
+        """
+        Registra un modelo nuevo en el registry.
+        
+        Args:
+            run_id: ID del run de MLflow que produjo el modelo
+            accuracy: Accuracy en test set
+            precision: Precision en test set
+            recall: Recall en test set
+            f1: F1 score en test set
+            training_config: Hyperparameters y config del entrenamiento
+            dataset_info: Info del dataset (version, size, date)
+            
+        Returns:
+            Versión del modelo registrado
+        """
+        # Registrar el modelo en MLflow
+        model_uri = f"runs:/{run_id}/model"
+        
+        # Crear descripción con metadata
+        description = f"""
+## Model Registration
+
+### Metrics
+- Accuracy: {accuracy:.4f}
+- Precision: {precision:.4f}
+- Recall: {recall:.4f}
+- F1: {f1:.4f}
+
+### Training Config
+{self._format_dict(training_config)}
+
+### Dataset Info
+{self._format_dict(dataset_info)}
+        """
+        
+        # Registrar modelo
+        model_version = mlflow.register_model(model_uri, self.model_name)
+        
+        # Agregar metadata como tags
+        client.set_model_version_tag(
+            self.model_name,
+            model_version.version,
+            "accuracy",
+            str(accuracy)
+        )
+        client.set_model_version_tag(
+            self.model_name,
+            model_version.version,
+            "precision",
+            str(precision)
+        )
+        client.set_model_version_tag(
+            self.model_name,
+            model_version.version,
+            "recall",
+            str(recall)
+        )
+        client.set_model_version_tag(
+            self.model_name,
+            model_version.version,
+            "dataset_version",
+            dataset_info.get("version", "unknown")
+        )
+        
+        # Agregar description completa
+        client.update_model_version(
+            self.model_name,
+            model_version.version,
+            description=description
+        )
+        
+        # Transicionar a Staging automáticamente
+        client.transition_model_version_stage(
+            self.model_name,
+            model_version.version,
+            stage="Staging"
+        )
+        
+        return model_version.version
+    
+    def get_best_model(self, stage: str = "Production") -> dict:
+        """
+        Obtiene el mejor modelo en un stage específico.
+        Por ahora simplemente retorna el más reciente.
+        """
+        latest_versions = client.get_latest_versions(
+            self.model_name,
+            stages=[stage]
+        )
+        
+        if not latest_versions:
+            return None
+        
+        return latest_versions[0]
+    
+    def load_model_by_version(self, version: int):
+        """
+        Carga un modelo específico por versión.
+        Útil para hacer rollback o investigación histórica.
+        """
+        model_uri = f"models:/{self.model_name}/{version}"
+        return mlflow.sklearn.load_model(model_uri)
+    
+    def load_model_by_stage(self, stage: str = "Production"):
+        """
+        Carga el modelo en un stage específico.
+        Útil para deployments.
+        """
+        model_uri = f"models:/{self.model_name}/{stage}"
+        return mlflow.sklearn.load_model(model_uri)
+    
+    def transition_to_production(self, version: int, reason: str = "") -> None:
+        """
+        Transiciona un modelo a producción.
+        Primero archiva el modelo que está actualmente en producción.
+        """
+        # Encontrar modelo actual en producción
+        current_prod = self.get_best_model("Production")
+        
+        if current_prod:
+            # Archivar el actual
+            client.transition_model_version_stage(
+                self.model_name,
+                current_prod.version,
+                stage="Archived"
+            )
+            client.set_model_version_tag(
+                self.model_name,
+                current_prod.version,
+                "archived_reason",
+                f"Replaced by v{version}: {reason}"
+            )
+        
+        # Transicionar el nuevo a producción
+        client.transition_model_version_stage(
+            self.model_name,
+            version,
+            stage="Production"
+        )
+        
+        # Agregar timestamp de deployment
+        client.set_model_version_tag(
+            self.model_name,
+            version,
+            "deployed_at",
+            pd.Timestamp.now().isoformat()
+        )
+        client.set_model_version_tag(
+            self.model_name,
+            version,
+            "deployed_reason",
+            reason
+        )
+    
+    def get_model_history(self) -> list:
+        """
+        Obtiene el historial completo de versiones del modelo.
+        Útil para auditoría y debugging.
+        """
+        versions = client.search_model_versions(self.model_name)
+        
+        history = []
+        for v in versions:
+            history.append({
+                "version": v.version,
+                "stage": v.current_stage,
+                "created_at": v.creation_timestamp,
+                "last_updated": v.last_updated_timestamp,
+                "run_id": v.run_id,
+                "description": v.description[:200] if v.description else "",
+            })
+        
+        return sorted(history, key=lambda x: x["version"], reverse=True)
+    
+    def _format_dict(self, d: dict) -> str:
+        """Formatea un dict para usar en descripciones."""
+        return "\n".join([f"- {k}: {v}" for k, v in d.items()])
+
+
+# Ejemplo de uso completo
+def train_and_register():
+    """Training pipeline completo con registro."""
+    
+    # Simular datos de entrenamiento
+    np.random.seed(42)
+    X_train = np.random.randn(1000, 20)
+    y_train = (X_train[:, 0] + X_train[:, 1] > 0).astype(int)
+    X_test = np.random.randn(200, 20)
+    y_test = (X_test[:, 0] + X_test[:, 1] > 0).astype(int)
+    
+    # Configuración del entrenamiento
+    config = {
+        "n_estimators": 100,
+        "max_depth": 10,
+        "random_state": 42,
+    }
+    
+    with mlflow.start_run() as run:
+        # Training
+        model = RandomForestClassifier(**config)
+        model.fit(X_train, y_train)
+        
+        # Evaluación
+        y_pred = model.predict(X_test)
+        accuracy = accuracy_score(y_test, y_pred)
+        precision = precision_score(y_test, y_pred)
+        recall = recall_score(y_test, y_pred)
+        f1 = f1_score(y_test, y_pred)
+        
+        # Log metrics
+        mlflow.log_metrics({
+            "accuracy": accuracy,
+            "precision": precision,
+            "recall": recall,
+            "f1": f1,
+        })
+        
+        # Log config
+        mlflow.log_params(config)
+        
+        # Log model
+        mlflow.sklearn.log_model(model, "model")
+        
+        # Registrar en registry
+        registry = ModelRegistry("prod-classifier")
+        
+        model_version = registry.register_model(
+            run_id=run.info.run_id,
+            accuracy=accuracy,
+            precision=precision,
+            recall=recall,
+            f1=f1,
+            training_config=config,
+            dataset_info={
+                "version": "v1.0",
+                "train_size": len(X_train),
+                "test_size": len(X_test),
+                "features": 20,
+            }
+        )
+        
+        print(f"Modelo registrado: v{model_version}")
+        
+        # Si supera threshold, deployar a producción automáticamente
+        if accuracy >= 0.85:
+            registry.transition_to_production(
+                model_version,
+                reason=f"Accuracy {accuracy:.4f} above threshold 0.85"
+            )
+            print(f"Modelo v{model_version} deployado a producción")
+        
+        return model_version
+
+
+if __name__ == "__main__":
+    train_and_register()
 </code></pre>
+
 <hr>
 <h2>⚠️ Errores Comunes</h2>
-<h3>Error 1: Prompts Vag os</h3>
-<p><strong>El problema</strong>: "Haz algo util con esto" no funciona.</p>
-<p><strong>La solucion</strong>: Se especifico: accion + formato + restricciones.</p>
+
+<h3>Error 1: No Versionar Modelos Y Perder Track De Qué Modelo Fue Deployed</h3>
+<p><strong>El problema</strong>: Guardar modelos como `best_model.pkl` sin versión. Cuando necesitas hacer rollback, no sabes qué versión era "buena". Cuando el modelo actual falla, no tienes forma de comparar con versiones anteriores porque no hay version tracking.</p>
+<p><strong>Fix:</strong> Usar un model registry desde day one. Cada training run produce una nueva versión. Nombra las versiones secuencialmente (v1, v2, v3...) y associa metadata a cada una. Si tu framework no tiene registry built-in, usa al menos convenciones de naming: `classifier_v3_2024-08-05_acc0.92.pkl`.</p>
+
+<h3>Error 2: Guardar Solo Los Pesos Sin Metadata (Training Config, Metrics)</h3>
+<p><strong>El problema</strong>: Guardar puramente los archivos del modelo sin contexto. Cuando 6 meses después necesitas reproducir el modelo, no sabes qué hyperparameters usó, qué datos exactamente, o qué métricas obtuvo. Es como guardar código compilado sin el source.</p>
+<p><strong>Fix:</strong> Guardar siempre junto con el modelo:</p>
+<ul>
+<li>Hyperparameters completos (learning rate, batch size, etc)</li>
+<li>Dataset version y hash de los datos</li>
+<li>Métricas de entrenamiento y evaluación (accuracy, loss por epoch)</li>
+<li> Código fuente o link al commit de git</li>
+<li>Fecha y dur del entrenamiento</li>
+</ul>
+<p>MLflow lo hace automáticamente si usas `mlflow.log_params()` y `mlflow.log_metrics()` durante el entrenamiento.</p>
+
+<h3>Error 3: No Tener Model Lineage Para Auditar</h3>
+<p><strong>El problema</strong>: No saber de dónde vino un modelo en producción. Si el modelo hace predicciones problemáticas, no puedes investigar la causa raíz. Si necesitas compliance (HIPAA, SOC2, GDPR), la auditoría es obligatoria y sin lineage es imposible.</p>
+<p><strong>Fix:</strong> Implementar lineage tracking desde el principio:</p>
+<ul>
+<li>Registrar cada modelo con el run_id del experimento que lo produjo</li>
+<li>Vincular datasets a versiones específicas (usar DVC o similar para datasets)</li>
+<li>Guardar todas las transiciones de stage (dev → staging → prod → archived)</li>
+<li>Mantener logs de quién hizo cada transición y por qué</li>
+</ul>
+<pre><code># Ejemplo de lineage completo
+model_lineage = {
+    "model_version": "v23",
+    "run_id": "abc123-def456",
+    "experiment": "prod-classifier",
+    "dataset": {
+        "version": "v2.1",
+        "hash": "sha256:abc123...",
+        "source": "s3://data/training_v2.1.csv"
+    },
+    "training_config": {
+        "framework": "sklearn",
+        "n_estimators": 100,
+        "learning_rate": 0.001
+    },
+    "metrics": {
+        "train_accuracy": 0.95,
+        "test_accuracy": 0.92
+    },
+    "transitions": [
+        {"stage": "Development", "timestamp": "2024-08-01T10:00:00Z"},
+        {"stage": "Staging", "timestamp": "2024-08-01T14:00:00Z", "by": "ci-pipeline"},
+        {"stage": "Production", "timestamp": "2024-08-02T09:00:00Z", "by": "fabian", "reason": "Passed A/B test"}
+    ]
+}
+</code></pre>
+
 <hr>
-<p><em>Eso es todo! Nos vemos en el Dia 219.</em></p>
+<h2>✅ Resumen y Cierre</h2>
+
+<ul>
+<li><strong>Model Registry</strong> es essential para cualquier sistema ML en producción.</li>
+<li><strong>MLflow Model Registry</strong> proporciona una solución completa: versioning, staging, metadata, lineage.</li>
+<li><strong>Versionar todo</strong>: no solo pesos, también config, metrics, y dataset info.</li>
+<li><strong>Lineage tracking</strong> es crítico para auditoría y debugging de producción.</li>
+<li><strong>Stage management</strong> (dev/staging/prod/archived) te permite hacer rollbacks limpios.</li>
+</ul>
+
+<p>Hagale que guardar modelos sin registry es como desarrollar software sin git. Puede funcionar un tiempo, pero eventualmente vas a perder algo importante. Implementa tu registry hoy, antes de que te toque restaurar un modelo en producción a las 3am sin saber cuál era el bueno.</p>
+
+<p><em>Eso es todo por hoy. Día 219 viene con más. Aquí vamos.</em></p>
   </article>
 
   <script>
