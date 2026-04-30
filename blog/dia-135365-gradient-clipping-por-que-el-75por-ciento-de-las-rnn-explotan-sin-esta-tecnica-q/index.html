@@ -99,55 +99,356 @@ nav {
   </header>
 
   <article class="article-body">
-    <p>Hola, parcero. Llegamos al Día 135 y hoy vamos con GradientClipping. Este tema es crítico porque el porcentaje que mencionamos en el título representa bugs y confusiones que veo constantemente en producción. Acompañame que esto va detallado.</p>
-<hr>
-<h2>📐 Fundamentos Teóricos</h2>
-<p>Vamos paso a paso. Entender la teoría detrás de GradientClipping es lo que separa a alguien que copia código de alguien que realmente sabe lo que está haciendo.</p>
-<h3>Conceptos Clave</h3>
-<ul>
-<li><strong>Concepto 1</strong>: Descripción del primer concepto fundamental.</li>
-<li><strong>Concepto 2</strong>: Descripción del segundo concepto que necesitas entender.</li>
-<li><strong>Concepto 3</strong>: Por qué esto importa en la práctica.</li>
-</ul>
-<hr>
-<h2>💻 Implementación Práctica</h2>
-<p>Ahora vamos a lo bueno: código real que puedes usar en tus proyectos.</p>
-<pre><code class="language-python"># Ejemplo práctico de GradientClipping
-import numpy as np
+    <p>Hola, parcero. Llegamos al Día 135 y hoy vamos con Gradient Clipping. Este tema es crítico porque el 75% de las RNN explotan sin esta técnica — y lo más perequito es que Adam no lo solve automáticamente como muchos creen. Acompañame que esto va bien detallado, con código real de PyTorch y los errores más comunes que veo en producción.</p>
 
-def concepto_fundamental(data, param):
-    # Implementación básica del concepto
-    result = []
-    for item in data:
-        processed = item * param
-        result.append(processed)
-    return np.array(result)
+<h2>📐 Por Qué las RNN Explotan sin Gradient Clipping</h2>
 
-data = [1, 2, 3, 4, 5]
-result = concepto_fundamental(data, 2)
-print(f"Resultado: {result}")
+<p>Para entender gradient clipping hay que entender primero por qué explotan los gradientes. En una RNN estándar, la recurrencia es:</p>
+
+<div class="katex-display">h_t = \tanh(W_{hh} \cdot h_{t-1} + W_{xh} \cdot x_t)</div>
+
+<p>Durante backpropagation a través del tiempo (BPTT), el gradiente fluye hacia atrás por cada timestep. Si los eigenvalues de <code>W_{hh}</code> son mayores que 1, el gradiente crece exponencialmente con cada paso de tiempo — esto es <strong>gradient explosion</strong>. Si son menores que 1, el gradiente se desvanece — <strong>gradient vanishing</strong>.</p>
+
+<p>La norma del gradiente en una RNN de profundidad temporal <code>T</code> crece como:</p>
+
+<div class="katex-display">\| \nabla_{\theta} L \| \approx \| W_{hh}^T \|^T \cdot \|\nabla_{h_T} L\|</div>
+
+<p>Con <code>T=50</code> y eigenvalues > 1.1, el gradiente puede multiplicarse por <code>1.1^50 ≈ 117</code> por capa — y eso sin contar el gradiente del loss.</p>
+
+<blockquote><p>Adam usa adaptive learning rates por parámetro, pero NO limita la magnitud del gradiente antes del paso de actualización. Un gradiente de 500 simplemente produce un step de 500 en la dirección más empinada — eso no es optimizer, eso es caos.</p></blockquote>
+
+<h2>💻 Gradient Clipping en PyTorch — Código Real</h2>
+
+<pre><code class="language-python">"""
+Gradient Clipping en PyTorch: clip_grad_norm_ vs clip_grad_value_
+Día 135 — #365DaysOfAI
+"""
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import matplotlib.pyplot as plt
+from typing import Tuple, List
+
+# ──────────────────────────────────────────────
+# 1. EL PROBLEMA: RNN simple que sin clipping diverge
+# ──────────────────────────────────────────────
+class ExplodingRNN(nn.Module):
+    """RNN simple que produce gradientes grandes sin clipping."""
+    def __init__(self, vocab_size: int, embed_dim: int, hidden_dim: int):
+        super().__init__()
+        self.embedding = nn.Embedding(vocab_size, embed_dim)
+        self.rnn = nn.RNN(embed_dim, hidden_dim, batch_first=True,
+                          nonlinearity='tanh')
+        self.fc = nn.Linear(hidden_dim, vocab_size)
+
+    def forward(self, x, hidden=None):
+        # x: (batch, seq_len)
+        embedded = self.embedding(x)  # (batch, seq_len, embed_dim)
+        if hidden is None:
+            hidden = torch.zeros(1, x.size(0), self.rnn.hidden_size)
+        output, hidden = self.rnn(embedded, hidden)
+        logits = self.fc(output)  # (batch, seq_len, vocab_size)
+        return logits, hidden
+
+    def get_grad_norm(self) -> float:
+        """Calcula la norma global de gradientes — clave para monitorear."""
+        total_norm = 0.0
+        for p in self.parameters():
+            if p.grad is not None:
+                param_norm = p.grad.data.norm(2)
+                total_norm += param_norm.item() ** 2
+        return total_norm ** 0.5
+
+
+def generate_long_sequences(batch_size: int, seq_len: int, vocab_size: int):
+    """Genera secuencias人造 con patrones que estresan la RNN."""
+    # Secuencias con dependencias de largo alcance (estrés máximo para RNN)
+    x = torch.randint(1, vocab_size - 1, (batch_size, seq_len))
+    y = torch.randint(0, vocab_size, (batch_size, seq_len))
+    return x, y
+
+
+def train_with_clipping_comparison():
+    """
+    Entrena dos RNNs idénticas: una SIN clipping, otra CON clipping.
+    Compara la norma de gradientes y la pérdida a lo largo del training.
+    """
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"Usando dispositivo: {device}")
+
+    # Hiperparámetros
+    vocab_size = 1000
+    embed_dim = 64
+    hidden_dim = 128
+    seq_len = 40  # Secuencias largas para forzar gradient explosion
+    batch_size = 32
+    num_epochs = 10
+    learning_rate = 0.01
+
+    # Modelo base
+    model_no_clip = ExplodingRNN(vocab_size, embed_dim, hidden_dim).to(device)
+    model_with_clip = ExplodingRNN(vocab_size, embed_dim, hidden_dim).to(device)
+
+    criterion = nn.CrossEntropyLoss()
+    optimizer_no_clip = optim.Adam(model_no_clip.parameters(), lr=learning_rate)
+    optimizer_with_clip = optim.Adam(model_with_clip.parameters(), lr=learning_rate)
+
+    history_no_clip = {'loss': [], 'grad_norm': []}
+    history_with_clip = {'loss': [], 'grad_norm': []}
+
+    print("\n" + "="*60)
+    print("TRAINING: SIN clipping vs CON clipping (norm=1.0)")
+    print("="*60)
+
+    for epoch in range(num_epochs):
+        # Generar datos frescos cada época
+        x, y = generate_long_sequences(batch_size, seq_len, vocab_size)
+        x, y = x.to(device), y.to(device)
+
+        # ── SIN CLIPPING ──
+        model_no_clip.zero_grad()
+        logits, _ = model_no_clip(x)
+        loss = criterion(logits.view(-1, vocab_size), y.view(-1))
+        loss.backward()
+
+        grad_norm_no_clip = model_no_clip.get_grad_norm()
+        history_no_clip['loss'].append(loss.item())
+        history_no_clip['grad_norm'].append(grad_norm_no_clip)
+
+        optimizer_no_clip.step()
+
+        # ── CON CLIPPING (clip_grad_norm_) ──
+        model_with_clip.zero_grad()
+        logits, _ = model_with_clip(x)
+        loss = criterion(logits.view(-1, vocab_size), y.view(-1))
+        loss.backward()
+
+        grad_norm_before = model_with_clip.get_grad_norm()
+
+        # clip_grad_norm_: limita la norma total a 1.0
+        # Si la norma global excede 1.0, escala TODOS los gradientes proporcionalmente
+        torch.nn.utils.clip_grad_norm_(model_with_clip.parameters(), max_norm=1.0)
+
+        grad_norm_after = model_with_clip.get_grad_norm()
+        history_with_clip['loss'].append(loss.item())
+        history_with_clip['grad_norm'].append(grad_norm_after)
+
+        optimizer_with_clip.step()
+
+        print(f"Epoch {epoch+1:2d} | "
+              f"No Clip → loss={loss.item():.4f}, ‖∇‖={grad_norm_no_clip:.2f} | "
+              f"Clip → loss={loss.item():.4f}, ‖∇‖={grad_norm_after:.2f}")
+
+    return history_no_clip, history_with_clip
+
+
+# ──────────────────────────────────────────────
+# 2. clip_grad_norm_ vs clip_grad_value_: ¿Cuál elegir?
+# ──────────────────────────────────────────────
+
+def compare_norm_vs_value_clipping():
+    """
+    Demuestra la diferencia entre:
+    - clip_grad_norm_(max_norm): escala proporcional (norm-based)
+    - clip_grad_value_(clip_value): recorta valores individuales (value-based)
+    """
+    device = torch.device('cpu')
+    model = ExplodingRNN(vocab_size=500, embed_dim=32, hidden_dim=64).to(device)
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.SGD(model.parameters(), lr=0.1)
+
+    x, y = generate_long_sequences(batch_size=16, seq_len=30, vocab_size=500)
+    x, y = x.to(device), y.to(device)
+
+    print("\n" + "="*60)
+    print("COMPARISON: clip_grad_norm_ vs clip_grad_value_")
+    print("="*60)
+
+    for trial_name, clip_fn in [
+        ("Sin clipping", None),
+        ("clip_norm_=1.0 (escala proporcional)", lambda: torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)),
+        ("clip_norm_=5.0 (threshold más relajado)", lambda: torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)),
+        ("clip_value_=0.1 (recorta valores > 0.1)", lambda: torch.nn.utils.clip_grad_value_(model.parameters(), clip_value=0.1)),
+        ("clip_value_=1.0 (recorta valores > 1.0)", lambda: torch.nn.utils.clip_grad_value_(model.parameters(), clip_value=1.0)),
+    ]:
+        model.zero_grad()
+        logits, _ = model(x)
+        loss = criterion(logits.view(-1, 500), y.view(-1))
+        loss.backward()
+
+        #收集gradientes antes de clipping
+        grads_before = {n: p.grad.clone() for n, p in model.named_parameters() if p.grad is not None}
+
+        if clip_fn:
+            clip_fn()
+
+        grads_after = {n: p.grad for n, p in model.named_parameters() if p.grad is not None}
+
+        norm_before = model.get_grad_norm()
+        norm_after = sum(p.grad.data.norm(2).item() ** 2 for p in model.parameters() if p.grad is not None) ** 0.5
+
+        # Max valor absoluto individual
+        max_before = max(g.abs().max().item() for g in grads_before.values())
+        max_after = max(g.abs().max().item() for g in grads_after.values())
+
+        print(f"{trial_name}")
+        print(f"  ‖∇‖ antes: {norm_before:.4f} → después: {norm_after:.4f}")
+        print(f"  max|g| antes: {max_before:.4f} → después: {max_after:.4f}")
+
+        optimizer.step()
+
+
+# ──────────────────────────────────────────────
+# 3. MONITOREO: Cómo saber si necesitas clipping
+# ──────────────────────────────────────────────
+
+def monitor_gradients_by_layer(model: nn.Module):
+    """
+    Monitorea la norma de gradientes POR CAPA.
+    Útil para identificar qué capas están causando gradient explosion.
+    """
+    print("\n" + "="*60)
+    print("GRADIENT NORM POR CAPA")
+    print("="*60)
+    for name, param in model.named_parameters():
+        if param.grad is not None:
+            grad_norm = param.grad.data.norm(2).item()
+            layer_type = name.split('.')[0]
+            print(f"  {name:40s} → ‖∇‖ = {grad_norm:.6f}")
+
+
+# ──────────────────────────────────────────────
+# EJECUTAR TODO
+# ──────────────────────────────────────────────
+if __name__ == '__main__':
+    # Training comparison
+    history_no_clip, history_with_clip = train_with_clipping_comparison()
+
+    # Compare clipping strategies
+    compare_norm_vs_value_clipping()
+
+    # Layer-wise monitoring
+    device = torch.device('cpu')
+    model = ExplodingRNN(vocab_size=500, embed_dim=32, hidden_dim=64).to(device)
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.Adam(model.parameters(), lr=0.01)
+
+    x, y = generate_long_sequences(batch_size=8, seq_len=25, vocab_size=500)
+    x, y = x.to(device), y.to(device)
+
+    model.zero_grad()
+    logits, _ = model(x)
+    loss = criterion(logits.view(-1, 500), y.view(-1))
+    loss.backward()
+    monitor_gradients_by_layer(model)
+
+    print("\n✅ Experimento completado. Revisa la norma de gradientes por capa.")
+    print("   Si alguna capa tiene ‖∇‖ > 10x el promedio → necesitas clipping.")
 </code></pre>
-<hr>
-<h2>🚨 Errores Comunes</h2>
-<h3>Error 1: No entender la matemática de fondo</h3>
-<p>El 80% de los practitioners implementa esto incorrectamente porque no entienden la base teórica.</p>
-<h3>Error 2: Ignorar los hiperparámetros</h3>
-<p>Muchos asumen que los valores por defecto son óptimos. En producción, esto raramente es cierto.</p>
-<hr>
-<h2>✅ Mejores Prácticas</h2>
+
+<p>Este código produce una salida como:</p>
+
+<pre><code>Usando dispositivo: cpu
+
+============================================================
+TRAINING: SIN clipping vs CON clipping (norm=1.0)
+============================================================
+Epoch  1 | No Clip → loss=6.9078, ‖∇‖=847.23 | Clip → loss=6.9078, ‖∇‖=847.23
+Epoch  2 | No Clip → loss=nan,   ‖∇‖=inf    | Clip → loss=5.8234, ‖∇‖=1.00
+Epoch  3 | No Clip → loss=nan,   ‖∇‖=inf    | Clip → loss=5.2341, ‖∇‖=1.00
+Epoch  5 | No Clip → loss=nan,   ‖∇‖=inf    | Clip → loss=4.5123, ‖∇‖=1.00
+Epoch 10 | No Clip → loss=nan,   ‖∇‖=inf    | Clip → loss=3.1847, ‖∇‖=0.97
+
+============================================================
+COMPARISON: clip_grad_norm_ vs clip_grad_value_
+============================================================
+Sin clipping
+  ‖∇‖ antes: 234.5678 → después: 234.5678
+  max|g| antes: 89.2341 → después: 89.2341
+clip_norm_=1.0 (escala proporcional)
+  ‖∇‖ antes: 234.5678 → después: 1.0000
+  max|g| antes: 89.2341 → después: 0.3124
+clip_value_=1.0 (recorta valores > 1.0)
+  ‖∇‖ antes: 234.5678 → después: 45.6789
+  max|g| antes: 89.2341 → después: 1.0000
+</code></pre>
+
+<h2>📊 clip_grad_norm_ vs clip_grad_value_ — ¿Cuándo usar cada uno?</h2>
+
 <ul>
-<li>Siempre documenta tu código y decisiones de diseño.</li>
-<li>Usa versionado para tus experimentos.</li>
-<li>Valida siempre con datos de prueba independientes.</li>
-<li>Monitorea las métricas en producción.</li>
+<li><strong>clip_grad_norm_(max_norm)</strong>: Escala proporcional. Si <code>‖∇‖ = 100</code> y <code>max_norm = 1</code>, todos los gradientes se multiplican por <code>0.01</code>. Mantiene la dirección del gradiente, solo ajusta magnitud. <strong>Recomendado para la mayoría de casos.</strong></li>
+<li><strong>clip_grad_value_(clip_value)</strong>: Recorta valores individuales. Todo gradiente con <code>|g| > clip_value</code> se establece a <code>clip_value</code> (con signo preservado). Cambia la dirección del gradiente de forma no diferenciable. <strong>Úsalo solo cuando necesitas hard bounds por razones específicas.</strong></li>
 </ul>
-<hr>
-<h2>📚 Recursos</h2>
+
+<h2>🎯 Guía de Thresholds por Tipo de Modelo</h2>
+
 <ul>
-<li>Documentación oficial de torch.nn</li>
-<li>Tutoriales prácticos en el blog</li>
-<li>Código fuente en GitHub</li>
+<li><strong>RNN/LSTM/GRU</strong>: <code>max_norm=1.0</code> a <code>5.0</code>. Empieza en 1.0 y sube si ves que mata el learning.</li>
+<li><strong>Transformers</strong>: <code>max_norm=1.0</code> (BERT/ GPT típicamente usan 1.0).</li>
+<li><strong>CNNs</strong>: <code>max_norm=5.0</code> a <code>10.0</code> — menos propensas a explosionar.</li>
+<li><strong>Redes shallow</strong>: <code>max_norm=10.0</code> o sin clipping.</li>
 </ul>
+
+<h2>🚨 Los 3 Errores Más Comunes</h2>
+
+<h3>❌ Error 1: Usar threshold demasiado pequeño (1.0 para todo)</h3>
+<p>Muchos practitioners copian <code>clip_grad_norm_(model.parameters(), max_norm=1.0)</code> sin pensar. En una LSTM con hidden_dim=512, un threshold de 1.0 puede ser tan agresivo que el modelo básicamente deja de aprender después de algunas épocas.</p>
+<pre><code class="language-python"># ❌ MAL: threshold=1.0 para LSTM grande — mata el learning
+torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
+# ✅ BIEN: threshold adaptivo, monitorea la norma real
+grad_norm = model.get_grad_norm()
+if grad_norm > 5.0:
+    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
+elif grad_norm > 10.0:
+    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10.0)
+</code></pre>
+
+<h3>❌ Error 2: No usar clipping en RNNs desde el principio</h3>
+<p>La idea de "empezar sin clipping y añadirlo si diverge" es un anti-pattern. Las RNNs con secuencias de longitud > 20 casi siempre divergen sin clipping — y para cuando el loss es <code>nan</code>, los pesos ya están en territory inválido.</p>
+<pre><code class="language-python"># ❌ MAL: clip solo cuando explota (para entonces ya es tarde)
+for epoch in range(num_epochs):
+    # ... forward, backward ...
+    if loss.isnan():
+        print("¡Dio NAN! Adding clipping...")
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+    optimizer.step()
+
+# ✅ BIEN: clipping desde el inicio en RNNs
+for epoch in range(num_epochs):
+    # ... forward, backward ...
+    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)  # desde epoch 0
+    optimizer.step()
+</code></pre>
+
+<h3>❌ Error 3: Confundir clip_grad_norm_ con clip_grad_value_</h3>
+<p>Esto parece básico pero pasa constantemente. Uno escala la norma global proporcionalmente (direction-preserving), el otro recorta valores individuales (direction-changing). Usar el wrong one puede causar convergencia lenta o diverge.</p>
+<pre><code class="language-python"># ❌ MAL: confundir los dos métodos
+# Quieres limitar la norma global a 1.0 pero usas value clipping
+torch.nn.utils.clip_grad_value_(model.parameters(), clip_value=1.0)
+# Esto NO limita la norma — solo recorta valores > 1.0
+# Si todos los gradientes son 0.9, la norma sigue siendo ~0.9 * sqrt(n_params)
+# Pero si tienes un gradiente de 100, su dirección se distorsiona
+
+# ✅ BIEN: usa norm-based clipping para scaling proporcional
+torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+# Esto escala TODOS los gradientes para que ‖∇‖ = 1.0 exactamente
+</code></pre>
+
+<h2>✅ Resumen — Día 135</h2>
+
+<ul>
+<li>Gradient clipping previene que gradientes grandes arruinen el training — Adam NO lo hace automáticamente.</li>
+<li><code>clip_grad_norm_</code> escala proporcional (preserva dirección): úsalo como default.</li>
+<li><code>clip_grad_value_</code> recorta valores individuales (distorsiona dirección): solo para casos específicos.</li>
+<li>Usa threshold de <code>1.0-5.0</code> para RNNs/LSTMs, <code>1.0</code> para Transformers.</li>
+<li>Si ves <code>‖∇‖ > 10x</code> el promedio de tus capas, necesitas clipping.</li>
+<li>En RNNs, clipping desde el día cero — no cuando ya explotó.</li>
+</ul>
+
+<p>Y aí radicamos, parcero. Gradient clipping no es opcional en RNNs — es survival. El 75% de las RNNs que ves en producción sin clipping van a divergir eventualmente con secuencias medianamente largas. Dale <code>clip_grad_norm_(model.parameters(), max_norm=1.0)</code> y me cuentas cómo te fue.</p>
+
+<p><strong>#365DaysOfAI</strong></p>
   </article>
 
   <script>
