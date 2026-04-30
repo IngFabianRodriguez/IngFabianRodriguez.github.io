@@ -118,60 +118,416 @@ nav {
   </header>
 
   <article class="article-body">
-    <h1>BatchNorm - Por Qué Tu Red No Converge Sin Esta Capa Invisible</h1>
-<p>Hágale pues, parcero. Llegamos al Día 96 y hoy toca hablar de batchnorm. Después de más de 10 años rompiendo redes neuronales en producción, te digo que esto es más jugoso de lo que parece. Dejá el café, acomodate, porque esto es más jugoso de lo que parece.</p>
-<hr>
 <h2>🎯 ¿Qué Es BatchNorm?</h2>
-<p>En este artículo exploramos BatchNorm en profundidad, con ejemplos prácticos y código.</p>
-<h3>Conceptos clave:</h3>
-<ul>
-<li><strong>Definición</strong>: BatchNorm es fundamental en deep learning</li>
-<li><strong>Aplicación</strong>: Se usa en arquitecturas modernas de redes neuronales</li>
-<li><strong>Por qué importa</strong>: Sin esto, muchos modelos no podrían entrenar eficientemente</li>
-</ul>
-<hr>
-<h2>📐 La Matemática Detrás De BatchNorm</h2>
-<p>La matemática que hace posible la magia de BatchNorm:</p>
+<p>Viejito pero sabroso, parcero. BatchNorm es la capa que hace que entrenar redes profundas sea posible — sin ella, muchas arquitecturas simplemente no convergerían. Introducida por Ioffe y Szegedy en 2015, normaliza las activaciones de cada mini-batch para tener media cero y varianza uno, aprendiéndose después dos parámetros aprendibles $\gamma$ y $\beta$ que permiten recuperar la capacidad expresiva.</p>
+<p>La diferencia fundamental con LayerNorm es qué significa "batch": BatchNorm normaliza sobre el eje del batch, mientras que LayerNorm normaliza sobre las features de cada sample individual. Eso tiene implicaciones enormes para cuándo usar cada una.</p>
+<h2>📐 La Matemática De BatchNorm</h2>
+<p>Para un mini-batch $\mathcal{B} = \{x_1, \ldots, x_m\}$ de $m$ samples, cada uno con $d$ features:</p>
+<p>$$\mu_{\mathcal{B}} = \frac{1}{m} \sum_{i=1}^{m} x_i \quad \text{(media del batch)}$$</p>
+<p>$$\sigma_{\mathcal{B}}^2 = \frac{1}{m} \sum_{i=1}^{m} (x_i - \mu_{\mathcal{B}})^2 \quad \text{(varianza del batch)}$$</p>
+<p>$$\hat{x}_i = \frac{x_i - \mu_{\mathcal{B}}}{\sqrt{\sigma_{\mathcal{B}}^2 + \epsilon}} \quad \text{(normalización)}$$</p>
+<p>$$\text{BN}(x_i) = y_i = \gamma \hat{x}_i + \beta \quad \text{(scale + shift)}$</p>
+<p>Los parámetros $\gamma$ (scale) y $\beta$ (shift) son aprendibles vía backpropagation. Esto es crucial: si la identidad fuera la mejor transformación, la red aprendería $\gamma = \sigma_{\mathcal{B}}, \beta = \mu_{\mathcal{B}}$. Pero no siempre lo es — por eso son aprendibles.</p>
+<p>Durante entrenamiento, BatchNorm usa las estadísticas del batch actual ($\mu_{\mathcal{B}}, \sigma_{\mathcal{B}}$). Durante inferencia, usa <strong>running statistics</strong>: $\mu_{\text{running}}$ y $\sigma_{\text{running}}$ que se actualizan como moving averages durante todo el entrenamiento.</p>
+<p>Las ecuaciones de actualización de los running stats:</p>
+<p>$$\mu_{\text{running}} = (1 - \text{momentum}) \cdot \mu_{\text{running}} + \text{momentum} \cdot \mu_{\mathcal{B}}$$</p>
+<p>$$\sigma^2_{\text{running}} = (1 - \text{momentum}) \cdot \sigma^2_{\text{running}} + \text{momentum} \cdot \sigma^2_{\mathcal{B}}$$</p>
+<p>El <code>momentum</code> por defecto en PyTorch es 0.1. Esto controla qué tan rápido cambian los running stats — un valor más alto significa más peso al batch actual.</p>
+<h2>🚀 Implementación En PyTorch</h2>
+<h3>1. BatchNorm1d Manual — Entendiendo Running Statistics</h3>
 <pre><code class="language-python">import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
-# Ejemplo de BatchNorm
-x = torch.randn(32, 64)
-print(f'Input: {x.shape}')
-</code></pre>
-<hr>
-<h2>🚀 Implementación En PyTorch</h2>
-<pre><code class="language-python"># Implementación de BatchNorm
-class BatchNormBlock(nn.Module):
-    def __init__(self):
+# ============================================================
+# Implementación manual de BatchNorm 1D para entender la matemática
+# ============================================================
+class ManualBatchNorm1d(nn.Module):
+    """
+    BatchNorm 1d desde cero: normalización sobre el eje del batch.
+    """
+    def __init__(self, num_features, eps=1e-5, momentum=0.1):
         super().__init__()
-        # Capas del bloque
-    
-    def forward(self, x):
-        return x
+        self.num_features = num_features
+        self.eps = eps
+        self.momentum = momentum
 
-# Uso
-model = BatchNormBlock()
-output = model(x)
-print(f"Output shape: {output.shape}")
+        # Parámetros aprendibles: gamma (scale) y beta (shift)
+        self.gamma = nn.Parameter(torch.ones(num_features))
+        self.beta = nn.Parameter(torch.zeros(num_features))
+
+        # Running statistics: se actualizan durante training
+        # pero se usan durante inference
+        self.register_buffer('running_mean', torch.zeros(num_features))
+        self.register_buffer('running_var', torch.ones(num_features))
+
+    def forward(self, x):
+        """
+        x shape: (N, C) o (N, C, L) para 1D
+        Para este ejemplo manejamos (N, C)
+        """
+        if self.training:
+            # Calcular estadísticas del batch actual
+            batch_mean = x.mean(dim=0)           # media sobre samples
+            batch_var = x.var(dim=0, unbiased=False)  # varianza sobre samples
+
+            # Normalizar
+            x_norm = (x - batch_mean) / torch.sqrt(batch_var + self.eps)
+
+            # Actualizar running statistics con exponential moving average
+            self.running_mean = (1 - self.momentum) * self.running_mean + self.momentum * batch_mean
+            self.running_var = (1 - self.momentum) * self.running_var + self.momentum * batch_var
+        else:
+            # Durante inference: usar running statistics guardadas
+            x_norm = (x - self.running_mean) / torch.sqrt(self.running_var + self.eps)
+
+        # Scale y shift aprendibles
+        return self.gamma * x_norm + self.beta
+
+# ============================================================
+# Test: comparar implementación manual con torch.nn.BatchNorm1d
+# ============================================================
+torch.manual_seed(42)
+
+# Crear datos simulando una layer lineal con 4 features
+N, C = 32, 8  # batch size 32, 8 features
+x = torch.randn(N, C)
+
+# Comparar
+manual_bn = ManualBatchNorm1d(num_features=C, momentum=0.1)
+official_bn = nn.BatchNorm1d(num_features=C, momentum=0.1)
+
+# Copiar los parámetros aprendibles para que sean idénticos
+manual_bn.gamma.data = official_bn.weight.data.clone()
+manual_bn.beta.data = official_bn.bias.data.clone()
+
+print("=== Entrenamiento: ambos usan estadísticas del batch ===")
+manual_bn.train()
+official_bn.train()
+
+out_manual = manual_bn(x)
+out_official = official_bn(x)
+
+print(f"Diferencia en salida (debería ser ~0): {torch.max(torch.abs(out_manual - out_official)):.2e}")
+
+print("\n=== Inference: ambos usan running statistics ===")
+# Hacer forward en modo training para actualizar running stats
+_ = manual_bn(x)
+_ = official_bn(x)
+
+# Ahora pasar a eval
+manual_bn.eval()
+official_bn.eval()
+
+out_manual_eval = manual_bn(x)
+out_official_eval = official_bn(x)
+
+print(f"Diferencia en salida (debería ser ~0): {torch.max(torch.abs(out_manual_eval - official_bn(x))):.2e}")
+print(f"\nRunning mean manual: {manual_bn.running_mean[:3].tolist()}")
+print(f"Running mean oficial: {official_bn.running_mean[:3].tolist()}")
+print(f"Running var manual: {manual_bn.running_var[:3].tolist()}")
+print(f"Running var oficial: {official_bn.running_var[:3].tolist()}")
 </code></pre>
-<hr>
-<h2>⚠️ Errores Comunes Y Cómo Evitarlos</h2>
-<h3>Error 1: No entender el orden de operaciones</h3>
-<p><strong>El problema</strong>: El orden en que se aplican las operaciones con BatchNorm afecta el resultado.</p>
-<p><strong>La solución</strong>: Siempre verifica la dimensión y el orden de las operaciones.</p>
-<h3>Error 2: Olvidar el modo de evaluación</h3>
-<p><strong>El problema</strong>: BatchNorm puede comportarse diferente en entrenamiento vs inferencia.</p>
-<p><strong>La solución</strong>: Usa model.eval() durante inferencia y model.train() durante entrenamiento.</p>
+<h3>2. Cómo BatchNorm Afecta el Gradient Flow</h3>
+<pre><code class="language-python"># ============================================================
+# BatchNorm como estabilizador del gradient flow
+# El problema: sin normalización, la media y varianza de las activaciones
+# se pueden ir a valores extremos durante el training, causando vanishing/exploding gradients
+# ============================================================
+import matplotlib.pyplot as plt
+
+class DeepNetWithoutBN(nn.Module):
+    """Red profunda SIN BatchNorm — difícil de entrenar"""
+    def __init__(self, layers=10, dim=128):
+        super().__init__()
+        self.layers = []
+        for i in range(layers):
+            self.layers.append(nn.Linear(dim, dim))
+            self.layers.append(nn.ReLU())
+        self.net = nn.Sequential(*self.layers)
+        self.output = nn.Linear(dim, 1)
+
+    def forward(self, x):
+        for layer in self.layers:
+            x = layer(x)
+        return self.output(x)
+
+class DeepNetWithBN(nn.Module):
+    """Red profunda CON BatchNorm — entrena stablemente"""
+    def __init__(self, layers=10, dim=128):
+        super().__init__()
+        self.layers = []
+        for i in range(layers):
+            self.layers.append(nn.Linear(dim, dim))
+            self.layers.append(nn.BatchNorm1d(dim))
+            self.layers.append(nn.ReLU())
+        self.net = nn.Sequential(*self.layers)
+        self.output = nn.Linear(dim, 1)
+
+    def forward(self, x):
+        return self.output(self.net(x))
+
+# ============================================================
+# Medir magnitud de gradientes a través de las capas
+# ============================================================
+def measure_gradient_flow(model, x, y):
+    """Mide la norma de gradientes en cada capa"""
+    criterion = nn.MSELoss()
+    output = model(x)
+    loss = criterion(output, y)
+    loss.backward()
+
+    grad_norms = []
+    for name, param in model.named_parameters():
+        if 'weight' in name:
+            grad_norms.append(param.grad.norm().item())
+
+    # Limpiar gradientes
+    model.zero_grad()
+    return grad_norms
+
+torch.manual_seed(42)
+x = torch.randn(64, 128)
+y = torch.randn(64, 1)
+
+net_no_bn = DeepNetWithoutBN(layers=10, dim=128)
+net_with_bn = DeepNetWithBN(layers=10, dim=128)
+
+# Inicializar con los mismos pesos para fair comparison
+with torch.no_grad():
+    for (n1, n2) in zip(net_no_bn.named_parameters(), net_with_bn.named_parameters()):
+        if 'weight' in n1[0]:
+            n2[1].copy_(n1[1].clone())
+
+# Hacer forward pass y medir gradientes
+grad_norms_no_bn = measure_gradient_flow(net_no_bn, x, y)
+grad_norms_with_bn = measure_gradient_flow(net_with_bn, x, y)
+
+print("=== Gradient Flow: Norma de gradientes por capa ===")
+print(f"Red SIN BN: {grad_norms_no_bn[:5]}...")
+print(f"Red CON BN: {grad_norms_with_bn[:5]}...")
+
+print(f"\nMin gradient (sin BN): {min(grad_norms_no_bn):.2e}")
+print(f"Min gradient (con BN): {min(grad_norms_with_bn):.2e}")
+print(f"Max gradient (sin BN): {max(grad_norms_no_bn):.2e}")
+print(f"Max gradient (con BN): {max(grad_norms_with_bn):.2e}")
+# BatchNorm evita que los gradientes se desvanezcan o exploten
+</code></pre>
+<h3>3. El Efecto del Momentum en BatchNorm</h3>
+<pre><code class="language-python"># ============================================================
+# El hyperparámetro 'momentum' en BatchNorm: qué hace exactamente
+# ============================================================
+
+class BNExperiment(nn.Module):
+    def __init__(self, momentum):
+        super().__init__()
+        self.bn = nn.BatchNorm1d(num_features=4, momentum=momentum)
+        # Guardar history de running stats
+        self.running_mean_history = []
+        self.running_var_history = []
+
+    def track(self):
+        self.running_mean_history.append(self.bn.running_mean.clone())
+        self.running_var_history.append(self.bn.running_var.clone())
+
+torch.manual_seed(42)
+
+# Crear datos que cambian de distribución gradualmente
+# batch 1-10: media ~0, batch 11-20: media ~5, batch 21-30: media ~10
+x_data = []
+for i in range(30):
+    batch = torch.randn(32, 4) + (i // 10) * 5.0  # media cambia cada 10 batches
+    x_data.append(batch)
+
+# Experimento 1: momentum alto (0.9) — responde lento a cambios
+model_high_momentum = BNExperiment(momentum=0.9)
+model_high_momentum.train()
+
+for i, batch in enumerate(x_data):
+    out = model_high_momentum.bn(batch)
+    model_high_momentum.track()
+    if i % 10 == 9:
+        print(f"After batch {i+1}, running_mean: {model_high_momentum.bn.running_mean.tolist()}")
+
+# Experimento 2: momentum bajo (0.01) — responde rápido a cambios
+model_low_momentum = BNExperiment(momentum=0.01)
+model_low_momentum.train()
+
+for i, batch in enumerate(x_data):
+    out = model_low_momentum.bn(batch)
+    model_low_momentum.track()
+    if i % 10 == 9:
+        print(f"After batch {i+1}, running_mean: {model_low_momentum.bn.running_mean.tolist()}")
+
+print("\n=== Efecto del momentum ===")
+print(f"High momentum (0.9): running_mean al final = {model_high_momentum.bn.running_mean.tolist()}")
+print(f"Low momentum (0.01): running_mean al final = {model_low_momentum.bn.running_mean.tolist()}")
+print("\n→ Momentum bajo adapta más rápido a cambios en la distribución de datos")
+print("→ Momentum alto es más estable pero responde lento a shifts de distribución")
+</code></pre>
+<h3>4. BatchNorm vs LayerNorm</h3>
+<pre><code class="language-python"># ============================================================
+# Comparación: BatchNorm normaliza sobre el BATCH
+# LayerNorm normaliza sobre las FEATURES de cada sample
+# ============================================================
+
+N, C, L = 16, 8, 32  # batch, channels, sequence_length
+
+x = torch.randn(N, C, L)  #假装 esto es la salida de una conv1d
+
+print(f"Input shape (N, C, L): {x.shape}")
+
+# BatchNorm1d: normaliza sobre N (batch) para cada feature individual
+# La dimensión C es el número de features
+bn = nn.BatchNorm1d(num_features=C)
+out_bn = bn(x)  # x needs to be (N, C) or (N, C, L) gets squeezed to (N*C, L) then...
+
+# Para comparar en shape (N, C, L), usamos BatchNorm2d con C como canal
+bn2d = nn.BatchNorm2d(num_features=C)
+x_2d = x  # (N, C, L) treat L as H*W equivalent
+out_bn2d = bn2d(x_2d)
+print(f"BatchNorm2d output shape: {out_bn2d.shape}")
+print(f"BatchNorm2d running_mean: {bn2d.running_mean[:3].tolist()}")
+
+# LayerNorm: normaliza sobre C*L (todas las features de cada sample)
+# NO depende del batch
+ln = nn.LayerNorm(normalized_shape=[C, L])
+out_ln = ln(x)
+print(f"\nLayerNorm output shape: {out_ln.shape}")
+print(f"LayerNorm NO tiene running_mean ( LayerNorm es instance-wise)")
+
+# La diferencia clave:
+# BatchNorm: la normalización depende del BATCH (otros samples importan)
+# LayerNorm: la normalización es por SAMPLE (no depende de otros samples)
+
+# En inference con batch_size=1:
+# - BatchNorm: usa running_stats (estadísticas guardadas durante training)
+# - LayerNorm: calcula estadísticas sobre ese único sample (siempre funciona)
+
+x_single = torch.randn(1, C, L)
+print("\n=== Batch size = 1 ===")
+bn.eval()
+ln.eval()
+with torch.no_grad():
+    out_bn_single = bn(x_single)
+    out_ln_single = ln(x_single)
+
+print(f"BatchNorm (eval) con batch_size=1 usa running_stats: mean={bn(x_single).mean():.4f}")
+print(f"LayerNorm con batch_size=1 calcula sobre el sample: mean={out_ln_single.mean():.4f}")
+</code></pre>
+<h2>⚠️ Los 3 Errores Más Comunes</h2>
+<h3>Error 1: No Setear model.train() / model.eval() Correctamente</h3>
+<p><strong>El problema completo:</strong> Este es el bug más frecuente con BatchNorm. Cuando tu modelo está en <code>train()</code> mode, BatchNorm usa las estadísticas del batch actual (media y varianza de ese mini-batch). Cuando está en <code>eval()</code> mode, usa los running statistics promediados durante todo el entrenamiento. Si hacés inference en <code>train()</code> mode, cada batch de datos de test va a producir outputs con estadísticas diferentes — porque cada batch tiene su propia media/varianza. Esto hace que las predicciones sean inconsistentes para el mismo input.</p>
+<p><strong>El código problemático:</strong></p>
+<pre><code class="language-python"># ❌ MAL: inference en train mode
+model = MyModelWithBatchNorm()
+model.train()  # ← O peor, ni siquiera se llama train/eval
+
+for sample in test_loader:
+    output = model(sample)  # ← Usa estadísticas del batch de test
+    # Cada batch de test tiene su propia media/varianza
+    # → Predicciones no determinísticas para el mismo input
+    # → Accuracy degradado
+</code></pre>
+<p><strong>La solución correcta:</strong></p>
+<pre><code class="language-python"># ✅ BIEN: inference en eval mode
+model = MyModelWithBatchNorm()
+model.eval()  # ← Usa running statistics, no batch statistics
+
+with torch.no_grad():  # ← No necesitamos gradientes para inference
+    for sample in test_loader:
+        output = model(sample)  # ← Determinístico (dados los mismos pesos)
+</code></pre>
+<p><strong>⚠️ Error todavía más sutil:</strong> incluso cuando hacés <code>model.eval()</code>, necesitás que tu modelo haya visto suficientes datos durante training para que los running statistics sean buenos. Si entrenaste con un batch size muy pequeño, los running stats van a ser ruido.</p>
+<h3>Error 2: Batch Size Demasiado Pequeño (1-2)</h3>
+<p><strong>El problema completo:</strong> BatchNorm necesita suficientes samples en cada batch para calcular estadísticas decentes. Si tu batch size es 1, la media y varianza del batch son simplemente el valor de ese único sample — no hay "batch" que valide. Si tu batch size es 2, la media de dos valores es extremadamente sensible a outliers. Los running statistics que se guardan durante training con batch size 1 o 2 son esencialmente ruido, y durante inference la normalización va a ser errática.</p>
+<p><strong>El código problemático:</strong></p>
+<pre><code class="language-python"># ❌ MAL: batch_size=1 durante training
+train_loader = DataLoader(dataset, batch_size=1, shuffle=True)
+# Cada "batch" tiene 1 solo sample
+# → Las estadísticas del batch son inútiles
+# → Los running stats se contaminan con ruido
+# → Durante inference, la normalización es esencialmente aleatoria
+</code></pre>
+<p><strong>La solución:</strong></p>
+<pre><code class="language-python"># ✅ BIEN: batch_size >= 16 para BatchNorm
+# Si necesitás batch_size pequeño, considerá:
+# 1. Gradient accumulation (acumular batches antes de update)
+train_loader = DataLoader(dataset, batch_size=32, shuffle=True)
+# O si memory es un problema:
+# 2. Usar LayerNorm o GroupNorm que no dependen del batch size
+</code></pre>
+<p><strong>Guía práctica de batch sizes mínimos:</strong></p>
+<ul>
+<li>Batch size 1: NO uses BatchNorm (usá LayerNorm o InstanceNorm)</li>
+<li>Batch size 2-8: Inestable, los running stats van a ser ruidosos</li>
+<li>Batch size 16-32: Mínimo recomendable para BatchNorm</li>
+<li>Batch size 64+: Común en entrenamiento de imágenes</li>
+</ul>
+<h3>Error 3: Usar BatchNorm en Secuencias Muy Cortas Donde Batch Statistics Son Inestables</h3>
+<p><strong>El problema completo:</strong> En tareas de NLP o series temporales, a veces tenés secuencias muy cortas (length = 1-4 tokens) o necesitas hacer inference con batch size pequeño. En estos casos, la suposición de que la media/varianza del batch representa bien la distribución verdadera falla. BatchNorm asume que los samples en un batch son i.i.d. de la misma distribución — con secuencias cortas esto casi nunca es cierto.</p>
+<p>Además, cuando hacés inference token por token (autoregressive generation), cada "batch" tiene un solo token, y BatchNorm no tiene forma de normalizar correctamente — está viendo un solo valor por feature, lo cual es equivalente a no normalizar en absoluto.</p>
+<p><strong>El código problemático:</strong></p>
+<pre><code class="language-python"># ❌ MAL: usar BatchNorm en modelos de lenguaje autoregresivos
+class BadLM(nn.Module):
+    def __init__(self, vocab_size, embed_dim, hidden_dim):
+        super().__init__()
+        self.embedding = nn.Embedding(vocab_size, embed_dim)
+        self.lstm = nn.LSTM(embed_dim, hidden_dim, batch_first=True)
+        # BatchNorm después de LSTM: problemático porque
+        # 1) secuencias pueden ser cortas
+        # 2) inference token por token = batch_size 1
+        self.bn = nn.BatchNorm1d(hidden_dim)
+        self.fc = nn.Linear(hidden_dim, vocab_size)
+
+    def forward(self, x):
+        x = self.embedding(x)
+        x, _ = self.lstm(x)
+        # x shape: (B, seq_len, hidden_dim)
+        # BatchNorm1d espera (N, C) o (N, C, L)
+        # Si seq_len es corta, las estadísticas del batch son ruido
+        x = self.bn(x)  # ← Inestable
+        return self.fc(x)
+
+# Durante generación autoregresiva:
+# input_ids = [token1] → batch_size=1, seq_len=1
+# → BatchNorm recibe un solo token → normalización sin sentido
+</code></pre>
+<p><strong>La solución correcta:</strong></p>
+<pre><code class="language-python"># ✅ BIEN: usar LayerNorm para secuencias o modelos autoregresivos
+class GoodLM(nn.Module):
+    def __init__(self, vocab_size, embed_dim, hidden_dim):
+        super().__init__()
+        self.embedding = nn.Embedding(vocab_size, embed_dim)
+        self.lstm = nn.LSTM(embed_dim, hidden_dim, batch_first=True)
+        # LayerNorm: normaliza sobre las features de cada sample
+        # NO depende del batch size ni de otros samples
+        self.ln = nn.LayerNorm(hidden_dim)
+        self.fc = nn.Linear(hidden_dim, vocab_size)
+
+    def forward(self, x):
+        x = self.embedding(x)
+        x, _ = self.lstm(x)
+        # LayerNorm normaliza sobre hidden_dim para CADA sample individualmente
+        x = self.ln(x)  # ← Funciona con batch_size=1, seq_len=1
+        return self.fc(x)
+
+# LayerNorm es la eleccion standard para:
+# - Transformers (BERT, GPT)
+# - Modelos autoregresivos
+# - Cualquier caso donde batch_size pueda ser 1
+</code></pre>
 <hr>
 <h2>💡 Tips Para Producción</h2>
 <ul>
-<li>Monitorea las métricas relevantes durante el entrenamiento</li>
-<li>Usa BatchNorm de acuerdo a la arquitectura de tu red</li>
-<li>No todas las técnicas sirven para todos los problemas</li>
+<li><strong>Siempre llamá <code>model.eval()</code> antes de inference</strong>: No solo para BatchNorm — también para Dropout y cualquier otra capa que cambie comportamiento entre train/eval.</li>
+<li><strong>Si entrenaste con batch_size pequeño, los running stats pueden ser malos</strong>: Considerá hacer un forward pass de tu dataset de training completo en eval mode para "calentar" los running stats con mejores estimaciones.</li>
+<li><strong>BatchNorm y padding</strong>: Si usas padding en tus datos, asegurate de que BatchNorm no esté incluyendo el padding en el cálculo de estadísticas. En NLP esto es un problema común con token padding.</li>
+<li><strong>Frozen BatchNorm</strong>: Cuando hacés transfer learning de un modelo pre-entrenado, a veces es mejor congelar los parámetros de BatchNorm y solo usar los running stats originales.</li>
+<li><strong>Evalúalo periódicamente en modo train</strong>: Si ves que tu loss durante training diverge cuando cambias de eval a train mode, los running stats probablemente se contaminaron.</li>
 </ul>
 <hr>
-<p><em>¡Eso es todo por hoy! Nos vemos mañana en el Día 97.</em></p>
+<p><em>Mañana es el Día 97 y la cosa se pone interesante. Vamos a hablar de algo que va a cambiar cómo pensás la regularización. Spoiler: no es solo dropout y batchnorm. ¡Nos vemos, parcero!</em></p>
 
   </article>
 
