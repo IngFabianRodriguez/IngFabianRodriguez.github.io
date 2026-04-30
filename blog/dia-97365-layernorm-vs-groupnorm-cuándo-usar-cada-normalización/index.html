@@ -118,60 +118,291 @@ nav {
   </header>
 
   <article class="article-body">
-    <h1>LayerNorm vs GroupNorm - Cuándo Usar Cada Normalización</h1>
-<p>Hágale pues, parcero. Llegamos al Día 97 y hoy toca hablar de layernorm vs groupnorm. Después de más de 10 años rompiendo redes neuronales en producción, te digo que esto es más jugoso de lo que parece. Dejá el café, acomodate, porque esto es más jugoso de lo que parece.</p>
-<hr>
-<h2>🎯 ¿Qué Es LayerNorm vs GroupNorm?</h2>
-<p>En este artículo exploramos LayerNorm vs GroupNorm en profundidad, con ejemplos prácticos y código.</p>
-<h3>Conceptos clave:</h3>
+<h2>🎯 Intro: ¿Por Qué Importa La Normalización?</h2>
+<p>Hágale pues, parcero. Vamos al Día 97 y hoy desmenuzamos algo que si no dominas, te va a dar problemas cuando trabajes con <strong>Transformers y RNNs</strong>: la normalización sobre features por sample. Mientras BatchNorm normaliza sobre el batch (la dimension N), aquí normalizamos sobre las features (la dimensión D) o grupos de ellas.</p>
+<p>¿Y eso por qué importa? Porque en secuencias largas — texto, audio, series de tiempo — el batch size puede ser 1 (online inference) o variar drasticamente. Si usas BatchNorm con batch=1, los running statistics se vuelven ruido. Por eso arquitecturas como el Transformer original usan <strong>LayerNorm</strong>: no depende del batch, solo del sample individual.</p>
+<p>Eso sí, GroupNorm e InstanceNorm también tienen su merito dependiendo del contexto. Vamos a ver cuándo usar cada una sin andar adivinando.</p>
+
+<h2>📐 La Matemática: Normalización Sobre Features</h2>
+<p>La fórmula general para cualquier normalización es:</p>
+<p>$$y = \frac{x - \mu}{\sqrt{\sigma^2 + \epsilon}} \cdot \gamma + \beta$$</p>
+<p>Donde $\mu$ y $\sigma$ se calculan diferente según el tipo:</p>
 <ul>
-<li><strong>Definición</strong>: LayerNorm vs GroupNorm es fundamental en deep learning</li>
-<li><strong>Aplicación</strong>: Se usa en arquitecturas modernas de redes neuronales</li>
-<li><strong>Por qué importa</strong>: Sin esto, muchos modelos no podrían entrenar eficientemente</li>
+<li><strong>BatchNorm</strong>: $\mu = \frac{1}{N \cdot H \cdot W} \sum x$, $\sigma = \sqrt{\frac{1}{N \cdot H \cdot W} \sum (x - \mu)^2}$ — normaliza sobre todo el batch y las espacial dims</li>
+<li><strong>LayerNorm</strong>: $\mu = \frac{1}{D} \sum_{d=1}^{D} x_d$, $\sigma = \sqrt{\frac{1}{D} \sum_{d=1}^{D} (x_d - \mu)^2}$ — normaliza sobre todas las features de UN solo sample</li>
+<li><strong>GroupNorm</strong>: Divide las D features en G grupos de D/G features cada uno, normaliza dentro de cada grupo</li>
+<li><strong>InstanceNorm</strong>: G = D (cada feature es su propio grupo) — normaliza cada canal independientemente</li>
 </ul>
-<hr>
-<h2>📐 La Matemática Detrás De LayerNorm vs GroupNorm</h2>
-<p>La matemática que hace posible la magia de LayerNorm vs GroupNorm:</p>
+<p>En PyTorch:</p>
 <pre><code class="language-python">import torch
 import torch.nn as nn
 
-# Ejemplo de LayerNorm vs GroupNorm
-x = torch.randn(32, 64)
-print(f'Input: {x.shape}')
+# Input: (N, D) para simplicity — un sentence embedding
+x = torch.randn(8, 512)  # 8 samples, 512 features cada uno
+
+# LayerNorm: normaliza sobre D (todas las features del sample)
+ln = nn.LayerNorm(512)
+out_ln = ln(x)
+print(f"LayerNorm:  mean={out_ln.mean(dim=-1).round().abs().max().item()}")  # ~0
+
+# GroupNorm: G=8 grupos de 64 features cada uno
+gn = nn.GroupNorm(num_groups=8, num_channels=512)
+out_gn = gn(x.unsqueeze(-1).unsqueeze(-1))  # GN espera (N, C, H, W)
+print(f"GroupNorm:  mean={out_gn.mean(dim=-1).round().abs().max().item()}")  # ~0
+
+# InstanceNorm: G=512 (cada canal es su propio grupo)
+inn = nn.InstanceNorm1d(512)
+out_inn = inn(x.unsqueeze(1))  # IN1d espera (N, C, L)
+print(f"InstanceNorm: mean={out_inn.mean(dim=-1).round().abs().max().item()}")  # ~0
+
+# BatchNorm: normaliza sobre el batch — DEPENDE del batch entero
+bn = nn.BatchNorm1d(512)
+out_bn = bn(x)
+print(f"BatchNorm: mean={out_bn.mean(dim=0).round().abs().max().item()}")  # ~0 si batch es grande
 </code></pre>
-<hr>
-<h2>🚀 Implementación En PyTorch</h2>
-<pre><code class="language-python"># Implementación de LayerNorm vs GroupNorm
-class LayerNormvsGroupNormBlock(nn.Module):
+
+<h2>🚀 Implementación Completa: Comparando Normalizations en un Transformer</h2>
+<pre><code class="language-python">import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import math
+
+class NormalizationComparison(nn.Module):
+    """
+    Compara BatchNorm vs LayerNorm vs GroupNorm en un transformer encoder simplificado.
+    Demuestra por qué BatchNorm falla en RNNs/Transformers con sequences variables.
+    """
+    def __init__(self, d_model=256, num_heads=8, num_groups=32):
+        super().__init__()
+        self.d_model = d_model
+
+        # Capa de atencion multi-cabeza
+        self.attn = nn.MultiheadAttention(d_model, num_heads, batch_first=True)
+
+        # Tres FFNs identicos salvo la normalizacion
+        self.ffn_ln  = self._make_ffn(d_model, use_ln=True,  use_bn=False, num_groups=0)
+        self.ffn_gn  = self._make_ffn(d_model, use_ln=False, use_bn=False, num_groups=num_groups)
+        self.ffn_bn  = self._make_ffn(d_model, use_ln=False, use_bn=True,  num_groups=0)
+
+        # Proyecciones para comparar outputs
+        self.proj_out = nn.Linear(d_model, 1)
+
+    def _make_ffn(self, d_model, use_ln, use_bn, num_groups):
+        """FFN con el tipo de normalizacion especificado."""
+        return nn.Sequential(
+            nn.Linear(d_model, d_model * 4),
+            nn.GELU(),
+            # Normalizacion segun el tipo
+            nn.LayerNorm(d_model) if use_ln else
+            nn.GroupNorm(num_groups, d_model) if use_bn else
+            nn.Identity(),
+            nn.Linear(d_model * 4, d_model),
+        )
+
+    def forward(self, x, padding_mask=None):
+        """
+        x: (batch, seq_len, d_model)
+        padding_mask: (batch, seq_len) — True donde hay padding
+        """
+        # Pre-LN transformer: LayerNorm ANTES de la atencion (más estable)
+        x_ln = x + self.attn(nn.LayerNorm(self.d_model)(x), x, x, key_padding_mask=padding_mask)[0]
+        x_ln = x_ln + self.ffn_ln(nn.LayerNorm(self.d_model)(x_ln))
+
+        # Pre-LN con GroupNorm (espera (N, C, H, W))
+        x_gn = x.clone()
+        x_gn = x_gn + self.attn(nn.LayerNorm(self.d_model)(x_gn), x_gn, x_gn, key_padding_mask=padding_mask)[0]
+        # GroupNorm necesita (N, C, H*W) si es 1D
+        x_gn_reshaped = x_gn.view(x_gn.size(0), x_gn.size(1), self.d_model, 1)
+        x_gn_reshaped = x_gn_reshaped.permute(0, 2, 1, 3)  # (N, D, seq, 1)
+        x_gn_norm = nn.GroupNorm(num_groups, self.d_model)(x_gn_reshaped).permute(0, 2, 1, 3).squeeze(-1)
+        x_gn = x_gn + self.ffn_gn(x_gn_norm)
+
+        # Pre-LN con BatchNorm (PROBLEMA: necesita running stats)
+        x_bn = x.clone()
+        bn1d = nn.BatchNorm1d(self.d_model)
+        x_bn = x_bn + self.attn(nn.LayerNorm(self.d_model)(x_bn), x_bn, x_bn, key_padding_mask=padding_mask)[0]
+        # BatchNorm1d espera (N, C) — aplica sobre seq_len también!
+        x_bn_flat = x_bn.view(-1, self.d_model)  # (N*seq, D)
+        x_bn_norm = bn1d(x_bn_flat).view(x_bn.size(0), x_bn.size(1), self.d_model)
+        x_bn = x_bn + self.ffn_bn(x_bn_norm)
+
+        return {
+            'layer_norm': x_ln,
+            'group_norm': x_gn,
+            'batch_norm': x_bn,
+        }
+
+def demo_rnn_problem():
+    """
+    Demuestra por qué BatchNorm falla en RNNs cuando seq_len varia.
+    """
+    print("=" * 60)
+    print("PROBLEMA DE BatchNorm EN RNNs/Sequences Variables")
+    print("=" * 60)
+
+    # Simulamos sequences de diferente longitud (como en NLP real)
+    batch_var_seq = [
+        torch.randn(1, 10, 128),   # seq_len=10
+        torch.randn(1, 20, 128),   # seq_len=20
+        torch.randn(1, 15, 128),   # seq_len=15
+    ]
+
+    bn = nn.BatchNorm1d(128)
+
+    print("\n--- BatchNorm con sequences de longitud variable ---")
+    for i, seq in enumerate(batch_var_seq):
+        seq_flat = seq.view(-1, 128)  # (seq, 128)
+        out = bn(seq_flat)
+        print(f"Sample {i}: seq_len={seq.size(1)}, running_mean[0]={bn.running_mean[0].item():.4f}, "
+              f"var[0]={bn.running_var[0].item():.4f}")
+
+    print("\n--- LayerNorm NO tiene este problema ---")
+    ln = nn.LayerNorm(128)
+    for i, seq in enumerate(batch_var_seq):
+        out = ln(seq)  # Cada sample se normaliza independientemente
+        print(f"Sample {i}: seq_len={seq.size(1)}, output mean={out.mean().item():.4f}")
+
+    print("\n--- GroupNorm G=1 es IGUAL a LayerNorm (pero no magic bullet) ---")
+    gn_g1 = nn.GroupNorm(num_groups=1, num_channels=128)
+    ln_check = nn.LayerNorm(128)
+    seq_test = torch.randn(4, 16, 128)
+
+    gn_out = gn_g1(seq_test.permute(0, 2, 1)).permute(0, 2, 1)  # necesita (N, C, L)
+    ln_out = ln_check(seq_test)
+
+    print(f"GroupNorm(G=1) vs LayerNorm max diff: {(gn_out - ln_out).abs().max().item():.6f}")
+    print("(Son numéricamente equivalentes, pero LayerNorm es más directa y eficiente)")
+
+
+# ─── EJECUTAR DEMO ───────────────────────────────────────────────────────────
+if __name__ == "__main__":
+    # Demo 1: Normalization comparison en Transformer
+    print("=" * 60)
+    print("COMPARACIÓN: LayerNorm vs GroupNorm vs BatchNorm en Transformer")
+    print("=" * 60)
+
+    model = NormalizationComparison(d_model=256, num_heads=8, num_groups=32)
+
+    # Batch con sequences de diferente longitud (simula NLP real)
+    x = torch.randn(4, 32, 256)  # (batch=4, seq=32, d_model=256)
+    padding_mask = torch.zeros(4, 32, dtype=torch.bool)
+    padding_mask[3, 20:] = True  # sample 4 tiene padding en posiciones 20+
+
+    outputs = model(x, padding_mask)
+
+    print("\nOutputs shapes:")
+    for name, out in outputs.items():
+        print(f"  {name}: {out.shape}")
+
+    # Verificar que todos tienen mean~0 y var~1 por sample
+    print("\nStats por sample (deberían ser ~0 mean, ~1 var para todos):")
+    for name, out in outputs.items():
+        sample_mean = out.mean(dim=-1).abs().mean().item()
+        sample_var  = (out.std(dim=-1) - 1).abs().mean().item()
+        print(f"  {name}: mean_err={sample_mean:.4f}, var_err={sample_var:.4f}")
+
+    # Demo 2: RNN problem
+    demo_rnn_problem()
+</code></pre>
+
+<h2>⚠️ Tres Errores Comunes (Y Sus Fx)</h2>
+<h3>❌ Error 1: Usar BatchNorm en RNNs Donde Sequence Length Varía</h3>
+<p><strong>El problema</strong>: BatchNorm1d aplica batch statistics sobre TODO el batch flattenado — incluyendo el eje de secuencia. Si tienes sequences de longitud variable (la norma en NLP), el flatten crea fantasmas de posiciones de padding o corta truncando. Peor aún: los <code>running_mean</code> y <code>running_var</code> se calculan sobre secuencias de LONGITUDES DIFERENTES, lo que corrompe las estadísticas.</p>
+<p><strong>El fix</strong>: Usa <code>nn.LayerNorm</code> que solo normaliza sobre las features del sample actual, sin dependence del batch o longitud de secuencia.</p>
+<pre><code class="language-python"># MAL: BatchNorm en LSTM con sequences variables
+class BadLSTMWithBatchNorm(nn.Module):
     def __init__(self):
         super().__init__()
-        # Capas del bloque
-    
-    def forward(self, x):
-        return x
+        self.lstm = nn.LSTM(input_size=256, hidden_size=512, batch_first=True)
+        self.bn = nn.BatchNorm1d(512)  # ❌ PROBLEMA: flatten con seq_len != cte
 
-# Uso
-model = LayerNormvsGroupNormBlock()
-output = model(x)
-print(f"Output shape: {output.shape}")
+    def forward(self, x):
+        out, _ = self.lstm(x)
+        # Flatten: (batch, seq, hidden) -> (batch*seq, hidden)
+        # Si seq_len varia, los stats se mezclan entre longitudades
+        out_flat = out.reshape(-1, 512)
+        return self.bn(out_flat).reshape(out.shape)
+
+
+# BIEN: LayerNorm en LSTM
+class GoodLSTMWithLayerNorm(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.lstm = nn.LSTM(input_size=256, hidden_size=512, batch_first=True)
+        self.ln = nn.LayerNorm(512)  # ✅ Normaliza solo features, ignore seq_len
+
+    def forward(self, x):
+        out, _ = self.lstm(x)
+        return self.ln(out)  # Cada time step se normaliza independientemente
 </code></pre>
-<hr>
-<h2>⚠️ Errores Comunes Y Cómo Evitarlos</h2>
-<h3>Error 1: No entender el orden de operaciones</h3>
-<p><strong>El problema</strong>: El orden en que se aplican las operaciones con LayerNorm vs GroupNorm afecta el resultado.</p>
-<p><strong>La solución</strong>: Siempre verifica la dimensión y el orden de las operaciones.</p>
-<h3>Error 2: Olvidar el modo de evaluación</h3>
-<p><strong>El problema</strong>: LayerNorm vs GroupNorm puede comportarse diferente en entrenamiento vs inferencia.</p>
-<p><strong>La solución</strong>: Usa model.eval() durante inferencia y model.train() durante entrenamiento.</p>
-<hr>
-<h2>💡 Tips Para Producción</h2>
+
+<h3>❌ Error 2: Creer Que group=1 en GroupNorm Es Un "Magic Bullet"</h3>
+<p><strong>El problema</strong>: Sí, GroupNorm con G=1 es numéricamente equivalente a LayerNorm. Pero no por eso GroupNorm siempre es mejor o "más general". En un Transformer, LayerNorm es más eficiente y directa porque no necesita reshaping a (N,C,H,W). GroupNorm brilla cuando tienes batch pequeño (batch=1) y necesitas normalizar features correlacionadas en grupos. Pero si pones G=1 esperando que sea "mejor LayerNorm", estás añadiendo overhead innecesario.</p>
+<p><strong>El fix</strong>: Usa LayerNorm para arquitecturas tipo Transformer (más directo, menos overhead). Usa GroupNorm cuando trabajes con imágenes/videos donde G>1 captura correlaciones locales de grupo, o cuando tienes batch muy pequeño y quieres aprovechar estadísticas de grupo.</p>
+<pre><code class="language-python"># group=1 NO es magic bullet — solo usa LayerNorm directo
+gn_g1 = nn.GroupNorm(num_groups=1, num_channels=512)
+ln     = nn.LayerNorm(512)
+
+x = torch.randn(8, 32, 512)
+
+# GroupNorm necesita (N, C, H, W) o reshaping para 1D
+gn_out = gn_g1(x.permute(0, 2, 1)).permute(0, 2, 1)
+ln_out = ln(x)
+
+print(f"Diferencia: {(gn_out - ln_out).abs().max().item():.8f}")  # ~0
+print("Son iguales. Pero LayerNorm es más rápida y clara.")
+
+# GroupNorm con G>1: captura estructura de grupo (útil en imágenes)
+gn_g32 = nn.GroupNorm(num_groups=32, num_channels=512)
+# Cada grupo tiene 512/32 = 16 canales — captura correlaciones locales de grupo
+</code></pre>
+
+<h3>❌ Error 3: No Entender Que LayerNorm No Tiene Running Stats</h3>
+<p><strong>El problema</strong>: BatchNorm guarda <code>running_mean</code> y <code>running_var</code> durante el training para usar en inference sin recalcular stats. LayerNorm NO tiene esto: durante inference usa las stats DEL PROPIO SAMPLE actual. Esto es correcto para inference online (batch=1) pero si entrenaste con BatchNorm y cambias a LayerNorm, las statistics cambian fundamentalmente. Si haces transfer learning y congelas capas, asegurate de que la normalización sea consistente.</p>
+<p><strong>El fix</strong>: Si necesitas inference con batch grande y no quieres recalcular stats por sample, usa <code>nn.SyncBatchNorm</code> (multi-GPU) o considera RMSNorm (más barato, sin bias). Para inference con batch=1, LayerNorm es perfecta porque no necesita buffers.</p>
+<pre><code class="language-python"># LayerNorm: TODO se calcula por-sample, no hay running stats
+ln = nn.LayerNorm(512)
+
+# Training
+x_train = torch.randn(32, 20, 512)
+out_train = ln(x_train)  # Stats se calculan dentro del forward
+
+# Inference con batch=1 (online)
+x_infer = torch.randn(1, 15, 512)
+out_infer = ln(x_infer)  # Stats se calculan sobre ESTE sample, no hay buffer
+
+print(f"LayerNorm training output stats: mean={out_train.mean().item():.4f}, std={out_train.std().item():.4f}")
+print(f"LayerNorm inference output stats: mean={out_infer.mean().item():.4f}, std={out_infer.std().item():.4f}")
+
+# BatchNorm: tiene running stats que se actualizan en train
+bn = nn.BatchNorm1d(512)
+print(f"\nBatchNorm buffers: running_mean[0]={bn.running_mean[0].item():.4f}, running_var[0]={bn.running_var[0].item():.4f}")
+
+# RMSNorm: solo calcula RMS, no mean — más eficiente
+class RMSNorm(nn.Module):
+    def __init__(self, d_model, eps=1e-6):
+        super().__init__()
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(d_model))
+
+    def forward(self, x):
+        # x: (batch, seq, d_model)
+        rms = x.pow(2).mean(dim=-1, keepdim=True).add(self.eps).rsqrt() * self.weight
+        return x * rms
+
+print("\nRMSNorm es ~40% más rápido que LayerNorm y funciona igual de bien en LLMs.")
+</code></pre>
+
+<h2>💡 Resumen y Guía Rápida</h2>
+<p>Aquí va la guía que vas a necesitar cuando estés en producción:</p>
 <ul>
-<li>Monitorea las métricas relevantes durante el entrenamiento</li>
-<li>Usa LayerNorm vs GroupNorm de acuerdo a la arquitectura de tu red</li>
-<li>No todas las técnicas sirven para todos los problemas</li>
+<li><strong>Usa LayerNorm</strong>: Transformers, LLMs, arquitecturas seq2seq, siempre que quieras normalización por-sample sin dependence del batch. Es el default para cualquier arquitectura moderna basada en atención.</li>
+<li><strong>Usa GroupNorm</strong>: Cuando tienes batch pequeño (batch &lt; 16), quieres aprovechar correlación de grupo, o estás en CV (img/video) donde G>1 tiene sentido. En imágenes, grupos de 8-32 funcionan bien.</li>
+<li><strong>Usa InstanceNorm</strong>: Style transfer, generadores de imagen. NO para clasificación o detección — mata la información de contraste que necesita el classifier.</li>
+<li><strong>NUNCA uses BatchNorm</strong>: En RNNs, en sequences variables, o cuando haces inference con batch=1. Solo tiene sentido en CNNs para visión con batch grande y ثابت.</li>
 </ul>
-<hr>
-<p><em>¡Eso es todo por hoy! Nos vemos mañana en el Día 98.</em></p>
+<p>Y ahí lo tienes, parcero. La normalización no es magia — es matemática y sentido común. Ahora ya sabes cuándo usar cada una sin andar adivinando.</p>
+<p><em>Nos vemos mañana en el Día 98.</em></p>
 
   </article>
 
