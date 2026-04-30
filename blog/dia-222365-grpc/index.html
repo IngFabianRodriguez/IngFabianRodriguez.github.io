@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="Evaluation Metrics - Midiendo La Calidad De Modelos | #365DaysOfAI por Fabian Rodriguez">
-  <title>Evaluation Metrics - Midiendo La Calidad De Modelos | #365DaysOfAI</title>
+  <meta name="description" content="Federated Learning — cómo entrenar modelos sin centralizar datos, privacy-preserving ML, differential privacy, FedAvg algorithm | #365DaysOfAI por Fabian Rodriguez">
+  <title>Federated Learning — El Aprendizaje Que No Cierra La Ventana Pero Protege Los Datos | #365DaysOfAI</title>
   
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
@@ -110,71 +110,458 @@ nav {
 
   <header class="article-hero">
     <div class="day-badge">Dia 222 / 365 &nbsp;·&nbsp; #365DaysOfAI</div>
-    <h1 class="article-title">Evaluation Metrics - Midiendo La Calidad De Modelos</h1>
+    <h1 class="article-title">Federated Learning — El Aprendizaje Que No Cierra La Ventana Pero Protege Los Datos</h1>
     <div class="article-meta">
       <time class="article-date">10 de agosto de 2026</time>
-      <div class="tags"><span class="tag">evaluation</span><span class="tag">metrics</span><span class="tag">accuracy</span><span class="tag">benchmark</span></div>
+      <div class="tags"><span class="tag">federated-learning</span><span class="tag">privacy</span><span class="tag">distributed-ml</span><span class="tag">differential-privacy</span></div>
     </div>
   </header>
 
   <article class="article-body">
-    <h1>Evaluation Metrics - Midiendo La Calidad De Modelos</h1>
+    <h1>Federated Learning — El Aprendizaje Que No Cierra La Ventana Pero Protege Los Datos</h1>
 
-<p>Hagale pues, parcero. Hoy es el Dia 222 y hablamos de evaluation metrics, como medir objetivamente la calidad de tus modelos. Dejala el cafe.</p>
+<p>Hagale pues, parcero. Aquí en Colombia, cuando un banco en Bogotá tiene datos de sus clientes y una fintech en Medellín tiene otros datos, la pregunta es: ¿cómo entrenar un modelo jointly sin que nadie tenga que compartir su información? Eso es exactamente lo que resuelve Federated Learning. Hoy lo desarmamos completo.</p>
+
 <hr>
-<h2>🎯 Por Que Medir Importa</h2>
-<p>Evaluar modelos no es opcional. Sin metricas objetivas, no puedes comparar cambios, detectar regresiones, o saber si un modelo realmente mejoro. Cada tipo de tarea tiene metricas apropiadas.</p>
-<h3>Metricias para clasificacion:</h3>
+<h2>🏥 El Problema Que Resuelve Federated Learning</h2>
+
+<p>En el mundo real, los datos están esparcidos:</p>
 <ul>
-<li><strong>Accuracy</strong>: Proporcion de predicciones correctas</li>
-<li><strong>Precision</strong>: De los predichos positivos, cuales son ciertos</li>
-<li><strong>Recall</strong>: De los reales positivos, cuales encontramos</li>
-<li><strong>F1</strong>: Media armonica de precision y recall</li>
+<li>Hospitales tienen registros médicos que no pueden compartir por HIPAA</li>
+<li>Bancos tienen transaction history que competencias no quieren exponer</li>
+<li>Telcos tienen datos de ubicación que reguladores vigilan</li>
+<li>Empresas tienen datos propietarios que son su ventaja competitiva</li>
 </ul>
+
+<p>Federated Learning dice: "No mandes los datos. Manda los gradientes." En lugar de centralizar datos, distribuyes el entrenamiento.</p>
+
 <hr>
-<h2>📐 Calculo De Metricas</h2>
-<pre><code>from sklearn.metrics import accuracy_score, precision_recall_fscore_support
+<h2>🔧 FedAvg — El Algoritmo Central</h2>
+
+<p>FedAvg (Federated Averaging) es el algoritmo foundational. La idea es simple:</p>
+
+<pre><code>"""
+Federated Averaging (FedAvg)
+1. Server envía modelo global a clients
+2. Cada client entrena localmente con sus datos
+3. Clients envían gradientes/actualizaciones al server
+4. Server promedia las actualizaciones
+5. Repetir hasta convergencia
+"""
+
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader, TensorDataset
+
+class FederatedServer:
+    def __init__(self, model, clients):
+        self.global_model = model
+        self.clients = clients
+        self.round = 0
+    
+    def broadcast_model(self):
+        """Envía modelo global a todos los clients"""
+        for client in self.clients:
+            client.set_model(self.global_model.state_dict())
+    
+    def aggregate_updates(self, updates, weights=None):
+        """
+        Promedia las actualizaciones de los clients
+        weights = número de samples por client (importante para non-IID!)
+        """
+        if weights is None:
+            weights = [1.0 / len(updates)] * len(updates)
+        
+        total_weight = sum(weights)
+        weighted_updates = []
+        
+        for update, weight in zip(updates, weights):
+            weighted_updates.append({k: v * (weight / total_weight) 
+                                   for k, v in update.items()})
+        
+        # Sumar los weighted updates
+        averaged_update = {}
+        for key in weighted_updates[0].keys():
+            averaged_update[key] = sum(u[key] for u in weighted_updates)
+        
+        return averaged_update
+    
+    def apply_update(self, update):
+        """Aplica la actualización al modelo global"""
+        with torch.no_grad():
+            for key, value in update.items():
+                self.global_model.state_dict()[key] += value
+    
+    def federated_round(self, weights=None):
+        """Una ronda completa de FedAvg"""
+        self.broadcast_model()
+        
+        updates = []
+        for client in self.clients:
+            update = client.train_local()
+            updates.append(update)
+        
+        averaged_update = self.aggregate_updates(updates, weights)
+        self.apply_update(averaged_update)
+        
+        self.round += 1
+        return self.global_model.state_dict()
+
+
+class FederatedClient:
+    def __init__(self, model, dataset, device='cpu'):
+        self.model = model
+        self.dataset = dataset
+        self.device = device
+        self.local_epochs = 2
+        self.batch_size = 32
+        self.lr = 0.01
+    
+    def set_model(self, state_dict):
+        self.model.load_state_dict(state_dict)
+    
+    def train_local(self):
+        """Entrena localmente y retorna la actualización (delta de pesos)"""
+        self.model.train()
+        optimizer = optim.SGD(self.model.parameters(), lr=self.lr)
+        
+        dataloader = DataLoader(self.dataset, batch_size=self.batch_size, shuffle=True)
+        
+        # Guardar pesos antes del entrenamiento
+        before_state = {k: v.clone() for k, v in self.model.state_dict().items()}
+        
+        for epoch in range(self.local_epochs):
+            for X_batch, y_batch in dataloader:
+                X_batch, y_batch = X_batch.to(self.device), y_batch.to(self.device)
+                
+                optimizer.zero_grad()
+                output = self.model(X_batch)
+                loss = nn.CrossEntropyLoss()(output, y_batch)
+                loss.backward()
+                optimizer.step()
+        
+        # Calcular delta (actualización)
+        after_state = self.model.state_dict()
+        delta = {k: after_state[k] - before_state[k] for k in before_state.keys()}
+        
+        return delta
+</code></pre>
+
+<hr>
+<h2>📊 Non-IID Data — El Desafío Real</h2>
+
+<p>El problema más grande en Federated Learning es que los datos de cada client raramente son IID (independent and identically distributed). Esto causa que los modelos diverjan.</p>
+
+<h3>¿Qué es Non-IID?</h3>
+
+<pre><code># Non-IID scenarios comunes:
+
+# 1. Feature distribution shift (clients tienen diferentes features)
+# Client A: datos de adultos-jóvenes, solo transacciones pequeñas
+# Client B: datos de adultos-mayores, transacciones grandes
+
+# 2. Label distribution shift (clients tienen diferentes clases)
+# Hospital A: mayoría pacientes con diabetes
+# Hospital B: mayoría pacientes con hipertensión
+
+# 3. Quantity skew (clients tienen diferentes cantidades de datos)
+# Banco grande: 1M samples
+# Banco pequeño: 1K samples
+
+# 4. Same labels pero diferentes features
+# Dos banks en diferentes regionesgeográficas
+</code></pre>
+
+<h3>Solución: FedProx y Estrategias de Compensación</h3>
+
+<pre><code># FedProx: agrega term de regularización para handle non-IID
+class FedProxClient(FederatedClient):
+    def __init__(self, model, dataset, mu=0.01, **kwargs):
+        super().__init__(model, dataset, **kwargs)
+        self.mu = mu  # parámetro de penalización
+    
+    def train_local(self):
+        before_state = {k: v.clone() for k, v in self.model.state_dict().items()}
+        
+        self.model.train()
+        optimizer = optim.SGD(self.model.parameters(), lr=self.lr)
+        dataloader = DataLoader(self.dataset, batch_size=self.batch_size, shuffle=True)
+        
+        for epoch in range(self.local_epochs):
+            for X_batch, y_batch in dataloader:
+                X_batch, y_batch = X_batch.to(self.device), y_batch.to(self.device)
+                
+                optimizer.zero_grad()
+                output = self.model(X_batch)
+                loss = nn.CrossEntropyLoss()(output, y_batch)
+                
+                # Término de proximal regularization (FedProx)
+                proximal_term = 0
+                for name, param in self.model.named_parameters():
+                    proximal_term += torch.sum((param - before_state[name]) ** 2)
+                loss += (self.mu / 2) * proximal_term
+                
+                loss.backward()
+                optimizer.step()
+        
+        after_state = self.model.state_dict()
+        delta = {k: after_state[k] - before_state[k] for k in before_state.keys()}
+        
+        return delta
+
+
+# Estrategia 2: Data sharing (compartir небольшую часть de datos)
+# Crear pequeño dataset público para estabilizar entrenamiento
+
+# Estrategia 3: Adaptive weighting basada en performance
+def adaptive_weights(clients_metrics):
+    """
+    Ponderar updates basado en qué tan bien performs el client
+    """
+    # Normalizar métricas
+    total = sum(clients_metrics)
+    return [m / total for m in clients_metrics]
+</code></pre>
+
+<hr>
+<h2>🔒 Differential Privacy — La Capa de Protección Que Hace Falta</h2>
+
+<p>Aquí viene la verdad incómoda: si solo mandas gradientes, un adversary puede reconstruir datos de otros clients. Differential Privacy (DP) añade ruido para prevenir esto.</p>
+
+<pre><code>import torch
 import numpy as np
 
-def evaluate_model(y_true, y_pred):
-    accuracy = accuracy_score(y_true, y_pred)
-    precision, recall, f1, _ = precision_recall_fscore_support(
-        y_true, y_pred, average='weighted'
-    )
+class DPFederatedClient(FederatedClient):
+    def __init__(self, model, dataset, epsilon=1.0, delta=1e-5, **kwargs):
+        super().__init__(model, dataset, **kwargs)
+        self.epsilon = epsilon  # Privacy budget
+        self.delta = delta     # Failure probability
+        self.sensitivity = 1.0  # Maximum change en un parámetro
+        self.noise_scale = self.sensitivity * np.sqrt(2 * np.log(1.25 / self.delta)) / self.epsilon
     
-    print(f"Accuracy:  {accuracy:.4f}")
-    print(f"Precision: {precision:.4f}")
-    print(f"Recall:    {recall:.4f}")
-    print(f"F1 Score:  {f1:.4f}")
+    def add_noise(self, parameters):
+        """Añade Gaussian noise a los gradientes para DP"""
+        noisy_parameters = {}
+        for name, param in parameters.items():
+            noise = torch.randn_like(param) * self.noise_scale
+            noisy_parameters[name] = param + noise
+        return noisy_parameters
     
-    return {'accuracy': accuracy, 'precision': precision, 'recall': recall, 'f1': f1}
+    def clip_gradients(self, delta, max_norm=1.0):
+        """Clip gradientes para bound sensitivity"""
+        total_norm = torch.sqrt(sum(torch.sum(p ** 2) for p in delta.values()))
+        
+        clip_factor = max_norm / total_norm.item() if total_norm.item() > max_norm else 1.0
+        
+        return {k: v * clip_factor for k, v in delta.items()}
+    
+    def train_local(self):
+        """Entrena con Differential Privacy"""
+        before_state = {k: v.clone() for k, v in self.model.state_dict().items()}
+        
+        self.model.train()
+        optimizer = optim.SGD(self.model.parameters(), lr=self.lr)
+        dataloader = DataLoader(self.dataset, batch_size=self.batch_size, shuffle=True)
+        
+        for epoch in range(self.local_epochs):
+            for X_batch, y_batch in dataloader:
+                X_batch, y_batch = X_batch.to(self.device), y_batch.to(self.device)
+                
+                optimizer.zero_grad()
+                output = self.model(X_batch)
+                loss = nn.CrossEntropyLoss()(output, y_batch)
+                loss.backward()
+                optimizer.step()
+        
+        after_state = self.model.state_dict()
+        delta = {k: after_state[k] - before_state[k] for k in before_state.keys()}
+        
+        # DP: Clip + add noise
+        clipped_delta = self.clip_gradients(delta)
+        noisy_delta = self.add_noise(clipped_delta)
+        
+        return noisy_delta
 
-# Matriz de confusion
-from sklearn.metrics import confusion_matrix
-cm = confusion_matrix(y_true, y_pred)
+
+# Ejemplo de uso
+print(f"Noise scale (epsilon={epsilon}): {DPFederatedClient(None, None, epsilon=1.0).noise_scale:.4f}")
+print("Menor epsilon = más privacidad, más ruido")
 </code></pre>
+
 <hr>
-<h2>🚀 Metricas Para NLP</h2>
-<pre><code># Para generacion de texto
-from rouge import Rouge
+<h2>💰 Aplicaciones Reales: Healthcare y Finance</h2>
 
-rouge = Rouge()
-scores = rouge.get_scores(predictions, references)
-print(f"ROUGE-1: {scores[0]['rouge-1']['f']:.4f}")
-print(f"ROUGE-2: {scores[0]['rouge-2']['f']:.4f}")
-print(f"ROUGE-L: {scores[0]['rouge-l']['f']:.4f}")
+<h3>Healthcare: Prediciendo readmisiones hospitalarias</h3>
 
-# Para QA
-from sklearn.metrics import exact_match
-em = exact_match_score(predictions, references)
+<pre><code># Ejemplo: 5 hospitales entrenando jointly sin compartir datos de pacientes
+
+# Hospital 1: Datos de urgencias (pacientes agudos)
+# Hospital 2: Datos de cuidado crítico
+# Hospital 3: Datos de rehabilitación
+# Hospital 4: Datos de cardiología
+# Hospital 5: Datos de oncología
+
+# Cada hospital tiene información que sería ético compartir
+# Pero juntos podrían entrenar un modelo mucho más robusto
+
+# Implementación conceptual
+hospitals = [
+    {"name": "Hospital Central", "data": cardiac_data, "patients": 50000},
+    {"name": "Clínica Norte", "data": oncology_data, "patients": 30000},
+    {"name": "Instituto Sur", "data": rehab_data, "patients": 20000},
+]
+
+# FedAvg con weighting por número de pacientes
+weights = [h["patients"] for h in hospitals]
+total = sum(weights)
+weights = [w / total for w in weights]
+
+server = FederatedServer(model=readmission_model, clients=[
+    FederatedClient(model, h["data"]) for h in hospitals
+])
+
+# Entrenar por 100 rondas
+for round in range(100):
+    server.federated_round(weights=weights)
 </code></pre>
+
+<h3>Finance: Detección de fraude cross-border</h3>
+
+<pre><code># Múltiples bancos entrenando modelo anti-fraude
+# sin revelar sus datos de clientes
+
+# Desafíos específicos:
+# 1. Datos de fraude son intrinsically non-IID (fraudes varían por región)
+# 2. Regulaciones diferentes por país (GDPR, CCPA,等行业自律)
+# 3. Latencia de red entre ubicaciones geográficas
+
+# Solución: Hierarchical Federated Learning
+# Level 1: Entrenamiento local en cada banco
+# Level 2: Agregación regional
+# Level 3: Agregación global
+
+class HierarchicalFLServer:
+    def __init__(self):
+        self.regional_servers = {}  # Un server por región
+        self.global_model = None
+    
+    def regional_aggregate(self, region):
+        """Agrega dentro de una región"""
+        # FedAvg local
+        pass
+    
+    def global_aggregate(self):
+        """Agrega entre regiones"""
+        # FedAvg global
+        pass
+</code></pre>
+
 <hr>
-<h2>⚠️ Errores Comunes</h2>
-<h3>Error 1: Solo Usar Accuracy</h3>
-<p><strong>El problema</strong>: Accuracy engana con clases desbalanceadas.</p>
-<p><strong>La solucion</strong>: Usa precision, recall, F1 especialmente para NLP.</p>
+<h2>⚠️ Los 3 Errores Que El 90% Commete</h2>
+
+<h3>Error 1: Federated Sin Differential Privacy Es Menos Private De Lo Que Crees</h3>
+
+<p><strong>El problema</strong>: Mandar gradientes puros es inseguro. Un adversary puede hacer membership inference attacks para determinar si un datapoint específico estaba en el dataset de otro client.</p>
+
+<pre><code># Membership inference attack simplificado:
+# 1. Interceptor conoce el modelo antes de la ronda
+# 2. Interceptor conoce el modelo después de la ronda
+# 3. Si la diferencia es muy pequeña, el datapoint probablemente estaba
+#    en el training set del client
+
+# Solución: ALWAYS usar DP cuando privacy es un requerimiento
+</code></pre>
+
+<p><strong>La solución</strong>: Implementar differential privacy desde el inicio. Usar:</p>
+<ul>
+<li>Gradient clipping (bound sensitivity)</li>
+<li>Gaussian noise addition</li>
+<li>Secure aggregation (server no ve updates individuales)</li>
+<li>Formal privacy accounting (epsilon, delta budgets)</li>
+</ul>
+
+<h3>Error 2: No Handle Non-IID Data Distributions Correctamente</h3>
+
+<p><strong>El problema</strong>: Si usas FedAvg vanilla con datos non-IID, el modelo global diverge y no converge bien.</p>
+
+<pre><code># NO HACER ESTO (FedAvg vanilla con non-IID):
+server = FederatedServer(model, clients)
+for round in range(100):
+    server.federated_round()  # Sin adjustar por non-IID!
+
+# Resultado: modelo converge a algo mediocre para todos
+</code></pre>
+
+<p><strong>La solución</strong>:</p>
+<ul>
+<li>Usar FedProx en lugar de FedAvg</li>
+<li>Ajustar weights por distribución de datos</li>
+<li>Implementar个性化 local adaptation</li>
+<li>Considerar mezcla de datos sintéticos</li>
+</ul>
+
+<h3>Error 3: No Considerar Communication Efficiency</h3>
+
+<p><strong>El problema</strong>: En federated setup real, communication es el bottleneck. Mandar modelos completos cada ronda es costoso y lento.</p>
+
+<pre><code># NO HACER ESTO (mandar modelo completo cada ronda):
+def federated_round_naive(server, clients):
+    for client in clients:
+        model = send_full_model_to_client(client)  # Gran payload
+        client.train()
+        delta = send_full_delta_to_server(client)  # Gran payload
+
+# Con 100M parámetros, esto es prohibitivo en edge devices
+</code></pre>
+
+<p><strong>La solución</strong>:</p>
+<ul>
+<li>Gradient compression (sparse gradients, quantization)</li>
+<li>Local SGD con más epochs locales antes de sincronizar</li>
+<li>Sketching y hashing para reducir payloads</li>
+<li>Async federated learning (no esperar a todos los clients)</li>
+</ul>
+
+<pre><code># Gradient compression ejemplo:
+def compress_gradient(gradient, compression_ratio=0.1):
+    """Top-k compression: solo manda el 10% de gradientes más importantes"""
+    flat = gradient.flatten()
+    k = int(len(flat) * compression_ratio)
+    
+    # Encontrar top-k valores absolutos
+    _, indices = torch.topk(torch.abs(flat), k)
+    
+    # Crear sparse representation
+    compressed = torch.zeros_like(flat)
+    compressed[indices] = flat[indices]
+    
+    return compressed, indices
+
+def decompress_gradient(compressed, indices, original_shape):
+    """Reconstruir gradiente sparse"""
+    gradient = torch.zeros(original_shape).flatten()
+    gradient[indices] = compressed[indices]
+    return gradient.view(original_shape)
+</code></pre>
+
 <hr>
-<p><em>Eso es todo! Nos vemos en el Dia 223.</em></p>
+<h2>📚 Resumen y Cierre</h2>
+
+<p>Hagale pues, parcero. Federated Learning es una de las tecnologías más importantes para el futuro de ML con privacy. Pero no es mágicay tiene sus complicaciones.</p>
+
+<p><strong>Lo que debes recordar</strong>:</p>
+<ul>
+<li>FedAvg es el foundation pero no funciona bien con non-IID out of the box</li>
+<li>Differential Privacy NO es opcional si privacy es un requerimiento real</li>
+<li>Non-IID data es la norma, no la excepción — prepárate para handlearlo</li>
+<li>Communication efficiency es crítica en producción real</li>
+<li>Aplicaciones en healthcare y finance son el caso de uso más fuerte</li>
+</ul>
+
+<p>En下次 vez que tu empresa diga "no podemos compartir datos por privacy", pregúntales si han considerado Federated Learning. En Colombia tenemos regulacion muy estricta de datos personales (Ley 1581), así que esta tecnología es especialmente relevante para nosotros.</p>
+
+<p>Nos vemos en el Día 223. Stay private, parcero.</p>
   </article>
 
   <script>
