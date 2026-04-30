@@ -99,55 +99,235 @@ nav {
   </header>
 
   <article class="article-body">
-    <p>Hola, parcero. Llegamos al Día 165 y hoy vamos con ChainOfThought. Este tema es crítico porque el porcentaje que mencionamos en el título representa bugs y confusiones que veo constantemente en producción. Acompañame que esto va detallado.</p>
-<hr>
-<h2>📐 Fundamentos Teóricos</h2>
-<p>Vamos paso a paso. Entender la teoría detrás de ChainOfThought es lo que separa a alguien que copia código de alguien que realmente sabe lo que está haciendo.</p>
-<h3>Conceptos Clave</h3>
-<ul>
-<li><strong>Concepto 1</strong>: Descripción del primer concepto fundamental.</li>
-<li><strong>Concepto 2</strong>: Descripción del segundo concepto que necesitas entender.</li>
-<li><strong>Concepto 3</strong>: Por qué esto importa en la práctica.</li>
-</ul>
-<hr>
-<h2>💻 Implementación Práctica</h2>
-<p>Ahora vamos a lo bueno: código real que puedes usar en tus proyectos.</p>
-<pre><code class="language-python"># Ejemplo práctico de ChainOfThought
-import numpy as np
+    <p>Hola, parcero. Llegamos al Día 165 y hoy vamos con vLLM. Si estás sirviendo LLMs en producción y todavía usas HuggingFace Transformers para inference, déjame te cuento que estás dejando dinero en la mesa — y这篇文章 te va a explicar exactamente por qué. También vamos a ver los errores que el 90% comete cuando configura vLLM por primera vez.</p>
 
-def concepto_fundamental(data, param):
-    # Implementación básica del concepto
-    result = []
-    for item in data:
-        processed = item * param
-        result.append(processed)
-    return np.array(result)
+<hr>
+<h2>🚀 Por Qué vLLM Cambia El Juego</h2>
+<p>El problema fundamental con HuggingFace Transformers para serving es que maneja la memoria GPU como si fuera memoria RAM en los 90s: todo o nada, sin paginación, sin compartir. Cada request que llega necesita alojar el KV cache completo en VRAM, y cuando la GPU se llena... pues ahí empieza el swapping y la tristeza.</p>
 
-data = [1, 2, 3, 4, 5]
-result = concepto_fundamental(data, 2)
-print(f"Resultado: {result}")
+<p>vLLM introduce <strong>PagedAttention</strong>, un mecanismo inspirado en la memoria virtual de los sistemas operativos. La idea es simple pero profunda: en vez de asignar bloques contiguos de memoria para el KV cache, vLLM usa bloques de tamaño fijo (típicamente 16 tokens por bloque) que pueden estar dispersos en memoria física pero lógicamente contiguos.</p>
+
+<h3>El Math Detrás de PagedAttention</h3>
+<p>En atención estándar, el KV cache para una secuencia de longitud $L$ ocupa:</p>
+<p class="katex-display">$$\text{KV cache size} = 2 \times n_{\text{layers}} \times n_{\text{heads}} \times d_{\text{head}} \times L \times 4 \text{ bytes}$$</p>
+<p>Donde el factor 2 es por K y V. Para un LLaMA-7B con 32 capas, 32 heads, y $d_{\text{head}} = 128$:</p>
+<p class="katex-display">$$\text{KV cache} = 2 \times 32 \times 32 \times 128 \times L \times 4 \approx 1 \text{ MB por token}$$</p>
+<p>Una secuencia de 2048 tokens ocupa ~2 GB solo en KV cache. Con atención paginada, solo alocamos lo que usamos, y el resto de la VRAM queda disponible para más requests simultáneos.</p>
+
+<hr>
+<h2>💻 Implementación: vLLM vs HuggingFace</h2>
+
+<h3>Instalación</h3>
+<pre><code class="language-bash">pip install vllm transformers torch</code></pre>
+
+<h3>Serving con vLLM (el correcto)</h3>
+<pre><code class="language-python">from vllm import LLM, SamplingParams
+
+# Inicialización - una sola vez al inicio del servidor
+llm = LLM(
+    model="meta-llama/Llama-2-7b-chat-hf",
+    gpu_memory_utilization=0.85,  # ¡Clave! Por defecto es 0.9
+    tensor_parallel_size=1,        # Para múltiples GPUs: 2, 4, etc.
+    max_model_len=4096,           # Ajusta según tu VRAM
+    trust_remote_code=True,
+)
+
+sampling_params = SamplingParams(
+    temperature=0.7,
+    top_p=0.95,
+    max_tokens=512,
+)
+
+# Inference - esto es 10-24x más rápido que HF en throughput
+outputs = llm.generate(["¿Por qué el cielo es azul?", "Explica la fotosíntesis"], sampling_params)
+
+for output in outputs:
+    print(f"Prompt: {output.prompt}")
+    print(f"Generado: {output.outputs[0].text}")
+    print(f"Throughput: {output.outputs[0].token_ids.__len__()} tokens")
 </code></pre>
+
+<h3>Lo Que NO Debes Hacer (HuggingFace en Producción)</h3>
+<pre><code class="language-python"># ❌ ESTO ES LO QUE EL 90% HACE Y SUFRE EN PRODUCCIÓN
+from transformers import AutoModelForCausalLM, AutoTokenizer
+import torch
+
+model_name = "meta-llama/Llama-2-7b-chat-hf"
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+model = AutoModelForCausalLM.from_pretrained(
+    model_name,
+    torch_dtype=torch.float16,
+    device_map="auto",
+)
+
+# Cada request crea un nuevo pipeline - Catastrófico para concurrency
+def generate_hf(prompt: str) -> str:
+    inputs = tokenizer(prompt, return_tensors="pt").to("cuda")
+    outputs = model.generate(**inputs, max_new_tokens=512)
+    return tokenizer.decode(outputs[0], skip_special_tokens=True)
+
+# En producción con 100 requests concurrentes: GPU OOM o tiempos de respuesta de 30+ segundos
+</code></pre>
+
+<h3>Benchmark Comparativo</h3>
+<pre><code class="language-python">import time
+import asyncio
+from vllm import LLM, SamplingParams
+
+async def benchmark_vllm():
+    llm = LLM(model="meta-llama/Llama-2-7b-chat-hf", gpu_memory_utilization=0.85)
+    sampling = SamplingParams(temperature=0.7, max_tokens=256)
+    
+    prompts = [f"Pregunta {i}: Explica algo interesante sobre el tema {i % 10}" for i in range(100)]
+    
+    start = time.time()
+    # vLLM procesa en batches automáticamente
+    outputs = llm.generate(prompts, sampling)
+    elapsed = time.time() - start
+    
+    total_tokens = sum(len(o.outputs[0].token_ids) for o in outputs)
+    print(f"vLLM: {total_tokens/elapsed:.1f} tokens/segundo")
+    print(f"Tiempo total: {elapsed:.2f}s para {len(prompts)} prompts")
+
+asyncio.run(benchmark_vllm())
+
+# Resultados típicos en A100 40GB:
+# vLLM:  ~180-240 tokens/segundo (throughput)
+# HF:    ~15-25 tokens/segundo (throughput)
+# Speedup: 10-15x en throughput real
+</code></pre>
+
 <hr>
-<h2>🚨 Errores Comunes</h2>
-<h3>Error 1: No entender la matemática de fondo</h3>
-<p>El 80% de los practitioners implementa esto incorrectamente porque no entienden la base teórica.</p>
-<h3>Error 2: Ignorar los hiperparámetros</h3>
-<p>Muchos asumen que los valores por defecto son óptimos. En producción, esto raramente es cierto.</p>
+<h2>⚙️ Configuración de gpu_memory_utilization</h2>
+<p>Este parámetro es probablemente el más malentendido de vLLM. No es "porcentaje de VRAM a usar" de forma naive — es más complejo:</p>
+
+<pre><code class="language-python"># Configuración CORRECTA según tu hardware
+configurations = {
+    "A100-40GB": {
+        "gpu_memory_utilization": 0.90,
+        "max_model_len": 8192,
+    },
+    "A100-80GB": {
+        "gpu_memory_utilization": 0.95,
+        "max_model_len": 16384,
+    },
+    "RTX-3090-24GB": {
+        "gpu_memory_utilization": 0.85,
+        "max_model_len": 4096,
+    },
+    "RTX-4090-24GB": {
+        "gpu_memory_utilization": 0.88,
+        "max_model_len": 4096,
+    },
+}
+
+# ❌ ERROR COMÚN: Dejar el默认值 sin ajustar
+# Esto causa OOM en GPUs con menos de 80GB
+llm = LLM(model="meta-llama/Llama-2-70b-hf", gpu_memory_utilization=0.9)  # ¡Falla!
+
+# ✅ CORRECTO: Calcular basado en tu modelo y VRAM
+# Para 70B en 4x A100 (320GB total), usa:
+llm = LLM(
+    model="meta-llama/Llama-2-70b-hf",
+    tensor_parallel_size=4,
+    gpu_memory_utilization=0.85,  # Deja margen para el sistema operativo
+    max_model_len=4096,
+)
+</code></pre>
+
 <hr>
-<h2>✅ Mejores Prácticas</h2>
+<h2>🔧 Tensor Parallel Para Modelos Grandes</h2>
+<p>Cuando tu modelo no cabe en una sola GPU, tensor parallelism divide los pesos de las capas de atención a través de múltiples GPUs:</p>
+
+<pre><code class="language-python">from vllm import LLM
+
+# Modelo que requiere 70GB+ - no cabe en una A100
+# Distribución: 70B / 4 GPUs = ~17.5GB por GPU
+
+llm = LLM(
+    model="meta-llama/Llama-2-70b-chat-hf",
+    tensor_parallel_size=4,      # Número de GPUs (debe ser divisor de num_heads)
+    pipeline_parallel_size=1,    # Para más de 8 GPUs, combina con pipeline parallel
+    gpu_memory_utilization=0.80, # Más bajo porque hay overhead de comunicación
+    max_model_len=4096,
+)
+
+# Verificación: ¿Cuántas GPUs tienes?
+# nvidia-smi --query-gpu=name,memory.total --format=csv
+</code></pre>
+
+<hr>
+<h2>🚨 Los 3 Errores que el 90% Comete</h2>
+
+<h3>Error 1: Usar HuggingFace Transformers en Producción</h3>
+<p>Este es el error más básico pero más costoso. HF fue diseñado para training y experimentación, no para serving en producción. El throughput que obtienes con HF es típicamente 10-15x menor que con vLLM para la misma hardware.</p>
+
+<p><strong>Fix:</strong> Si tienes más de 10 requests/hora en producción, usa vLLM. Siempre. La inversión en migración se paga en reducción de costos de GPU en la primera semana.</p>
+
+<h3>Error 2: No Configurar gpu_memory_utilization Correctamente</h3>
+<p>Dejar <code>gpu_memory_utilization=0.9</code> sin calcular si realmente tienes ese margen causa OOM crashes en producción. El sistema operativo, drivers de CUDA, y otros procesos también necesitan VRAM.</p>
+
+<pre><code class="language-python"># ✅ FIX CORRECTO: Calcular antes de lanzar
+import torch
+
+def calculate_optimal_config(model_name: str, num_gpus: int):
+    total_vram_gb = torch.cuda.get_device_properties(0).total_memory / 1e9 * num_gpus
+    
+    # Estimar VRAM del modelo
+    # Parámetros * 2 bytes (fp16) * 1.2 overhead multiplicativo
+    model_vram_estimate_gb = 7 * 1.2  # Ejemplo para 7B model
+    
+    # Para KV cache y overhead
+    available_for_util = (total_vram_gb - 2) / total_vram_gb  # 2GB para sistema
+    
+    return {
+        "gpu_memory_utilization": min(0.92, available_for_util * 0.95),
+        "max_model_len": min(4096, int((available_for_util * total_vram_gb * 1e9) / (1e6))),
+    }
+
+config = calculate_optimal_config("meta-llama/Llama-2-7b-chat-hf", 1)
+print(f"Configuración óptima: {config}")
+</code></pre>
+
+<h3>Error 3: No Usar Tensor Parallel Para Modelos > 13B</h3>
+<p>Tweet esto: si estás intentando cargar un LLaMA-70B en una sola A100 40GB, no es que "no funcione", es que estás usando el hardware equivocado o la técnica equivocada. Tensor parallel existe por una razón.</p>
+
+<pre><code class="language-python"># ✅ FIX: Si tu modelo no cabe, usa tensor parallel
+# 70B modelo en 4x A100 40GB
+# Cada GPU recibe: 70B / 4 = 17.5B parámetros
+# Con fp16: 17.5B * 2 bytes = 35GB por GPU
+# ¡Cabe! (justo, pero cabe)
+
+# ❌ NO HAGAS ESTO - Intentar forzar todo en una GPU
+llm = LLM(model="meta-llama/Llama-2-70b-hf", tensor_parallel_size=1)  # OOM garantizada
+
+# ✅ HAZ ESTO - Distribución inteligente
+llm = LLM(
+    model="meta-llama/Llama-2-70b-hf",
+    tensor_parallel_size=4,  # 4 GPUs para el 70B
+    gpu_memory_utilization=0.82,  # Un poco más bajo por el overhead de TP
+)
+</code></pre>
+
+<hr>
+<h2>📊 Resumen: vLLM vs HuggingFace Transformers</h2>
+
 <ul>
-<li>Siempre documenta tu código y decisiones de diseño.</li>
-<li>Usa versionado para tus experimentos.</li>
-<li>Valida siempre con datos de prueba independientes.</li>
-<li>Monitorea las métricas en producción.</li>
+<li><strong>Throughput</strong>: vLLM ofrece 10-24x más tokens/segundo que HF para inference</li>
+<li><strong>Memoria</strong>: PagedAttention reduce el KV cache overhead en 40-60%</li>
+<li><strong>Concurrency</strong>: vLLM maneja cientos de requests simultáneos; HF se ahoga</li>
+<li><strong>PagedAttention</strong>: Inspirado en memoria virtual, bloques de 16 tokens, compartir entre requests</li>
+<li><strong>Tensor Parallel</strong>: Essential para modelos >13B, divide pesos entre GPUs</li>
+<li><strong>gpu_memory_utilization</strong>: No es "usar X% de VRAM", es una política de allocation</li>
 </ul>
+
 <hr>
-<h2>📚 Recursos</h2>
-<ul>
-<li>Documentación oficial de langchain</li>
-<li>Tutoriales prácticos en el blog</li>
-<li>Código fuente en GitHub</li>
-</ul>
+<h2>🏁 Cierre</h2>
+<p>Y ahí lo tienen, parcero. Si después de este artículo sigues usando HuggingFace Transformers para servir modelos en producción, te quiero ver explicando en la daily por qué tu servidor responde en 30 segundos mientras el de la competencia responde en 2. vLLM no es opcional para producción — es el baseline mínimo aceptable.</p>
+
+<p>Mañana seguimos con cuantización. No se pierdan el Día 166 que vamos a meterle lupa a GPTQ y AWQ, los métodos que el 90% implementa sin entender cuándo usar cada uno. Spoiler: no es "el que sea más popular". Es según tu caso de uso. Nos vemos.</p>
+
+<p><em>#365DaysOfAI #vLLM #PagedAttention #MLOps #LLMInference</em></p>
   </article>
 
   <script>
