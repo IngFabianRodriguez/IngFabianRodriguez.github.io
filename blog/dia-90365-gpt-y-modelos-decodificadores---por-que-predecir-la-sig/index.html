@@ -118,8 +118,319 @@ nav {
   </header>
 
   <article class="article-body">
-    <h1>GPT y Modelos Decodificadores - Por Qué Predecir la Siguiente Palabra Revolucionó la IA</h1>
-<p>Contenido del Día 90 - Esta entrada aún está en construcción. ¡Vuelve pronto!</p>
+
+<h2>¿Por qué predecir la siguiente palabra funciona… y funciona tan bien?</h2>
+
+<p>Mire, yo llevaba años trabajando con modelos clásicos de NLP — con sus reglas manuales, sus feature engineering interminable, sus tf-idf y sus modelos de Markov escondidos en el rincón— cuando llegó ChatGPT y me dijo: "mire doctor, yo solo predigo la siguiente palabra". Y el muchacho tenía razón.</p>
+
+<p>Eso es lo loco de los GPT: arquitectura decoder-only, atención causal, trillions de tokens de entrenamiento, y al final la tarea es <em>predecir la siguiente palabra</em>. Suena ridículo, ¿no? Pues resulta que esa tarea simple, repetida a escala, produce algo que se parece peligrosamente a <strong>entender</strong> el lenguaje.</p>
+
+<p>Hoy les cuento cómo funciona eso, por qué el decoder-only cambió todo, y —lo más importante— les dejo código real en PyTorch para que ustedes mismos puedan generar texto con GPT-2 usando greedy, beam search y nucleus sampling. Porque uno lee muchos artículos teóricos, pero nada como ensuciarse las manos con el código.</p>
+
+<hr>
+
+<h2>El encuadre conceptual: Causal Language Modeling</h2>
+
+<h3>La tarea es simple… en apariencia</h3>
+
+<p>En <strong>Causal Language Modeling (CLM)</strong>, el modelo recibe una secuencia de tokens y debe predecir el siguiente token. Solo puede "mirar hacia atrás" — es decir, la atención es <strong>causal</strong>: cada posición solo puede attends a posiciones anteriores (incluyendo ella misma). No puede ver el futuro.</p>
+
+<p>Matemáticamente:</p>
+
+<pre><code>P(x₁, x₂, ..., xₙ) = ∏ᵢ P(xᵢ | x₁, x₂, ..., xᵢ₋₁)</code></pre>
+
+<p>El modelo条件 sobre todo el contexto previo. No necesita un encoder que procese la oración completa bidireccionalmente. Solo necesita el historial. Esto es fundamentalmente diferente del BERT, que usa <em>masked language modeling</em> y puede ver ambos lados.</p>
+
+<h3>Arquitectura decoder-only</h3>
+
+<p>Los modelos GPT son <strong>decoder-only</strong>: la misma pila de capas Transformer decodifica la secuencia de entrada token por token, y cada nuevo token se genera condicionando en toda la secuencia acumulada.</p>
+
+<p>Esto versus un modelo encoder-decoder (como T5 o los modelos seq2seq clásicos):</p>
+
+<ul>
+<li><strong>Encoder-decoder</strong>: el encoder procesa la entrada completa y produce una representación; el decoder genera la salida condicionando en esa representación.</li>
+<li><strong>Decoder-only</strong>: no hay separación. Una sola torre de Transformer genera la salida token por token, siempre condicionando en lo que ya se ha generado.</li>
+</ul>
+
+<h3>La familia GPT</h3>
+
+<p>OpenAI fue refinando esta idea:</p>
+
+<ul>
+<li><strong>GPT-1 (2018)</strong>: 117M parámetros. Demostró que预训练 en Language Modeling + fine-tuning funcionaba para tareas downstream.</li>
+<li><strong>GPT-2 (2019)</strong>: 1.5B parámetros. "Language Models are Unsupervised Multitask Learners". Empezó a mostrar zero-shot: sin fine-tuning, выполни tareas solo con el prompt.</li>
+<li><strong>GPT-3 (2020)</strong>: 175B parámetros. Few-shot en toda regla: le das ejemplos en el prompt y hace inferencia sin cambiar pesos.</li>
+<li><strong>GPT-4 (2023)</strong>: parámetros no revelados oficialmente, pero se estima en ~1.76T. Mult-modal, mejor reasoning, menos alucinaciones.</li>
+</ul>
+
+<h3>Few-shot vs Zero-shot vs Chain-of-Thought</h3>
+
+<p><strong>Zero-shot</strong>: le das una instrucción directa sin ejemplos. "Traduce esto al francés."</p>
+
+<p><strong>Few-shot</strong>: le das 2-5 ejemplos en el prompt para que "aprenda en contexto". La estructura de los ejemplos le enseña el formato.</p>
+
+<p><strong>Chain-of-Thought (CoT)</strong>: le pides que "piense paso a paso" antes de dar la respuesta. Esto mejora dramáticamente el reasoning en modelos grandes. El modelo genera una cadena de pensamiento intermediate antes de responder. No requiere fine-tuning — solo cambiar el prompt.</p>
+
+<hr>
+
+<h2>Código real: GPT2LMHeadModel en PyTorch</h2>
+
+<p>Vamos a lo bueno. El siguiente bloque de código (~100 líneas) muestra cómo usar <code>transformers</code> de HuggingFace con <code>GPT2LMHeadModel</code>, incluyendo positional embeddings, causal mask, y tres métodos de generación: <strong>greedy</strong>, <strong>beam search</strong> y <strong>nucleus sampling (top-p)</strong>.</p>
+
+<pre><code>import torch
+from transformers import GPT2LMHeadModel, GPT2Tokenizer
+import torch.nn.functional as F
+
+# ── Cargar modelo y tokenizador ─────────────────────────────────────────────
+model_name = "gpt2"  # gpt2-medium (345M), gpt2-large (774M), gpt2-xl (1.5B)
+tokenizer = GPT2Tokenizer.from_pretrained(model_name)
+model = GPT2LMHeadModel.from_pretrained(model_name)
+model.eval()  # Modo inferencia
+
+# GPT2 no tiene padding token por defecto; usamos eos como pad
+tokenizer.pad_token = tokenizer.eos_token
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model.to(device)
+print(f"Modelo: {model_name} | Dispositivo: {device}")
+
+# ── Exploración rápida de la arquitectura ───────────────────────────────────
+# GPT2 usa posiciones posicionaleslearned (no sinusoidal como el Transformer original)
+print(f"Vocabulary size: {tokenizer.vocab_size}")
+print(f"N layers: {model.config.n_layer}")
+print(f"N heads: {model.config.n_head}")
+print(f"Hidden size: {model.config.n_embd}")
+# Embeddings posicionales: shape [max_position_embeddings, n_embd]
+print(f"Max position embeddings: {model.config.max_position_embeddings}")
+
+# ── Cómo funciona el forward pass (con texto → ids → logits) ──────────────
+prompt = "El machine learning es"
+inputs = tokenizer(prompt, return_tensors="pt").to(device)
+input_ids = inputs["input_ids"]  # [1, seq_len]
+seq_len = input_ids.size(1)
+
+print(f"\nPrompt: '{prompt}'")
+print(f"Input IDs shape: {input_ids.shape}")
+
+# Forward pass completo
+with torch.no_grad():
+    outputs = model(input_ids)  # (lm_head projection ya aplicada dentro)
+    logits = outputs.logits     # [1, seq_len, vocab_size]
+
+# El logits de la ÚLTIMA posición es el que predice el siguiente token
+next_token_logits = logits[0, -1, :]  # [vocab_size]
+probs = F.softmax(next_token_logits, dim=-1)
+
+top5 = torch.topk(probs, 5)
+print("\nTop-5 siguiente token (sin generación aún):")
+for i, (token_id, prob) in enumerate(zip(top5.indices, top5.values)):
+    word = tokenizer.decode([token_id])
+    print(f"  {i+1}. '{word}' → {prob:.4f}")
+
+# ── MÉTODO 1: Greedy Search ─────────────────────────────────────────────────
+def greedy_generate(prompt, max_new_tokens=30, verbose=True):
+    """Siempre toma el token con mayor probabilidad."""
+    inputs = tokenizer(prompt, return_tensors="pt").to(device)
+    input_ids = inputs["input_ids"]
+
+    generated = input_ids.clone()
+    for _ in range(max_new_tokens):
+        with torch.no_grad():
+            logits = model(generated).logits          # [1, cur_len, vocab]
+            next_logits = logits[0, -1, :]            # última posición
+            next_token = torch.argmax(next_logits).unsqueeze(0).unsqueeze(0)
+        generated = torch.cat([generated, next_token], dim=1)
+        if next_token.item() == tokenizer.eos_token_id:
+            break
+
+    result = tokenizer.decode(generated[0], skip_special_tokens=True)
+    if verbose:
+        print(f"[GREEDY] Prompt: '{prompt}'")
+        print(f"[GREEDY] Output: '{result}'\n")
+    return result
+
+# ── MÉTODO 2: Beam Search ────────────────────────────────────────────────────
+def beam_search_generate(prompt, max_new_tokens=30, num_beams=4, verbose=True):
+    """Mantiene num_beams hipótesis y selecciona la de mayor probabilidad total."""
+    inputs = tokenizer(prompt, return_tensors="pt").to(device)
+    input_ids = inputs["input_ids"]
+
+    generated = input_ids.repeat(num_beams, 1)  # [num_beams, seq_len]
+    beam_scores = torch.zeros(num_beams, device=device)
+
+    for step in range(max_new_tokens):
+        with torch.no_grad():
+            logits = model(generated).logits       # [num_beams, cur_len, vocab]
+            log_probs = F.log_softmax(logits[:, -1, :], dim=-1)
+
+            # Para el primer paso, beam_scores viene de la.forward; 
+            # después sumamos log_probs a los scores existentes
+            if step == 0:
+                scores = beam_scores.unsqueeze(1) + log_probs
+            else:
+                scores = beam_scores.unsqueeze(1) + log_probs
+
+            # Top-k para reducir búsqueda
+            topk_scores, topk_tokens = torch.topk(scores.view(-1), num_beams)
+            beam_idx = topk_tokens // log_probs.size(1)
+            token_idx = topk_tokens % log_probs.size(1)
+
+            generated = generated[beam_idx]
+            generated = torch.cat([generated, token_idx.unsqueeze(1)], dim=1)
+            beam_scores = topk_scores
+
+    # Mejor haz (score más alto)
+    best_idx = torch.argmax(beam_scores).item()
+    result = tokenizer.decode(generated[best_idx], skip_special_tokens=True)
+    if verbose:
+        print(f"[BEAM] beams={num_beams} | Output: '{result}'\n")
+    return result
+
+# ── MÉTODO 3: Nucleus Sampling (top-p) ───────────────────────────────────────
+def nucleus_sample(prompt, max_new_tokens=30, top_p=0.9, temperature=1.0, verbose=True):
+    """
+    Nucleus sampling: muestrea de la smallest set de tokens cuya 
+    probabilidad acumulada supera top_p. Con temp=1.0 es estándar; 
+    temp>1 = más random, temp<1 = más determinístico.
+    """
+    inputs = tokenizer(prompt, return_tensors="pt").to(device)
+    input_ids = inputs["input_ids"]
+
+    generated = input_ids.clone()
+    for _ in range(max_new_tokens):
+        with torch.no_grad():
+            logits = model(generated).logits        # [1, cur_len, vocab]
+            next_logits = logits[0, -1, :]          # [vocab]
+
+            # Aplicar temperature
+            if temperature != 1.0:
+                next_logits = next_logits / temperature
+
+            probs = F.softmax(next_logits, dim=-1)
+
+            # Nucleus: ordenar por probabilidad y tomar el núcleo
+            sorted_probs, sorted_indices = torch.sort(probs, descending=True)
+            cumsum = torch.cumsum(sorted_probs, dim=-1)
+
+            # Tokens que están dentro del núcleo (donde cumsum <= top_p)
+            nucleus_mask = cumsum <= top_p
+            # Siempre incluir al menos el token más probable
+            nucleus_mask = nucleus_mask | torch.arange(len(cumsum), device=device) == 0
+
+            # Poner a cero las probabilidades fuera del núcleo
+            filtered_probs = probs.clone()
+            filtered_probs[~nucleus_mask] = 0.0
+            filtered_probs = filtered_probs / filtered_probs.sum()
+
+            # Muestrear de la distribución filtrada
+            next_token = torch.multinomial(filtered_probs, num_samples=1)
+        generated = torch.cat([generated, next_token], dim=1)
+        if next_token.item() == tokenizer.eos_token_id:
+            break
+
+    result = tokenizer.decode(generated[0], skip_special_tokens=True)
+    if verbose:
+        print(f"[NUCLEUS] top_p={top_p}, temp={temperature} | Output: '{result}'\n")
+    return result
+
+# ── Ejecutar las tres estrategias ───────────────────────────────────────────
+prompt_test = "El machine learning ha transformado la"
+print("=" * 60)
+greedy_generate(prompt_test, max_new_tokens=25)
+beam_search_generate(prompt_test, max_new_tokens=25, num_beams=5)
+nucleus_sample(prompt_test, max_new_tokens=25, top_p=0.92, temperature=0.8)
+nucleus_sample(prompt_test, max_new_tokens=25, top_p=0.95, temperature=1.2)
+print("=" * 60)
+
+# ── Generación con pipeline de HuggingFace (atajo rápido) ───────────────────
+from transformers import pipeline
+
+gen_pipeline = pipeline("text-generation", model=model_name, tokenizer=tokenizer)
+
+print("\n[ PIPELINE ] greedy:")
+print(gen_pipeline(prompt_test, max_new_tokens=25, num_return_sequences=1))
+
+print("[ PIPELINE ] nucleus (top_p=0.9, temp=0.9):")
+print(gen_pipeline(prompt_test, num_return_sequences=2,
+                   do_sample=True, top_p=0.9, temperature=0.9,
+                   max_new_tokens=25))</code></pre>
+
+<h3>¿Qué está pasando architecturalmente?</h3>
+
+<ul>
+<li><strong>Positional embeddings</strong>: GPT-2 usa <em>learned positional embeddings</em> (no sinusoidal como el Transformer original de Vaswani). Cada posición tiene un vector aprendido de dimensión <code>n_embd</code>. La forma es <code>[max_position_embeddings, n_embd]</code>.</li>
+<li><strong>Causal mask</strong>: dentro de <code>GPT2Model</code>, la atención es causal por diseño — cada token solo puede attends a sí mismo y a los anteriores. El <code>attention_mask</code> en el forward call indica qué posiciones son reales vs padding.</li>
+<li><strong>Feed-forward</strong>: después de cada capa de atención hay un feed-forward de dos capas (el "MLP" del Transformer original), con GELU como activación.</li>
+<li><strong>LM head</strong>: una proyección lineal de <code>n_embd → vocab_size</code> que produce los logits para cada token del vocabulario.</li>
+<li><strong>Generation config</strong>: el <code>GenerationConfig</code> (o los argumentos directos de <code>pipeline</code>) controlan greedy/beam/sampling, temperature, top_p, max_new_tokens, etc.</li>
+</ul>
+
+<hr>
+
+<h2>Tres errores comunes (y sus fixes)</h2>
+
+<h3>Error 1: Usar temperature=0 cuando quieres diversidad</h3>
+
+<p><strong>El error</strong>: mucha gente pone <code>temperature=0</code> creyendo que así "mejora" la calidad, cuando en realidad temperature=0 es equivalente a greedy search: siempre elige el token más probable. Si haces esto con un prompt que pide opciones creativas, variaciones, o brainstorming… siempre te devuelve lo mismo.</p>
+
+<p><strong>Fix</strong>: usa <code>temperature ∈ [0.7, 1.2]</code> para generación creativa. O nucleus sampling con <code>top_p=0.9</code> que es mejor que temperature solo porque filtra tokens extremadamente improbables antes de muestrear. Si quieres determinismo (código, factual), aí sí usa greedy o beam search.</p>
+
+<pre><code># ❌ Mal para diversidad
+nucleus_sample(prompt, temperature=0.0, top_p=0.9)
+
+# ✅ Bien para texto creativo
+nucleus_sample(prompt, temperature=1.0, top_p=0.92)
+
+# ✅ Bien para texto variado
+nucleus_sample(prompt, temperature=1.2, top_p=0.95)</code></pre>
+
+<h3>Error 2: Usar temperature alto para generación de código</h3>
+
+<p><strong>El error</strong>: pensar que "más temperatura = más creatividad" y poner <code>temperature=1.5</code> para escribir código. El resultado es un desastre: el modelo empieza a inventar nombres de funciones, introduce bugs sutiles, y el código se vuelve repetitivo o inconsistente porque cada token se muestrea de una distribución muy plana.</p>
+
+<p><strong>Fix</strong>: para código, usa <code>temperature ≤ 0.3</code> o directamente <strong>greedy/beam search</strong>. El código es determinístico por naturaleza — la sintaxis debe ser precisa. Solo sube temperature moderadamente si quieres que el código sea "diferente" (ej. generar variantes de un algoritmo), pero nunca tanto como para código.</p>
+
+<pre><code># ❌ Mal para código
+nucleus_sample(code_prompt, temperature=1.5, top_p=0.99)
+
+# ✅ Bien para código funcional
+nucleus_sample(code_prompt, temperature=0.2, top_p=0.9)
+
+# ✅ Aún mejor: greedy para código
+greedy_generate(code_prompt, max_new_tokens=50)</code></pre>
+
+<h3>Error 3: No usar max_new_tokens y generar sin límite</h3>
+
+<p><strong>El error</strong>: no especificar <code>max_new_tokens</code> y dejar que el modelo genere hasta el token EOS. Parece inofensivo, pero en la práctica el modelo puede entrar en <strong>loops repetitivos</strong> — empieza a generar tokens en círculo y nunca para. O peor: agota la memoria GPU con secuencias enormemente largas.</p>
+
+<p><strong>Fix</strong>: SIEMPRE establece <code>max_new_tokens</code> (o <code>max_length</code>). Para prompts cortos, 50-100 tokens suele ser suficiente. Para tareas de resumen, 150-250. Para stories creativas, 300-500. Si necesitas más, puedes llamar el modelo iterativamente con el contexto acumulado.</p>
+
+<pre><code># ❌ Peligroso: sin límite
+# model.generate(input_ids)  # puede generar miles de tokens
+
+# ✅ Seguro: siempre con límite
+model.generate(input_ids, max_new_tokens=100)
+
+# ✅ Con límite + stop on EOS (ya lo manejamos en el loop manual)
+model.generate(input_ids, max_new_tokens=100, eos_token_id=tokenizer.eos_token_id)</code></pre>
+
+<hr>
+
+<h2>Resumen</h2>
+
+<ul>
+<li><strong>Causal Language Modeling</strong> es la tarea de predecir el siguiente token condicionando en todo el historial previo — simple en concepto, poderoso a escala.</li>
+<li>Los modelos <strong>decoder-only</strong> (GPT) usan atención causal y una sola torre Transformer para generar secuencias arbitrariamente largas, sin necesidad de un encoder bidireccional.</li>
+<li>La familia GPT (1→2→3→4) muestra cómo la escala — más parámetros y más datos — desbloquea capacidades emergentes: zero-shot, few-shot, y chain-of-thought sin cambiar la arquitectura.</li>
+<li>En PyTorch, <code>GPT2LMHeadModel</code> produce logits sobre el vocabulario completo. Los métodos de generación (greedy, beam search, nucleus sampling)elan differently en esos logits.</li>
+<li><strong>Greedy</strong>: máximo determinismo, mínimo riesgo. <strong>Beam search</strong>: busca en paralelo múltiples hipótesis. <strong>Nucleus (top-p)</strong>: muestrea del núcleo probabilístico, ideal para texto creativo.</li>
+<li>Los errores comunes — temperature=0 para diversidad, temp alto para código, sin max_new_tokens — son fáciles de cometer pero fáciles de fixear.</li>
+</ul>
+
+<hr>
+
+<p><em>Y ahí lo tienen, la idea era simple: predecir la siguiente palabra. Y funcionando tan bien que hasta a mí me da risa pensarlo. Si con una tarea tan básica hemos llegado hasta acá, imagínense qué más nos espera. ¡Nos vemos en el Día 91!</em></p>
+
   </article>
 </body>
 </html>
