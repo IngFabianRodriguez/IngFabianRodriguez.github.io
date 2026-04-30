@@ -118,62 +118,391 @@ nav {
   </header>
 
   <article class="article-body">
-    <h1>Learning Rate Schedulers - El Hiperparámetro Que Domina El Entrenamiento</h1>
-<p>Hágale pues, parcero. Llegamos al Día 102 y hoy toca hablar de learning rate schedulers. Después de más de 10 años rompiendo redes neuronales en producción, te digo que esto es más jugoso de lo que parece. Dejá el café, acomodate, porque esto es más jugoso de lo que parece.</p>
+<h1>Learning Rate Schedulers — CosineAnnealing, Warmup, OneCycleLR, ReduceLROnPlateau</h1>
+<p>Hágale pues, parcero. Llegamos al Día 102 y hoy vamos a hablar de algo que el 80% de los practitioners ignora o implementa mal: los learning rate schedulers. "¿Qué es eso?", me dirás. Bueno, imagínate que tienes el optimizer perfecto — AdamW con todos los parámetros corrects — pero el learning rate se mantiene fijo durante todo el entrenamiento. Entonce estás desperdiciando la mitad del potencial de tu modelo. Así como en la vida, en deep learning hay que saber cuándo apretar y cuándo soltar. Y eso es exactamente lo que hace un scheduler: ajusta el learning rate según la fase del entrenamiento. Así que servite otro aguapanela y presta atención, que esto es la diferencia entre un modelo promedio y uno que gana competencias.</p>
 <hr>
-<h2>🎯 ¿Qué Es Learning Rate Schedulers?</h2>
-<p>En este artículo exploramos Learning Rate Schedulers en profundidad, con ejemplos prácticos y código.</p>
-<h3>Conceptos clave:</h3>
-<ul>
-<li><strong>Definición</strong>: Learning Rate Schedulers es fundamental en deep learning</li>
-<li><strong>Aplicación</strong>: Se usa en arquitecturas modernas de redes neuronales</li>
-<li><strong>Por qué importa</strong>: Sin esto, muchos modelos no podrían entrenar eficientemente</li>
-</ul>
+<h2>🎯 ¿Por Qué Necesitas Un Learning Rate Scheduler?</h2>
+<p>Piensa en el entrenamiento de una red neuronal como escalar una montaña para llegar al valle más profundo. El learning rate es el tamaño del paso que das. Si das pasos muy grandes, puedes pasar de largo el mínimo. Si das pasos muy pequeños, te tardas una eternidad y te atas en un mínimo local.</p>
+<p>La intuition dice: al inicio, necesitas pasos grandes para explorar rápido. Cerca del mínimo, necesitas pasos pequeños para no oscilear. Esto es exactamente lo que hace un scheduler de learning rate.</p>
+<p>La investigación empírica en transformers es categórica: sin warmup, la loss esplota en los primeros iterations. Sin annealing, nunca terminas de converger al mínimo verdadero. Y sin un buen schedule, estás dejando precisión sobre la mesa.</p>
 <hr>
-<h2>📐 La Matemática Detrás De Learning Rate Schedulers</h2>
-<p>La matemática que hace posible la magia de Learning Rate Schedulers:</p>
+<h2>📐 La Matemática De Cada Scheduler</h2>
+<h3>StepLR — Decaimiento por Pasos</h3>
+<p>El más simple: reduce el lr por un factor cada N epochs:</p>
+<p style="text-align:center"><strong>η_t = η_0 · γ^{⌊t/N⌋}</strong></p>
+<p>donde γ es típicamente 0.1 (reducir 10x). Fácil de implementar, pero el decaimiento es abrupto — discontinuidad en el lr que puede causar oscilación.</p>
+<h3>ExponentialLR — Decaimiento Exponencial</h3>
+<p>Reduce el lr continuamente:</p>
+<p style="text-align:center"><strong>η_t = η_0 · γ^t</strong></p>
+<p>Más suave que StepLR pero predecible en exceso — no permite "hard restarts" que pueden ayudar a escapar mínimos locales.</p>
+<h3>CosineAnnealingLR — El Más Popular</h3>
+<p>Decae el lr siguiendo una curva de coseno desde η_0 hasta η_min:</p>
+<p style="text-align:center"><strong>η_t = η_min + (η_0 − η_min) · (1 + cos(πt/T_max))/2</strong></p>
+<p>Esta curva empieza alta, baja rápido al principio, luego se relentiza cerca del final. En la práctica, produce mejorgeneralización que step decay porque no tiene discontinuidades. La variante <code>CosineAnnealingWarmRestarts</code> permite reiniciar laschedule periódicamente — útil cuando quieres dar "nuevos arranques" al entrenamiento.</p>
+<h3>Linear Warmup + Cosine Annealing</h3>
+<p>Este es el estándar en transformers modernos. Primero, linearly aumenta el lr de 0 a η_0 en los primeros <code>warmup_steps</code>:</p>
+<p style="text-align:center"><strong>η_t = t/T_warmup · η_0</strong> &nbsp;&nbsp; para t &lt; T_warmup</p>
+<p>Luego aplica cosine annealing:</p>
+<p style="text-align:center"><strong>η_t = η_min + (η_0 − η_min) · (1 + cos(π(t−T_warmup)/(T_max−T_warmup)))/2</strong></p>
+<p>El warmup previene que los gradientes exploten al inicio — crucial en transformers con skip connections. Sin warmup, las primeras actualizaciones pueden enviar los pesos a regiones de alto loss, y Recovery toma epochs valiosos.</p>
+<h3>OneCycleLR — El Más Agresivo</h3>
+<p>Entrenamiento en una sola "cicla" de lr: empieza bajo, sube hasta un máximo (con anneal), y termina bajo:</p>
+<p style="text-align:center"><strong>η_t = η_max · (1 − t/T · (1 − η_min/η_max))</strong> &nbsp; (fase 1, sube)</p>
+<p style="text-align:center"><strong>η_t = η_min + (η_max − η_min) · (1 − (t−T/2)/(T/2) · (1 − η_min/η_max))</strong> &nbsp; (fase 2, baja)</p>
+<p>OneCycleLR típicamente produce los mejores resultados en menos epochs que otros schedulers. El lr máximo suele ser mayor que el lr inicial de otros schedulers — puedes probar con 1e-3 a 1e-2. La fase de descenso final es importante: produce Generalization excelente porque explora menos al final.</p>
+<h3>ReduceLROnPlateau — El Reactivo</h3>
+<p>No sigue un schedule fijo. Monitorea una métrica (típicamente validation loss) y reduce el lr cuando deja de mejorar:</p>
+<p style="text-align:center"><strong>η_{t+1} = η_t · factor</strong> &nbsp; cuando metric no mejora por <code>patience</code> epochs</p>
+<p>Es útil cuando no sabes cuánto training va a tomar o cuando la loss tiene mesetas. El problema es que es reaction en lugar de proactive — solo reduce cuando ya detecta que no hay progreso, lo que puede significar que ya pasaste mucho tiempo sin converger efectivamente.</p>
+<hr>
+<h2>🚀 Implementación Comparativa En PyTorch</h2>
+<p>Vamos a comparar todos los schedulers con un training loop real en FashionMNIST. Verás la diferencia en convergencia con tus propios ojos.</p>
 <pre><code class="language-python">import torch
 import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader
+from torchvision import datasets, transforms
+import matplotlib.pyplot as plt
+import numpy as np
 
-# Ejemplo de Learning Rate Schedulers
-x = torch.randn(32, 64)
-print(f'Input: {x.shape}')
-</code></pre>
-<hr>
-<h2>🚀 Implementación En PyTorch</h2>
-<pre><code class="language-python"># Implementación de Learning Rate Schedulers
-class LearningRateSchedulersBlock(nn.Module):
+# ─────────────────────────────────────────────
+# Configuración
+# ─────────────────────────────────────────────
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+EPOCHS = 20
+BATCH_SIZE = 256
+
+# FashionMNIST
+transform = transforms.Compose([
+    transforms.ToTensor(),
+    transforms.Normalize((0.2860,), (0.3530,))
+])
+train_dataset = datasets.FashionMNIST(
+    root='./data', train=True, download=True, transform=transform
+)
+train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=2)
+
+# ─────────────────────────────────────────────
+# MLP
+# ─────────────────────────────────────────────
+class MLP(nn.Module):
     def __init__(self):
         super().__init__()
-        # Capas del bloque
-    
+        self.net = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(28*28, 512),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(512, 256),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(256, 128),
+            nn.ReLU(),
+            nn.Linear(128, 10)
+        )
     def forward(self, x):
-        return x
+        return self.net(x)
 
-# Uso
-model = LearningRateSchedulersBlock()
-output = model(x)
-print(f"Output shape: {output.shape}")
+# ─────────────────────────────────────────────
+# Training loop genérico
+# ─────────────────────────────────────────────
+def train_with_scheduler(scheduler_name, scheduler_kwargs, optimizer_name='Adam',
+                          base_lr=1e-3, epochs=EPOCHS, warmup_epochs=0):
+    """Entrena con el scheduler dado y retorna (losses, lr_history)."""
+    torch.manual_seed(42)
+    model = MLP().to(device)
+    criterion = nn.CrossEntropyLoss()
+
+    optimizer = optim.Adam(model.parameters(), lr=base_lr)
+
+    # Scheduler
+    if scheduler_name == 'None':
+        scheduler = None
+    elif scheduler_name == 'StepLR':
+        scheduler = optim.lr_scheduler.StepLR(
+            optimizer, step_size=kwargs.get('step_size', 5),
+            gamma=kwargs.get('gamma', 0.1)
+        )
+    elif scheduler_name == 'ExponentialLR':
+        scheduler = optim.lr_scheduler.ExponentialLR(
+            optimizer, gamma=kwargs.get('gamma', 0.95)
+        )
+    elif scheduler_name == 'CosineAnnealing':
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=epochs,
+            eta_min=kwargs.get('eta_min', 1e-6)
+        )
+    elif scheduler_name == 'CosineAnnealingWarmRestarts':
+        scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(
+            optimizer, T_0=5, T_mult=2,
+            eta_min=kwargs.get('eta_min', 1e-6)
+        )
+    elif scheduler_name == 'OneCycleLR':
+        scheduler = optim.lr_scheduler.OneCycleLR(
+            optimizer, max_lr=kwargs.get('max_lr', 1e-2),
+            epochs=epochs, steps_per_epoch=len(train_loader),
+            pct_start=0.3, anneal_strategy='cos',
+            final_div_factor=kwargs.get('final_div_factor', 1e4)
+        )
+    elif scheduler_name == 'ReduceLROnPlateau':
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, mode='min', factor=kwargs.get('factor', 0.5),
+            patience=kwargs.get('patience', 3), min_lr=1e-6
+        )
+    elif scheduler_name == 'LinearWarmupCosineAnnealing':
+        # Warmup manual: incremento lineal en warmup_epochs
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=epochs - warmup_epochs,
+            eta_min=kwargs.get('eta_min', 1e-6)
+        )
+        # El scheduler se ajusta después del warmup
+        warmup_scheduler = None
+
+    losses = []
+    lr_history = []
+
+    for epoch in range(epochs):
+        model.train()
+        epoch_loss = 0.0
+
+        # Warmup: lr lineal de 0 a base_lr en warmup_epochs
+        if epoch < warmup_epochs:
+            warmup_lr = base_lr * (epoch + 1) / warmup_epochs
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = warmup_lr
+            lr_history.append(warmup_lr)
+        else:
+            # Scheduler post-warmup
+            if scheduler_name == 'CosineAnnealingWarmRestarts':
+                scheduler.step()
+            elif scheduler_name == 'ReduceLROnPlateau':
+                pass  # Se actualiza dentro del loop con la loss
+            elif scheduler_name != 'OneCycleLR':
+                if scheduler is not None:
+                    scheduler.step()
+
+        for batch_idx, (X_batch, y_batch) in enumerate(train_loader):
+            X_batch, y_batch = X_batch.to(device), y_batch.to(device)
+
+            optimizer.zero_grad()
+            outputs = model(X_batch)
+            loss = criterion(outputs, y_batch)
+            loss.backward()
+
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
+            if scheduler_name == 'OneCycleLR':
+                scheduler.step()
+
+            optimizer.step()
+
+            # ReduceLROnPlateau se actualiza por epoch
+            if scheduler_name == 'ReduceLROnPlateau' and batch_idx == 0:
+                scheduler.step(epoch_loss / max(len(train_loader), 1))
+
+            epoch_loss += loss.item()
+
+        if scheduler_name == 'OneCycleLR':
+            lr_history.append(scheduler.get_last_lr()[0])
+        elif epoch >= warmup_epochs and scheduler_name != 'ReduceLROnPlateau':
+            lr_history.append(scheduler.get_last_lr()[0])
+
+        avg_loss = epoch_loss / len(train_loader)
+        losses.append(avg_loss)
+
+        current_lr = optimizer.param_groups[0]['lr']
+        print(f"  [{scheduler_name}] Epoch {epoch+1:2d}/{epochs} | "
+              f"Loss: {avg_loss:.4f} | LR: {current_lr:.2e}")
+
+    return losses, lr_history
+
+# ─────────────────────────────────────────────
+# Comparación de schedulers
+# ─────────────────────────────────────────────
+kwargs = {}  # shared kwargs dict
+results = {}
+
+print("\n=== 1. Sin Scheduler (baseline) ===")
+results['No Scheduler'] = train_with_scheduler('None', {}, base_lr=1e-3, epochs=EPOCHS)
+
+print("\n=== 2. StepLR (step_size=5, gamma=0.1) ===")
+results['StepLR'] = train_with_scheduler('StepLR', {'step_size': 5, 'gamma': 0.1},
+                                          base_lr=1e-3, epochs=EPOCHS)
+
+print("\n=== 3. ExponentialLR (gamma=0.95) ===")
+results['ExpLR'] = train_with_scheduler('ExponentialLR', {'gamma': 0.95},
+                                         base_lr=1e-3, epochs=EPOCHS)
+
+print("\n=== 4. CosineAnnealing (eta_min=1e-6) ===")
+results['CosineAnnealing'] = train_with_scheduler(
+    'CosineAnnealing', {'eta_min': 1e-6}, base_lr=1e-3, epochs=EPOCHS
+)
+
+print("\n=== 5. CosineAnnealingWarmRestarts (T_0=5, T_mult=2) ===")
+results['CosineAnnealingWR'] = train_with_scheduler(
+    'CosineAnnealingWarmRestarts', {'eta_min': 1e-6},
+    base_lr=1e-3, epochs=EPOCHS
+)
+
+print("\n=== 6. Linear Warmup (3 epochs) + CosineAnnealing ===")
+results['Warmup+Cosine'] = train_with_scheduler(
+    'CosineAnnealing', {'eta_min': 1e-6},
+    base_lr=1e-3, epochs=EPOCHS, warmup_epochs=3
+)
+
+print("\n=== 7. OneCycleLR (max_lr=1e-2) ===")
+results['OneCycleLR'] = train_with_scheduler(
+    'OneCycleLR', {'max_lr': 1e-2, 'final_div_factor': 1e4},
+    base_lr=1e-6, epochs=EPOCHS  # base_lr se ignora con OneCycleLR
+)
+
+print("\n=== 8. ReduceLROnPlateau (factor=0.5, patience=3) ===")
+results['ReduceLROnPlateau'] = train_with_scheduler(
+    'ReduceLROnPlateau', {'factor': 0.5, 'patience': 3},
+    base_lr=1e-3, epochs=EPOCHS
+)
+
+# ─────────────────────────────────────────────
+# Visualización: Loss curves
+# ─────────────────────────────────────────────
+plt.figure(figsize=(14, 5))
+
+plt.subplot(1, 2, 1)
+plt.title("Loss por Epoch — Comparación de Schedulers")
+for name, (losses, _) in results.items():
+    plt.plot(losses, label=name, linewidth=2)
+plt.xlabel("Epoch"); plt.ylabel("Loss"); plt.legend(fontsize=8); plt.grid(True, alpha=0.3)
+
+plt.subplot(1, 2, 2)
+plt.title("Learning Rate Schedule — Warmup + CosineAnnealing")
+_, lr_hist = results['Warmup+Cosine']
+plt.plot(lr_hist, color='orange', linewidth=2.5)
+plt.xlabel("Epoch"); plt.ylabel("Learning Rate"); plt.grid(True, alpha=0.3)
+plt.yscale('log')
+
+plt.tight_layout()
+plt.savefig("scheduler_comparison.png", dpi=150)
+plt.show()
+print("\n✅ Gráfico guardado como scheduler_comparison.png")
+
+# ─────────────────────────────────────────────
+# Análisis: efecto del warmup en transformers
+# ─────────────────────────────────────────────
+print("\n=== ANALISIS: Warmup — Por Qué Es Crítico En Transformers ===")
+# Simular gradientes sin warmup vs con warmup
+# En un transformer, los primeros layers tienen gradientes enormes al inicio
+
+print("""
+En transformers, las skip connections causan que los gradientes se amplifiquen.
+Sin warmup:
+  - Epoch 1: lr=1e-3 → gradientes pueden ser 100x más grandes que al final
+  - Los primeros updates mandan los pesos a regiones de alto loss
+  - Recovery toma epochs valiosos
+
+Con warmup (3-5 epochs):
+  - Epoch 1: lr=1e-6 (mil veces menor)
+  - Gradientes pequeños = actualizaciones pequeñas = stable
+  - Los pesos encuentran la escala correcta antes de usar lr alto
+""")
 </code></pre>
 <hr>
-<h2>⚠️ Errores Comunes Y Cómo Evitarlos</h2>
-<h3>Error 1: No entender el orden de operaciones</h3>
-<p><strong>El problema</strong>: El orden en que se aplican las operaciones con Learning Rate Schedulers afecta el resultado.</p>
-<p><strong>La solución</strong>: Siempre verifica la dimensión y el orden de las operaciones.</p>
-<h3>Error 2: Olvidar el modo de evaluación</h3>
-<p><strong>El problema</strong>: Learning Rate Schedulers puede comportarse diferente en entrenamiento vs inferencia.</p>
-<p><strong>La solución</strong>: Usa model.eval() durante inferencia y model.train() durante entrenamiento.</p>
+<h2>⚠️ Los 3 Errores Más Comunes Con LR Schedulers</h2>
+<h3>Error 1: No Usar Warmup En Transformers (causa Loss Spikes)</h3>
+<p><strong>El problema</strong>: En transformers con skip connections y layer normalization, los gradientes al inicio del entrenamiento pueden ser órdenes de magnitud más grandes que cuando el modelo ya está "calentado". Sin warmup, el primer learning rate alto causa que los pesos se actualicen drásticamente, la loss puede explotar o mostrar spikes grandes, y el modelo pierde epochs valiosos de training recovering from those overshoots. Este problema es especialmente agudo en models profundos (12+ layers) y con arquitecturas tipo BERT, GPT, ViT.</p>
+<p><strong>La solución</strong>: Implementa linear warmup de 500 a 10,000 steps dependiendo del tamaño del modelo. Para un transformer pequeño, 500-1000 steps de warmup son suficientes. Para GPT-3 o modelos grandes, 10,000+ steps. En PyTorch moderno, puedes usar <code>get_linear_schedule_with_warmup</code> de transformers o implementar el tuyo:</p>
+<pre><code class="language-python"># ❌ MAL: Sin warmup — causa spikes en transformers profundos
+optimizer = optim.AdamW(model.parameters(), lr=1e-4)
+scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS)
+
+# ✅ BIEN: Linear warmup + Cosine Annealing
+num_training_steps = len(train_loader) * EPOCHS
+num_warmup_steps = len(train_loader) * 2  # 2 epochs de warmup
+
+scheduler = optim.lr_scheduler.LinearLR(
+    optimizer, start_factor=1e-4, end_factor=1.0,
+    total_iters=num_warmup_steps
+)
+# O si quieres después de warmup usar CosineAnnealing:
+# Combinar con ChainScheduler o implementar manualmente
+
+# Implementación manual típica:
+def get_lr(self):
+    if self.step < self.warmup_steps:
+        return self.base_lr * self.step / self.warmup_steps
+    else:
+        progress = (self.step - self.warmup_steps) / (self.total_steps - self.warmup_steps)
+        return self.min_lr + (self.base_lr - self.min_lr) * 0.5 * (1 + math.cos(math.pi * progress))
+</code></pre>
+<h3>Error 2: Cosine Annealing Sin min_lr Adecuada (oscilación al final)</h3>
+<p><strong>El problema</strong>: <code>CosineAnnealingLR</code> con <code>eta_min=0</code> (default) lleva el learning rate a cero al final. Esto causa que el modelo deje de aprender completamente en las últimas epochs — si el schedule es largo, estás desperdiciando los últimos 20-30% del entrenamiento donde todavía podía mejorar. Además, si el lr llega a exactamente 0, los pesos dejan de actualizarse y cualquier mejora marginal se congela.</p>
+<p><strong>La solución</strong>: Usa <code>eta_min</code> entre 1e-6 y 1e-5 para la mayoría de modelos. Esto mantiene un lr lo suficientemente pequeño para hacer ajuste fino al final sin ser cero. Para transformers, 1e-5 a 1e-7 es el rango típico. Si usas <code>CosineAnnealingWarmRestarts</code>, asegúrate de que <code>T_0</code> y <code>T_mult</code> sean consistentes con tu número de epochs.</p>
+<pre><code class="language-python"># ❌ MAL: CosineAnnealing con eta_min=0 — lr muere al final
+scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS)
+# El lr cae a 0 en la última epoch → sin aprendizaje al final
+
+# ✅ BIEN: eta_min=1e-6 — lr pequeño pero no cero
+scheduler = optim.lr_scheduler.CosineAnnealingLR(
+    optimizer, T_max=EPOCHS, eta_min=1e-6
+)
+
+# Verificación: imprime el lr por epoch
+for epoch in range(EPOCHS):
+    scheduler.step()
+    print(f"Epoch {epoch+1}: lr = {scheduler.get_last_lr()[0]:.2e}")
+    # Deberías ver el lr bajar suavemente hacia eta_min, no a cero
+</code></pre>
+<h3>Error 3: ReduceLROnPlateau Con Factor Muy Agresivo (causa inestabilidad)</h3>
+<p><strong>El problema</strong>: Un factor de reducción de 0.5 (reducir a la mitad) es muy agresivo para la mayoría de casos. Cuando la loss deja de mejorar, puede ser por una meseta temporal o porque realmente necesitas un lr más pequeño. Reducir a la mitad de golpe causa un cambio abrupto en la dinámica de optimización — los pesos pueden oscilar porque de pronto el lr es muy pequeño relative al gradiente acumulado. Esto puede causar que la loss incluso aumente momentáneamente.</p>
+<p><strong>La solución</strong>: Usa un factor entre 0.7 y 0.9 para reducciones más suaves. Además, asegúrate de que la <code>patience</code> sea suficiente — 3-5 epochs es apropiado para la mayoría de casos. No quieras reducir lr antes de que el modelo tenga tiempo de adaptarse a la nueva escala.</p>
+<pre><code class="language-python"># ❌ MAL: factor=0.5 (reducir 50%) — muy agresivo, causa oscilación
+scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+    optimizer, mode='min', factor=0.5, patience=2
+)
+# La loss puede explotar porque el lr cae muy rápido
+
+# ✅ BIEN: factor=0.7 (reducir 30%) + patience adecuada
+scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+    optimizer,
+    mode='min',
+    factor=0.7,        # Reducir solo 30% — más suave
+    patience=5,        # Esperar 5 epochs sin mejora antes de reducir
+    min_lr=1e-6,      # No reducir más allá de esto
+    threshold=1e-4    # Cambio mínimo para considerar "mejora"
+)
+
+# Para mucha estabilidad: factor=0.9 con patience=3
+# Esto es basically gradual annealing basado en performance
+scheduler_stable = optim.lr_scheduler.ReduceLROnPlateau(
+    optimizer, mode='min', factor=0.9, patience=3, min_lr=1e-7
+)
+</code></pre>
 <hr>
-<h2>💡 Tips Para Producción</h2>
+<h2>💡 Guía Práctica: Qué Scheduler Elegir</h2>
 <ul>
-<li>Monitorea las métricas relevantes durante el entrenamiento</li>
-<li>Usa Learning Rate Schedulers de acuerdo a la arquitectura de tu red</li>
-<li>No todas las técnicas sirven para todos los problemas</li>
+<li><strong>Transformers (BERT, GPT, ViT):</strong> Linear warmup (2-5% de los steps) + CosineAnnealing. Estándar de la industria. Usa <code>get_cosine_schedule_with_warmup</code> de HuggingFace.</li>
+<li><strong>Visión (ResNet, CNNs en general):</strong> CosineAnnealingLR con eta_min=1e-6, o StepLR si el dataset es pequeño. Para training largo (100+ epochs), CosineAnnealing con restarts puede ayudar.</li>
+<li><strong>GANs:</strong> No uses schedulers en el generador — lr constante. Para el discriminador, ReduceLROnPlateau puede funcionar simonitorias la loss.</li>
+<li><strong>RNNs/LSTMs:</strong> ReduceLROnPlateau con factor suave (0.9), o Exponencial con gamma=0.95. RNNs son sensitivos a cambios abruptos en lr.</li>
+<li><strong>Fine-tuning:</strong> CosineAnnealing con eta_min=1e-7 y sin warmup (el modelo ya está warm). O simplemente lr constante si son pocas epochs.</li>
+<li><strong>¿Entrenamiento corto (&lt;30 epochs)?</strong> OneCycleLR con max_lr alto — converge más rápido en pocas epochs. Ideal para experimentos rápidos.</li>
+<li><strong>¿No sabes qué usar?</strong> Linear warmup (2 epochs) + CosineAnnealingLR(eta_min=1e-6). Funciona bien en casi todo.</li>
 </ul>
 <hr>
-<p><em>¡Eso es todo por hoy! Nos vemos mañana en el Día 103.</em></p>
-
-  </article>
+<h2>📊 Resumen Ejecutivo</h2>
+<ul>
+<li><strong>Sin scheduler</strong> = learning rate fijo. Funciona pero deja Performance sobre la mesa. Úsalo solo como baseline.</li>
+<li><strong>StepLR</strong> = simple pero abrupto. Descontinuidades en el lr que pueden causar oscilación.</li>
+<li><strong>ExponentialLR</strong> = suave pero predecible. No permite "reinicios" útiles.</li>
+<li><strong>CosineAnnealing</strong> = el más popular y robusto. Suave decaimiento, buena generalización. Siempre configura eta_min (no dejes en 0).</li>
+<li><strong>Warmup + CosineAnnealing</strong> = combinación estándar en transformers. Previene loss spikes al inicio. 2-5 epochs de warmup son típicos.</li>
+<li><strong>CosineAnnealingWarmRestarts</strong> = permite reiniciar el schedule periódicamente. Útil en training muy largo o cuando quieres "explorar" con lr alto periódicamente.</li>
+<li><strong>OneCycleLR</strong> = el mejor para entrenamiento corto. Un solo ciclo de lr. Rápido y buena generalización. Requiere tuning del max_lr.</li>
+<li><strong>ReduceLROnPlateau</strong> = reactivo, basado en métrica. Bueno cuando no sabes cuánto va a durar el training. Usa factor suave (0.7-0.9), no 0.5.</li>
+<li><strong>Gradient clipping + warmup</strong> = los dos factores más importantes para estabilidad en transformers profundos.</li>
+</ul>
+<hr>
+<p><em>¡Eso es todo por hoy, parcero! Mañana en el Día 103 hablamos de Callbacks — cómo automatizar el entrenamiento para que no tengas que estar pendiente a las 3 de la mañana. ¡Nos vemos!</em></p>
+</article>
 
   <script>
     document.getElementById('themeToggle').addEventListener('click', function() {
