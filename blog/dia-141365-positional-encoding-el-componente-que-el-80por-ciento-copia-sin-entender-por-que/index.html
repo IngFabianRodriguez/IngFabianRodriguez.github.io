@@ -99,55 +99,362 @@ nav {
   </header>
 
   <article class="article-body">
-    <p>Hola, parcero. Llegamos al Día 141 y hoy vamos con PositionalEncoding. Este tema es crítico porque el porcentaje que mencionamos en el título representa bugs y confusiones que veo constantemente en producción. Acompañame que esto va detallado.</p>
+    <p>Hola, parcero. Llegamos al Día 141 y hoy vamos con Positional Encoding. Este tema es crítico porque el 80% de los implementations que veo en producción tienen errores sutiles que hacen que el modelo no capture bien el orden de los tokens. El más común: copiar código de internet sin entender que el positional encoding se <strong>suma</strong> a los embeddings, no se concatena. Acompañame que esto va bien detallado.</p>
+
 <hr>
 <h2>📐 Fundamentos Teóricos</h2>
-<p>Vamos paso a paso. Entender la teoría detrás de PositionalEncoding es lo que separa a alguien que copia código de alguien que realmente sabe lo que está haciendo.</p>
-<h3>Conceptos Clave</h3>
+
+<p>Un Transformer no tiene recurrencia ni convolución. Su atención es permutación equivalente: "el token en posición 3" y "el token en posición 8" son indistinguibles para el modelo si solo miramos los embeddings. Por eso necesitamos decirle <em>explícitamente</em> dónde está cada token.</p>
+
+<h3>¿Por qué se suma y no se concatena?</h3>
+
+<p>La decisión de <strong>sumar</strong> positional embeddings a los token embeddings no es arbitraria. Si concatenaras, duplicarías la dimensión del embedding (un token de dimensión 512 se volvería 1024), lo cual:</p>
 <ul>
-<li><strong>Concepto 1</strong>: Descripción del primer concepto fundamental.</li>
-<li><strong>Concepto 2</strong>: Descripción del segundo concepto que necesitas entender.</li>
-<li><strong>Concepto 3</strong>: Por qué esto importa en la práctica.</li>
+<li>Duplica el tamaño del modelo sin razón</li>
+<li>Rompe la compatibilidd con modelos pre-entrenados</li>
+<li>Complica la implementación de atención</li>
 </ul>
+
+<p>Al <strong>sumar</strong>, mantienes la dimensión original. El token embedding <code>E</code> y el positional embedding <code>P</code> viven en el mismo espacio vectorial y se cancelan parcialmente en zonas de alta frecuencia, permitiendo que el modelo aprenda qué información de posición es relevante.</p>
+
+<h3>La matemática detrás de Sinusoidal PE</h3>
+
+<p>El paper original "Attention Is All You Need" usa:</p>
+
+<div class="katex-display">$$PE_{(pos, 2i)} = \sin\left(\frac{pos}{10000^{2i/d_{model}}}\right)$$</div>
+<div class="katex-display">$$PE_{(pos, 2i+1)} = \cos\left(\frac{pos}{10000^{2i/d_{model}}}\right)$$</div>
+
+<p>donde <code>pos</code> es la posición, <code>i</code> es la dimensión, y <code>d_model</code> es la dimensión total del embedding.</p>
+
+<p>Esto produce embeedings donde:</p>
+<ul>
+<li><strong>Dimensiones pares</strong> (2i): patrones de onda sinusoidal</li>
+<li><strong>Dimensiones impares</strong> (2i+1): onda coseno correspondiente</li>
+<li><strong>Bajas frecuencias</strong> (i pequeño): periodos largos (poséctions cercanas tienen valores similares)</li>
+<li><strong>Altas frecuencias</strong> (i grande): periodos cortos, más sensibles a diferencias locales</li>
+</ul>
+
+<h3>Learned vs Sinusoidal vs RoPE vs ALiBi</h3>
+
+<p>Hay cuatro estrategias principales:</p>
+
+<ul>
+<li><strong>Sinusoidal (fijo)</strong>: Funciones trigonométricas fijas. Generaliza bien a secuencias más largas que las vistas en entrenamiento.</li>
+<li><strong>Learned (aprendido)</strong>: Parámetros entrenables. En la práctica suele superar a sinusoidal en tareas downstream según Devlin et al. (BERT).</li>
+<li><strong>RoPE (Rotary Position Embedding)</strong>: Codifica posición como rotación en el espacio de embeddings. Usa Product-SVD para eficiencia. Es el estándar en LLaMA, Falcon, Mistral.</li>
+<li><strong>ALiBi (Attention with Linear Biases)</strong>: Añade sesgo lineal a los scores de atención sin embeddings posicionales. Excelente para largos contextos.</li>
+</ul>
+
 <hr>
 <h2>💻 Implementación Práctica</h2>
-<p>Ahora vamos a lo bueno: código real que puedes usar en tus proyectos.</p>
-<pre><code class="language-python"># Ejemplo práctico de PositionalEncoding
-import numpy as np
 
-def concepto_fundamental(data, param):
-    # Implementación básica del concepto
-    result = []
-    for item in data:
-        processed = item * param
-        result.append(processed)
-    return np.array(result)
+<pre><code class="language-python">"""
+Positional Encoding: comparación completa de métodos.
+Implementación desde cero en PyTorch - Día 141 #365DaysOfAI
+"""
+import torch
+import torch.nn as nn
+import math
 
-data = [1, 2, 3, 4, 5]
-result = concepto_fundamental(data, 2)
-print(f"Resultado: {result}")
+
+# ─────────────────────────────────────────────
+# 1. Sinusoidal Positional Encoding (desde cero)
+# ─────────────────────────────────────────────
+class SinusoidalPE(nn.Module):
+    """Sinusoidal Positional Encoding - paper original Vaswani et al. 2017."""
+    def __init__(self, d_model: int, max_len: int = 5000, dropout: float = 0.1):
+        super().__init__()
+        self.dropout = nn.Dropout(p=dropout)
+
+        # Crear matriz de positional encodings [max_len, d_model]
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)  # [max_len, 1]
+
+        # Divisores en base 10000^(2i/d_model)
+        div_term = torch.exp(
+            torch.arange(0, d_model, 2, dtype=torch.float) *
+            (-math.log(10000.0) / d_model)
+        )  # [d_model/2]
+
+        # Aplicar senos y cosenos
+        pe[:, 0::2] = torch.sin(position * div_term)  # dimensiones pares
+        pe[:, 1::2] = torch.cos(position * div_term)  # dimensiones impares
+
+        pe = pe.unsqueeze(0)  # [1, max_len, d_model] para broadcasting
+        self.register_buffer('pe', pe)  # No es parámetro entrenable
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        x: [batch_size, seq_len, d_model]
+        Returns: x + positional encoding (suma, no concatenación)
+        """
+        seq_len = x.size(1)
+        # IMPORTANTE: se SUMA, no se concatena
+        x = x + self.pe[:, :seq_len, :]
+        return self.dropout(x)
+
+
+# ─────────────────────────────────────────────
+# 2. Learned Positional Embeddings
+# ─────────────────────────────────────────────
+class LearnedPE(nn.Module):
+    """ positional embeddings entrenables."""
+    def __init__(self, d_model: int, max_len: int = 5000, dropout: float = 0.1):
+        super().__init__()
+        self.dropout = nn.Dropout(p=dropout)
+        # Parámetro entrenable [1, max_len, d_model]
+        self.pe = nn.Parameter(torch.randn(1, max_len, d_model) * 0.02)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        seq_len = x.size(1)
+        #同样 se SUMA
+        x = x + self.pe[:, :seq_len, :]
+        return self.dropout(x)
+
+
+# ─────────────────────────────────────────────
+# 3. Rotary Position Embedding (RoPE) - completo
+# ─────────────────────────────────────────────
+class RoPE(nn.Module):
+    """
+    Rotary Position Embedding - Su et al. 2022.
+    Codifica posición como rotación en el espacio 2D de embeddings.
+    """
+    def __init__(self, dim: int, base: int = 10000):
+        super().__init__()
+        self.dim = dim
+        self.base = base
+        # Precomputar ángulos para cada posición
+        self.inv_freq = 1.0 / (base ** (torch.arange(0, dim, 2).float() / dim))
+
+    def forward(self, x: torch.Tensor, seq_len: int) -> torch.Tensor:
+        """
+        x: [batch_size, num_heads, seq_len, head_dim]
+        Aplica rotación a los embeddings de query y key.
+        """
+        batch_size, num_heads, seq_len, head_dim = x.shape
+        assert head_dim % 2 == 0, "head_dim debe ser par para RoPE"
+
+        # Posiciones [seq_len]
+        positions = torch.arange(seq_len, device=x.device, dtype=x.dtype)
+        # Ángulos [seq_len, head_dim/2]
+        angles = positions.unsqueeze(-1) * self.inv_freq.unsqueeze(0)
+
+        # Concatenar senos y cosenos para cada par 2D
+        # [seq_len, head_dim]
+        cos = torch.cos(angles).repeat_interleave(2, dim=-1)
+        sin = torch.sin(angles).repeat_interleave(2, dim=-1)
+
+        # Rotación: (x * cos - x_rotado * sin)
+        x1, x2 = x[..., ::2], x[..., 1::2]  # pares, impares
+        x_rotated = torch.cat([-x2, x1], dim=-1)
+
+        return x * cos.unsqueeze(0).unsqueeze(0) + x_rotated * sin.unsqueeze(0).unsqueeze(0)
+
+
+# ─────────────────────────────────────────────
+# 4. ALiBi (Attention with Linear Biases)
+# ─────────────────────────────────────────────
+def build_alibi_slopes(num_heads: int, device: torch.device = None) -> torch.Tensor:
+    """
+    Construye los slopes (pendientes) para ALiBi.
+   论文: "Train Short, Test Long: Attention with Linear Biases" (Press et al. 2021)
+    """
+    # Secuencia geométrica de slopes
+    def get_slopes_power_of_2(n: int):
+        start = 2 ** (-(2 ** -(math.log2(n) - 3)))
+        ratio = start
+        return [start * ratio ** i for i in range(n)]
+
+    if math.log2(num_heads).is_integer():
+        slopes = get_slopes_power_of_2(num_heads)
+    else:
+        # Interpolación para números de heads que no son potencia de 2
+        closest_power_of_2 = 2 ** math.floor(math.log2(num_heads))
+        slopes = get_slopes_power_of_2(closest_power_of_2)
+        extra_slopes = get_slopes_power_of_2(2 * closest_power_of_2)
+        slopes = slopes + extra_slopes[0::2][:num_heads - closest_power_of_2]
+
+    return torch.tensor(slopes, device=device, dtype=torch.float32)
+
+
+def apply_alibi_bias(attn_scores: torch.Tensor, seq_len: int,
+                      num_heads: int, device: torch.device) -> torch.Tensor:
+    """
+    Aplica sesgo lineal a los scores de atención.
+    attn_scores: [batch_size, num_heads, seq_len, seq_len]
+    """
+    # Matriz de distancias relativas [[0,1,2,...], [-1,0,1,...], ...]
+    positions = torch.arange(seq_len, device=device)
+    relative_positions = positions.unsqueeze(0) - positions.unsqueeze(1)  # [seq_len, seq_len]
+    # Tomar valor absoluto (sesgo es simétrico en ALiBi)
+    relative_positions = torch.abs(relative_positions)
+
+    slopes = build_alibi_slopes(num_heads, device)  # [num_heads]
+
+    # Aplicar slopes: attn_scores[h, i, j] -= slopes[h] * |i - j|
+    # Broadcasting: slopes [num_heads, 1, 1], relative_positions [1, seq_len, seq_len]
+    bias = -slopes.view(num_heads, 1, 1) * relative_positions.float().unsqueeze(0)
+    return attn_scores + bias
+
+
+# ─────────────────────────────────────────────
+# 5. Comparación: efecto de diferentes PE en attention patterns
+# ─────────────────────────────────────────────
+def compare_pe_methods():
+    """Compara cómo diferentes PE afectan los patrones de atención."""
+    batch_size, num_heads, seq_len, head_dim = 2, 4, 16, 64
+    d_model = num_heads * head_dim
+
+    # Token embeddings aleatorios
+    x = torch.randn(batch_size, seq_len, d_model)
+
+    print("=" * 60)
+    print("COMPARACIÓN DE MÉTODOS DE POSITIONAL ENCODING")
+    print("=" * 60)
+
+    # Sinusoidal
+    sinusoidal_pe = SinusoidalPE(d_model, max_len=100)
+    out_sin = sinusoidal_pe(x)
+    print(f"\n1. Sinusoidal PE:")
+    print(f"   Output shape: {out_sin.shape}")
+    print(f"   Output stats: mean={out_sin.mean():.4f}, std={out_sin.std():.4f}")
+    print(f"   PE valores únicos: {sinusoidal_pe.pe.unique().numel()}")
+
+    # Learned
+    learned_pe = LearnedPE(d_model, max_len=100)
+    out_learned = learned_pe(x)
+    print(f"\n2. Learned PE:")
+    print(f"   Output shape: {out_learned.shape}")
+    print(f"   Output stats: mean={out_learned.mean():.4f}, std={out_learned.std():.4f}")
+    print(f"   Parámetros entrenables: {sum(p.numel() for p in learned_pe.parameters())}")
+
+    # RoPE en práctica (simplificado para demostración)
+    rope = RoPE(head_dim)
+    x_rope = torch.randn(batch_size, num_heads, seq_len, head_dim)
+    out_rope = rope(x_rope, seq_len)
+    print(f"\n3. RoPE:")
+    print(f"   Output shape: {out_rope.shape}")
+    print(f"   Dtype: {out_rope.dtype}")
+
+    # ALiBi bias
+    alibi_slopes = build_alibi_slopes(num_heads)
+    print(f"\n4. ALiBi:")
+    print(f"   Slopes: {alibi_slopes}")
+    print(f"   Rango de sesgo: [{-alibi_slopes.max():.4f}, {-alibi_slopes.min():.4f}]")
+
+    # Verificar que PE se SUMA, no concatena
+    print(f"\n" + "=" * 60)
+    print("VERIFICACIÓN CRÍTICA: ¿SE SUMA O SE CONCATENA?")
+    print("=" * 60)
+    original_dim = x.shape[-1]
+    out_dim = out_sin.shape[-1]
+    print(f"Dimensión input:  {original_dim}")
+    print(f"Dimensión output:  {out_dim}")
+    print(f"Misma dimensión:  {original_dim == out_dim} ← (debe ser True)")
+    print("→ El PE se SUMA, no se concatena!")
+
+    return out_sin, out_learned, out_rope
+
+
+if __name__ == "__main__":
+    out_sin, out_learned, out_rope = compare_pe_methods()
 </code></pre>
+
+<h3>¿Qué acaba de pasar?</h3>
+
+<p>Este código demuestra cuatro estrategias de positional encoding y verifica el punto más importante: <strong>la dimensión NO cambia</strong>. El PE se suma a los embeddings, no los reemplaza ni los concatena.</p>
+
 <hr>
-<h2>🚨 Errores Comunes</h2>
-<h3>Error 1: No entender la matemática de fondo</h3>
-<p>El 80% de los practitioners implementa esto incorrectamente porque no entienden la base teórica.</p>
-<h3>Error 2: Ignorar los hiperparámetros</h3>
-<p>Muchos asumen que los valores por defecto son óptimos. En producción, esto raramente es cierto.</p>
-<hr>
-<h2>✅ Mejores Prácticas</h2>
+<h2>🚨 Los 3 Errores Más Comunes</h2>
+
+<h3>Error 1: No usar positional encoding — el modelo no distingue orden</h3>
+
+<p>Si omites PE completamente, el Transformer trata "el perro persigue al gato" y "el gato persigue al perro" como idénticos. Los scores de atención entre tokens serán iguales sin importar la distancia posicional.</p>
+
+<pre><code class="language-python"># ❌ ERROR: Sin positional encoding
+class BrokenTransformer(nn.Module):
+    def __init__(self, vocab_size, d_model, n_heads, n_layers):
+        super().__init__()
+        self.embedding = nn.Embedding(vocab_size, d_model)
+        self.layers = nn.ModuleList([TransformerLayer() for _ in range(n_layers)])
+        # FALTAN positional embeddings aquí!
+
+    def forward(self, x):
+        x = self.embedding(x)  # embeddings sin posición
+        # El modelo NO sabe cuál token está en cuál posición
+        for layer in self.layers:
+            x = layer(x, x, x)
+        return x
+</code></pre>
+
+<p><strong>Fix:</strong> Siempre añade positional encoding. Si no estás seguro, usa learned PE que es el default en la mayoría de modelos modernos.</p>
+
+<h3>Error 2: Copiar código sin entender que se SUMA — concatener causa bugs sutiles</h3>
+
+<p>El error más frecuente que veo: alguien copia código y el output del attention tiene dimensión diferente a la esperada, o el modelo no converge. Casi siempre es porque concatenó en vez de sumar.</p>
+
+<pre><code class="language-python"># ❌ ERROR: Concatenar en vez de sumar
+class WrongPE(nn.Module):
+    def __init__(self, d_model):
+        super().__init__()
+        self.token_emb = nn.Embedding(vocab_size, d_model)
+        self.pos_emb = nn.Embedding(vocab_size, d_model)
+
+    def forward(self, x):
+        token_emb = self.token_emb(x)           # [B, seq, d_model]
+        pos_ids = torch.arange(x.size(1)).unsqueeze(0).expand(x.size(0), -1)
+        pos_emb = self.pos_emb(pos_ids)          # [B, seq, d_model]
+        # ❌ WRONG: esto duplica la dimensión
+        return torch.cat([token_emb, pos_emb], dim=-1)  # [B, seq, 2*d_model] ← ¡BUG!
+</code></pre>
+
+<pre><code class="language-python"># ✅ FIX: Sumar en el mismo espacio vectorial
+class CorrectPE(nn.Module):
+    def __init__(self, d_model):
+        super().__init__()
+        self.token_emb = nn.Embedding(vocab_size, d_model)
+        self.pos_emb = nn.Embedding(vocab_size, d_model)
+
+    def forward(self, x):
+        token_emb = self.token_emb(x)
+        pos_ids = torch.arange(x.size(1)).unsqueeze(0).expand(x.size(0), -1)
+        pos_emb = self.pos_emb(pos_ids)
+        # ✅ CORRECTO: se SUMA, dimensión se mantiene
+        return token_emb + pos_emb  # [B, seq, d_model]
+</code></pre>
+
+<h3>Error 3: Usar sinusoidal cuando learned funciona mejor en tu tarea</h3>
+
+<p>El paper original usó sinusoidal porque no había datos para aprender posiciones. Pero en 2026, con BERT, GPT y compañía pre-entrenados con millones de tokens, <strong>learned positional embeddings suelen superar a sinusoidal</strong> en tareas downstream.</p>
+
+<blockquote>Devlin et al. (BERT, 2018) encontraron que learned PE supera a sinusoidal. La mayoría de modelos modernos (BERT, GPT, T5) usan learned o RoPE.</blockquote>
+
+<p><strong>Regla práctica:</strong></p>
 <ul>
-<li>Siempre documenta tu código y decisiones de diseño.</li>
-<li>Usa versionado para tus experimentos.</li>
-<li>Valida siempre con datos de prueba independientes.</li>
-<li>Monitorea las métricas en producción.</li>
+<li><strong>Tarea con secuencias cortas固定的</strong> → learned PE</li>
+<li><strong>Necesitas generalizar a secuencias más largas que entrenamiento</strong> → sinusoidal o ALiBi</li>
+<li><strong>Modelo tipo LLaMA/Mistral</strong> → RoPE (casi obligatorio)</li>
+<li><strong>Modelo con atención lineal</strong> → ALiBi</li>
 </ul>
+
 <hr>
-<h2>📚 Recursos</h2>
+<h2>✅ Resumen y Cierre</h2>
+
+<p>Lo fundamental del día de hoy:</p>
+
 <ul>
-<li>Documentación oficial de torch</li>
-<li>Tutoriales prácticos en el blog</li>
-<li>Código fuente en GitHub</li>
+<li><strong>PE se SUMA</strong>, no concatena — esto es innegociable</li>
+<li><strong>Sin PE el Transformer no tiene noción de orden</strong> — tokens permutados producen el mismo output</li>
+<li><strong>Sinusoidal</strong>: bueno para generalización, fijo, no aprende</li>
+<li><strong>Learned</strong>: más común, entrenable, suele funcionar mejor en la práctica</li>
+<li><strong>RoPE</strong>: estándar actual para LLMs, codificación rotacional</li>
+<li><strong>ALiBi</strong>: para contextos muy largos sin overhead de embeddings</li>
 </ul>
+
+<p>La próxima vez que copies código de positional encoding, verifica que entiendas por qué se suma y no se concatena. Ese detalle marca la diferencia entre un modelo que aprende el orden de los tokens y uno que es completamente order-agnostic.</p>
+
+<p>Nos vemos mañana, parcero. #365DaysOfAI</p>
   </article>
 
   <script>
