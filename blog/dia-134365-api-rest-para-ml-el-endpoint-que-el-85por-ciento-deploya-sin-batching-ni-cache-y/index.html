@@ -99,55 +99,317 @@ nav {
   </header>
 
   <article class="article-body">
-    <p>Hola, parcero. Llegamos al Día 134 y hoy vamos con MLAPI. Este tema es crítico porque el porcentaje que mencionamos en el título representa bugs y confusiones que veo constantemente en producción. Acompañame que esto va detallado.</p>
+    <p>Hola, parcero. Llegamos al Día 134 y hoy vamos con un tema que me duele ver en producción: APIs REST para ML. Ese endpoint que el 85% deploya sin batching, sin cache, y sin async — y cuando le llegan 100 requests simultáneos, el servidor se cae. Acá te muestro cómo hacerlo bien, con código que escala de verdad.</p>
+
 <hr>
 <h2>📐 Fundamentos Teóricos</h2>
-<p>Vamos paso a paso. Entender la teoría detrás de MLAPI es lo que separa a alguien que copia código de alguien que realmente sabe lo que está haciendo.</p>
-<h3>Conceptos Clave</h3>
+
+<h3>¿Por qué tu API de ML se cae en producción?</h3>
+<p>El problema fundamental es que la mayoría de endpoints de ML se diseñan como si fueran una API CRUD normal. Pero un request de ML involucra:</p>
 <ul>
-<li><strong>Concepto 1</strong>: Descripción del primer concepto fundamental.</li>
-<li><strong>Concepto 2</strong>: Descripción del segundo concepto que necesitas entender.</li>
-<li><strong>Concepto 3</strong>: Por qué esto importa en la práctica.</li>
+<li><strong>Loading del modelo</strong> (puede pesar GB)</li>
+<li><strong>Preprocessing</strong> (tokenización, transformaciones — I/O bound)</li>
+<li><strong>Inferencia</strong> (GPU compute-bound)</li>
+<li><strong>Postprocessing</strong> (parsing, formateo)</li>
 </ul>
+<p>Cada paso tiene latencia propia. Sin batching, cada request dispara estos 4 pasos por separado. Con batching, puedes agrupar requests y共享 el overhead.</p>
+
+<h3>Throughput con batching</h3>
+<p>La mejora de throughput con batching sigue aproximadamente:</p>
+<p>$$\text{Throughput}_{\text{batched}} \approx \frac{\text{Throughput}_{\text{single}}}{1 + \frac{O_{\text{overhead}}}{N_{\text{batch}}}}$$</p>
+<p>Donde $O_{\text{overhead}}$ es el overhead por batch (serialización, GPU kernel launch) y $N_{\text{batch}}$ es el tamaño del batch. Con batch size 32, el throughput puede mejorar 10-20x vs requests individuales.</p>
+
+<h3>El costo de cargar el modelo en cada request</h3>
+<p>Cargar un modelo como BERT o GPT-2 implica:</p>
+<p>$$T_{\text{load}} = T_{\text{weights}} + T_{\text{vocab}} + T_{\text{config}} + T_{\text{gpu\_transfer}}$$</p>
+<p>Para un modelo de 500MB en GPU, $T_{\text{load}} \approx 2-5$ segundos. Si esto ocurre en cada request, tu p99 latency es unacceptable. El fix: cargar una vez, cachear para siempre.</p>
+
 <hr>
 <h2>💻 Implementación Práctica</h2>
-<p>Ahora vamos a lo bueno: código real que puedes usar en tus proyectos.</p>
-<pre><code class="language-python"># Ejemplo práctico de MLAPI
-import numpy as np
 
-def concepto_fundamental(data, param):
-    # Implementación básica del concepto
-    result = []
-    for item in data:
-        processed = item * param
-        result.append(processed)
-    return np.array(result)
+<h3>FastAPI app con model caching y batching</h3>
+<pre><code class="language-python"># app/main.py
+import asyncio
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
+import torch
+from transformers import AutoTokenizer, AutoModel
+import time
 
-data = [1, 2, 3, 4, 5]
-result = concepto_fundamental(data, 2)
-print(f"Resultado: {result}")
+# ─── Global model cache ───
+model_cache = {}
+tokenizer_cache = {}
+
+# ─── Request/Response schemas ───
+class PredictRequest(BaseModel):
+    texts: list[str] = Field(..., min_length=1, max_length=32)
+    max_length: int = Field(default=128, ge=1, le=512)
+
+class PredictResponse(BaseModel):
+    predictions: list[list[float]]
+    latency_ms: float
+    batch_size: int
+
+class HealthResponse(BaseModel):
+    status: str
+    model_loaded: bool
+    device: str
+
+# ─── Model loader con cache ───
+def get_model(device: str = "cuda"):
+    if "model" not in model_cache:
+        print("Loading model... (primera vez)")
+        model_name = "distilbert-base-uncased"
+        tokenizer_cache["tok"] = AutoTokenizer.from_pretrained(model_name)
+        model_cache["model"] = AutoModel.from_pretrained(model_name).to(device)
+        model_cache["device"] = device
+        model_cache["model"].eval()
+    return model_cache["model"], tokenizer_cache["tok"], model_cache["device"]
+
+# ─── Batch queue con asyncio ───
+batch_queue = asyncio.Queue()
+batch_results = {}
+
+async def batch_processor():
+    """Consume la cola de requests, hace batching real, y procesa."""
+    while True:
+        items = []
+        # Esperar hasta tener enough items o timeout
+        first_item = await asyncio.wait_for(batch_queue.get(), timeout=0.05)
+        items.append(first_item)
+        
+        # Hacer gather de más items mientras llegan (max 0.05s window)
+        while len(items) < 32 and not batch_queue.empty():
+            try:
+                items.append(batch_queue.get_nowait())
+            except asyncio.QueueEmpty:
+                break
+        
+        # Procesar batch
+        model, tokenizer, device = get_model()
+        texts = [item["text"] for item in items]
+        
+        with torch.no_grad():
+            inputs = tokenizer(
+                texts,
+                padding=True,
+                truncation=True,
+                max_length=items[0]["max_length"],
+                return_tensors="pt"
+            ).to(device)
+            
+            start = time.perf_counter()
+            outputs = model(**inputs)
+            # Promedio del last hidden state como embedding
+            embeddings = outputs.last_hidden_state[:, 0, :].cpu().tolist()
+            latency = (time.perf_counter() - start) * 1000
+        
+        # Distribuir resultados
+        for i, item in enumerate(items):
+            item["future"].set_result({
+                "prediction": embeddings[i],
+                "latency_ms": latency
+            })
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    asyncio.create_task(batch_processor())
+    get_model()  # Precargar modelo al arrancar
+    yield
+    # Shutdown
+
+app = FastAPI(title="ML Inference API", lifespan=lifespan)
+
+@app.post("/predict", response_model=PredictResponse)
+async def predict(request: PredictRequest):
+    """Endpoint de predicción con batching automático."""
+    loop = asyncio.get_event_loop()
+    future = loop.create_future()
+    
+    await batch_queue.put({
+        "text": request.texts[0],  # Por ahora 1 texto por request
+        "max_length": request.max_length,
+        "future": future
+    })
+    
+    result = await future
+    
+    return PredictResponse(
+        predictions=[result["prediction"]],
+        latency_ms=round(result["latency_ms"], 2),
+        batch_size=1
+    )
+
+@app.get("/health", response_model=HealthResponse)
+async def health():
+    """Health check — esencial para k8s/load balancers."""
+    try:
+        model, _, device = get_model()
+        return HealthResponse(
+            status="healthy",
+            model_loaded=True,
+            device=device
+        )
+    except Exception as e:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "unhealthy",
+                "model_loaded": False,
+                "error": str(e)
+            }
+        )
 </code></pre>
+
+<h3>uvicorn config para producción</h3>
+<pre><code class="language-bash"># Arrancar con workers múltiples (para CPU-bound preprocessing)
+uvicorn app.main:app \
+    --host 0.0.0.0 \
+    --port 8000 \
+    --workers 4 \
+    --limit-concurrency 100 \
+    --backlog 2048 \
+    --timeout-keep-alive 30
+
+# Para GPU: un solo worker con múltiples threads
+uvicorn app.main:app \
+    --host 0.0.0.0 \
+    --port 8000 \
+    --workers 1 \
+    --limit-concurrency 50 \
+    --env-prefix "UVICORN_"
+</code></pre>
+
+<h3>Async inference con transformers (I/O-bound preprocessing)</h3>
+<pre><code class="language-python">import asyncio
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
+import torch
+
+class AsyncClassifier:
+    def __init__(self, model_name: str = "distilbert-base-uncased-finetuned-sst-2"):
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        # El modelo se carga en __init__, no en cada request
+        self.model = AutoModelForSequenceClassification.from_pretrained(model_name)
+        self.model.to(self.device)
+        self.model.eval()
+    
+    async def predict_async(self, texts: list[str]) -> list[dict]:
+        # Fake async para demo — en la realidad el tokenizado es sync
+        # pero puedes usar run_in_executor para I/O real (disk, network)
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None,  # usa default ThreadPoolExecutor
+            self._sync_predict,
+            texts
+        )
+    
+    def _sync_predict(self, texts: list[str]) -> list[dict]:
+        with torch.no_grad():
+            inputs = self.tokenizer(
+                texts,
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+                max_length=512
+            ).to(self.device)
+            
+            logits = self.model(**inputs).logits
+            probs = torch.softmax(logits, dim=-1)
+            
+        return [
+            {"label": self.model.config.id2label[i], "prob": p}
+            for i, p in enumerate(probs[0].cpu().tolist())
+        ]
+
+# Uso:
+# classifier = AsyncClassifier()
+# result = await classifier.predict_async(["I love this product!"])
+</code></pre>
+
 <hr>
-<h2>🚨 Errores Comunes</h2>
-<h3>Error 1: No entender la matemática de fondo</h3>
-<p>El 80% de los practitioners implementa esto incorrectamente porque no entienden la base teórica.</p>
-<h3>Error 2: Ignorar los hiperparámetros</h3>
-<p>Muchos asumen que los valores por defecto son óptimos. En producción, esto raramente es cierto.</p>
+<h2>🚨 Errores Comunes (y sus fixes)</h2>
+
+<h3>Error 1: No usar batching → overhead enorme en producción</h3>
+<p><strong>Síntoma:</strong> 1000 requests/minuto con latencia de 200ms deberían dar ~3 req/s, pero tu servidor satura CPU al 100% y la latencia sube a 5s.</p>
+<p><strong>Causa raiz:</strong> Sin batching, cada request abre su propia sesión de GPU, carga sus propios datos, y cierra. El overhead de GPU context switching es enorme.</p>
+<pre><code class="language-python"># Mal (sin batching):
+for text in texts:
+    result = model(tokenize(text))  # Un inference call por texto
+
+# Bien (con batching):
+batch = tokenize(texts)  # Un inference call para todos
+results = model(batch)
+</code></pre>
+<p>Usa una cola asíncrona con window de tiempo o de tamaño para agrupar requests. Con batch size 32, el throughput puede mejorar 10-20x.</p>
+
+<h3>Error 2: Cargar modelo en cada request → latencia de 2-5s por request</h3>
+<p><strong>Síntoma:</strong> La primera request tarda 3s, las siguientes 50ms. Esto pasa porque el modelo se carga lazy en el primer request.</p>
+<pre><code class="language-python"># Mal:
+@app.post("/predict")
+async def predict(text: str):
+    model = load_model()  # Se ejecuta en CADA request
+    return model.predict(text)
+
+# Bien: cargar en startup (lifespan o __init__)
+model = None
+
+@app.on_event("startup")
+async def startup():
+    global model
+    model = load_model()  # Una sola vez
+
+@app.post("/predict")
+async def predict(text: str):
+    return model.predict(text)  # Reusa el modelo ya cargado
+</code></pre>
+
+<h3>Error 3: No usar async para preprocessing I/O-bound</h3>
+<p><strong>Síntoma:</strong> El thread pool se satura con requests esperando I/O (disk, network) mientras el CPU está ocioso.</p>
+<pre><code class="language-python"># Mal (blocking I/O en endpoint async):
+@app.post("/predict")
+async def predict(text: str):
+    # Esto bloquea el event loop si es I/O real
+    data = await fetch_from_external_api(text)
+    result = model.predict(data)
+    return result
+
+# Bien (async I/O o run_in_executor):
+async def fetch_from_external_api(text: str):
+    # Async HTTP client real
+    async with aiohttp.ClientSession() as session:
+        async with session.get(f"http://api.example.com/lookup/{text}") as resp:
+            return await resp.json()
+
+@app.post("/predict")
+async def predict(text: str):
+    # Todo async, no bloquea el event loop
+    data = await fetch_from_external_api(text)
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, lambda: model.predict(data))
+    return result
+</code></pre>
+
 <hr>
 <h2>✅ Mejores Prácticas</h2>
 <ul>
-<li>Siempre documenta tu código y decisiones de diseño.</li>
-<li>Usa versionado para tus experimentos.</li>
-<li>Valida siempre con datos de prueba independientes.</li>
-<li>Monitorea las métricas en producción.</li>
+<li><strong>Health check endpoint</strong>: esencial para Kubernetes liveness/readiness probes y load balancers</li>
+<li><strong>Model caching global</strong>: carga el modelo una vez al startup, nunca en cada request</li>
+<li><strong>Batching con cola asíncrona</strong>: agrupa requests por ventana de tiempo o tamaño</li>
+<li><strong>Pydantic validation</strong>: valida inputs en el schema, no dentro del código de inferencia</li>
+<li><strong>Límites de concurrencia</strong>: configura `--limit-concurrency` en uvicorn para evitar overload</li>
+<li><strong>Métricas</strong>: exporta latencia, throughput y errores a Prometheus para monitoreo real</li>
+<li><strong>Graceful shutdown</strong>: el lifespan context manager asegura que el modelo se libere limpiamente</li>
 </ul>
+
 <hr>
-<h2>📚 Recursos</h2>
-<ul>
-<li>Documentación oficial de fastapi</li>
-<li>Tutoriales prácticos en el blog</li>
-<li>Código fuente en GitHub</li>
-</ul>
+<h2>Resumen y cierre</h2>
+<p>Hoy cubrimos APIs REST para ML desde la perspectiva de producción real: FastAPI con async, batching con colas asíncronas, model caching, y los tres errores que hacen que el 85% de los endpoints se caigan bajo load.</p>
+<p>La diferencia entre un endpoint que sobrevive y uno que se cae es simple: caching del modelo, batching de requests, y async para todo lo que sea I/O. No es magia — es arquitectura correcta desde el día uno.</p>
+<p>Eso es todo por hoy, parcero. Mañana seguimos con más. Nos vemos.</p>
   </article>
 
   <script>
