@@ -110,61 +110,210 @@ nav {
 
   <header class="article-hero">
     <div class="day-badge">Dia 208 / 365 &nbsp;·&nbsp; #365DaysOfAI</div>
-    <h1 class="article-title">Semantic Search - Busqueda Por Significado</h1>
+    <h1 class="article-title">Speech-to-Text — Whisper y la Revolución de la Transcripción Automática</h1>
     <div class="article-meta">
       <time class="article-date">27 de julio de 2026</time>
-      <div class="tags"><span class="tag">semantic-search</span><span class="tag">embeddings</span><span class="tag">similarity</span><span class="tag">nlp</span></div>
+      <div class="tags"><span class="tag">whisper</span><span class="tag">speech-to-text</span><span class="tag">CTC</span><span class="tag">asr</span></div>
     </div>
   </header>
 
   <article class="article-body">
-    <h1>Semantic Search - Busqueda Por Significado</h1>
-<p>Hagale pues, parcero. Hoy es el Dia 208 y hablamos de Semantic Search, busqueda por significado. Cafe.</p>
+<h1>Speech-to-Text — Whisper y la Revolución de la Transcripción Automática</h1>
+<p>Hagale pues, que aquí andamos con la mercazo de la inteligencia artificial. Hoy Día 208 y vamos a hablar de algo que está pegando duro en todas partes: Whisper, el modelo de speech-to-text de OpenAI que transcribe audio como si fuera nativo. Desde médicos en consultorios hasta YouTubers, todos lo están usando. Así funciona.</p>
 <hr>
-<h2>🎯 Que Es Semantic Search?</h2>
-<p>Semantic search busca por significado en lugar de palabras clave. Usa embeddings para encontrar documentos semanticamente similares a la query.</p>
-<h3>Vs Keyword Search:</h3>
-<ul>
-<li><strong>Keyword</strong>: Coincidencia exacta de palabras</li>
-<li><strong>Semantic</strong>: Entendimiento del significado</li>
-<li><strong>Embedding</strong>: Convierte query y docs a vectores</li>
-</ul>
+<h2>🎯 Qué Es Whisper y Cómo Funciona?</h2>
+<p>Whisper es un modelo seq2seq basado en <strong>Transformer encoder-decoder</strong> entrenado con 680,000 horas de audio multilingual diverso. A diferencia de modelos anteriores que usaban phoneme vocabularies, Whisper predice texto directamente del espectrograma mel.</p>
+<p>La arquitectura es un Transformer clásico:</p>
+<pre><code class="language-python"># Encoder: toma espectrograma mel (80 bins, 30ms window)
+# Decoder: GPT-style attention, genera texto token por token
+
+# La innovación NO es la arquitectura — es la ESCALA de training
+# 680K horas de audio en múltiples idiomas y dominios
+</code></pre>
+<p>Usa un enfoque <strong>multitask</strong>: además de transcripción, también predice idioma, y puede hacer traducción (English-to-Other). El objetivo es:</p>
+<p>$$\mathcal{L} = -\log P(y | x)$$</p>
+<p>Donde $y$ es la secuencia de texto target y $x$ es el audio input. Es un language modeling condicionado en audio.</p>
 <hr>
-<h2>📐 Implementacion</h2>
-<pre><code class="language-python">from sentence_transformers import SentenceTransformer
-import chromadb
+<h2>📐 CTC (Connectionist Temporal Classification)</h2>
+<p>Whisper no usa CTC directamente — es un modelo seq2seq con cross-attention. Pero entender CTC es clave porque la mayoría de modelos ASR (Automatic Speech Recognition) anteriores lo usaban.</p>
+<p>CTC resuelve un problema: <strong>no sabemos alineamiento</strong> entre frames de audio y caracteres/phonemes de salida. El audio tiene ~100 frames/segundo pero el texto tiene ~5 caracteres/segundo.</p>
+<h3>La Idea de CTC</h3>
+<p>CTC introduce un token especial <em>blank</em> (ε) que representa "no output aquí". La red produce una secuencia larga, y CTC collapsea repeticiones y blanks:</p>
+<pre><code class="language-python"># Ejemplo: audio de "cat"
+# Network output: [c, c, ε, ε, a, a, t, t, ε]
+# CTC collapse:   [c, a, t]  ← elimina reps y blanks
 
-model = SentenceTransformer('all-MiniLM-L6-v2')
-client = chromadb.Client()
-collection = client.create_collection("knowledge_base")
+# La función de pérdida CTC:
+# L = -log P(y | x) donde y se calcula sobre todos los paths
+# que colapsan a la transcription correcta
 
-# Indexar documentos
-docs = ["Python is a programming language", "Java is also a language"]
-embeddings = model.encode(docs)
-collection.add(documents=docs, embeddings=embeddings, ids=["1", "2"])
+# Implementación simplificada:
+def ctc_loss(log_probs, targets, input_lengths, target_lengths):
+    """
+    log_probs: (T, B, V) - T timesteps, B batch, V vocab
+    targets: (B, T_trg) - sequences target
+    """
+    from torch.nn import CTCLoss
+    criterion = CTCLoss(blank=0, zero_infinity=True)
+    return criterion(log_probs, targets, input_lengths, target_lengths)
+</code></pre>
+<p>La <strong>forward algorithm</strong> computa la probabilidad de todos los paths que producen el target en tiempo $O(T \cdot T)$:</p>
+<p>$$\alpha_t(s) = \text{probabilidad de estar en estado } s \text{ después de timestep } t$$</p>
+<p>Se usa dynamic programming para no enumerar todos los $T^N$ paths posibles.</p>
+<hr>
+<h2>📊 Usando Whisper Para Transcripción</h2>
+<pre><code class="language-python"># Instalación
+# pip install openai-whisper
 
-# Buscar
-query = "Tell me about coding languages"
-query_emb = model.encode([query])
-results = collection.query(query_embeddings=query_emb, n_results=1)
+import whisper
+import torch
+
+# Cargar modelo (hay tiny, base, small, medium, large)
+model = whisper.load_model("base")
+
+# Transcribir archivo de audio
+result = model.transcribe("audio.mp3")
+print(result["text"])
+
+# Con opciones avanzadas
+result = model.transcribe(
+    "audio.mp3",
+    language="es",           # Especificar idioma!
+    task="transcribe",       # o "translate" para English
+    beam_size=5,              # Beam search, mejor accuracy
+    temperature=0,            # 0 = determinístico
+    condition_on_previous_text=True,  # Usa contexto previo
+)
+print(result["segments"])  # Cada segmento con timestamps
+</code></pre>
+<h3>Usando HuggingFace Transformers</h3>
+<pre><code class="language-python">from transformers import WhisperProcessor, WhisperForConditionalGeneration
+from datasets import load_dataset
+
+processor = WhisperProcessor.from_pretrained("openai/whisper-base")
+model = WhisperForConditionalGeneration.from_pretrained("openai/whisper-base")
+
+# Cargar audio de ejemplo
+dataset = load_dataset("hf-internal-testing/librispeech_as4_dummy", "clean", split="validation")
+sample = dataset[0]["audio"]
+input_features = processor(sample["array"], sampling_rate=sample["sampling_rate"],
+                            return_tensors="pt").input_features
+
+# Generar
+forced_decoder_ids = processor.get_decoder_prompt_ids(language="english", task="transcribe")
+generated_ids = model.generate(input_features, forced_decoder_ids=forced_decoder_ids)
+
+transcription = processor.batch_decode(generated_ids, skip_special_tokens=True)
+print(transcription)
 </code></pre>
 <hr>
-<h2>🚀 Hybrid Search</h2>
-<pre><code class="language-python"># Combina keyword + semantic search
+<h2>🚀 Fine-Tuning Whisper Para Dominio Específico</h2>
+<p>Whisper general funciona bien, pero para jerga técnica, acentos fuertes o vocabularios especializados (médico, legal, tecnología), el fine-tuning es casi obligatorio.</p>
+<pre><code class="language-python">from datasets import load_dataset, Audio
+from transformers import WhisperForConditionalGeneration, WhisperProcessor, Trainer, TrainingArguments
 
-# 1. BM25 para matching exacto
-# 2. Semantic similarity para ranking
-# 3. Combinar scores con ponderacion
+# Cargar dataset de tu dominio
+dataset = load_dataset("path/a/tu/dataset_audio")
+dataset = dataset.cast_column("audio", Audio(sampling_rate=16000))
 
-final_score = 0.3 * bm25_score + 0.7 * semantic_score
+processor = WhisperProcessor.from_pretrained("openai/whisper-base")
+model = WhisperForConditionalGeneration.from_pretrained("openai/whisper-base")
+
+def prepare_dataset(examples):
+    audio = examples["audio"]
+    examples["input_features"] = processor(audio["array"], sampling_rate=16000).input_features[0]
+    examples["labels"] = processor(text=examples["text"]).input_ids
+    return examples
+
+dataset = dataset.map(prepare_dataset, remove_columns=dataset.column_names["train"])
+
+# Fine-tuning con Trainer
+training_args = TrainingArguments(
+    output_dir="./whisper-finetuned",
+    per_device_train_batch_size=8,
+    learning_rate=1e-5,
+    warmup_steps=500,
+    max_steps=5000,
+    gradient_accumulation_steps=2,
+    fp16=True,
+    evaluation_strategy="steps",
+    save_steps=1000,
+)
+
+trainer = Trainer(
+    model=model,
+    args=training_args,
+    train_dataset=dataset["train"],
+    eval_dataset=dataset.get("test"),
+)
+trainer.train()
 </code></pre>
 <hr>
-<h2>⚠️ Errores Comunes</h2>
-<h3>Error 1: Chunks Muy Grandes</h3>
-<p><strong>El problema</strong>: Diluye el significado relevante.</p>
-<p><strong>La solucion</strong>: Chunks de 256-512 tokens.</p>
+<h2>⚠️ Errores Comunes y Cómo Evitarlos</h2>
+<h3>Error 1: Whisper Sin Especificar Language — Mezcla de Idiomas</h3>
+<p><strong>El problema</strong>: Sin especificar <code>language</code>, Whisper intenta detectar el idioma y puede mezclar idiomas en transcripciones de bilingual speakers (como muchos colombianos que mezclamos español e inglés).</p>
+<p><strong>La solución</strong>: SIEMPRE especifica el idioma:</p>
+<pre><code class="language-python"># MAL: deja que detecte
+result = model.transcribe("audio.mp3")  # Puede mezclaryo
+
+# BIEN: especificar idioma
+result = model.transcribe(
+    "audio.mp3",
+    language="es",  # Siempre especifica
+    task="transcribe"
+)
+
+# Para bilingües: transcribe en dos pasos
+result_es = model.transcribe("audio.mp3", language="es")
+result_en = model.transcribe("audio.mp3", language="en")
+# Luego selecciona el mejor o combina
+</code></pre>
+<h3>Error 2: No Usar Beam Size > 1 — Baja Accuracy</h3>
+<p><strong>El problema</strong>: Por default Whisper usa greedy decoding (temperature=0 con argmax). Esto es rápido pero pierde accuracy porque no considera múltiples hipótesis.</p>
+<p><strong>La solución</strong>: Usa beam search con beam_size > 1:</p>
+<pre><code class="language-python"># Decoding: Greedy vs Beam Search
+# Greedy: toma el token con mayor probabilidad en cada paso
+# → rápido pero puede elegir mala palabra que afecta el resto
+
+# Beam Search: mantiene N hipótesis y elige la mejor
+result = model.transcribe(
+    "audio.mp3",
+    language="es",
+    beam_size=5,        # Mantiene 5 hipótesis
+    best_of=5,          # samplea N candidatos y elige el mejor
+    temperature=0,       # 0 = no sampling, solo beam
+)
+</code></pre>
+<p>El beam search mejora Word Error Rate (WER) significativamente, especialmente en audios largos donde errores tempranos se propagan.</p>
+<h3>Error 3: Whisper Para Dominio Técnico Sin Fine-Tuning Específico</h3>
+<p><strong>El problema</strong>: Whisper general no conoce terminología técnica, jerga médica, legal, nombres propios, o acentos específicos. Transcribe "radiografía" como "radiografías" mal, o confunde "LSTM" con algo inventado.</p>
+<p><strong>La solución</strong>: Fine-tunea con data de tu dominio:</p>
+<pre><code class="language-python"># 1. Recopila 1-10 horas de audio con transcription del dominio
+# 2. Usa whispered-base o whisper-small para fine-tuning rápido
+# 3. Si es poco data: usa LoRA para fine-tuning eficiente
+
+from peft import LoraConfig, get_peft_model
+from transformers import WhisperForConditionalGeneration
+
+model = WhisperForConditionalGeneration.from_pretrained("openai/whisper-base")
+
+# LoRA config - entrena solo 0.5% de parámetros
+lora_config = LoraConfig(
+    r=32,
+    lora_alpha=64,
+    target_modules=["q_proj", "v_proj", "k_proj", "out_proj"],
+    lora_dropout=0.05,
+)
+model = get_peft_model(model, lora_config)
+model.print_trainable_parameters()
+# trainable params: 1,534,464 || all params: 149,737,344 || trainable%: 1.025
+</code></pre>
+<p>Con solo 1-2 horas de data domain-specific y LoRA, puedes mejorar dramáticamente la transcription de tu jargon.</p>
 <hr>
-<p><em>Eso es todo! Nos vemos en el Dia 209.</em></p>
+<h2>📝 Resumen y Cierre</h2>
+<p>Whisper revolucionó speech-to-text con escala masiva de training (680K horas) y arquitectura Transformer seq2seq. La CTC loss fue pioneers en resolver el alineamiento audio-texto, pero Whisper usa attention directo. Los 3 errores más graves: no especificar idioma (mezcla idiomas), no usar beam search (pierde accuracy), y usar Whisper vanilla para dominios técnicos sin fine-tuning.</p>
+<p>En Colombia uno dice "eso está más pelado que moleca enana" cuando algo es claro — y Whisper lo que hizo fue pelar el speech-to-text para que cualquiera lo pueda usar. No hay excusas para no transcribir audio hoy en día.</p>
+<p><em>Eso es todo, parcero. Día 208 cumplido. Mañana seguimos con más inteligencia artificial. ¡Ahí te voy!</em></p>
   </article>
 
   <script>
