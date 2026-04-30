@@ -99,55 +99,562 @@ nav {
   </header>
 
   <article class="article-body">
-    <p>Hola, parcero. Llegamos al Día 137 y hoy vamos con WeightInit. Este tema es crítico porque el porcentaje que mencionamos en el título representa bugs y confusiones que veo constantemente en producción. Acompañame que esto va detallado.</p>
+    <p>Hola, parcero. Llegamos al Día 137 y hoy vamos con Weight Initialization. Este tema es crítico porque el 90% de los Practitioners en Colombia y el mundo usa Xavier o He sin entender cuándo cambia el juego. Yo mismo lo hice mal por meses hasta que me senté a entender el paper de Glorot y me cambió el panorama completo. Acompañame que esto va bien detallado.</p>
+
 <hr>
 <h2>📐 Fundamentos Teóricos</h2>
-<p>Vamos paso a paso. Entender la teoría detrás de WeightInit es lo que separa a alguien que copia código de alguien que realmente sabe lo que está haciendo.</p>
-<h3>Conceptos Clave</h3>
-<ul>
-<li><strong>Concepto 1</strong>: Descripción del primer concepto fundamental.</li>
-<li><strong>Concepto 2</strong>: Descripción del segundo concepto que necesitas entender.</li>
-<li><strong>Concepto 3</strong>: Por qué esto importa en la práctica.</li>
-</ul>
+
+<p>Vamos paso a paso. El objetivo de Weight Initialization es evitar que las activaciones exploten o se extingan durante el forward pass, y que los gradientes vanish o explode durante el backprop. Eso es el problema central, parcero.</p>
+
+<h3>La matemática detrás de Variance Scaling</h3>
+
+<p>Para una capa lineal $y = Wx + b$, queremos que la varianza de las salidas sea igual a la varianza de las entradas. Esto se conoce como el <strong>principio de isotropia</strong>:</p>
+
+<p class="katex-display">$$\text{Var}(y) = \text{Var}(x) \implies n_{in} \cdot \text{Var}(W) = 1$$</p>
+
+<p>Donde $n_{in}$ es el número de conexiones de entrada. Pero aquí está el tema: cuando usamos diferentes funciones de activación, el comportamiento cambia radicalmente.</p>
+
+<h3>Xavier/Glorot Initialization (2010)</h3>
+
+<p>Xavier Glorot y Yoshua Bengio propusieron inicializar con:</p>
+
+<p class="katex-display">$$W \sim \mathcal{U}\left(-\frac{\sqrt{6}}{\sqrt{n_{in} + n_{out}}}, \frac{\sqrt{6}}{\sqrt{n_{in} + n_{out}}}\right)$$</p>
+
+<p>O equivalentemente con distribución Normal:</p>
+
+<p class="katex-display">$$W \sim \mathcal{N}\left(0, \frac{2}{n_{in} + n_{out}}\right)$$</p>
+
+<p><strong>Esta inicialización está diseñada para activación SIGMOID y TANH</strong>, donde la región lineal alrededor de 0 es la que importa. Si la usas con ReLU, estás perdiendo la mitad de tus neuronas en la práctica.</p>
+
+<h3>He Initialization (2015)</h3>
+
+<p>Kaiming He et al. se dieron cuenta que para ReLU, la varianza correcta es:</p>
+
+<p class="katex-display">$$W \sim \mathcal{N}\left(0, \frac{2}{n_{in}}\right)$$</p>
+
+<p>Para Leaky ReLU con pendiente $\alpha$:</p>
+
+<p class="katex-display">$$W \sim \mathcal{N}\left(0, \frac{2}{(1 + \alpha^2) \cdot n_{in}}\right)$$</p>
+
+<h3>Orthogonal Initialization</h3>
+
+<p>Para redes recurrentes y arquitecturas profundas, la inicialización Ortogonal es学金:</p>
+
+<p class="katex-display">$$W W^T = I$$</p>
+
+<p>Esto garantiza que los eigenvalores de la matriz de transición sean exactamente 1, evitando el vanishing/exploding gradient en secuencias largas.</p>
+
 <hr>
-<h2>💻 Implementación Práctica</h2>
-<p>Ahora vamos a lo bueno: código real que puedes usar en tus proyectos.</p>
-<pre><code class="language-python"># Ejemplo práctico de WeightInit
+<h2>💻 Implementación Práctica en PyTorch</h2>
+
+<p>Ahora vamos con código real que puedes usar. Este es un análisis completo de diferentes inicializaciones y su efecto en el gradient flow.</p>
+
+<pre><code class="language-python">"""
+Weight Initialization Deep Dive - Día 137
+==========================================
+Comparación práctica de Xavier, He, Orthogonal y más.
+Visualización de gradient flow en redes profundas.
+"""
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import matplotlib.pyplot as plt
 import numpy as np
+from collections import defaultdict
 
-def concepto_fundamental(data, param):
-    # Implementación básica del concepto
-    result = []
-    for item in data:
-        processed = item * param
-        result.append(processed)
-    return np.array(result)
+# ─────────────────────────────────────────────
+# 1. IMPLEMENTACIONES DESDE CERO
+# ─────────────────────────────────────────────
 
-data = [1, 2, 3, 4, 5]
-result = concepto_fundamental(data, 2)
-print(f"Resultado: {result}")
+def xavier_uniform_init(tensor: torch.Tensor, gain: float = 1.0):
+    """
+    Xavier/Glorot Uniform Initialization.
+    Diseñada para: Sigmoid, Tanh
+    Requiere: n_in y n_out para el cálculo
+    """
+    fan_in, fan_out = torch.nn.init._calculate_fan_in_fan_out(tensor)
+    std = gain * np.sqrt(2.0 / (fan_in + fan_out))
+    bound = np.sqrt(3.0) * std
+    with torch.no_grad():
+        return tensor.uniform_(-bound, bound)
+
+
+def xavier_normal_init(tensor: torch.Tensor, gain: float = 1.0):
+    """
+    Xavier/Glorot Normal Initialization.
+    Distribución normal con desviación estándar calculada.
+    """
+    fan_in, fan_out = torch.nn.init._calculate_fan_in_fan_out(tensor)
+    std = gain * np.sqrt(2.0 / (fan_in + fan_out))
+    with torch.no_grad():
+        return tensor.normal_(0, std)
+
+
+def he_uniform_init(tensor: torch.Tensor, a: float = 0.0):
+    """
+    He Initialization para ReLU/LeakyReLU.
+    Diseñada para: ReLU, PReLU, LeakyReLU
+    Para ReLU estándar (a=0): std = sqrt(2/n_in)
+    Para LeakyReLU con pendiente a: std = sqrt(2/(1+a²)/n_in)
+    """
+    fan_in, fan_out = torch.nn.init._calculate_fan_in_fan_out(tensor)
+    # Para LeakyReLU: la varianza se ajusta por (1 + a²)
+    std = np.sqrt(2.0 / (fan_in * (1 + a ** 2)))
+    bound = np.sqrt(3.0) * std
+    with torch.no_grad():
+        return tensor.uniform_(-bound, bound)
+
+
+def he_normal_init(tensor: torch.Tensor, a: float = 0.0):
+    """
+    He Normal Initialization.
+    Recomendada por Kaiming para redes profundas con ReLU.
+    """
+    fan_in, fan_out = torch.nn.init._calculate_fan_in_fan_out(tensor)
+    std = np.sqrt(2.0 / (fan_in * (1 + a ** 2)))
+    with torch.no_grad():
+        return tensor.normal_(0, std)
+
+
+def orthogonal_init(tensor: torch.Tensor, gain: float = 1.0):
+    """
+    Inicialización Ortogonal.
+    Ideal para RNNs, LSTMs, y redes muy profundas.
+    Garantiza W @ W.T = I (sin eigenvalores problemáticos).
+    """
+    if tensor.ndim &lt; 2:
+        raise ValueError("Orthogonal init requiere tensor 2D mínimo")
+    
+    rows, cols = tensor.shape
+    # Para matrices no cuadradas, usar QR con matriz aleatoria
+    a = torch.randn(rows, cols) if rows &gt;= cols else torch.randn(cols, rows).t()
+    
+    # Descomposición QR para obtener matriz ortogonal
+    q, r = torch.qr(a)
+    
+    # Ajuste de signo para evitar valores negativos en la diagonal de R
+    d = torch.diag(r, 0)
+    ph = torch.sign(d)
+    q *= ph
+    
+    # Si cols &gt; rows, transponer
+    if rows &lt; cols:
+        q = q.t()
+    
+    with torch.no_grad():
+        tensor.copy_(q * gain)
+    return tensor
+
+
+def sparse_init(tensor: torch.Tensor, sparsity: float = 0.1):
+    """
+    Inicialización Esparsa.
+    Primero selecciona índices aleatorios, luego inicializa con Xavier.
+    Útil para evitar co-adaptation de neuronas.
+    """
+    fan_in, fan_out = torch.nn.init._calculate_fan_in_fan_out(tensor)
+    std = np.sqrt(2.0 / fan_in) * 0.01  # factor pequeño
+    
+    with torch.no_grad():
+        tensor.fill_(0.0)  # Primero todo en cero
+        # Calcular cuántos pesos mantener conectados
+        n_connections = int(sparsity * tensor.numel())
+        
+        # Índices aleatorios para los pesos activos
+        flat_indices = torch.randperm(tensor.numel())[:n_connections]
+        values = torch.randn(n_connections) * std
+        tensor.view(-1).scatter_(0, flat_indices, values)
+    
+    return tensor
+
+
+# ─────────────────────────────────────────────
+# 2. RED DE PRUEBA PARA VISUALIZAR GRADIENT FLOW
+# ─────────────────────────────────────────────
+
+class GradientFlowNet(nn.Module):
+    """
+    Red profunda para comparar gradient flow.
+    20 capas lineales de 512 unidades con ReLU.
+    """
+    def __init__(self, input_dim=512, hidden_dim=512, num_layers=20, 
+                 init_type='xavier', activation='relu'):
+        super().__init__()
+        self.layers = nn.ModuleList()
+        self.activations = []
+        self.input_dim = input_dim
+        
+        # Crear capas
+        for i in range(num_layers):
+            in_dim = input_dim if i == 0 else hidden_dim
+            out_dim = hidden_dim
+            layer = nn.Linear(in_dim, out_dim)
+            self.layers.append(layer)
+        
+        self.output_layer = nn.Linear(hidden_dim, 10)
+        self.activation_fn = nn.ReLU() if activation == 'relu' else nn.Tanh()
+        self.init_type = init_type
+        self.apply_initialization(init_type)
+    
+    def apply_initialization(self, init_type):
+        """Aplicar inicialización a todas las capas."""
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                if init_type == 'xavier_uniform':
+                    xavier_uniform_init(m.weight)
+                    nn.init.zeros_(m.bias)
+                elif init_type == 'xavier_normal':
+                    xavier_normal_init(m.weight)
+                    nn.init.zeros_(m.bias)
+                elif init_type == 'he_uniform':
+                    he_uniform_init(m.weight)
+                    nn.init.zeros_(m.bias)
+                elif init_type == 'he_normal':
+                    he_normal_init(m.weight)
+                    nn.init.zeros_(m.bias)
+                elif init_type == 'orthogonal':
+                    orthogonal_init(m.weight)
+                    nn.init.zeros_(m.bias)
+                elif init_type == 'sparse':
+                    sparse_init(m.weight, sparsity=0.1)
+                    nn.init.zeros_(m.bias)
+                elif init_type == 'default':
+                    # PyTorch default: kaiming_uniform para Conv2d/Linear con ReLU
+                    pass
+    
+    def forward(self, x):
+        self.activations = []
+        for i, layer in enumerate(self.layers):
+            x = layer(x)
+            x = self.activation_fn(x)
+            self.activations.append(x.detach().clone())
+        x = self.output_layer(x)
+        return x
+    
+    def get_gradient_norms(self):
+        """Retornar normas de gradientes por capa."""
+        norms = []
+        for layer in self.layers:
+            if layer.weight.grad is not None:
+                norms.append(layer.weight.grad.norm().item())
+            else:
+                norms.append(0.0)
+        return norms
+
+
+# ─────────────────────────────────────────────
+# 3. VISUALIZACIÓN DE GRADIENT FLOW
+# ─────────────────────────────────────────────
+
+def visualize_gradient_flow():
+    """
+    Compara cómo fluyen los gradientes con diferentes inicializaciones.
+    """
+    input_tensor = torch.randn(32, 512)
+    target = torch.randint(0, 10, (32,))
+    criterion = nn.CrossEntropyLoss()
+    
+    init_types = ['xavier_uniform', 'xavier_normal', 'he_uniform', 'he_normal', 'orthogonal']
+    results = defaultdict(list)
+    
+    for init_type in init_types:
+        torch.manual_seed(42)
+        model = GradientFlowNet(input_dim=512, hidden_dim=512, num_layers=20,
+                               init_type=init_type, activation='relu')
+        optimizer = optim.SGD(model.parameters(), lr=0.01)
+        
+        # Forward pass
+        output = model(input_tensor)
+        loss = criterion(output, target)
+        
+        # Backward pass
+        optimizer.zero_grad()
+        loss.backward()
+        
+        # Guardar normas de gradientes
+        grad_norms = model.get_gradient_norms()
+        results[init_type] = grad_norms
+    
+    # Plot (en producción usar matplotlib, aquí solo impresionamos)
+    print("=" * 60)
+    print("GRADIENT NORMS POR CAPA (20 capas)")
+    print("=" * 60)
+    for init_type, norms in results.items():
+        avg_norm = np.mean(norms)
+        min_norm = np.min(norms)
+        max_norm = np.max(norms)
+        print(f"{init_type:15s} | avg={avg_norm:.6f} | min={min_norm:.6f} | max={max_norm:.6f}")
+    
+    return results
+
+
+# ─────────────────────────────────────────────
+# 4. EFECTO EN ESTABILIDAD DE TRAINING
+# ─────────────────────────────────────────────
+
+def compare_training_stability():
+    """
+    Compara estabilidad de training con diferentes inicializaciones.
+    Mide: loss inicial, tasa de convergencia, estabilidad.
+    """
+    print("\n" + "=" * 60)
+    print("TRAINING STABILITY COMPARISON")
+    print("=" * 60)
+    
+    input_tensor = torch.randn(64, 256)
+    target = torch.randint(0, 10, (64,))
+    criterion = nn.CrossEntropyLoss()
+    
+    init_types = ['xavier_uniform', 'he_uniform', 'orthogonal', 'sparse']
+    
+    for init_type in init_types:
+        torch.manual_seed(123)
+        model = GradientFlowNet(input_dim=256, hidden_dim=256, num_layers=15,
+                               init_type=init_type, activation='relu')
+        optimizer = optim.Adam(model.parameters(), lr=0.001)
+        
+        losses = []
+        for step in range(100):
+            optimizer.zero_grad()
+            output = model(input_tensor)
+            loss = criterion(output, target)
+            loss.backward()
+            optimizer.step()
+            losses.append(loss.item())
+        
+        print(f"{init_type:15s} | initial_loss={losses[0]:.4f} | "
+              f"final_loss={losses[-1]:.4f} | std={np.std(losses[-10:]):.4f}")
+    
+    return True
+
+
+# ─────────────────────────────────────────────
+# 5. TIMING TIPS EN PRODUCCIÓN
+# ─────────────────────────────────────────────
+
+def timing_tips():
+    """
+    Consejos prácticos para producción.
+    """
+    tips = """
+    ╔════════════════════════════════════════════════════════════╗
+    ║                    TIMING TIPS                              ║
+    ╠════════════════════════════════════════════════════════════╣
+    ║ 1. Para CNNs con ReLU → usa He (kaiming_uniform/normal)    ║
+    ║ 2. Para RNNs/LSTMs → usa Orthogonal o LSTM con bias=0      ║
+    ║ 3. Para Transformers → usa Xavier para embedding layers     ║
+    ║    y He para capas FFN                                      ║
+    ║ 4. Nunca inicialices bias con valores distintos de cero    ║
+    ║    sin justificación (rompes simetría gratis)              ║
+    ║ 5. Para batch norm layers → el bias es redundante          ║
+    ║ 6. Si usas Swish/SiLU → Xavier puede funcionar bien       ║
+    ║ 7. Para pretrained models → NO re-inicialices a menos      ║
+    ║    que hagas fine-tuning profundo                           ║
+    ╚════════════════════════════════════════════════════════════╝
+    """
+    print(tips)
+
+
+# ─────────────────────────────────────────────
+# EJECUTAR TODO
+# ─────────────────────────────────────────────
+
+if __name__ == "__main__":
+    print("=" * 60)
+    print("WEIGHT INITIALIZATION DEEP DIVE - DÍA 137")
+    print("=" * 60)
+    
+    # 1. Comparar gradient flow
+    visualize_gradient_flow()
+    
+    # 2. Comparar estabilidad de training
+    compare_training_stability()
+    
+    # 3. Mostrar tips
+    timing_tips()
 </code></pre>
+
 <hr>
-<h2>🚨 Errores Comunes</h2>
-<h3>Error 1: No entender la matemática de fondo</h3>
-<p>El 80% de los practitioners implementa esto incorrectamente porque no entienden la base teórica.</p>
-<h3>Error 2: Ignorar los hiperparámetros</h3>
-<p>Muchos asumen que los valores por defecto son óptimos. En producción, esto raramente es cierto.</p>
+<h2>🚨 Errores Comunes que Destruyen tu Red</h2>
+
+<h3>Error 1: Usar Xavier con ReLU — El Error Más Popular</h3>
+
+<p><strong>El problema</strong>: Xavier está diseñado para sigmoid/tanh, donde la región lineal alrededor de cero es aproximadamente simétrica. Con ReLU, matas la mitad de las neuronas en cada forward pass porque la parte negativa es cero.</p>
+
+<pre><code class="language-python"># ❌ ERROR: Xavier con ReLU en red profunda
+class BadDeepNet(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(512, 512), nn.ReLU(),  # <- Mal: Xavier aquí
+            nn.Linear(512, 512), nn.ReLU(),  # <- Mal: Xavier aquí
+            nn.Linear(512, 512), nn.ReLU(),  # <- Mal: Xavier aquí
+            nn.Linear(512, 256), nn.ReLU(),
+            nn.Linear(256, 10)
+        )
+        # PyTorch por defecto usa kaiming_uniform para Linear+ReLU
+        # PERO si alguien re-inicializa con Xavier:
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)  # ❌ ¡ESTO ESTÁ MAL!
+
+
+# ✅ FIX: Usar He initialization para ReLU
+class GoodDeepNet(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(512, 512), nn.ReLU(),
+            nn.Linear(512, 512), nn.ReLU(),
+            nn.Linear(512, 512), nn.ReLU(),
+            nn.Linear(512, 256), nn.ReLU(),
+            nn.Linear(256, 10)
+        )
+        # ✅ CORRECTO: PyTorch ya usa kaiming_uniform por defecto
+        # O explícitamente:
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.kaiming_uniform_(m.weight, mode='fan_in', nonlinearity='relu')
+</code></pre>
+
+<h3>Error 2: Inicializar Bias a Valores No-Cero — Rompes la Simetría Gratis</h3>
+
+<p><strong>El problema</strong>: Si inicializas bias con valores no-zero como <code>b = 1.0</code>, todas las neuronas de una capa empiezan con la misma activación antes del entrenamiento. Esto causa que aprendan la misma función — literalmente rompes la ventaja de tener múltiples neuronas.</p>
+
+<pre><code class="language-python"># ❌ ERROR: Bias no-cero causa symmetry breaking
+class BadNetSymmetry(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.layer = nn.Linear(256, 128)
+        # Inicialización por defecto de PyTorch: bias=0 ✓
+        # PERO muchos hacen esto:
+        nn.init.constant_(self.layer.bias, 0.5)  # ❌ ¡TODAS las neuronas empiezan igual!
+
+
+# ❌ ERROR 2: Inicializar bias con valor "pequeño" random
+nn.init.uniform_(self.layer.bias, 0.1, 0.2)  # ❌ Sigue mal
+
+
+# ✅ FIX: Bias en cero siempre (o con propósito específico)
+class GoodNetBias(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.layer = nn.Linear(256, 128)
+        # Bias ya es 0 por defecto en PyTorch ✓
+        # Pero si necesitas inicializar explícitamente:
+        nn.init.zeros_(self.layer.bias)  # ✅ Cero siempre
+        
+        # Excepciones legítimas:
+        # - PoseNet: inicializar bias con valores de pose conocidos
+        # - ResNet con pre-activations: a veces se usa bias pequeño
+        # - Cuando tienes conocimiento previo de la salida esperada
+
+
+# ✅ FIX 2: Para BatchNorm, el bias es REDUNDANTE
+class NetWithBN(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.conv = nn.Conv2d(3, 64, 3)
+        self.bn = nn.BatchNorm2d(64)
+        # ✅ BatchNorm tiene scale y bias learnable
+        # NO necesitas bias antes de BN — es redundante
+        nn.init.zeros_(self.conv.bias)  # Solo si quieres, pero bn lo compensa
+</code></pre>
+
+<h3>Error 3: No Inicializar Weights Antes del Training — Variance Inapropiada</h3>
+
+<p><strong>El problema</strong>: Muchos asumen que PyTorch inicializa "bien" por defecto. La verdad: <code>torch.nn.Linear</code> usa <code>Uniform(-sqrt(k), sqrt(k))</code> donde k=1/fan_in para ReLU. Esto está bien, pero no es óptimo, y para arquitecturas especiales puedes perder rendimiento.</p>
+
+<pre><code class="language-python"># ❌ ERROR: Dejar que todo sea "random" sin control
+class NegligentNet(nn.Module):
+    def __init__(self):
+        super().__init__()
+        # Esto usa la inicialización por defecto de PyTorch:
+        # fan_in mode con std = sqrt(2/fan_in) para ReLU
+        # ¡Pero no sabes exactamente qué obtienes!
+        self.net = nn.Sequential(
+            nn.Linear(784, 256), nn.ReLU(),
+            nn.Linear(256, 128), nn.ReLU(),
+            nn.Linear(128, 10)
+        )
+        # No hay control sobre la inicialización
+        # Si cambias la activación a Swish, la inicialización ya no es óptima
+
+
+# ✅ FIX: Control explícito de la inicialización
+class ControlledInitNet(nn.Module):
+    def __init__(self, activation='relu'):
+        super().__init__()
+        self.activations = {
+            'relu': ('kaiming_uniform', 'relu'),
+            'leaky_relu': ('kaiming_uniform', 'leaky_relu'),
+            'swish': ('xavier_uniform', 'sigmoid'),  # Swish ≈ x*sig(x)
+            'tanh': ('xavier_uniform', 'tanh'),
+        }
+        
+        init_fn_name, nonlinearity = self.activations.get(activation, ('xavier_uniform', 'relu'))
+        
+        self.net = nn.Sequential(
+            nn.Linear(784, 256), getattr(nn, activation.title().replace('_', ''))(),
+            nn.Linear(256, 128), getattr(nn, activation.title().replace('_', ''))(),
+            nn.Linear(128, 10)
+        )
+        
+        # Inicialización correcta para la activación
+        self._init_weights(init_fn_name, nonlinearity)
+    
+    def _init_weights(self, init_fn_name, nonlinearity):
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                if init_fn_name == 'kaiming_uniform':
+                    nn.init.kaiming_uniform_(m.weight, nonlinearity=nonlinearity)
+                elif init_fn_name == 'xavier_uniform':
+                    nn.init.xavier_uniform_(m.weight, gain=nn.init.calculate_gain(nonlinearity))
+                nn.init.zeros_(m.bias)
+
+
+# ✅ FIX 2: Usar el módulo torch.nn.init con propósito
+def proper_init_for_architecture(model, arch_type='cnn'):
+    """
+    Inicialización según arquitectura.
+    
+    arch_type options:
+    - 'cnn': Kaiming/He para capas conv con ReLU
+    - 'rnn': Orthogonal para capas recurrentes
+    - 'transformer': Especial para attention layers
+    """
+    for name, param in model.named_parameters():
+        if 'weight' in name:
+            if 'rnn' in name.lower() or 'lstm' in name.lower() or 'gru' in name.lower():
+                nn.init.orthogonal_(param)
+            elif 'conv' in name.lower():
+                nn.init.kaiming_normal_(param, mode='fan_out', nonlinearity='relu')
+            else:  # Linear layers
+                nn.init.xavier_uniform_(param, gain=nn.init.calculate_gain('relu'))
+        elif 'bias' in name:
+            nn.init.zeros_(param)
+    
+    return model
+</code></pre>
+
 <hr>
-<h2>✅ Mejores Prácticas</h2>
+<h2>✅ Resumen y Cierre</h2>
+
+<p>Bueno parcero, vamos con el resumen del día:</p>
+
 <ul>
-<li>Siempre documenta tu código y decisiones de diseño.</li>
-<li>Usa versionado para tus experimentos.</li>
-<li>Valida siempre con datos de prueba independientes.</li>
-<li>Monitorea las métricas en producción.</li>
+<li><strong>Xavier/Glorot</strong>: Para sigmoid y tanh. NO para ReLU — estás perdiendo la mitad de tu red.</li>
+<li><strong>He/Kaiming</strong>: Para ReLU, LeakyReLU, PReLU. Es el estándar actual para CNNs y MLPs profundas.</li>
+<li><strong>Orthogonal</strong>: Para RNNs, LSTMs, GRUs y redes muy profundas donde el gradient flow en secuencias es crítico.</li>
+<li><strong>Bias siempre en cero</strong>: A menos que tengas una razón específica y documentada para hacerlo diferente.</li>
+<li><strong>PyTorch por defecto</strong>: Usa kaiming_uniform para Linear/Conv2d con ReLU — está bien, pero no óptimo para todas las arquitecturas.</li>
 </ul>
-<hr>
-<h2>📚 Recursos</h2>
-<ul>
-<li>Documentación oficial de torch.nn.init</li>
-<li>Tutoriales prácticos en el blog</li>
-<li>Código fuente en GitHub</li>
-</ul>
+
+<p>La próxima vez que copies código de internet y veas un <code>nn.init.xavier_uniform_</code> sin contexto, ya sabes que probablemente está mal si la red usa ReLU. Pregúntate: ¿el autor sabía lo que hacía o solo copió de otro lado?</p>
+
+<p>Eso es todo por hoy, nos vemos en el Día 138 donde vamos con Loss Functions en profundidad. ¡Éxitos!</p>
+
+<p><em>— Fabián</em></p>
   </article>
 
   <script>
