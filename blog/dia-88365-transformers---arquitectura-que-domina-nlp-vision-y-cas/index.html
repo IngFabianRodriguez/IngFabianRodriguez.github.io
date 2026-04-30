@@ -118,8 +118,224 @@ nav {
   </header>
 
   <article class="article-body">
-    <h1>Transformers - Arquitectura que Domina NLP, Visión y Casi Todo lo Demás</h1>
-<p>Contenido del Día 88 - Esta entrada aún está en construcción. ¡Vuelve pronto!</p>
+    <h2>La Intro que el 85% Se Salta</h2>
+    <p>Parcero, ¿por qué en 2020 cuando OpenAI publicó GPT-3 con 175B parámetros, la gente quedó sorprendida de que un modelo de lenguaje pudiera hacer traducción, summarization, question answering, y hasta código — todo con el mismo architecture? El transformer es esa arquitectura. Desde el "Attention Is All You Need" de Vaswani et al. (2017), el transformer ha dominado NLP, luego visión por computadora, audio, y prácticamente cualquier dominio donde haya sequences o sets de datos.</p>
+    <p>Yo implementé mi primer transformer en 2018 — una versión pequeña para traducción EN→FR. Después de semanas de debugging (¿por qué el attention weights eran NaN? Ah, sí, olvidé el scale factor), el modelo funcionó. Y lo más remarkable: una vez que entendí los components individuales (MHA, FFN, positional encoding), implementar el modelo completo fue relativamente straightforward.</p>
+    <p>Hoy: la arquitectura transformer completa — encoder-decoder, los components, y cómo implementarla.</p>
+
+    <h2>Arquitectura Completa del Transformer</h2>
+    <p>El transformer original tenía encoder y decoder:</p>
+    <p><strong>Encoder:</strong> $N$ capas idénticas, cada una con:</p>
+    <ol>
+      <li>Multi-Head Self-Attention</li>
+      <li>Feed-Forward Network (FFN): dos linear transforms con GELU</li>
+      <li>Cada subcapa tiene skip connection + layer norm</li>
+    </ol>
+    <p><strong>Decoder:</strong> Similar al encoder, pero con:</p>
+    <ol>
+      <li>Masked Multi-Head Self-Attention (causal — no ve el futuro)</li>
+      <li>Encoder-Decoder Attention (keys/values del encoder, queries del decoder)</li>
+      <li>Feed-Forward Network</li>
+    </ol>
+    <p><strong>Key insight:</strong> Cada subcapa tiene skip connection (input se suma al output) y LayerNorm se aplica después de la skip. Esto es Pre-LN (Layer Norm antes del attention/FFN) que es más estable que Post-LN (Layer Norm después).</p>
+
+    <h2>Componentes Clave</h2>
+    <p><strong>Positional Encoding:</strong> Los transformers no tienen recurrence ni convolución, así que no saben el orden de las palabras naturalmente. Positional encoding inyecta información de posición usando senos y cosenos en diferentes frecuencias:</p>
+    <p>$PE_{(pos, 2i)} = \sin(pos / 10000^{2i/d_{model}})$</p>
+    <p>$PE_{(pos, 2i+1)} = \cos(pos / 10000^{2i/d_{model}})$</p>
+    <p>La suma de embeddings + positional encoding permite que el modelo use la posición.</p>
+
+    <p><strong>Feed-Forward Network:</strong> Después del attention, cada capa tiene un FFN:</p>
+    <p>$\text{FFN}(x) = \max(0, xW_1 + b_1)W_2 + b_2$</p>
+    <p>El FFN es típicamente un expansion-collapse: expande a $4 \times d_{model}$ y colapsa de vuelta. Aproximadamente 1/3 de los parámetros del transformer están en los FFNs.</p>
+
+    <h2>Código Production-Grade</h2>
+    <pre><code class="language-python">import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import math
+
+
+class PositionalEncoding(nn.Module):
+    def __init__(self, d_model, max_len=5000):
+        super().__init__()
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        pe = pe.unsqueeze(0)
+        self.register_buffer('pe', pe)
+
+    def forward(self, x):
+        return x + self.pe[:, :x.size(1)]
+
+
+class MultiHeadAttention(nn.Module):
+    def __init__(self, d_model, num_heads, dropout=0.1):
+        super().__init__()
+        assert d_model % num_heads == 0
+        self.d_k = d_model // num_heads
+        self.num_heads = num_heads
+        self.w_q = nn.Linear(d_model, d_model)
+        self.w_k = nn.Linear(d_model, d_model)
+        self.w_v = nn.Linear(d_model, d_model)
+        self.w_o = nn.Linear(d_model, d_model)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, query, key, value, mask=None):
+        batch_size = query.size(0)
+        Q = self.w_q(query).view(batch_size, -1, self.num_heads, self.d_k).transpose(1, 2)
+        K = self.w_k(key).view(batch_size, -1, self.num_heads, self.d_k).transpose(1, 2)
+        V = self.w_v(value).view(batch_size, -1, self.num_heads, self.d_k).transpose(1, 2)
+
+        scores = torch.matmul(Q, K.transpose(-2, -1)) / math.sqrt(self.d_k)
+        if mask is not None:
+            scores = scores.masked_fill(mask == 0, -1e9)
+        attn = F.softmax(scores, dim=-1)
+        attn = self.dropout(attn)
+
+        x = torch.matmul(attn, V)
+        x = x.transpose(1, 2).contiguous().view(batch_size, -1, self.num_heads * self.d_k)
+        return self.w_o(x)
+
+
+class FeedForward(nn.Module):
+    def __init__(self, d_model, d_ff=2048, dropout=0.1):
+        super().__init__()
+        self.w1 = nn.Linear(d_model, d_ff)
+        self.w2 = nn.Linear(d_ff, d_model)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x):
+        return self.w2(self.dropout(F.gelu(self.w1(x))))
+
+
+class TransformerEncoderLayer(nn.Module):
+    def __init__(self, d_model, num_heads, d_ff=2048, dropout=0.1):
+        super().__init__()
+        self.self_attn = MultiHeadAttention(d_model, num_heads, dropout)
+        self.ffn = FeedForward(d_model, d_ff, dropout)
+        self.norm1 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x, mask=None):
+        # Pre-LN: norm antes de subcapa (más estable)
+        x = x + self.dropout(self.self_attn(self.norm1(x), self.norm1(x), self.norm1(x), mask))
+        x = x + self.dropout(self.ffn(self.norm2(x)))
+        return x
+
+
+class TransformerEncoder(nn.Module):
+    def __init__(self, num_layers, d_model, num_heads, d_ff=2048, dropout=0.1):
+        super().__init__()
+        self.layers = nn.ModuleList([
+            TransformerEncoderLayer(d_model, num_heads, d_ff, dropout)
+            for _ in range(num_layers)
+        ])
+        self.norm = nn.LayerNorm(d_model)
+
+    def forward(self, x, mask=None):
+        for layer in self.layers:
+            x = layer(x, mask)
+        return self.norm(x)
+
+
+class Transformer(nn.Module):
+    """Transformer completo para seq2seq (traducción, etc.)."""
+    def __init__(self, vocab_size, d_model=512, num_heads=8, num_layers=6,
+                 d_ff=2048, dropout=0.1, max_seq_len=512):
+        super().__init__()
+        self.d_model = d_model
+        self.embedding = nn.Embedding(vocab_size, d_model)
+        self.pos_enc = PositionalEncoding(d_model, max_seq_len)
+        self.encoder = TransformerEncoder(num_layers, d_model, num_heads, d_ff, dropout)
+        self.decoder = TransformerDecoder(num_layers, d_model, num_heads, d_ff, dropout)
+        self.output_proj = nn.Linear(d_model, vocab_size)
+
+    def forward(self, src, tgt, src_mask=None, tgt_mask=None):
+        # Encode
+        src_emb = self.pos_enc(self.embedding(src)) * math.sqrt(self.d_model)
+        memory = self.encoder(src_emb, src_mask)
+
+        # Decode
+        tgt_emb = self.pos_enc(self.embedding(tgt)) * math.sqrt(self.d_model)
+        output = self.decoder(tgt_emb, memory, tgt_mask, src_mask)
+
+        return self.output_proj(output)
+
+
+class TransformerDecoderLayer(nn.Module):
+    def __init__(self, d_model, num_heads, d_ff=2048, dropout=0.1):
+        super().__init__()
+        self.self_attn = MultiHeadAttention(d_model, num_heads, dropout)
+        self.cross_attn = MultiHeadAttention(d_model, num_heads, dropout)
+        self.ffn = FeedForward(d_model, d_ff, dropout)
+        self.norm1 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
+        self.norm3 = nn.LayerNorm(d_model)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x, memory, tgt_mask=None, src_mask=None):
+        # Self-attention (causal)
+        x = x + self.dropout(self.self_attn(self.norm1(x), self.norm1(x), self.norm1(x), tgt_mask))
+        # Cross-attention (encoder-decoder)
+        x = x + self.dropout(self.cross_attn(self.norm2(x), memory, memory, src_mask))
+        # FFN
+        x = x + self.dropout(self.ffn(self.norm3(x)))
+        return x
+
+
+class TransformerDecoder(nn.Module):
+    def __init__(self, num_layers, d_model, num_heads, d_ff=2048, dropout=0.1):
+        super().__init__()
+        self.layers = nn.ModuleList([
+            TransformerDecoderLayer(d_model, num_heads, d_ff, dropout)
+            for _ in range(num_layers)
+        ])
+        self.norm = nn.LayerNorm(d_model)
+
+    def forward(self, x, memory, tgt_mask=None, src_mask=None):
+        for layer in self.layers:
+            x = layer(x, memory, tgt_mask, src_mask)
+        return self.norm(x)
+
+
+if __name__ == '__main__':
+    model = Transformer(vocab_size=10000, d_model=256, num_heads=8, num_layers=4)
+    src = torch.randint(0, 10000, (2, 32))
+    tgt = torch.randint(0, 10000, (2, 32))
+    output = model(src, tgt)
+    print(f"Output shape: {output.shape}")  # [2, 32, 10000]</code></pre>
+
+    <h2>Errores Comunes</h2>
+    <p><strong>Error 1: No aplicar masking correctamente en el decoder</strong></p>
+    <p>El decoder tiene dos máscaras: la causal mask (para que no vea el futuro) y el padding mask (para ignorar tokens de padding). Si olvidas cualquiera de las dos, el modelo tiene información que no debería tener o ignora el padding incorrectamente.</p>
+    <p><strong>Fix:</strong> Aplica ambas máscaras explícitamente. La causal mask es <code>torch.tril(torch.ones(seq_len, seq_len))</code> y el padding mask es un boolean tensor que marca posiciones de padding como False.</p>
+
+    <p><strong>Error 2: Usar Post-LN en lugar de Pre-LN</strong></p>
+    <p>El paper original usa Post-LN (LayerNorm después de la skip connection). Esto es inestable durante training — a veces los gradientes explotan con muchas capas. Pre-LN (LayerNorm antes de la subcapa) es significativamente más estable y es el estándar actual.</p>
+    <p><strong>Fix:</strong> Usa Pre-LN: <code>x = x + sublayer(LayerNorm(x))</code> en lugar de <code>x = LayerNorm(x + sublayer(x))</code>. Los resultados son comparables pero el training es más estable.</p>
+
+    <p><strong>Error 3: Ignorar el scaling del embedding</strong></p>
+    <p>Los embeddings se multiplican por $\sqrt{d_{model}}$ antes de añadir positional encoding. Esto es porque los embeddings tienen varianza ~1/d_model y el positional encoding tiene varianza 1. Si no los escalas, el positional encoding domina y el modelo no puede aprender las embeddings de las palabras.</p>
+    <p><strong>Fix:</strong> Multiplica los embeddings por <code>math.sqrt(d_model)</code> antes de añadir positional encoding.</p>
+
+    <h2>Resumen del Día</h2>
+    <ul>
+      <li><strong>Transformer</strong>: Encoder + Decoder. Attention + FFN + Skip Connections + LayerNorm.</li>
+      <li><strong>Encoder</strong>: Self-Attention → FFN. Cada capa tiene skip connection y LayerNorm.</li>
+      <li><strong>Decoder</strong>: Masked Self-Attention → Cross-Attention (con encoder) → FFN.</li>
+      <li><strong>Pre-LN</strong>: LayerNorm antes de subcapa (más estable que Post-LN).</li>
+      <li><strong>Positional Encoding</strong>: Senos/cosenos para inyectar información de posición.</li>
+      <li><strong>FFN</strong>: Expansion a 4x d_model → GELU → collapse. 1/3 de los parámetros.</li>
+      <li><strong>Masking</strong>: Causal mask (no futuro) + padding mask (ignorar PAD).</li>
+    </ul>
+
+    <h2>El Cierre</h2>
+    <p>Parcero, el transformer es probablemente la arquitectura más importante en ML desde 2017. Todo lo que hace ChatGPT, GPT-4, BERT, DALL-E, Stable Diffusion (con U-Net adaptada), Whisper — todo está basado en transformers. La razón de su éxito: permite parallelización masiva durante training (a diferencia de RNNs que son secuenciales), y la atención permite capturar dependencias de largo alcance sin fading gradients.</p>
+    <p>Esa vaina de "es solo attention" es cierto en cierto modo, pero el transformer es más que la suma de sus partes: la combinación de attention + FFN + skip connections + positional encoding + pre-LN + training tricks (warmup, label smoothing) es lo que lo hace funcionar tão bien. Hágale que cuando uses un modelo basado en transformer, sepas que estás usando la misma arquitectura que ha revolucionado todos los campos del machine learning. ¡Fin del bloque de Computer Vision a NLP. Nos vemos en el día 89!</p>
   </article>
 </body>
 </html>

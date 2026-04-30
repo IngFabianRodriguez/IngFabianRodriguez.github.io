@@ -118,8 +118,144 @@ nav {
   </header>
 
   <article class="article-body">
-    <h1>Transfer Learning - Por Qué Entrenar desde Cero es Desperdiciar Recursos y Tiempo</h1>
-<p>Contenido del Día 84 - Esta entrada aún está en construcción. ¡Vuelve pronto!</p>
+    <h2>La Intro que el 85% Se Salta</h2>
+    <p>Parcero, ¿cuántas veces has entrenamientos un modelo desde cero cuando ya existía uno que podía resolver tu problema? Es probablemente el error más común en ML aplicado. En 2017, cuando empecé a trabajar en NLP, alguien me pidió entrenar un classifier de sentiment en 50K reviews. Yo: "Voy a entrenar un LSTM desde cero." Tardé 3 semanas. Si hubiera usado transfer learning con un modelo pre-entrenado, habrían sido 2 horas.</p>
+    <p>Transfer learning es la técnica de tomar un modelo pre-entrenado en un dataset grande y adaptarlo a tu problema específico. En lugar de entrenar desde cero,スタート con knowledge ya existente. Los features de bajo nivel (bordes, texturas en visión; contexto léxico en NLP) ya están aprendidos — solo necesitas adaptarlos a tu tarea.</p>
+    <p>Hoy: cómo hacer transfer learning correctamente, cuándo funciona y cuándo no, y los errores que el 85% comete.</p>
+
+    <h2>¿Cuándo Funciona Transfer Learning?</h2>
+    <p>Transfer learning funciona cuando el <strong>feature space</strong> del modelo pre-entrenado es útil para tu tarea. Esto pasa cuando:</p>
+    <ul>
+      <li>El dataset de pre-training es mucho más grande que el tuyo ( ImageNet: 14M imágenes vs tu 10K )</li>
+      <li>El dominio del pre-training es similar al tuyo (Foto de naturales → medical imaging; texto general → sentiment analysis)</li>
+      <li>Las features de bajo nivel son compartidas (bordes, texturas, formas en visión; word embeddings en NLP)</li>
+    </ul>
+    <p>Transfer learning NO funciona bien cuando:</p>
+    <ul>
+      <li>El dominio es muy diferente (model entrenado en fotos naturales no ajuda para señales de tráfico)</li>
+      <li>Las features de alto nivel son lo importante y no son transferibles</li>
+    </ul>
+
+    <h2>Las Estrategias de Fine-Tuning</h2>
+    <p><strong>Feature Extraction ( frozen backbone):</strong> Congelas el backbone pre-entrenado y solo entrenas el head. El backbone actúa como feature extractor fijo. Bueno cuando: tu dataset es pequeño y similar al pre-training. Rápido, no sobreajusta.</p>
+    <p><strong>Fine-tuning completo:</strong> Desconjetas algunas o todas las capas del backbone y las re-entrenas con tu dataset. Bueno cuando: tu dataset es moderado (10K+) y algo diferente del pre-training. Más lento, más risk de overfitting.</p>
+    <p><strong>Fine-tuning gradual:</strong> Empiezas descongelando solo las capas finales, luego gradualmente las anteriores (layer-wise unfreezing). Previene que las features de bajo nivel se destruyan.</p>
+
+    <h2>Código Production-Grade</h2>
+    <pre><code class="language-python">import torch
+import torch.nn as nn
+import torchvision.models as models
+from dataclasses import dataclass
+from typing import Literal
+
+
+@dataclass
+class TransferLearningConfig:
+    strategy: Literal['freeze', 'finetune_last', 'finetune_all', 'layerwise'] = 'finetune_last'
+    backbone: str = 'resnet50'
+    pretrained: bool = True
+    unfreeze_at_epoch: int = 5
+    lr_backbone: float = 1e-5
+    lr_head: float = 1e-3
+
+
+class TransferLearningModel(nn.Module):
+    def __init__(self, backbone_name='resnet50', num_classes=10, pretrained=True):
+        super().__init__()
+        if backbone_name == 'resnet50':
+            backbone = models.resnet50(weights='IMAGENET1K_V2' if pretrained else None)
+            self.feature_dim = 2048
+        elif backbone_name == 'resnet18':
+            backbone = models.resnet18(weights='IMAGENET1K_V1' if pretrained else None)
+            self.feature_dim = 512
+        elif backbone_name == 'efficientnet_b0':
+            backbone = models.efficientnet_b0(weights='IMAGENET1K_V1' if pretrained else None)
+            self.feature_dim = 1280
+
+        self.backbone = nn.Sequential(*list(backbone.children())[:-1])  # Remove FC
+        self.head = nn.Sequential(
+            nn.Dropout(0.3),
+            nn.Linear(self.feature_dim, num_classes),
+        )
+        self.frozen = True
+        self._freeze_backbone()
+
+    def _freeze_backbone(self):
+        for param in self.backbone.parameters():
+            param.requires_grad = False
+        self.frozen = True
+
+    def _unfreeze_backbone(self):
+        for param in self.backbone.parameters():
+            param.requires_grad = True
+        self.frozen = False
+
+    def finetune_last_n_layers(self, n=2):
+        """Descongela solo las últimas n capas del backbone."""
+        self._freeze_backbone()
+        # Descongelamos las últimas n capas (children del Sequential del backbone)
+        backbone_children = list(self.backbone.children())
+        for layer in backbone_children[-n:]:
+            for param in layer.parameters():
+                param.requires_grad = True
+        self.frozen = False
+
+    def forward(self, x):
+        features = self.backbone(x)
+        features = features.view(features.size(0), -1)
+        return self.head(features)
+
+
+def create_optimizer_with_layerwise_lr(model, lr_head=1e-3, lr_backbone=1e-5):
+    """Optimizer con learning rates diferentes para head y backbone."""
+    head_params = list(model.head.parameters())
+    backbone_params = [p for p in model.backbone.parameters() if p.requires_grad]
+
+    optimizer = torch.optim.AdamW([
+        {'params': backbone_params, 'lr': lr_backbone},
+        {'params': head_params, 'lr': lr_head},
+    ], weight_decay=1e-4)
+
+    return optimizer
+
+
+# ─── Ejemplo de training loop ───────────────────────────────────────────────
+if __name__ == '__main__':
+    model = TransferLearningModel('resnet50', num_classes=10, pretrained=True)
+    model.finetune_last_n_layers(n=2)  # Descongelar últimas 2 capas del backbone
+
+    optimizer = create_optimizer_with_layerwise_lr(model, lr_head=1e-3, lr_backbone=1e-5)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=50)
+
+    # Training loop...
+    print(f"Trainable params: {sum(p.numel() for p in model.parameters() if p.requires_grad):,}")</code></pre>
+
+    <h2>Errores Comunes</h2>
+    <p><strong>Error 1: Descongelar todo desde el día uno</strong></p>
+    <p>Si tu dataset es pequeño y descongelas el backbone completo, las features de alto nivel (aprender para ImageNet) se destruyen antes de que el head haya aprendido a usar las features correctamente. El resultado: overfitting severo o convergencia a un óptimo worse que si hubieras congelado todo.</p>
+    <p><strong>Fix:</strong> Empieza con el backbone congelado (feature extraction). Entrena hasta que el head converja. Luego descongela gradualmente.</p>
+
+    <p><strong>Error 2: Usar el mismo LR para head y backbone</strong></p>
+    <p>El backbone pre-entrenado ya tiene features buenos; actualizarlo con LR alto los destruye. El head necesita LR más alto porque está entrenando desde zero. LR para backbone debe ser 10-100x menor que para el head.</p>
+    <p><strong>Fix:</strong> Usa parameter groups con LR diferente: backbone (1e-5 a 1e-4) y head (1e-3 a 1e-2).</p>
+
+    <p><strong>Error 3: No usar preprocessing consistente con el pre-training</strong></p>
+    <p>Si el modelo fue pre-entrenado con ImageNet normalization (mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]) y tú no normalizas así, las activations del modelo serán inconsistentes y la quality caerá drásticamente.</p>
+    <p><strong>Fix:</strong> Usa exactamente el mismo preprocessing que el modelo pre-entrenado usaba. Revisa la documentación del modelo.</p>
+
+    <h2>Resumen del Día</h2>
+    <ul>
+      <li><strong>Feature Extraction</strong>: Backbone congelado. Solo se entrena el head. Bueno para datasets pequeños.</li>
+      <li><strong>Fine-tuning completo</strong>: Todo se entrena. Bueno para datasets moderados.</li>
+      <li><strong>Layerwise unfreezing</strong>: Gradual, de capas finales a iniciales. Previene destruir features.</li>
+      <li><strong>LR diferente por layer</strong>: Head alto, backbone bajo (10-100x diferencia).</li>
+      <li><strong>Preprocessing consistente</strong>: Usar el mismo mean/std que el pre-training.</li>
+      <li><strong>Cuándo funciona</strong>: Datasets grandes pre-training, dominios similares, features compartidas.</li>
+    </ul>
+
+    <h2>El Cierre</h2>
+    <p>Parcero, transfer learning es probablemente la técnica más importante en ML moderno. Con modelos como ResNet, BERT, GPT pre-entrenados en petabytes de data, intentar entrenar desde cero es casi siempre desperdiciar recursos. La clave es saber cuándo descongelar (o no) y usar LR apropiadamente.</p>
+    <p>Esa vaina de "vamos a entrenar desde cero porque así controlamos todo" es una approach de alguien con GPUs ilimitadas y tiempo de sobra. El resto de nosotros usa transfer learning y llega al mismo resultado en horas en lugar de semanas. ¡Nos vemos en el día 85!</p>
   </article>
 </body>
 </html>

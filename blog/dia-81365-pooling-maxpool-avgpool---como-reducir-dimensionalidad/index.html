@@ -118,8 +118,140 @@ nav {
   </header>
 
   <article class="article-body">
-    <h1>Pooling (MaxPool, AvgPool) - Cómo Reducir Dimensionalidad sin Perder Información Relevante</h1>
-<p>Contenido del Día 81 - Esta entrada aún está en construcción. ¡Vuelve pronto!</p>
+    <h2>La Intro que el 85% Se Salta</h2>
+    <p>Parcero, ¿alguna vez te has preguntado cómo es que una red neuronal puede detectar que en una imagen hay un gato, sin que nadie le haya explicado explícitamente qué es un gato? No hay una regla que diga "un gato tiene forma de X con orejas de Y" — la red simplemente aprende a reconocer patrones visuales por sí misma. El mecanismo detrás de esto son las capas convolucionales (Conv2D).</p>
+    <p>Yo lo entendí verdaderamente cuando implementé mi primera CNN desde cero. Después de ver cómo los filtros aprendían solos a detectar bordes, texturas, y eventualmente objetos completos, me di cuenta de que la convolución no es solo una operación de procesamiento de imagen — es la forma en que las máquinas aprenden a ver. Y lo más remarkable: la matemática detrás es bastante simple.</p>
+    <p>Hoy: cómo funcionan las capas convolucionales, por qué son tan efectivas para visión, y cómo implementarlas correctamente.</p>
+
+    <h2>La Operación de Convolución</h2>
+    <p>Una convolución es una operación linear que aplica un filtro (kernel) sobre una imagen de entrada. El filtro es una matriz pequeña (típicamente 3x3, 5x5, o 7x7) que se desliza sobre toda la imagen. En cada posición, se calcula el producto punto entre el filtro y la región de la imagen subyacente:</p>
+    <p>$$y[i,j] = \sum_m \sum_n x[i+m, j+n] \cdot k[m,n]$$</p>
+    <p>Donde $x$ es la imagen de entrada, $k$ es el kernel, e $y$ es el feature map de salida. El kernel se aprende durante el entrenamiento — la red descubre qué patrones debe detectar.</p>
+
+    <h2>Parámetros de Conv2D en PyTorch</h2>
+    <p><code>torch.nn.Conv2d(in_channels, out_channels, kernel_size, stride=1, padding=0, dilation=1, groups=1, bias=True)</code></p>
+    <p><strong>in_channels:</strong> Canales de entrada (3 para RGB, 1 para grayscale, el número de feature maps de la capa anterior)</p>
+    <p><strong>out_channels:</strong> Número de filtros que aplicas. Cada filtro produce un feature map de salida. Más filtros = más features detectados.</p>
+    <p><strong>kernel_size:</strong> Tamaño del filtro. 3x3 y 5x5 son los más comunes. Filtros pequeños capturan features finas; filtros grandes capturan patrones más globales.</p>
+    <p><strong>stride:</strong> Cuántos pixels se mueve el filtro en cada paso. stride=1 produce output del mismo tamaño que input; stride=2 reduce las dimensiones a la mitad.</p>
+    <p><strong>padding:</strong> Pixels de cero añadidos alrededor de la imagen antes de aplicar la convolución. padding=1 con kernel=3x3 mantiene el tamaño original.</p>
+    <p><strong>dilation:</strong> Espaciado entre los elementos del kernel. dilation=1 es el default (kernel denso). dilation>1 produce un kernel "inflado" que captura contexto más amplio.</p>
+
+    <h2>Feature Maps y Receptive Field</h2>
+    <p>Cada filtro produce un feature map — una matriz 2D donde cada valor indica qué tanto matchea el filtro en esa posición. Varios filtros juntos producen múltiples feature maps que forman el input para la siguiente capa.</p>
+    <p>El <strong>receptive field</strong> es el área de la imagen original que afecta a un pixel particular en un feature map dado. En una CNN profunda, el receptive field de las capas finales puede ser toda la imagen — lo que les permite capturar features globales.</p>
+
+    <h2>Código Production-Grade</h2>
+    <pre><code class="language-python">import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from dataclasses import dataclass
+
+
+class ConvBlock(nn.Module):
+    """Bloque convolucional estándar: Conv -> BatchNorm -> ReLU"""
+    def __init__(self, in_ch, out_ch, kernel_size=3, stride=1, padding=1):
+        super().__init__()
+        self.conv = nn.Conv2d(in_ch, out_ch, kernel_size, stride, padding, bias=False)
+        self.bn = nn.BatchNorm2d(out_ch)
+        self.relu = nn.ReLU(inplace=True)
+
+    def forward(self, x):
+        return self.relu(self.bn(self.conv(x)))
+
+
+class DepthwiseSeparableConv(nn.Module):
+    """
+    Depthwise Separable Convolution:
+    1. Depthwise: un filtro por canal (in_ch filtros de 3x3)
+    2. Pointwise: 1x1 conv que mezcla canales (in_ch -> out_ch)
+    Más eficiente que Conv2d completo.
+    """
+    def __init__(self, in_ch, out_ch):
+        super().__init__()
+        self.depthwise = nn.Conv2d(in_ch, in_ch, 3, 1, 1, groups=in_ch, bias=False)
+        self.pointwise = nn.Conv2d(in_ch, out_ch, 1, bias=False)
+        self.bn = nn.BatchNorm2d(out_ch)
+        self.relu = nn.ReLU(inplace=True)
+
+    def forward(self, x):
+        x = self.depthwise(x)
+        x = self.pointwise(x)
+        return self.relu(self.bn(x))
+
+
+class DilatedConvBlock(nn.Module):
+    """Convolución dilatada (Atrous) para expandir receptive field sin perder resolución."""
+    def __init__(self, in_ch, out_ch, dilation_rate=2):
+        super().__init__()
+        self.conv = nn.Conv2d(in_ch, out_ch, 3, 1, padding=dilation_rate, dilation=dilation_rate, bias=False)
+        self.bn = nn.BatchNorm2d(out_ch)
+        self.relu = nn.ReLU(inplace=True)
+
+    def forward(self, x):
+        return self.relu(self.bn(self.conv(x)))
+
+
+class SimpleCNN(nn.Module):
+    """CNN simple para CIFAR-10."""
+    def __init__(self, num_classes=10):
+        super().__init__()
+        # in: 3x32x32
+        self.features = nn.Sequential(
+            ConvBlock(3, 32, kernel_size=3, padding=1),      # 32x32
+            nn.MaxPool2d(2),                                  # 16x16
+            ConvBlock(32, 64, kernel_size=3, padding=1),    # 16x16
+            nn.MaxPool2d(2),                                  # 8x8
+            ConvBlock(64, 128, kernel_size=3, padding=1),    # 8x8
+            nn.AdaptiveAvgPool2d((1, 1)),                   # 1x1
+        )
+        self.classifier = nn.Linear(128, num_classes)
+
+    def forward(self, x):
+        x = self.features(x)
+        x = x.view(x.size(0), -1)
+        return self.classifier(x)
+
+
+def count_parameters(model):
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+
+if __name__ == '__main__':
+    model = SimpleCNN()
+    x = torch.randn(8, 3, 32, 32)
+    out = model(x)
+    print(f"Output shape: {out.shape}")  # [8, 10]
+    print(f"Parameters: {count_parameters(model):,}")</code></pre>
+
+    <h2>Errores Comunes</h2>
+    <p><strong>Error 1: Padding incorrecto que destruye la información de los bordes</strong></p>
+    <p>Sin padding, cada convolución shrink la imagen. Después de varias capas, la información de los bordes se pierde porque nunca son el centro de un kernel. Muchos practitioners olvidan añadir padding y se preguntan por qué el modelo no aprende features de los bordes.</p>
+    <p><strong>Fix:</strong> Usa padding para mantener el spatial size. Con kernel=3, usa padding=1. Con kernel=5, usa padding=2. O usa <code>padding='same'</code> si tu framework lo soporta (PyTorch no lo tiene built-in, pero puedes calcularlo).</p>
+
+    <p><strong>Error 2: Mezclar canales con y sin bias</strong></p>
+    <p>Cuando usas <code>BatchNorm</code> después de <code>Conv2d</code>, el bias de la convolución es innecesario porque BatchNorm lo absorbe. Pero si olvidas poner <code>bias=False</code> y NO usas BatchNorm, el bias ayuda a la convolución a shift la activation function. Muchos practitioners pierden este detalle y entrenan con bias redundant cuando tienen BatchNorm.</p>
+    <p><strong>Fix:</strong> Si usas BatchNorm después de Conv2d, pon <code>bias=False</code> en la convolución. Si no usas BatchNorm, deja bias=True.</p>
+
+    <p><strong>Error 3: depthwise separable convolutions sin entender cuándo usarlas</strong></p>
+    <p>Depthwise separable convolutions ( Depthwise + Pointwise) son ~8-9x más baratas computacionalmente que convolución completa con la misma dimensionalidad. Son el basis de MobileNet y EfficientNet. Pero tienen menos capacidad de aprender features complejos porque cada canal se procesa independientemente antes de mezclarse.</p>
+    <p><strong>Fix:</strong> Usa depthwise separable cuando necesites eficiencia (móvil, edge devices) y la calidad del modelo no sea crítica. Para máxima accuracy en GPUs potentes, usa convolución completa.</p>
+
+    <h2>Resumen del Día</h2>
+    <ul>
+      <li><strong>Conv2D</strong>: Aplica filtros que aprenden a detectar patrones visuales. El kernel se desliza sobre la imagen.</li>
+      <li><strong>Feature Maps</strong>: Output de aplicar un filtro. Cada filtro detecta un tipo de patrón.</li>
+      <li><strong>Padding</strong>: Pixels artificiales para mantener el tamaño espacial. Crítico para bordes.</li>
+      <li><strong>Stride</strong>: Paso del filtro. stride=2 reduce dimensiones a la mitad.</li>
+      <li><strong>Dilation</strong>: Espaciado en el kernel. Dilated conv captura contexto más amplio.</li>
+      <li><strong>Depthwise Separable</strong>: Convolución eficiente (MobileNet). Depthwise + Pointwise.</li>
+      <li><strong>Receptive Field</strong>: Área de la imagen original que afecta a un pixel del feature map.</li>
+      <li><strong>Bias=False con BatchNorm</strong>: Si usas BN después de Conv2d, pon bias=False.</li>
+    </ul>
+
+    <h2>El Cierre</h2>
+    <p>Parcero, las capas convolucionales son el foundation de todo computer vision moderno. Desde ResNet hasta YOLO, todas las arquitecturas de visión usan algún tipo de convolución. Entender cómo funcionan — padding, stride, dilation, depthwise separable — te permite no solo usar arquitecturas pre-hechas sino diseñar las tuyas propias cuando el problema lo requiera.</p>
+    <p>Esa vaina de que "las CNNs ya están resueltas con transfer learning" es cierta para muchos casos, pero hay problemas donde necesitas entender convolutions desde cero — cuando trabajas con dominios no naturales (medical imaging, remote sensing, spectral imaging) donde los modelos pre-entrenados de ImageNet no transferen bien. Hágale que la próxima vez que veas un feature map de una CNN, recuerdes que cada pixel es el resultado de un filtro aprendido que detecta algo específico. ¡Nos vemos en el día 82!</p>
   </article>
 </body>
 </html>

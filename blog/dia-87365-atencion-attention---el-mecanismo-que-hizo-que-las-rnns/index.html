@@ -118,8 +118,145 @@ nav {
   </header>
 
   <article class="article-body">
-    <h1>Atención (Attention) - El Mecanismo que Hizo que las RNNs Quedaran Obsoletas</h1>
-<p>Contenido del Día 87 - Esta entrada aún está en construcción. ¡Vuelve pronto!</p>
+    <h2>La Intro que el 85% Se Salta</h2>
+    <p>Parcero, ¿por qué cuando leíste "el gato estaba sentado en el" tu cerebro inmediatamente supo que la siguiente palabra probable es "sofá" o "piso"? No procesaste la oración palabra por palabra — procesaste toda la estructura simultáneamente y usaste el contexto para predecir. Las RNNs procesaban secuencialmente (palabra por palabra). Los transformers procesan todo a la vez, pero necesitan un mecanismo para saber qué palabras importan más en relación a las demás. Ese mecanismo es <strong>attention</strong>.</p>
+    <p>Yo vi el paper "Attention Is All You Need" (Vaswani et al., 2017) en 2017 y mi primera reacción fue: "esto es demasiado simple para funcionar". Comparado con LSTM con attention complejo, el transformer original era casi trivial. Pero los resultados hablaron solos: mejor que todo lo anterior en traducción, y con entrenamiento significativamente más paraleloizable.</p>
+    <p>Hoy: cómo funciona el mecanismo de attention, por qué es tan efectivo, y cómo se implementa.</p>
+
+    <h2>¿Qué Es Attention?</h2>
+    <p>Attention es un mecanismo que permite a cada posición del output enfocarse en cualquier posición del input. Para traducción, esto significa que cuando traduces "gato" puedes ver "estaba", "sentado", "en", "el" — todas las palabras — y decidir cuáles importan más para esa traducción.</p>
+    <p>La matemática de Scaled Dot-Product Attention:</p>
+    <p>$$\text{Attention}(Q, K, V) = \text{softmax}\left(\frac{QK^T}{\sqrt{d_k}}\right)V$$</p>
+    <p>Donde:</p>
+    <ul>
+      <li>$Q$ (Query): Lo que estoy buscando. Cada posición del output tiene un query.</li>
+      <li>$K$ (Key): Lo que cada posición del input ofrece para ser matcheado.</li>
+      <li>$V$ (Value): El contenido real de cada posición del input.</li>
+    </ul>
+    <p>El output es una weighted sum de los values, donde los weights están determinados por qué tan bien el query matchea cada key.</p>
+
+    <h2>Multi-Head Attention</h2>
+    <p>Un solo attention head captura solo un tipo de relación. Multi-head attention proyecta $Q, K, V$ en $h$ subspaces diferentes y aplica attention en paralelo:</p>
+    <p>$$\text{MultiHead}(Q, K, V) = \text{Concat}(\text{head}_1, ..., \text{head}_h)W^O$$</p>
+    <p>Donde $\text{head}_i = \text{Attention}(QW_i^Q, KW_i^K, VW_i^V)$</p>
+    <p>Cada head puede aprender un tipo diferente de relación: uno podría enfocarse en relaciones sintácticas (sujeto-verbo), otro en relaciones semánticas (gato-animal), otro en relaciones de proximidad, etc.</p>
+
+    <h2>Código Production-Grade</h2>
+    <pre><code class="language-python">import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import math
+
+
+class ScaledDotProductAttention(nn.Module):
+    """Scaled Dot-Product Attention: softmax(QK^T / sqrt(d_k)) V"""
+    def forward(self, query, key, value, mask=None):
+        d_k = query.size(-1)
+        scores = torch.matmul(query, key.transpose(-2, -1)) / math.sqrt(d_k)
+        if mask is not None:
+            scores = scores.masked_fill(mask == 0, -1e9)
+        attention_weights = F.softmax(scores, dim=-1)
+        return torch.matmul(attention_weights, value), attention_weights
+
+
+class MultiHeadAttention(nn.Module):
+    """Multi-Head Attention con h heads en paralelo."""
+    def __init__(self, d_model=512, num_heads=8, dropout=0.1):
+        super().__init__()
+        assert d_model % num_heads == 0
+        self.d_k = d_model // num_heads
+        self.num_heads = num_heads
+
+        self.w_q = nn.Linear(d_model, d_model)
+        self.w_k = nn.Linear(d_model, d_model)
+        self.w_v = nn.Linear(d_model, d_model)
+        self.w_o = nn.Linear(d_model, d_model)
+        self.dropout = nn.Dropout(dropout)
+        self.attention = ScaledDotProductAttention()
+
+    def forward(self, query, key, value, mask=None):
+        batch_size = query.size(0)
+
+        # Linear projections y split en heads
+        Q = self.w_q(query).view(batch_size, -1, self.num_heads, self.d_k).transpose(1, 2)
+        K = self.w_k(key).view(batch_size, -1, self.num_heads, self.d_k).transpose(1, 2)
+        V = self.w_v(value).view(batch_size, -1, self.num_heads, self.d_k).transpose(1, 2)
+
+        # Apply attention
+        x, attn_weights = self.attention(Q, K, V, mask)
+
+        # Concatenar heads y aplicar output projection
+        x = x.transpose(1, 2).contiguous().view(batch_size, -1, self.num_heads * self.d_k)
+        return self.w_o(x), attn_weights
+
+
+class SelfAttention(nn.Module):
+    """Self-Attention: Q, K, V vienen del mismo sequence."""
+    def __init__(self, d_model, num_heads=8):
+        super().__init__()
+        self.mha = MultiHeadAttention(d_model, num_heads)
+
+    def forward(self, x, mask=None):
+        # Self-attention: query, key, value son el mismo input
+        return self.mha(x, x, x, mask)
+
+
+class CausalSelfAttention(nn.Module):
+    """Self-Attention causal (para language modeling). No puede ver el futuro."""
+    def __init__(self, d_model, num_heads=8, max_seq_len=512, dropout=0.1):
+        super().__init__()
+        self.mha = MultiHeadAttention(d_model, num_heads, dropout)
+        self.register_buffer(
+            "causal_mask",
+            torch.tril(torch.ones(max_seq_len, max_seq_len)).view(1, 1, max_seq_len, max_seq_len)
+        )
+
+    def forward(self, x):
+        # Crear causal mask para no ver el futuro
+        seq_len = x.size(1)
+        mask = self.causal_mask[:, :, :seq_len, :seq_len]
+        return self.mha(x, x, x, mask)
+
+
+if __name__ == '__main__':
+    # Demo
+    batch_size, seq_len, d_model = 2, 10, 128
+    num_heads = 8
+
+    x = torch.randn(batch_size, seq_len, d_model)
+    attn = SelfAttention(d_model, num_heads)
+    out, weights = attn(x)
+
+    print(f"Input: {x.shape}")  # [2, 10, 128]
+    print(f"Output: {out.shape}")  # [2, 10, 128]
+    print(f"Attention weights: {weights.shape}")  # [2, 8, 10, 10]</code></pre>
+
+    <h2>Errores Comunes</h2>
+    <p><strong>Error 1: No aplicar el mask causal en language modeling</strong></p>
+    <p>Cuando usas attention para language modeling, el modelo no debería poder ver las palabras futuras — si no, el training es trivially incorrect porque el objetivo sería visible en el input. Sin causal mask, el modelo aprende a "hacer trampa" mirando el target.</p>
+    <p><strong>Fix:</strong> Aplica un causal mask (mask triangular inferior): <code>torch.tril(torch.ones(seq_len, seq_len))</code>. Esto asegura que cada posición solo pueda attend a sí misma ya posiciones anteriores.</p>
+
+    <p><strong>Error 2: Attention sin scale adecuado</strong></p>
+    <p>Si no divides por $\sqrt{d_k}$ en el dot product, el softmax puede entrar en regiones de gradientes muy pequeños cuando $d_k$ es grande. Para $d_k = 512$, el dot product puede ser hasta $512 \times \text{max value} \approx 512$ — softmax de valores tan extremos es esencialmente one-hot, matando el gradiente.</p>
+    <p><strong>Fix:</strong> SIEMPRE escala por $\sqrt{d_k}$. Esto mantiene la varianza de los dot products aproximadamente constante.</p>
+
+    <p><strong>Error 3: Memory/performance issues con sequences muy largas</strong></p>
+    <p>Attention es $O(n^2)$ en memoria y cómputo — cada posición attend a todas las demás. Para una sequence de 4096 tokens, esto es 16M operaciones. Para 32K tokens, es 1B. En long sequences, esto se vuelve prohibitivo.</p>
+    <p><strong>Fix:</strong> Para sequences largas, usa attention sparse (Longformer, BigBird), linear attention (Performer), o sliding window attention. O usa architectures que reducen la longitud efectiva (compresión, chunking).</p>
+
+    <h2>Resumen del Día</h2>
+    <ul>
+      <li><strong>Attention</strong>: Permite enfocarse en diferentes partes del input. softmax(QK^T / √d_k)V.</li>
+      <li><strong>Q, K, V</strong>: Query (lo que busco), Key (lo que oferezco), Value (el contenido real).</li>
+      <li><strong>Multi-Head</strong>: h attention heads en paralelo, cada uno captura diferentes tipos de relaciones.</li>
+      <li><strong>Causal Mask</strong>: Para LM, solo permite ver el pasado, no el futuro.</li>
+      <li><strong>Scale</strong>: Dividir por √d_k para evitar softmax de valores extremos.</li>
+      <li><strong>O(n²)</strong>: Attention es cuadrático en la longitud de la secuencia.</li>
+    </ul>
+
+    <h2>El Cierre</h2>
+    <p>Parcero, attention es el corazón de los transformers y de muchos modelos de lenguaje modernos. La idea es simple — weighted sum de values según qué tan bien query matchea key — pero el impacto es profond. Permite que cada posición vea todo el contexto simultáneamente, sin recurrence ni convolución.</p>
+    <p>Esa vaina de "attention es todo lo que necesitas" no es exagerada: eliminó la necesidad de recurrence y convolución para muchas tareas de secuencia. Y la razón por la que funciona tan bien es que permite al modelo aprender qué relaciones son importantes — syntactic, semantic, positional — sin que le digamos explícitamente qué mirar. ¡Nos vemos en el día 88!</p>
   </article>
 </body>
 </html>

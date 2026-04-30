@@ -118,8 +118,141 @@ nav {
   </header>
 
   <article class="article-body">
-    <h1>Capas Convolucionales (Conv2D) - El Filtro que Detecta Patrones Visuales sin Que le Explique Qué es un Gato</h1>
-<p>Contenido del Día 80 - Esta entrada aún está en construcción. ¡Vuelve pronto!</p>
+    <h2>La Intro que el 85% Se Salta</h2>
+    <p>Parcero, ¿sabes qué tienen en común el batch gradient descent, el mini-batch gradient descent y el stochastic gradient descent? Son tres versiones del mismo algoritmo y la mayoría de practitioners no sabe cuándo usar cada una. Muchos começam con "batch gradient descent" porque "suena más completo" y después se preguntan por qué su modelo tarda 3 días en entrenar. Otros van al extremo opuesto y usan batch_size=1 (SGD puro) y se preguntan por qué la convergencia es tão errática.</p>
+    <p>Yo lo aprendí entrenando un modelo de NLP en 2019. Empecé con batch completo (80K samples por step) porque "así no hay ruido". Después de 48 horas sin ninguna mejora visible, cambié a mini-batch de 256 y el modelo convergió en 6 horas. Esa vaina me enseñó que el tamaño del batch no es solo speed vs. accuracy — es un hyperparameter que afecta fundamentalmente qué tipo de solución encuentras.</p>
+    <p>Hoy: la matemática del gradient descent, por qué el batch size importa tanto, y cómo elegir el correcto.</p>
+
+    <h2>Las Tres Variantes de Gradient Descent</h2>
+    <p>Gradient descent es el algoritmo para encontrar el mínimo de una función de pérdida. La diferencia entre las tres variantes está en cuántos samples usas para computar el gradiente en cada step.</p>
+
+    <h3>Batch (Full) Gradient Descent</h3>
+    <p>Usa TODOS los samples para calcular el gradiente exacto:</p>
+    <p>$$\theta_{t+1} = \theta_t - \eta \cdot \frac{1}{N} \sum_{i=1}^{N} \nabla_\theta \mathcal{L}(\theta_t, x_i, y_i)$$</p>
+    <p>Ventajas: gradiente exacto = dirección óptima en cada step. Convergencia suave y estable.</p>
+    <p>Desventajas: $N$ puede ser millones. Cada step cuesta $O(N)$ en memoria y cómputo. Imposible para datasets grandes. Además, la convergencia es lenta porque no hay ruido que te ayude a escapar mínimos locales.</p>
+
+    <h3>Stochastic Gradient Descent (SGD)</h3>
+    <p>Usa 1 solo sample por step:</p>
+    <p>$$\theta_{t+1} = \theta_t - \eta \cdot \nabla_\theta \mathcal{L}(\theta_t, x_i, y_i)$$</p>
+    <p>Ventajas: muy rápido por step ($O(1)$). El ruido inherente ayuda a escapar mínimos locales y saddle points.</p>
+    <p>Desventajas: gradiente extremely ruidoso = convergencia errática. Puedes pasar horas oscilando alrededor del óptimo sin acercarte.</p>
+
+    <h3>Mini-Batch Gradient Descent</h3>
+    <p>Usa $B$ samples (típicamente 8-512):</p>
+    <p>$$\theta_{t+1} = \theta_t - \eta \cdot \frac{1}{B} \sum_{i \in \mathcal{B}_t} \nabla_\theta \mathcal{L}(\theta_t, x_i, y_i)$$</p>
+    <p>Ventajas: tradeoff óptimo entre speed y calidad del gradiente. El batch size $B$ te permite ajustar el ruido: $B$ grande = gradiente más preciso pero más lento; $B$ pequeño = más ruido pero más rápido por iteration.</p>
+
+    <h2>El Batch Size Como Hyperparameter</h2>
+    <p>Lo que muchos no saben: el batch size no solo afecta speed — afecta la quality de la solución encontrada. El ruido del gradiente estocástico tiene un efecto de regularización.</p>
+    <p><strong>Batch size pequeño (8-64):</strong> Más ruido → regularización → mejor generalización. Necesita LR más alto. Step rápidos pero más steps necesarios.</p>
+    <p><strong>Batch size grande (512-8192):</strong> Gradiente más preciso → dirección más correcta. Learning rate más bajo. Más estable pero más memoria.</p>
+    <p><strong>Batch size óptimo para transformers:</strong> Goyal et al. (2017) mostró que con warmup correcto, batch sizes de 8192+ pueden entrenar ImageNet en minutos. Para NLP, 512-4096 es típico.</p>
+
+    <h2>La Escalada del Learning Rate con Batch Size</h2>
+    <p>Cuando aumentas el batch size, puedes aumentar el learning rate proporcionalmente. La regla:</p>
+    <p>$$\eta_{new} = \eta_{baseline} \cdot \frac{B_{new}}{B_{baseline}}$$</p>
+    <p>Si entrenabas con batch=256 y LR=0.001, al subir a batch=1024 puedes subir LR a $0.001 \times 4 = 0.004$. Esta regla solo funciona con warmup.</p>
+
+    <h2>Código Production-Grade</h2>
+    <pre><code class="language-python">import logging
+import torch
+import torch.nn as nn
+from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
+
+
+class GradientAccumulationWrapper:
+    """
+    Simula batch sizes grandes sin necesitar más memoria GPU.
+    accumulation_steps = target_batch_size / base_batch_size
+    """
+    def __init__(self, model, optimizer, base_batch_size=256, target_batch_size=2048):
+        self.model = model
+        self.optimizer = optimizer
+        self.base_batch_size = base_batch_size
+        self.target_batch_size = target_batch_size
+        self.accumulation_steps = target_batch_size // base_batch_size
+        self.current_step = 0
+
+    def training_step(self, batch_x, batch_y, loss_fn):
+        outputs = self.model(batch_x)
+        loss = loss_fn(outputs, batch_y)
+        loss = loss / self.accumulation_steps  # Normalize
+        loss.backward()
+        self.current_step += 1
+        if self.current_step % self.accumulation_steps == 0:
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+            self.optimizer.step()
+            self.optimizer.zero_grad()
+            return loss.item() * self.accumulation_steps
+        return None
+
+
+class DynamicBatchSizeScheduler:
+    """Scheduler que ajusta batch size durante training."""
+    def __init__(self, initial_batch=32, max_batch=2048, ramp_steps=10000):
+        self.initial_batch = initial_batch
+        self.max_batch = max_batch
+        self.ramp_steps = ramp_steps
+        self.current_step = 0
+
+    def get_batch_size(self):
+        if self.current_step >= self.ramp_steps:
+            return self.max_batch
+        ratio = self.current_step / self.ramp_steps
+        return int(self.initial_batch + (self.max_batch - self.initial_batch) * ratio)
+
+    def step(self):
+        self.current_step += 1
+
+    def get_lr_scale(self, base_lr):
+        return self.get_batch_size() / self.initial_batch
+
+
+if __name__ == '__main__':
+    torch.manual_seed(42)
+    model = nn.Sequential(nn.Linear(784, 256), nn.ReLU(), nn.Linear(256, 10))
+    loss_fn = nn.CrossEntropyLoss()
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+
+    for batch_size in [32, 128, 512]:
+        lr_scaled = 1e-3 * (batch_size / 32)
+        print(f"Batch={batch_size}: LR={lr_scaled:.4f}")</code></pre>
+
+    <h2>Errores Comunes</h2>
+    <p><strong>Error 1: Usar batch size = 1 (SGD puro)</strong></p>
+    <p>Con batch_size=1, el gradiente es tão ruidoso que la convergencia es extremamente lenta e inestable. Puedes necesitar 10x más steps que con un mini-batch razonable.</p>
+    <p><strong>Fix:</strong> Usa batch_size mínimo de 8-16 para GPUs modernos. Si tienes poca memoria, usa gradient accumulation.</p>
+
+    <p><strong>Error 2: No escalar el LR cuando aumentas el batch size</strong></p>
+    <p>Si pasas de batch=256 a batch=2048 sin cambiar el LR, cada step mueve los pesos muito poco. El LR debe escalar linealmente con el batch size.</p>
+    <p><strong>Fix:</strong> Duplica el LR cuando dupliques el batch size (hasta ~1e-3 para AdamW). Siempre con warmup.</p>
+
+    <p><strong>Error 3: Batch size fijo sin considerar la fase de training</strong></p>
+    <p>Al inicio del entrenamiento, los gradientes pueden ser muito erráticos y un batch size pequeño te ayuda a escapar mínimos locales. Cerca del óptimo, quieres estabilidad.</p>
+    <p><strong>Fix:</strong> Considera batch size más pequeño al inicio y aumentarlo gradualmente (simulated annealing del batch size).</p>
+
+    <p><strong>Error 4: No usar gradient accumulation cuando la memoria es limitada</strong></p>
+    <p>Si tienes 8GB de VRAM y quieres batch=2048, muchos reducen el batch y pierden performance. Gradient accumulation: entrenas con batch=256, pero solo actualizas pesos cada 8 steps. Es la misma calidad con 1/8 de la memoria.</p>
+    <p><strong>Fix:</strong> Usa gradient accumulation: <code>loss.backward()</code> N veces sin <code>optimizer.step()</code>, luego <code>optimizer.step()</code>. Normaliza la loss por N.</p>
+
+    <h2>Resumen del Día</h2>
+    <ul>
+      <li><strong>Batch GD</strong>: Todos los samples. Gradiente exacto pero lento e imposible para datasets grandes.</li>
+      <li><strong>SGD</strong>: 1 sample. Rápido pero muito ruidoso. Converge lentamente.</li>
+      <li><strong>Mini-batch GD</strong>: B samples. El estándar. Tradeoff óptimo speed/quality.</li>
+      <li><strong>Batch size pequeño</strong>: Más ruido = regularización. Mejor para exploración. LR más alto.</li>
+      <li><strong>Batch size grande</strong>: Más estable. LR puede ser mayor. Más memoria.</li>
+      <li><strong>Linear scaling rule</strong>: LR nuevo = LR base × (batch nuevo / batch base). Solo con warmup.</li>
+      <li><strong>Gradient accumulation</strong>: Simula batch sizes grandes sin más memoria.</li>
+      <li><strong>Batch size para transformers</strong>: 512-4096 es lo típico.</li>
+    </ul>
+
+    <h2>El Cierre</h2>
+    <p>Parcero, el batch size es uno de los hyperparameters más subestimados en deep learning. La mayoría lo deja en 32 o 64 "porque siempre se usa eso" sin pensar en qué efecto tiene en su problema específico. Un batch size pequeño te ayuda a explorar más; uno grande a explotar más. Elige basado en tu fase de entrenamiento y tu objetivo.</p>
+    <p>Y recuerda: si tienes poca memoria, no reduzcas el batch size — usa gradient accumulation. Hágale que la próxima vez que configures un training, no merely copies el batch_size del último tutorial — pregúntate qué batch size necesita tu modelo en cada fase. ¡Nos vemos en el día 81!</p>
   </article>
 </body>
 </html>

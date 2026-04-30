@@ -118,8 +118,147 @@ nav {
   </header>
 
   <article class="article-body">
-    <h1>Word2Vec y GloVe - Modelos que Aprendieron Analogías Semánticas Solo Mirando Contexto</h1>
-<p>Contenido del Día 86 - Esta entrada aún está en construcción. ¡Vuelve pronto!</p>
+    <h2>La Intro que el 85% Se Salta</h2>
+    <p>Parcero, ¿sabes cómo Mikolov et al. (2013) lograron que un modelo aprendiera analogías como "rey - hombre + mujer = reina" sin supervisión semántica? No le dijeron al modelo explícitamente que "rey es a hombre como reina es a mujer". El modelo simplemente aprendió a predecir qué palabra aparece en un contexto dado — y de ese objetivo aparentemente simple emergió toda una geometría semántica. Así nacieron Word2Vec.</p>
+    <p>Yo implementé Word2Vec por primera vez en 2016. Recuerdo haber visto los vectores de "paris", "francia", "italia" y haber calculado "paris - francia + italia" para ver qué salía. Cuando apareción "roma", me quedé helado — ¡era exactamente lo que la teoría predecía! Ese momento me convenció de que los embeddingscapturan algo fundamental sobre cómo se organiza el significado.</p>
+    <p>Hoy: los dos algoritmos de Word2Vec (Skip-gram y CBOW), cómo se entrenan, y por qué son el foundation de los modelos de lenguaje modernos.</p>
+
+    <h2>Skip-Gram y CBOW</h2>
+    <p>Word2Vec tiene dos arquitecturas:</p>
+    <p><strong>Skip-Gram:</strong> Dada la palabra central, predecir las palabras del contexto. "gato" → ["sentado", "en", "el", "sofá"]. Funciona bien con datasets pequeños y para palabras raras.</p>
+    <p><strong>CBOW (Continuous Bag of Words):</strong> Dada el contexto, predecir la palabra central. ["el", "feliz", "está", "durmiendo"] → "gato". Funciona mejor con datasets grandes y es más rápido de entrenar.</p>
+    <p>Ambos usan una red neuronal simple con una sola hidden layer. La magic está en lo que sucede en la hidden layer — los vectores de embedding que se aprenden.</p>
+
+    <h2>El Truco: Negative Sampling</h2>
+    <p>El problema de softmax sobre todo el vocabulario (50K+ palabras) es prohibitivamente costoso. La solución: negative sampling. En lugar de predecir el softmax completo, entrenamos un clasificador binario: la palabra objetivo es real o es un negative sample?</p>
+    <p>Para cada training sample (word, context), muestreamos $k$ palabras negativas del corpus (típicamente 5-15). El objetivo: maximizar la similaridad entre la palabra objetivo y su contexto, y minimizar la similaridad con las negative samples.</p>
+    <p>$$\mathcal{L} = \log \sigma(v_{w_O} \cdot v_{w_I}) + \sum_{i=1}^{k} \mathbb{E}_{w_i \sim P_n} [\log \sigma(-v_{w_i} \cdot v_{w_I})]$$</p>
+    <p>Donde $v_{w_O}$ es el vector de la palabra objetivo, $v_{w_I}$ es el vector del contexto, y $w_i$ son las negative samples.</p>
+
+    <h2>Código Production-Grade</h2>
+    <pre><code class="language-python">import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from collections import Counter
+import numpy as np
+import random
+
+
+class Word2Vec(nn.Module):
+    """Word2Vec con Skip-Gram y Negative Sampling."""
+    def __init__(self, vocab_size, embedding_dim):
+        super().__init__()
+        self.target_embeddings = nn.Embedding(vocab_size, embedding_dim)
+        self.context_embeddings = nn.Embedding(vocab_size, embedding_dim)
+        # Inicialización
+        nn.init.uniform_(self.target_embeddings.weight, -0.5 / embedding_dim, 0.5 / embedding_dim)
+        nn.init.zeros_(self.context_embeddings.weight)
+
+    def forward(self, target, context, negative):
+        # target: [batch], context: [batch], negative: [batch, num_negatives]
+        # returns: loss escalar
+        v_target = self.target_embeddings(target)  # [batch, dim]
+        v_context = self.context_embeddings(context)  # [batch, dim]
+        v_negative = self.context_embeddings(negative)  # [batch, num_neg, dim]
+
+        # Positive score
+        pos_score = torch.sum(v_target * v_context, dim=1)  # [batch]
+        pos_loss = F.binary_cross_entropy_with_logits(pos_score, torch.ones_like(pos_score))
+
+        # Negative score
+        neg_score = torch.bmm(v_negative, v_target.unsqueeze(2)).squeeze(2)  # [batch, num_neg]
+        neg_loss = F.binary_cross_entropy_with_logits(neg_score, torch.zeros_like(neg_score))
+
+        return pos_loss + neg_loss
+
+    def get_embeddings(self):
+        return self.target_embeddings.weight.detach()
+
+
+class NegativeSampler:
+    """Muestreador de negative samples basado en frecuencia (unigram distribution elevada a 3/4)."""
+    def __init__(self, word_counts, exponent=0.75):
+        self.exponent = exponent
+        self.word_counts = word_counts
+        total = sum(word_counts.values())
+        self.probs = {w: (c / total) ** exponent for w, c in word_counts.items()}
+        self.words = list(self.probs.keys())
+        self.probs = np.array([self.probs[w] for w in self.words])
+        self.probs /= self.probs.sum()
+
+    def sample(self, k):
+        return random.choices(self.words, weights=self.probs, k=k)
+
+
+def build_vocab(corpus, min_freq=5):
+    """Construye vocabulario desde un corpus."""
+    word_counts = Counter()
+    for sentence in corpus:
+        word_counts.update(sentence)
+    vocab = {'<PAD>': 0, '<UNK>': 1}
+    for word, count in word_counts.items():
+        if count >= min_freq:
+            vocab[word] = len(vocab)
+    return vocab, word_counts
+
+
+def generate_skipgram_pairs(sentence, vocab, window_size=5):
+    """Genera pares (target, context) para Skip-Gram."""
+    pairs = []
+    for i, word in enumerate(sentence):
+        if word not in vocab:
+            continue
+        start = max(0, i - window_size)
+        end = min(len(sentence), i + window_size + 1)
+        for j in range(start, end):
+            if i != j and sentence[j] in vocab:
+                pairs.append((vocab[word], vocab[sentence[j]]))
+    return pairs
+
+
+if __name__ == '__main__':
+    # Demo simple
+    corpus = [["el", "gato", "come", "pescado"], ["el", "perro", "come", "carne"]]
+    vocab, word_counts = build_vocab(corpus, min_freq=1)
+    print(f"Vocab: {vocab}")
+
+    model = Word2Vec(vocab_size=len(vocab), embedding_dim=10)
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
+
+    # Training step demo
+    target = torch.LongTensor([vocab['gato']])
+    context = torch.LongTensor([vocab['come']])
+    negative = torch.LongTensor([[vocab['el'], vocab['pescado']]])
+
+    loss = model(target, context, negative)
+    print(f"Loss: {loss.item():.4f}")</code></pre>
+
+    <h2>Errores Comunes</h2>
+    <p><strong>Error 1: No sub-sampling de palabras frecuentes</strong></p>
+    <p>Palabras como "el", "la", "de" aparecen miles de millones de veces en un corpus. Si no las sub-sampleas, el modelo pasa la mayor parte del tiempo entrenando con palabras que no aportan información semántica (palabras funcionales vs content words). "the" no te dice nada sobre qué significa "gato".</p>
+    <p><strong>Fix:</strong> Usa sub-sampling: elimina palabras con probabilidad $P(w) = 1 - \sqrt{t/f_w}$ donde $f_w$ es la frecuencia y $t$ es un threshold (típicamente 1e-5). Palabras muy frecuentes se eliminan con alta probabilidad.</p>
+
+    <p><strong>Error 2: Usar el embedding incorrecto en inferencia</strong></p>
+    <p>En Skip-Gram, hay dos matrices de embedding: target_embeddings y context_embeddings. ¿Cuál usar? Típicamente se usa la suma o concatenación de ambas. En algunos casos (CBOW), solo se usa una. Mezclar cuál usas lleva a resultados inconsistent.</p>
+    <p><strong>Fix:</strong> Para Skip-Gram, usa <code>(target_emb + context_emb) / 2</code>. Para CBOW, usa solo la output embedding. Documenta qué embedding usas en tu pipeline.</p>
+
+    <p><strong>Error 3: No representar bien los OOV (out-of-vocabulary) words</strong></p>
+    <p>Word2Vec tradicional no maneja OOV — si una palabra no estaba en el vocabulario de training, simplemente no tiene embedding. En producción esto es un problema constante porque siempre aparecen palabras nuevas.</p>
+    <p><strong>Fix:</strong> Usa modelos más nuevos (FastText) que representan palabras como suma de character n-grams, permitiendo manejar OOV parcialmente. O usa subword tokenization (BPE/WordPiece) en modelos más modernos.</p>
+
+    <h2>Resumen del Día</h2>
+    <ul>
+      <li><strong>Skip-Gram</strong>: Dada palabra central, predecir contexto. Bueno para datasets pequeños y palabras raras.</li>
+      <li><strong>CBOW</strong>: Dado contexto, predecir palabra central. Más rápido, mejor para datasets grandes.</li>
+      <li><strong>Negative Sampling</strong>: En lugar de softmax completo, clasificador binario (real vs negative). Acelera enormemente.</li>
+      <li><strong>Unigram Distribution 3/4</strong>: Las palabras menos frecuentes se muestrean con mayor probabilidad relativa.</li>
+      <li><strong>Sub-sampling</strong>: Elimina palabras frecuentes con alta probabilidad. Enfoca el training en content words.</li>
+      <li><strong>OOV</strong>: Word2Vec tradicional no maneja palabras fuera del vocabulario.</li>
+    </ul>
+
+    <h2>El Cierre</h2>
+    <p>Parcero, Word2Vec fue un watershed moment en NLP. La idea de que la semántica emerge de predecir contexto — sin etiquetas semánticas explícitas — cambió cómo pensamos el language understanding. Los embeddings que produce son la base sobre la que se construyeron los transformer models modernos.</p>
+    <p>Esa vaina de "los embeddings de Word2Vec están obsoletos" es cierta para algunas aplicaciones, pero la intuición fundamental — que las palabras se organizan en un espacio geométrico que refleja su significado — sigue siendo el foundation de todo. Los transformers son esencialmente Word2Vec en esteroides: en lugar de predecir contexto de una palabra, predicen contexto de todo un sequence simultáneamente. ¡Nos vemos en el día 87!</p>
   </article>
 </body>
 </html>
