@@ -1,5 +1,6 @@
 // src/app.js — Apple Design Language
 
+import './styles/main.css'
 import './components/Header.js'
 import './components/SprintSidebar.js'
 import './components/FilterBar.js'

@@ -1,8 +1,11 @@
 import { defineConfig } from 'vite'
-import { resolve } from 'path'
+import { resolve, dirname } from 'path'
+import { fileURLToPath } from 'url'
+
+const __dirname = dirname(fileURLToPath(import.meta.url))
 
 export default defineConfig({
-  root: '.',
+  root: __dirname,
   base: './',
   publicDir: 'public',
   build: {
@@ -14,6 +17,6 @@ export default defineConfig({
   },
   server: {
     port: 3000,
-    open: true
+    open: false
   }
 })
