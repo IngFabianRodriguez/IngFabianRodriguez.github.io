@@ -110,66 +110,462 @@ nav {
 
   <header class="article-hero">
     <div class="day-badge">Dia 219 / 365 &nbsp;·&nbsp; #365DaysOfAI</div>
-    <h1 class="article-title">Chain-of-Thought - Razonamiento Paso A Paso</h1>
+    <h1 class="article-title">Monitoring y Observability para ML — El Tablero que te Avisa Antes de que los Usuarios lo Noten</h1>
     <div class="article-meta">
       <time class="article-date">07 de agosto de 2026</time>
-      <div class="tags"><span class="tag">chain-of-thought</span><span class="tag">reasoning</span><span class="tag">llm</span><span class="tag">prompting</span></div>
+      <div class="tags"><span class="tag">monitoring</span><span class="tag">observability</span><span class="tag">prometheus</span><span class="tag">grafana</span><span class="tag">mlops</span></div>
     </div>
   </header>
 
   <article class="article-body">
-    <h1>Chain-of-Thought - Razonamiento Paso A Paso</h1>
+    <h1>Monitoring y Observability para ML</h1>
 
-<p>Hagale pues, parcero. Dia 219 y hoy hablamos de Chain-of-Thought prompting, la tecnica que ensena a los modelos a razonar paso a paso. Cafe.</p>
+<p>Hagale pues, parcero. Aqui andamos en el dia 219 hablando de algo que el 90% de los equipos de ML descubren a las malas:监控 y observabilidad no es solo verificar que el servidor esté prendido. Si tu modelo está generando predicciones terriblemente malas y solo te enteras cuando un usuario se queja, pues hermano, ya llegaste tarde. Hoy hablamos de como construir un sistema de monitoreo que te avise ANTES de que los usuarios se den cuenta. Café en mano, que esto es más largo que un partido de Atlético Nacional.</p>
+
 <hr>
-<h2>🎯 Que Es Chain-of-Thought?</h2>
-<p>Chain-of-Thought (CoT) prompting es una tecnica donde el modelo genera pasos de razonamiento intermedios antes de dar la respuesta final. Esto mejora significativamente el razonamiento logico y matematico.</p>
-<h3>Por que funciona:</h3>
+<h2>🎯 Por Que ML Monitoring Es Diferente</h2>
+
+<p>A diferencia del software tradicional, en ML tienes tres fuentes de problemas que vigilar:</p>
+
 <ul>
-<li><strong>Expllicit Reasoning</strong>: El modelo externaliza su proceso de pensamiento</li>
-<li><strong>Working Memory</strong>: Usa mas tokens para "recordar" informacion</li>
-<li><strong>Error Detection</strong>: Errores se pueden identificar en pasos intermedios</li>
+<li><strong>Code/Infra Issues</strong>: Tu servicio se cayó, la RAM se agotó, la GPU no responde — problemas clásicos de sistemas.</li>
+<li><strong>Model Degradation</strong>: El modelo funciona, pero sus predicciones están empeorando gradualmente — la maldición del data drift.</li>
+<li><strong>Data Pipeline Failures</strong>: Los datos de entrada llegan malformed, con valores atípicos, o el feature engineering se rompió — Garbage In, Garbage Out.</li>
 </ul>
+
+<p>La matemática detrás de esto es clara. Si $p(y|x)$ cambia porque la distribución de $x$ se desplazó, tus predicciones se degradan. Puedes medir esto con la KL divergence entre tu distribución de entrenamiento $P_{train}$ y la distribución de producción $P_{prod}$:</p>
+
+$$D_{KL}(P_{train} || P_{prod}) = \sum_{x} P_{train}(x) \log \frac{P_{train}(x)}{P_{prod}(x)}$$
+
+<p>Cuando $D_{KL}$ supera un threshold que tú defines, tu sistema debe disparar una alerta. Eso es monitoring con contexto, no solo verificar uptime.</p>
+
 <hr>
-<h2>📐 CoT Prompting Basico</h2>
-<pre><code># Sin CoT - respuesta directa
-prompt_direct = """
-Juan tiene 3 manzanas. Maria tiene 2 manzanas mas que Juan.
-Cuantas manzanas tiene Maria?
-Respuesta: 5
-"""
+<h2>📊 Prometheus + Grafana: La Combination Ganadora</h2>
 
-# Con CoT - razonamiento paso a paso
-prompt_cot = """
-Juan tiene 3 manzanas. Maria tiene 2 manzanas mas que Juan.
-Cuantas manzanas tiene Maria?
+<h3>Arquitectura Básica</h3>
 
-Razonamiento:
-1. Juan tiene 3 manzanas
-2. Maria tiene 2 mas que Juan
-3. Por lo tanto, Maria tiene 3 + 2 = 5 manzanas
+<pre><code># prometheus.yml - Configuración de scraping
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
 
-Respuesta: 5
-"""
-</code></pre>
+rule_files:
+  - "ml_alerts.yml"
+
+scrape_configs:
+  - job_name: 'ml-model'
+    kubernetes_sd_configs:
+      - role: pod
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+        action: keep
+        regex: true</code></pre>
+
+<h3>Custom Metrics para ML</h3>
+
+<pre><code># ml_metrics.py - Métricas custom para modelos
+from prometheus_client import Counter, Histogram, Gauge
+
+# Prediction Latency - Que tan rápido responde tu modelo
+prediction_latency = Histogram(
+    'model_prediction_latency_seconds',
+    'Time spent processing prediction request',
+    ['model_name', 'model_version'],
+    buckets=[0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5]
+)
+
+# Throughput - Cuantas predicciones por segundo
+prediction_counter = Counter(
+    'model_predictions_total',
+    'Total number of predictions made',
+    ['model_name', 'model_version', 'status']
+)
+
+# Error Rate - Que porcentaje de predicciones fallan
+error_counter = Counter(
+    'model_prediction_errors_total',
+    'Total number of prediction errors',
+    ['model_name', 'error_type']
+)
+
+# Prediction Distribution - Para detectar drift
+prediction_gauge = Gauge(
+    'model_last_prediction_value',
+    'Last prediction value for drift detection',
+    ['model_name']
+)
+
+# Feature Distribution - Monitorear inputs
+feature_histogram = Histogram(
+    'model_input_feature_distribution',
+    'Distribution of input features',
+    ['feature_name'],
+    buckets=[-10, -5, -1, 0, 1, 5, 10, 50, 100, 500, 1000]
+)</code></pre>
+
 <hr>
-<h2>🚀 Zero-Shot CoT</h2>
-<pre><code># Zero-shot Chain-of-Thought (sin ejemplos)
-prompt_zero_shot_cot = """
-Problema: Si un tren sale de A a 60 km/h y otro de B a 80 km/h,
-y la distancia es 420 km, cuando se encuentran?
+<h2>🚀 ML Monitoring Dashboard en Grafana</h2>
 
-Razonemos paso a paso:
+<pre><code># Grafana Dashboard JSON (fragmento clave)
+{
+  "dashboard": {
+    "title": "ML Model Performance Dashboard",
+    "panels": [
+      {
+        "title": "Prediction Latency (p50, p95, p99)",
+        "type": "timeseries",
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.50, rate(model_prediction_latency_seconds_bucket[5m]))",
+            "legendFormat": "p50"
+          },
+          {
+            "expr": "histogram_quantile(0.95, rate(model_prediction_latency_seconds_bucket[5m]))",
+            "legendFormat": "p95"
+          },
+          {
+            "expr": "histogram_quantile(0.99, rate(model_prediction_latency_seconds_bucket[5m]))",
+            "legendFormat": "p99"
+          }
+        ]
+      },
+      {
+        "title": "Error Rate por Tipo",
+        "type": "timeseries",
+        "targets": [
+          {
+            "expr": "rate(model_prediction_errors_total[5m]) / rate(model_predictions_total[5m]) * 100",
+            "legendFormat": "{{error_type}}"
+          }
+        ]
+      },
+      {
+        "title": "Throughput (predictions/sec)",
+        "type": "timeseries",
+        "targets": [
+          {
+            "expr": "rate(model_predictions_total[5m])",
+            "legendFormat": "{{model_name}}"
+          }
+        ]
+      }
+    ]
+  }
+}</code></pre>
 
-"""
-</code></pre>
 <hr>
-<h2>⚠️ Errores Comunes</h2>
-<h3>Error 1: CoT Muy Largo</h3>
-<p><strong>El problema</strong>: Pasos innecesarios que confunden al modelo.</p>
-<p><strong>La solucion</strong>: Mantener el razonamiento conciso y focused.</p>
+<h2>📐 Métricas de Negocio vs Métricas Técnicas</h2>
+
+<p>Aquí está el error más común: medir solo métricas técnicas cuando el negocio se mide en plata. Necesitas traducir tu ML metrics a business metrics.</p>
+
+<h3>La matemática de la traducción</h3>
+
+<pre><code># conversion.py - Traducir métricas técnicas a negocio
+import numpy as np
+
+class BusinessMetrics:
+    def __init__(self, model_name: str):
+        self.model_name = model_name
+        self.predictions = []
+        self.actual_outcomes = []
+    
+    def record_prediction(self, prediction: float, features: dict):
+        """Registra predicción y特征 para análisis post-hoc"""
+        self.predictions.append({
+            'prediction': prediction,
+            'timestamp': pd.Timestamp.now(),
+            **features
+        })
+    
+    def calculate_technical_metrics(self):
+        """Métricas técnicas estándar"""
+        from sklearn.metrics import accuracy, precision, recall, f1_score
+        
+        y_true = np.array([p['actual'] for p in self.predictions if 'actual' in p])
+        y_pred = np.array([p['prediction'] > 0.5 for p in self.predictions if 'actual' in p])
+        
+        return {
+            'accuracy': accuracy_score(y_true, y_pred),
+            'precision': precision_score(y_true, y_pred),
+            'recall': recall_score(y_true, y_pred),
+            'f1': f1_score(y_true, y_pred)
+        }
+    
+    def calculate_business_impact(self, technical_metrics: dict):
+        """
+        Traduce métricas técnicas a impacto de negocio.
+        
+        Si el modelo predice churn con 85% de precision y el cliente
+        que se va representa $500 USD/mes, el impacto es directo.
+        """
+        precision = technical_metrics['precision']
+        recall = technical_metrics['recall']
+        avg_customer_value = 500  # USD por mes
+        
+        # ROI proyectado de usar el modelo
+        monthly_savings = recall * 100 * avg_customer_value * 0.7  # 70% efectividad de retención
+        implementation_cost = 1000  # USD mensual en infraestructura
+        
+        return {
+            'projected_monthly_savings': monthly_savings,
+            'net_monthly_impact': monthly_savings - implementation_cost,
+            'roi_percentage': ((monthly_savings - implementation_cost) / implementation_cost) * 100
+        }</code></pre>
+
 <hr>
-<p><em>Eso es todo! Nos vemos en el Dia 220.</em></p>
+<h2>⚠️ Los 3 Errores Críticos</h2>
+
+<h3>Error 1: Monitorear Solo Uptime y No Model Performance</h3>
+
+<p><strong>El problema</strong>: Tu dashboard solo muestra "✅ Service is up" pero el modelo lleva 3 días dando predicciones terriblemente malas porque los datos cambiaron.</p>
+
+<p><strong>La matemática</strong>: El accuracy de tu modelo puede degradarse de 92% a 67% sin que ningún indicador de infraestructura se mueva. Estás mirando el síntoma, no la enfermedad.</p>
+
+<p><strong>La solución</strong>: Implementar Shadow Mode + Ground Truth Comparison.</p>
+
+<pre><code># shadow_mode.py - Corre modelo nuevo en paralelo
+class ShadowModeMonitor:
+    def __init__(self, production_model, shadow_model, metrics_collector):
+        self.production = production_model
+        self.shadow = shadow_model
+        self.metrics = metrics_collector
+    
+    def predict(self, features):
+        # Producción: retorna predicción real
+        production_result = self.production.predict(features)
+        
+        # Shadow: corre en paralelo, no afecta al usuario
+        shadow_result = self.shadow.predict(features)
+        
+        # Compara resultados periódicamente
+        if self.should_compare():
+            self.metrics.record_comparison(
+                production=production_result,
+                shadow=shadow_result,
+                actual=features.get('actual_outcome')  # Si ya tienes ground truth
+            )
+        
+        return production_result
+    
+    def should_compare(self) -> bool:
+        """Compara cada 100 predicciones o cada minuto"""
+        return random.random() < 0.01 or self.time_to_compare()</code></pre>
+
+<h3>Error 2: No Tener Baseline de Modelos para Comparar</h3>
+
+<p><strong>El problema</strong>: ¿Cómo sabes que tu modelo actual está funcionando bien si no tienes con qué compararlo? Sin baseline, cualquier número es solo un número.</p>
+
+<p><strong>La matemática</strong>: Si tu baseline random achieves 50% accuracy y tu modelo tiene 85%, eso es una mejora de 35 puntos. Pero si tu baseline del modelo anterior era 89%, entonces tienes un problema real.</p>
+
+$$\text{Relative Improvement} = \frac{\text{Accuracy}_{new} - \text{Accuracy}_{baseline}}{\text{Accuracy}_{baseline}} \times 100\%$$
+
+<p><strong>La solución</strong>: Guardar predicciones históricas con timestamps y comparar contra el modelo anterior.</p>
+
+<pre><code># baseline_comparison.py
+class ModelBaseline:
+    def __init__(self, model_name: str, version: str):
+        self.model_name = model_name
+        self.version = version
+        self.baseline_metrics = None
+    
+    def establish_baseline(self, validation_data):
+        """Guarda métricas de referencia del modelo"""
+        predictions = self.model.predict(validation_data)
+        
+        self.baseline_metrics = {
+            'accuracy': accuracy_score(validation_data.y, predictions),
+            'precision': precision_score(validation_data.y, predictions),
+            'recall': recall_score(validation_data.y, predictions),
+            'f1': f1_score(validation_data.y, predictions),
+            'auc': roc_auc_score(validation_data.y, predictions),
+            'feature_distribution': self.compute_feature_stats(validation_data.X),
+            'timestamp': datetime.now()
+        }
+    
+    def compare_to_baseline(self, current_data) -> dict:
+        """Compara modelo actual contra baseline establecido"""
+        current_predictions = self.model.predict(current_data.X)
+        current_metrics = {
+            'accuracy': accuracy_score(current_data.y, current_predictions),
+            'precision': precision_score(current_data.y, current_predictions),
+            'recall': recall_score(current_data.y, current_predictions),
+            'f1': f1_score(current_data.y, current_predictions),
+        }
+        
+        degradation = {}
+        for metric in current_metrics:
+            baseline_value = self.baseline_metrics[metric]
+            current_value = current_metrics[metric]
+            degradation[metric] = {
+                'baseline': baseline_value,
+                'current': current_value,
+                'change_pct': ((current_value - baseline_value) / baseline_value) * 100
+            }
+        
+        return degradation</code></pre>
+
+<h3>Error 3: Alerting Sin Contexto (No Diferenciar Entre Drift vs Bug)</h3>
+
+<p><strong>El problema</strong>: Te llega una alerta: "Error rate spike!" y no sabes si es porque los datos cambiaron (drift) o porque alguien hizo un deploy mal hecho (bug). Alertas sin contexto llevan a alert fatigue.</p>
+
+<p><strong>La matemática</strong>: El drift y el bug tienen firmas diferentes en tus métricas. El drift es gradual y afecta la distribución; el bug es agudo y afecta errores puntuales.</p>
+
+<pre><code># alerting_context.py - Sistema de alertas inteligente
+import numpy as np
+from scipy import stats
+
+class IntelligentAlerter:
+    def __init__(self, drift_threshold: float = 0.05, bug_threshold: float = 0.01):
+        self.drift_threshold = drift_threshold
+        self.bug_threshold = bug_threshold
+        self.historical_baseline = None
+    
+    def diagnose_anomaly(self, current_metrics: dict, historical_window: list) -> dict:
+        """
+        Diagnostica si una anomalía es drift o bug
+        """
+        diagnosis = {}
+        
+        # Test para drift: KS test en distribución de predicciones
+        if len(historical_window) > 30:
+            historical_values = [m['prediction_mean'] for m in historical_window]
+            current_values = current_metrics['recent_predictions']
+            
+            ks_statistic, p_value = stats.ks_2samp(historical_values, current_values)
+            
+            diagnosis['drift_detected'] = p_value < self.drift_threshold
+            diagnosis['drift_confidence'] = 1 - p_value
+            diagnosis['ks_statistic'] = ks_statistic
+        
+        # Test para bug: sudden spike en error rate
+        error_rate_change = self.calculate_error_rate_change(historical_window, current_metrics)
+        diagnosis['bug_detected'] = error_rate_change > self.bug_threshold
+        diagnosis['error_rate_change'] = error_rate_change
+        
+        # Clasificación final
+        if diagnosis['drift_detected'] and diagnosis['bug_detected']:
+            diagnosis['classification'] = 'BOTH_DRIFT_AND_BUG'
+            diagnosis['priority'] = 'CRITICAL'
+        elif diagnosis['drift_detected']:
+            diagnosis['classification'] = 'DATA_DRIFT'
+            diagnosis['priority'] = 'WARNING'
+            diagnosis['action'] = 'Retrain model or update features'
+        elif diagnosis['bug_detected']:
+            diagnosis['classification'] = 'SYSTEM_BUG'
+            diagnosis['priority'] = 'CRITICAL'
+            diagnosis['action'] = 'Rollback recent deploy'
+        else:
+            diagnosis['classification'] = 'NO_ANOMALY'
+            diagnosis['priority'] = 'NONE'
+        
+        return diagnosis
+    
+    def calculate_error_rate_change(self, historical: list, current: dict) -> float:
+        historical_error_rates = [h.get('error_rate', 0) for h in historical]
+        avg_historical = np.mean(historical_error_rates)
+        current_rate = current.get('error_rate', 0)
+        
+        if avg_historical == 0:
+            return 0
+        
+        return abs(current_rate - avg_historical) / avg_historical</code></pre>
+
+<hr>
+<h2>📐 Integración con Kubernetes</h2>
+
+<pre><code># kubernetesDeployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ml-model-serving
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8080"
+    prometheus.io/path: "/metrics"
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: ml-model
+  template:
+    metadata:
+      labels:
+        app: ml-model
+    spec:
+      containers:
+      - name: model-server
+        image: my-registry.com/ml-model:v2.1.0
+        ports:
+        - containerPort: 8080
+        resources:
+          limits:
+            nvidia.com/gpu: 1
+            memory: "8Gi"
+            cpu: "2"
+        env:
+        - name: MODEL_NAME
+          value: "recommendation-v2"
+        - name: LOG_LEVEL
+          value: "INFO"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 5
+---
+# Horizontal Pod Autoscaler para ML
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: ml-model-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: ml-model-serving
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+  - type: Pods
+    pods:
+      metric:
+        name: model_prediction_latency_seconds
+      target:
+        type: AverageValue
+        averageValue: "100m"  # 100ms target latency
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70</code></pre>
+
+<hr>
+<h2>🔧 Resumen y Cierre</h2>
+
+<p>Pues ahí lo tiene, parcero. Monitoring para ML no es solo verificar que el servidor esté prendido — es tener visibilidad total sobre la salud de tus modelos en producción. Recuerde:</p>
+
+<ul>
+<li><strong>Uptime ≠ Model Health</strong>: Un modelo puede estar "up" pero generando basura</li>
+<li><strong>Baseline es essential</strong>: Sin comparacion no hay forma de saber si mejoraste o empeoraste</li>
+<li><strong>Alertas inteligentes</strong>: Diferencia entre drift y bug para actuar correctamente</li>
+<li><strong>Metrics translate to business</strong>: Si no puedes explicar el impacto en plata, no estás monitoreando lo correcto</li>
+</ul>
+
+<p>La próxima vez que alguien te pregunte como va el modelo en producción, tu respuesta no debería ser "bien, el servicio está arriba". Debería ser "accuracy 91.2%, error rate 0.3%, prediction latency p99 en 45ms, y drift score 0.02 — todo dentro de umbrales". Eso es ser profesional de ML.</p>
+
+<p>Eso es todo pues. Nos vemos en el día 220 — A/B Testing para ML, donde aprenderemos a experimentar correctamente con nuestros modelos. ¡Hagámoslo!</p>
+
+<hr>
+<p><em>Código del día en GitHub: <a href="#">365DaysOfAI/day-219-monitoring</a></em></p>
+<p><em>#365DaysOfAI #MLMonitoring #Observability #Prometheus #Grafana</em></p>
   </article>
 
   <script>
