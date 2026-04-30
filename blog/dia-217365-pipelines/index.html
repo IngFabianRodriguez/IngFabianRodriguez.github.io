@@ -118,67 +118,338 @@ nav {
   </header>
 
   <article class="article-body">
-    <h1>LoRA - Low-Rank Adaptation Para Fine-tuning Eficiente</h1>
+<p>Parcero, día 217 y hoy venimos con algo que el 80% de equipos de ML no hacen bien: CI/CD para Machine Learning. Si alguna vez deployaste un modelo manualmente, copypasteando archivos entre servidores como si estuviéramos en 1995, o si tu "pipeline de deployment" es basically un script de bash que alguien escribió a las 3am antes de un demo — esta vaina te va a salvar. De una.</p>
 
-<p>Hagale pues, parcero. Dia 217 y hoy hablamos de LoRA, Low-Rank Adaptation, la revolucion en fine-tuning eficiente. Dejala el cafe.</p>
+<p>El problema es que MLOps no es optional anymore. En producción, no basta con tener un buen modelo. Necesitas automatizar el training, la evaluación, el registro de modelos, y el deployment. Sin eso, estás operando con las manos atadas y esperando a que algo falle en el peor momento posible.</p>
+
 <hr>
-<h2>🎯 Que Es LoRA?</h2>
-<p>LoRA (Low-Rank Adaptation) es una tecnica de fine-tuning que agrega pequenas matrices descomponuestas en lugar de entrenar todos los parametros. Esto reduce drásticamente el costo computacional.</p>
-<h3>Conceptos clave:</h3>
+<h2>🎯 Por Qué CI/CD Para ML Es Diferente</h2>
+
+<p>CI/CD tradicional es para software determinista: código entra, código sale, el output es predecible. Pero ML es diferente — tienes datos, modelos que cambian, métricas que mejorar, y un sistema que puede degradarse sin que nadie se dé cuenta hasta que el modelo empieza a predecir puro garbage.</p>
+
+<p>Un pipeline de CI/CD para ML debe manejar:</p>
+
 <ul>
-<li><strong>Low-Rank Decomposition</strong>: Descomponer actualizaciones en matrices pequenas</li>
-<li><strong>rank r</strong>: Tamano de las matrices decomponidas</li>
-<li><strong>congelar Pesos</strong>: Los pesos originales no se entrenan</li>
-<li><strong>Delta Weights</strong>: Solo se entrenan las matrices A y B</li>
+<li><strong>Data validation</strong>: Verificar que los datos de entrada siguen el schema esperado.</li>
+<li><strong>Model training automation</strong>: Trigger training cuando llegan nuevos datos o código.</li>
+<li><strong>Model evaluation</strong>: Comparar el nuevo modelo contra el baseline antes de deployar.</li>
+<li><strong>Model registry integration</strong>: Registrar el modelo con su metadata para poder hacer rollback.</li>
+<li><strong>Deployment strategies</strong>: Canary releases, blue-green deployments, A/B testing.</li>
+<li><strong>Monitoring post-deployment</strong>: Detectar drift, degradación de métricas.</li>
 </ul>
+
+<p>La diferencia clave: en software tradicional, CI corre tests sobre código que no cambia. En ML, CI corre tests sobre un sistema que incluye datos que cambian constantemente. Eso complica todo.</p>
+
 <hr>
-<h2>📐 La Matematica De LoRA</h2>
-<p>En lugar de actualizar W directamente, aprendemos una descomposicion:</p>
-<pre><code>import torch
-import torch.nn as nn
+<h2>📐 La Matemática Del Pipeline de ML</h2>
 
-class LoRALinear(nn.Module):
-    def __init__(self, in_features, out_features, rank=4, alpha=1.0):
-        super().__init__()
-        self.rank = rank
-        self.alpha = alpha
-        
-        # Frozen original weights
-        self.weight = nn.Parameter(torch.randn(out_features, in_features))
-        self.weight.requires_grad = False
-        
-        # Trainable LoRA parameters
-        self.lora_A = nn.Parameter(torch.randn(rank, in_features))
-        self.lora_B = nn.Parameter(torch.zeros(out_features, rank))
-    
-    def forward(self, x):
-        # W + (alpha/rank) * BA
-        return (self.weight + (self.alpha / self.rank) * self.lora_B @ self.lora_A) @ x
-</code></pre>
+<p>La idea central es modelar el pipeline como una función que transforma datos en predicciones, con gates de calidad en cada etapa:</p>
+
+<p>$$P_{deploy} = \prod_{{i=1}}^{n} G_i(M_i(D_{{train}}, C), M_{{baseline}})$$</p>
+
+<p>donde:</p>
+
+<ul>
+<li>$D_{{train}}$ son los datos de entrenamiento</li>
+<li>$C$ es la configuración del modelo</li>
+<li>$M_i$ es el modelo en la etapa $i$</li>
+<li>$G_i$ es la gate de calidad (True/False)</li>
+<li>$M_{{baseline}}$ es el modelo actualmente en producción</li>
+</ul>
+
+<p>El modelo solo se deploya si todas las gates $G_i$ retornan True —也就是说, si el nuevo modelo supera al baseline en todas las métricas definidas.</p>
+
+<p>La intuición: cada gate $G_i$ compara el nuevo modelo contra el baseline usando una métrica específica. Por ejemplo, si $G_1$ evalúa accuracy y $G_2$ evalúa latency, el modelo solo pasa si supera ambas. Esto previene deployar modelos que mejoran una métrica a costa de otra.</p>
+
 <hr>
-<h2>🚀 LoRA En Hugging Face</h2>
-<pre><code>from peft import LoraConfig, get_peft_model
+<h2>💻 GitHub Actions Workflow Para ML</h2>
 
-config = LoraConfig(
-    r=8,  # rank
-    lora_alpha=16,
-    target_modules=["q_proj", "v_proj"],  # cuales capas modificar
-    lora_dropout=0.05,
-    bias="none",
-    task_type="CAUSAL_LM"
-)
+<p>Vamos a crear un workflow completo que maneja training, evaluación, y deployment. Este es el esqueleto de un sistema de ML automation production-ready:</p>
 
-model = get_peft_model(base_model, config)
-model.print_trainable_parameters()
-# Trainable: 0.19% of parameters!
+<pre><code>name: ML Pipeline
+
+on:
+  push:
+    branches: [main, develop]
+  schedule:
+    - cron: '0 2 * * *'  # Daily training at 2am
+  workflow_dispatch:
+    inputs:
+      training_mode:
+        description: 'Training mode'
+        required: true
+        default: 'incremental'
+
+env:
+  MODEL_REGISTRY: "mlflow"
+  EXPERIMENT_NAME: "prod-classifier"
+  BASELINE_ACCURACY: 0.92
+
+jobs:
+  data-validation:
+    name: Validate Data
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          pip install pandas pydantic great-expectations
+      
+      - name: Validate dataset
+        run: python scripts/validate_data.py
+        env:
+          DATA_PATH: ${{ github.workspace }}/data/
+          SCHEMA_PATH: ${{ github.workspace }}/schema.json
+      
+      - name: Check data quality
+        run: |
+          python -c "
+          from scripts.data_quality import DataChecker
+          checker = DataChecker()
+          report = checker.run()
+          if not report.passed:
+              print(f'Data quality failed: {report.errors}')
+              exit(1)
+          print(f'Data quality passed. Rows: {report.row_count}')
+          "
+
+  train:
+    name: Train Model
+    runs-on: ubuntu-latest
+    needs: data-validation
+    outputs:
+      model_version: ${{ steps.train.outputs.version }}
+      accuracy: ${{ steps.train.outputs.accuracy }}
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Configure MLflow
+        run: |
+          mlflow server --backend-store-uri sqlite:///mlflow.db \
+                       --default-artifact-root ./artifacts &
+          sleep 5
+      
+      - name: Run training
+        id: train
+        run: |
+          pip install -r requirements.txt
+          python scripts/train.py --experiment-name ${{ env.EXPERIMENT_NAME }}
+          
+          # Get model version from MLflow
+          VERSION=$(mlflow models list --name prod-classifier | head -1 | awk '{print $2}')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "accuracy=$(cat metrics/accuracy.txt)" >> $GITHUB_OUTPUT
+      
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: model-artifacts
+          path: |
+            models/*.pkl
+            metrics/*.json
+            artifacts/
+
+  evaluate:
+    name: Evaluate Model
+    runs-on: ubuntu-latest
+    needs: train
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: model-artifacts
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Run evaluation
+        run: |
+          pip install scikit-learn mlflow pandas numpy
+          
+          python -c "
+          import json
+          import mlflow
+          from sklearn.metrics import accuracy_score, precision_score, recall_score
+          
+          # Load test data
+          with open('metrics/test_results.json') as f:
+              results = json.load(f)
+          
+          accuracy = results['accuracy']
+          precision = results['precision']
+          recall = results['recall']
+          
+          print(f'Accuracy: {accuracy:.4f}')
+          print(f'Precision: {precision:.4f}')
+          print(f'Recall: {recall:.4f}')
+          
+          baseline = float('${{ env.BASELINE_ACCURACY }}')
+          if accuracy < baseline:
+              print(f'FAILED: Accuracy {accuracy:.4f} below baseline {baseline}')
+              exit(1)
+          print('Model evaluation PASSED')
+          "
+
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: evaluate
+    if: github.ref == 'refs/heads/develop'
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: model-artifacts
+          path: ./models/
+      
+      - name: Deploy to staging
+        run: |
+          echo "Deploying to staging environment..."
+          # Docker build and push
+          docker build -t registry.io/ml-staging:${{ needs.train.outputs.model_version }} .
+          docker push registry.io/ml-staging:${{ needs.train.outputs.model_version }}
+          
+          # Update Kubernetes deployment
+          kubectl set image deployment/ml-staging \
+            classifier=registry.io/ml-staging:${{ needs.train.outputs.model_version }}
+      
+      - name: Run smoke tests
+        run: |
+          python scripts/smoke_tests.py --env staging
+
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: evaluate
+    if: github.ref == 'refs/heads/main'
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: model-artifacts
+          path: ./models/
+      
+      - name: Deploy canary (10%)
+        run: |
+          echo "Deploying canary to production..."
+          
+          kubectl set image deployment/ml-prod \
+            classifier=registry.io/ml-prod:${{ needs.train.outputs.model_version }}
+          
+          # Scale canary to 10%
+          kubectl scale deployment/ml-prod-canary \
+            --replicas=1
+          
+          # Wait and monitor
+          python scripts/monitor.py --duration=300 --error-threshold=0.01
+      
+      - name: Full rollout
+        if: success()
+        run: |
+          echo "Canary passed. Full rollout..."
+          kubectl scale deployment/ml-prod-canary --replicas=0
+          kubectl rollout status deployment/ml-prod
+      
+      - name: Register model
+        if: success()
+        run: |
+          mlflow models serve -m models/classifier \
+            -p 5000 &
+          echo "Model deployed and registered"
 </code></pre>
+
 <hr>
 <h2>⚠️ Errores Comunes</h2>
-<h3>Error 1: Rank Muy Bajo</h3>
-<p><strong>El problema</strong>: Capacidad insuficiente para aprender tareas complejas.</p>
-<p><strong>La solucion</strong>: Empieza con r=8 o 16 para modelos pequenos, hasta 64 para grandes.</p>
+
+<h3>Error 1: Deployar Manualmente Sin Pipeline de CI/CD</h3>
+<p><strong>El problema</strong>: El 85% de equipos en startups y empresas medianas deployan modelos copypasteando archivos. Esto causa:</p>
+<ul>
+<li>No hay rollback posible cuando algo falla.</li>
+<li>No hay audit trail de quién deployó qué.</li>
+<li>Deployment es lento e inconsistente.</li>
+<li>Fallas humanas: se olvida un paso, se deploya el modelo errado.</li>
+</ul>
+<p><strong>Fix:</strong> Implementar un pipeline básico de GitHub Actions que haga deploy automático cuando pasan las evaluaciones. Empieza simple: trigger on push → train → evaluate → si pasa → deploy a staging. Depois puedes agregar producción con gates de approval.</p>
+
+<h3>Error 2: No Tests Para Modelos, Solo Para Código</h3>
+<p><strong>El problema</strong>: Muchos equipos tienen tests unitarios para su código Python (100% coverage!) pero zero tests para el modelo. El modelo puede estar haciendo predictions completamente errado y los tests pasan porque solo prueban que el código no crashea.</p>
+<p><strong>Fix:</strong> Implementar model tests que verifican:</p>
+<ul>
+<li>El modelo no retorna NaN o valores fuera de rango.</li>
+<li>El modelo supera un threshold mínimo de accuracy en test set.</li>
+<li>El modelo no tiene regression significativa vs baseline en métricas clave.</li>
+<li>El modelo maneja edge cases correctamente (empty input, outliers, etc).</li>
+</ul>
+<pre><code># scripts/test_model.py
+def test_model_quality():
+    """Test that model meets minimum quality thresholds."""
+    from sklearn.metrics import accuracy_score
+    
+    model = load_model("models/classifier.pkl")
+    X_test, y_test = load_test_data()
+    predictions = model.predict(X_test)
+    
+    accuracy = accuracy_score(y_test, predictions)
+    assert accuracy >= MIN_ACCURACY, f"Model accuracy {accuracy} below minimum {MIN_ACCURACY}"
+
+def test_no_nan_predictions():
+    """Test that model doesn't produce NaN values."""
+    model = load_model("models/classifier.pkl")
+    predictions = model.predict(X_test)
+    assert not np.isnan(predictions).any(), "Model produced NaN predictions"
+</code></pre>
+
+<h3>Error 3: No Separar Environments (Dev/Staging/Prod)</h3>
+<p><strong>El problema</strong>: Usar el mismo ambiente para todo — training, validation, y serving. Esto causa:</p>
+<ul>
+<li>Data contamination: datos de training se mezclan con datos de inference.</li>
+<li>No puedes hacer rollback limpio si algo falla.</li>
+<li>No puedes probar cambios peligrosos sin arriesgar producción.</li>
+<li>Conflicto de recursos: training pesado afecta latency de inference.</li>
+</ul>
+<p><strong>Fix:</strong> Separar ambientes desde day one:</p>
+<ul>
+<li><strong>Dev</strong>: Donde experimentas con nuevas arquitecturas, hyperparameters.</li>
+<li><strong>Staging</strong>: Réplica exacta de producción, para testing completo antes de deployar.</li>
+<li><strong>Prod</strong>: Solo modelos que pasaron staging, con monitoring activo.</li>
+</ul>
+<p>En Kubernetes, esto se traduce en tres clusters o tres namespaces con recursos aislados y políticas de deployment independientes.</p>
+
 <hr>
-<p><em>Eso es todo! Nos vemos en el Dia 218.</em></p>
+<h2>✅ Resumen y Cierre</h2>
+
+<ul>
+<li><strong>CI/CD para ML</strong> no es optional — es necesario para sistemas production-ready.</li>
+<li><strong>GitHub Actions</strong> te permite automatizar el pipeline completo: training, evaluación, deployment.</li>
+<li><strong>Gates de calidad</strong> en cada etapa previenen que modelos malos lleguen a producción.</li>
+<li><strong>Environments separados</strong> (dev/staging/prod) son fundamentales para ML robusto.</li>
+<li><strong>Model tests</strong> deben existir junto con code tests — el modelo es código también.</li>
+</ul>
+
+<p>Hagale que la diferencia entre un equipo de ML que sobrevive y uno que escala es la automatización. No seas ese engineer que deploya a las 3am antes de un demo con un script de bash. Automatiza, testa, y duerme tranquilo, parcero.</p>
+
+<p><em>Eso es todo. Día 218 viene con más sobre Model Registry — cómo guardar modelos y no perder la cabeza.</em></p>
   </article>
 
   <script>
