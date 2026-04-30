@@ -118,60 +118,443 @@ nav {
   </header>
 
   <article class="article-body">
-    <h1>Attention Mechanism - El Cerebro De Los Modelos Modernos</h1>
-<p>Hágale pues, parcero. Llegamos al Día 107 y hoy toca hablar de attention mechanism. Después de más de 10 años rompiendo redes neuronales en producción, te digo que esto es más jugoso de lo que parece. Dejá el café, acomodate, porque esto es más jugoso de lo que parece.</p>
-<hr>
 <h2>🎯 ¿Qué Es Attention Mechanism?</h2>
-<p>En este artículo exploramos Attention Mechanism en profundidad, con ejemplos prácticos y código.</p>
-<h3>Conceptos clave:</h3>
+<p>Hágale pues, parcero. Llegamos al Día 107 y hoy toca uno de los conceptos que cambió completamente el deep learning: el Attention Mechanism. Si pensabas que las redes recurrentes eran el futuro, espera a ver cómo attention permitió que los Transformers dominaran todo — desde NLP hasta visión por computadora. Sin attention, ChatGPT, BERT, y probablemente medio mundo de la IA moderna no existiría. Así que prestá atención (valga la redundancia).</p>
+
+<h2>📐 La Matemática Detrás De Attention</h2>
+<p>Attention es fundamentalmente una idea sencilla pero profunda: <strong>dada una posición en una secuencia, ¿a qué partes de la misma (o de otra) secuencia debo prestar atención para entender mejor el contexto?</strong></p>
+
+<h3>Scaled Dot-Product Attention</h3>
+<p>La fórmula original del paper "Attention Is All You Need" es:</p>
+<p><code>Attention(Q, K, V) = softmax(QK^T / √d_k) × V</code></p>
+
+<p>Donde:</p>
 <ul>
-<li><strong>Definición</strong>: Attention Mechanism es fundamental en deep learning</li>
-<li><strong>Aplicación</strong>: Se usa en arquitecturas modernas de redes neuronales</li>
-<li><strong>Por qué importa</strong>: Sin esto, muchos modelos no podrían entrenar eficientemente</li>
+<li><strong>Q (Query)</strong>: El vector que representa "qué estoy buscando" — la posición actual</li>
+<li><strong>K (Key)</strong>: El vector que representa "de qué trata" cada posición</li>
+<li><strong>V (Value)</strong>: El contenido real de cada posición que queremos extraer</li>
+<li><strong>√d_k</strong>: El factor de escala — aquí está el primer error común que vamos a ver</li>
 </ul>
-<hr>
-<h2>📐 La Matemática Detrás De Attention Mechanism</h2>
-<p>La matemática que hace posible la magia de Attention Mechanism:</p>
+
+<p>La intuición: computamos la similitud entre Q y cada K usando el producto punto, escalamos para evitar que los valores crezcan demasiado cuando d_k es grande, aplicamos softmax para obtener pesos que sumen 1, y finalmente hacemos una suma ponderada de los valores V.</p>
+
+<h3>¿Por qué se escala por √d_k?</h3>
+<p>Cuando d_k es grande (ej: 512 o 768), el producto punto QK^T puede generar valores muy grandes en magnitud. Esto satura el softmax, haciendo que los gradientes sean cercanos a cero — vanilla vanishing gradients. Escalar por √d_k mantiene la varianza de los scores cerca de 1, asegurando un softmax "suave" con gradientes razonables.</p>
+
+<h3>Self-Attention vs Cross-Attention</h3>
+<ul>
+<li><strong>Self-Attention</strong>: Q, K, V vienen de la misma secuencia. Cada posición attend a todas las demás posiciones de la misma secuencia. Ejemplo: en "El gato se sentó en la alfombra", "gato" attends a "sentó" y "alfombra" para capturar la relación.</li>
+<li><strong>Cross-Attention</strong>: Q viene de una secuencia (ej: el decoder) y K, V vienen de otra (ej: el encoder). Es cómo el decoder mira el input original en traducción. Q = "¿qué palabra traduzco ahora?", K, V = representaciones del sentence original.</li>
+</ul>
+
+<h2>🚀 Implementación En PyTorch</h2>
 <pre><code class="language-python">import torch
 import torch.nn as nn
+import torch.nn.functional as F
+import matplotlib.pyplot as plt
+import seaborn as sns
+import math
 
-# Ejemplo de Attention Mechanism
-x = torch.randn(32, 64)
-print(f'Input: {x.shape}')
-</code></pre>
-<hr>
-<h2>🚀 Implementación En PyTorch</h2>
-<pre><code class="language-python"># Implementación de Attention Mechanism
-class AttentionMechanismBlock(nn.Module):
-    def __init__(self):
-        super().__init__()
-        # Capas del bloque
+
+# ============================================================
+# 1. SCALED DOT-PRODUCT ATTENTION DESDE CERO
+# ============================================================
+def scaled_dot_product_attention(Q, K, V, mask=None):
+    """
+    Q: (batch, seq_q, d_k)
+    K: (batch, seq_k, d_k)
+    V: (batch, seq_k, d_v)
+    mask: (batch, seq_q, seq_k) — opcional, para causal o padding
+    """
+    d_k = Q.size(-1)
     
-    def forward(self, x):
+    # Compute attention scores: Q @ K^T
+    # shape: (batch, seq_q, seq_k)
+    scores = torch.matmul(Q, K.transpose(-2, -1)) / math.sqrt(d_k)
+    
+    # Apply mask if provided (for causal attention or padding)
+    if mask is not None:
+        scores = scores.masked_fill(mask == 0, float('-inf'))
+    
+    # Softmax para obtener pesos de atención
+    attn_weights = F.softmax(scores, dim=-1)
+    
+    # Weighted sum de los values
+    output = torch.matmul(attn_weights, V)
+    
+    return output, attn_weights
+
+
+# Demo básico
+batch_size = 2
+seq_len = 5
+d_k = 64
+
+Q = torch.randn(batch_size, seq_len, d_k)
+K = torch.randn(batch_size, seq_len, d_k)
+V = torch.randn(batch_size, seq_len, d_k)
+
+output, attn_weights = scaled_dot_product_attention(Q, K, V)
+
+print(f"Output shape: {output.shape}")       # (2, 5, 64)
+print(f"Attention weights shape: {attn_weights.shape}")  # (2, 5, 5)
+print(f"Pesos suman 1 por fila: {attn_weights[0].sum(dim=-1)}")
+
+
+# ============================================================
+# 2. MULTI-HEAD ATTENTION CON nn.MultiheadAttention
+# ============================================================
+class MultiHeadAttentionDemo(nn.Module):
+    def __init__(self, d_model=512, num_heads=8):
+        super().__init__()
+        self.d_model = d_model
+        self.num_heads = num_heads
+        self.d_k = d_model // num_heads
+        
+        # Proyecciones lineales
+        self.W_q = nn.Linear(d_model, d_model)
+        self.W_k = nn.Linear(d_model, d_model)
+        self.W_v = nn.Linear(d_model, d_model)
+        self.W_o = nn.Linear(d_model, d_model)
+        
+        # Usar el módulo built-in de PyTorch
+        self.multihead_attn = nn.MultiheadAttention(
+            embed_dim=d_model, 
+            num_heads=num_heads,
+            batch_first=True
+        )
+    
+    def forward(self, query, key, value, attn_mask=None):
+        """
+        query/key/value: (batch, seq_len, d_model)
+        """
+        # Proyecciones
+        Q = self.W_q(query)
+        K = self.W_k(key)
+        V = self.W_v(value)
+        
+        # Multi-head attention con PyTorch
+        # Devuelve: (output, attn_weights)
+        attn_output, attn_weights = self.multihead_attn(
+            query=Q, 
+            key=K, 
+            value=V,
+            attn_mask=attn_mask
+        )
+        
+        # Proyección de salida
+        output = self.W_o(attn_output)
+        
+        return output, attn_weights
+
+
+# Demo
+d_model = 512
+num_heads = 8
+seq_len = 10
+
+demo = MultiHeadAttentionDemo(d_model=d_model, num_heads=num_heads)
+
+x = torch.randn(1, seq_len, d_model)
+output, attn_weights = demo(x, x, x)  # self-attention
+
+print(f"\nMulti-head output: {output.shape}")
+print(f"Attention weights: {attn_weights.shape}")  # (batch*num_heads, seq_len, seq_len)
+
+
+# ============================================================
+# 3. SELF-ATTENTION LAYER (solo-attention, sin RNN)
+# ============================================================
+class SelfAttentionLayer(nn.Module):
+    """Una capa de self-attention con residuales y layernorm"""
+    def __init__(self, d_model, num_heads=8, dropout=0.1):
+        super().__init__()
+        self.self_attn = nn.MultiheadAttention(
+            embed_dim=d_model,
+            num_heads=num_heads,
+            batch_first=True,
+            dropout=dropout
+        )
+        self.norm = nn.LayerNorm(d_model)
+        self.dropout = nn.Dropout(dropout)
+    
+    def forward(self, x, mask=None):
+        """
+        x: (batch, seq_len, d_model)
+        mask: mask para atención causal
+        """
+        # Multi-head attention con residuales
+        attn_output, _ = self.self_attn(x, x, x, attn_mask=mask)
+        x = self.norm(x + self.dropout(attn_output))
         return x
 
-# Uso
-model = AttentionMechanismBlock()
-output = model(x)
-print(f"Output shape: {output.shape}")
+
+# Test self-attention layer
+d_model = 256
+seq_len = 20
+batch = 4
+
+self_attn_layer = SelfAttentionLayer(d_model=d_model, num_heads=8)
+x = torch.randn(batch, seq_len, d_model)
+out = self_attn_layer(x)
+
+print(f"\nSelf-attention layer input: {x.shape}")
+print(f"Self-attention layer output: {out.shape}")
+
+
+# ============================================================
+# 4. CROSS-ATTENTION PARA ENCODER-DECODER
+# ============================================================
+class CrossAttentionLayer(nn.Module):
+    """Cross-attention: queries del decoder, keys/values del encoder"""
+    def __init__(self, d_model, num_heads=8, dropout=0.1):
+        super().__init__()
+        self.cross_attn = nn.MultiheadAttention(
+            embed_dim=d_model,
+            num_heads=num_heads,
+            batch_first=True,
+            dropout=dropout
+        )
+        self.norm = nn.LayerNorm(d_model)
+        self.dropout = nn.Dropout(dropout)
+    
+    def forward(self, decoder_states, encoder_states, mask=None):
+        """
+        decoder_states: (batch, dec_seq, d_model) — queries
+        encoder_states: (batch, enc_seq, d_model) — keys/values
+        """
+        attn_output, attn_weights = self.cross_attn(
+            query=decoder_states,
+            key=encoder_states,
+            value=encoder_states,
+            attn_mask=mask
+        )
+        output = self.norm(decoder_states + self.dropout(attn_output))
+        return output, attn_weights
+
+
+# Demo encoder-decoder cross attention
+d_model = 512
+enc_seq = 15  # longitud del input (encoder)
+dec_seq = 8   # longitud del output generado (decoder)
+batch = 2
+
+encoder_output = torch.randn(batch, enc_seq, d_model)
+decoder_input = torch.randn(batch, dec_seq, d_model)
+
+cross_attn = CrossAttentionLayer(d_model=d_model, num_heads=8)
+decoder_output, cross_attn_weights = cross_attn(decoder_input, encoder_output)
+
+print(f"\nEncoder states: {encoder_output.shape}")
+print(f"Decoder states: {decoder_input.shape}")
+print(f"Cross-attention output: {decoder_output.shape}")
+print(f"Cross-attention weights: {cross_attn_weights.shape}")
+
+
+# ============================================================
+# 5. VISUALIZAR ATTENTION WEIGHTS
+# ============================================================
+def visualize_attention(attn_weights, sentence, head_idx=0):
+    """
+    Visualiza los pesos de atención como heatmap
+    attn_weights: (num_heads, seq_len, seq_len) o (seq_len, seq_len)
+    sentence: lista de tokens
+    head_idx: cuál head visualizar si hay múltiples
+    """
+    if attn_weights.dim() == 4:
+        # (batch, num_heads, seq, seq) -> tomar primer batch y head específico
+        attn_weights = attn_weights[0, head_idx].detach().cpu().numpy()
+    else:
+        attn_weights = attn_weights[0].detach().cpu().numpy()
+    
+    plt.figure(figsize=(10, 8))
+    sns.heatmap(
+        attn_weights, 
+        xticklabels=sentence,
+        yticklabels=sentence,
+        cmap='viridis',
+        annot=False,
+        fmt='.2f'
+    )
+    plt.title(f'Attention Weights - Head {head_idx}')
+    plt.xlabel('Keys')
+    plt.ylabel('Queries')
+    plt.tight_layout()
+    
+    # Guardar como imagen
+    plt.savefig('attention_heatmap.png', dpi=150)
+    plt.close()
+    print("Heatmap guardado en attention_heatmap.png")
+    
+    return 'attention_heatmap.png'
+
+
+# Demo con una oración de ejemplo
+tokens = ['El', 'gato', 'negro', 'se', 'sentó', 'en', 'la', 'alfombra']
+seq_len = len(tokens)
+
+# Crear attention weights sintético para demo
+demo_weights = torch.softmax(torch.randn(seq_len, seq_len), dim=-1)
+
+img_path = visualize_attention(demo_weights, tokens)
+print(f"Imagen generada: {img_path}")
+
+
+# ============================================================
+# EJEMPLO COMPLETO: MINI TRANSFORMER ENCODER
+# ============================================================
+class TransformerEncoderBlock(nn.Module):
+    """Un bloque de encoder completo: MHAttention + FFN + residuales"""
+    def __init__(self, d_model, num_heads, d_ff, dropout=0.1):
+        super().__init__()
+        self.self_attn = nn.MultiheadAttention(
+            embed_dim=d_model,
+            num_heads=num_heads,
+            batch_first=True,
+            dropout=dropout
+        )
+        self.ffn = nn.Sequential(
+            nn.Linear(d_model, d_ff),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(d_ff, d_model)
+        )
+        self.norm1 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
+        self.dropout = nn.Dropout(dropout)
+    
+    def forward(self, x, mask=None):
+        # Self-attention con residuales
+        attn_output, attn_weights = self.self_attn(x, x, x, attn_mask=mask)
+        x = self.norm1(x + self.dropout(attn_output))
+        
+        # Feed-forward con residuales
+        ffn_output = self.ffn(x)
+        x = self.norm2(x + self.dropout(ffn_output))
+        
+        return x, attn_weights
+
+
+class SimpleTransformerEncoder(nn.Module):
+    def __init__(self, vocab_size, d_model, num_heads, d_ff, num_layers, max_seq_len):
+        super().__init__()
+        self.embedding = nn.Embedding(vocab_size, d_model)
+        self.pos_embedding = nn.Parameter(torch.randn(1, max_seq_len, d_model) * 0.02)
+        self.layers = nn.ModuleList([
+            TransformerEncoderBlock(d_model, num_heads, d_ff)
+            for _ in range(num_layers)
+        ])
+    
+    def forward(self, x, mask=None):
+        # x: (batch, seq_len) — token IDs
+        x = self.embedding(x) + self.pos_embedding[:, :x.size(1), :]
+        
+        attn_weights_all = []
+        for layer in self.layers:
+            x, attn_weights = layer(x, mask)
+            attn_weights_all.append(attn_weights)
+        
+        return x, attn_weights_all
+
+
+# Demo
+vocab_size = 10000
+d_model = 128
+num_heads = 4
+d_ff = 512
+num_layers = 3
+max_seq_len = 100
+batch = 8
+seq_len = 30
+
+model = SimpleTransformerEncoder(vocab_size, d_model, num_heads, d_ff, num_layers, max_seq_len)
+x = torch.randint(0, vocab_size, (batch, seq_len))
+
+output, all_attn_weights = model(x)
+
+print(f"\n=== Simple Transformer Encoder Demo ===")
+print(f"Input: {x.shape}")
+print(f"Output: {output.shape}")
+print(f"Número de layers: {len(all_attn_weights)}")
+print(f"Attention weights por layer: {all_attn_weights[0].shape}")
+
+
+print("\n✅ Todos los demos de Attention completados exitosamente!")
 </code></pre>
-<hr>
+
 <h2>⚠️ Errores Comunes Y Cómo Evitarlos</h2>
-<h3>Error 1: No entender el orden de operaciones</h3>
-<p><strong>El problema</strong>: El orden en que se aplican las operaciones con Attention Mechanism afecta el resultado.</p>
-<p><strong>La solución</strong>: Siempre verifica la dimensión y el orden de las operaciones.</p>
-<h3>Error 2: Olvidar el modo de evaluación</h3>
-<p><strong>El problema</strong>: Attention Mechanism puede comportarse diferente en entrenamiento vs inferencia.</p>
-<p><strong>La solución</strong>: Usa model.eval() durante inferencia y model.train() durante entrenamiento.</p>
-<hr>
-<h2>💡 Tips Para Producción</h2>
+
+<h3>❌ Error 1: No escalar el attention score — vanishing gradients en redes profundas</h3>
+<p><strong>El problema</strong>: Si no escalamos QK^T por √d_k, los scores se vuelven muy grandes cuando d_k es grande. Esto satura el softmax, haciendo que los pesos de atención se concentren en un solo token (casi one-hot). Los gradientes del softmax son prácticamente cero, matando el aprendizaje en redes profundas con muchas capas de attention.</p>
+
+<p><strong>La solución</strong>: SIEMPRE escala por √d_k. Es una línea de código pero salva tu entrenamiento:</p>
+<pre><code class="language-python"># ❌ WRONG — causa vanishing gradients
+scores = torch.matmul(Q, K.transpose(-2, -1))
+
+# ✅ CORRECTO — escala apropiada
+d_k = Q.size(-1)
+scores = torch.matmul(Q, K.transpose(-2, -1)) / math.sqrt(d_k)
+</code></pre>
+
+<h3>❌ Error 2: Demasiados attention heads — overfitting</h3>
+<p><strong>El problema</strong>: Más heads = más parámetros = más capacidad de memorización. En datasets pequeños, el modelo aprende a "rotear" en lugar de generalizar. Además, cada head termina aprendiendo patrones redundantes o ruido.</p>
+
+<p><strong>La solución</strong>: El paper original de "Attention Is All You Need" usa 8 heads con d_model=512 (d_k=64). Una regla práctica: d_k debería ser al menos 32-64 para que cada head tenga suficiente representación. Usa menos heads en datasets pequeños y valida con attention analysis:</p>
+<pre><code class="language-python"># ❌ WRONG — demasiados heads para dataset pequeño
+num_heads = 32  # d_model 512 / 32 = 16 dims por head
+
+# ✅ CORRECTO — número razonable de heads
+num_heads = 8   # d_model 512 / 8 = 64 dims por head
+# O prueba con heads más grandes: d_k = 64-128 mínimo
+</code></pre>
+
+<h3>❌ Error 3: No usar causal mask en language modeling — data leakage</h3>
+<p><strong>El problema</strong>: En generación autoregresiva, el modelo no debe "ver" los tokens futuros. Si no aplicas una causal mask, durante entrenamiento el modelo mira el token objetivo directamente, aprendiendo a copiar en lugar de predecir. En inferencia esto causa que el modelo genere texto repetitivo o sin sentido porque "chequeó" las respuestas.</p>
+
+<p><strong>La solución</strong>: Aplica una máscara causal (triangular inferior) antes del softmax:</p>
+<pre><code class="language-python">def create_causal_mask(seq_len, device):
+    """
+    Crea máscara causal: 1 donde se permite atención, 0 donde no.
+    Matriz triangular inferior — cada posición solo ve hacia atrás.
+    """
+    mask = torch.triu(torch.ones(seq_len, seq_len, device=device), diagonal=1)
+    return mask == 0  # True donde podemos atender (triangular inferior)
+
+
+def scaled_dot_product_attention_causal(Q, K, V):
+    d_k = Q.size(-1)
+    scores = torch.matmul(Q, K.transpose(-2, -1)) / math.sqrt(d_k)
+    
+    # Crear y aplicar máscara causal
+    seq_len = Q.size(1)
+    causal_mask = create_causal_mask(seq_len, Q.device)
+    scores = scores.masked_fill(causal_mask.unsqueeze(0), float('-inf'))
+    
+    attn_weights = F.softmax(scores, dim=-1)
+    output = torch.matmul(attn_weights, V)
+    return output, attn_weights
+</code></pre>
+
+<h2>💡 Resumen</h2>
+<p>Attention Mechanism es el corazón de los modelos modernos. La idea central es simple: weighted sum de values, donde los pesos vienen de la similitud entre queries y keys. Lo que hace especial a attention es:</p>
+
 <ul>
-<li>Monitorea las métricas relevantes durante el entrenamiento</li>
-<li>Usa Attention Mechanism de acuerdo a la arquitectura de tu red</li>
-<li>No todas las técnicas sirven para todos los problemas</li>
+<li><strong>Paralelizable</strong>: A diferencia de RNN, toda la secuencia se procesa en paralelo</li>
+<li><strong>Direct connections</strong>: Cada posición puede attends a cualquier otra — sin pasos secuenciales de hidden state</li>
+<li><strong>Interpretable</strong>: Los attention weights muestran qué partes del input son relevantes</li>
 </ul>
-<hr>
-<p><em>¡Eso es todo por hoy! Nos vemos mañana en el Día 108.</em></p>
+
+<p>Los 3 errores que vimos son críticos en producción:</p>
+
+<ol>
+<li><strong>No escalar</strong> → vanishing gradients → modelo no aprende</li>
+<li><strong>Demasiados heads</strong> → overfitting → mala generalización</li>
+<li><strong>No usar causal mask</strong> → data leakage → generación rota</li>
+</ol>
+
+<p>Aplicar bien estos conceptos hace la diferencia entre un modelo que funciona en paper y uno que funciona en producción. Hágale, parcero, domínialo que mañana viene Transformers y ahí las cosas se ponen más interesantes todavía.</p>
+
+<p><em>¡Eso es todo por hoy! Nos vemos mañana en el Día 108 — LSTM: por qué las redes recurrentes no mueren.</em></p>
 
   </article>
 
