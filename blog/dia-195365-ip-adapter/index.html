@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="Word Embeddings - Representando Palabras Como Vectores | #365DaysOfAI por Fabian Rodriguez">
-  <title>Word Embeddings - Representando Palabras Como Vectores | #365DaysOfAI</title>
+  <meta name="description" content="Optimización de Prompts - Prompt Tuning, Soft Prompts, Prefix Tuning, P-Tuning | #365DaysOfAI por Fabian Rodriguez">
+  <title>Optimización de Prompts: La Guía Definitiva Que el 80% Ignora | #365DaysOfAI</title>
   
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
@@ -110,55 +110,296 @@ nav {
 
   <header class="article-hero">
     <div class="day-badge">Dia 195 / 365 &nbsp;·&nbsp; #365DaysOfAI</div>
-    <h1 class="article-title">Word Embeddings - Representando Palabras Como Vectores</h1>
+    <h1 class="article-title">Optimización de Prompts: La Guía Definitiva Que el 80% Ignora</h1>
     <div class="article-meta">
       <time class="article-date">14 de julio de 2026</time>
-      <div class="tags"><span class="tag">word-embeddings</span><span class="tag">nlp</span><span class="tag">vectors</span><span class="tag">representation</span></div>
+      <div class="tags"><span class="tag">prompt-tuning</span><span class="tag">soft-prompts</span><span class="tag">prefix-tuning</span><span class="tag">p-tuning</span></div>
     </div>
   </header>
 
   <article class="article-body">
-    <h1>Word Embeddings - Representando Palabras Como Vectores</h1>
-<p>Hagale pues, parcero. Llegamos al Dia 195 y hoy hablamos de word embeddings, la base de todo en NLP moderno. Si pensabas que las palabras eran solo texto, espera a ver como las convertimos en vectores. Cafe.</p>
+<h1>Optimización de Prompts: La Guía Definitiva Que el 80% Ignora</h1>
+<p>Hagale pues, parcero. Día 195 y hoy llegamos al tema que nadie te explica bien: cómo optimizar prompts de verdad. No es solo "escribir mejor", es usar técnicas como prompt tuning, soft prompts y prefix tuning para que tu LLM aprenda a responder sin reentrenar todo el modelo. Esto lo ignoran el 80% de los developers. Vamos con café.</p>
 <hr>
-<h2>🎯 Que Son Los Word Embeddings?</h2>
-<p>Los word embeddings son representaciones vectoriales densas de palabras. Cada palabra se mapea a un vector de cientos de dimensiones donde palabras semanticamente similares estan cerca en el espacio vectorial.</p>
+<h2>🎯 Por Qué tus Prompts No Generalizan</h2>
+<p>El problema fundamental: hard-coded prompts (escribir instrucciones fijas en el input) no generalizan a situaciones nuevas. Si tu prompt dice "cuando el usuario pregunte por clima, responde con datos meteorológicos", fallará cuando pregunte "cómo está el tiempo en Bogotá?".</p>
+<p>La solución: aprender representations de los prompts que se adaptan automáticamente. Eso es el <strong>prompt tuning</strong>.</p>
 <h3>Conceptos clave:</h3>
 <ul>
-<li><strong>Dimensionalidad</strong>: Tipicamente 100-300 dimensiones</li>
-<li><strong> dense vs sparse</strong>: Vectores densos vs one-hot sparsos</li>
-<li><strong>Semantic similarity</strong>: Palabras similares tienen vectores similares</li>
+<li><strong>Hard prompts</strong>: Texto fijo escrito por humanos — no generaliza</li>
+<li><strong>Soft prompts</strong>: Embeddings aprendibles que se concatenan con el input</li>
+<li><strong>Prefix tuning</strong>: Prepende un vector aprendible antes de cada capa transformer</li>
+<li><strong>P-tuning</strong>: Usa embeddings de tokens persistentes (prompt tokens)</li>
 </ul>
 <hr>
-<h2>📐 La logica De Los Embeddings</h2>
+<h2>📐 La Matemática del Prompt Tuning</h2>
+<p>En lugar de modificar los pesos del modelo base, aprendemos un conjunto de <em>k</em> embeddings de prompt:</p>
+<p>$$\mathcal{L}(\theta_p) = \sum_{(x,y) \in \mathcal{D}} -\log p_\theta(y | p_\theta(x))$$</p>
+<p>Donde $p_\theta$ son los pesos del modelo frozen y $p_\theta$ son los embeddings del prompt que optimizamos via gradient descent.</p>
+<h3>Comparación de métodos:</h3>
+<p><strong>Fine-tuning completo</strong>: $\theta_{nuevo} = \theta_{pre} - \alpha \nabla_\theta \mathcal{L}$ — actualiza TODOS los parámetros.</p>
+<p><strong>Prompt tuning</strong>: Solo actualiza $P = [p_1, p_2, ..., p_k]$ donde $k \ll |\theta|$ — el modelo base queda frozen.</p>
+<p><strong>Prefix tuning</strong>: Para cada capa $l$, prepending $P_l \in \mathbb{R}^{k \times d_{model}}$ antes de $h_l$.</p>
+<hr>
+<h2>🚀 Implementación en PyTorch</h2>
 <pre><code class="language-python">import torch
 import torch.nn as nn
+from transformers import AutoModel, AutoTokenizer
 
-# Embedding layer basico
-embedding = nn.Embedding(vocab_size=10000, embedding_dim=300)
+class PromptTuner(nn.Module):
+    """Prompt Tuning: embeddings aprendibles concatenados al input."""
+    def __init__(self, model_name, num_prompts=20, embed_dim=768):
+        super().__init__()
+        self.model = AutoModel.from_pretrained(model_name)
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        
+        # Soft prompts aprendibles (num_prompts x embed_dim)
+        self.prompt_embeddings = nn.Parameter(
+            torch.randn(num_prompts, embed_dim) * 0.01
+        )
+        # Freeze el modelo base
+        for param in self.model.parameters():
+            param.requires_grad = False
+    
+    def forward(self, input_ids, attention_mask):
+        # Obtener embeddings del input
+        inputs_embeds = self.model.get_input_embeddings()(input_ids)
+        
+        # Concatenar soft prompts antes del input
+        batch_size = input_ids.shape[0]
+        prompt_embeds = self.prompt_embeddings.unsqueeze(0).expand(batch_size, -1, -1)
+        inputs_embeds = torch.cat([prompt_embeds, inputs_embeds], dim=1)
+        
+        # Adjust attention mask para incluir los prompts
+        prompt_mask = torch.ones(batch_size, self.prompt_embeddings.shape[0], 
+                                  device=attention_mask.device)
+        attention_mask = torch.cat([prompt_mask, attention_mask], dim=1)
+        
+        outputs = self.model(inputs_embeds=inputs_embeds, 
+                            attention_mask=attention_mask)
+        return outputs.last_hidden_state
 
-# Convertir indices a embeddings
-word_indices = torch.tensor([0, 45, 123, 890])
-word_vectors = embedding(word_indices)  # Shape: (4, 300)
+
+class PrefixTuner(nn.Module):
+    """Prefix Tuning: prepending a CADA capa del transformer."""
+    def __init__(self, model_name, num_prefix=20, prefix_dim=768):
+        super().__init__()
+        self.model = AutoModel.from_pretrained(model_name)
+        
+        # Para cada capa: prefix keys + values como embeddings aprendibles
+        num_layers = self.model.config.num_hidden_layers
+        self.prefix_keys = nn.ParameterDict()
+        self.prefix_values = nn.ParameterDict()
+        
+        for layer in range(num_layers):
+            self.prefix_keys[str(layer)] = nn.Parameter(
+                torch.randn(num_prefix, prefix_dim) * 0.01
+            )
+            self.prefix_values[str(layer)] = nn.Parameter(
+                torch.randn(num_prefix, prefix_dim) * 0.01
+            )
+    
+    def forward(self, input_ids, attention_mask):
+        # Prefix tuning intercepta los attention heads
+        # (versión simplificada - ver implementación completa con hooks)
+        outputs = self.model(input_ids, attention_mask=attention_mask)
+        return outputs.last_hidden_state
+
+
+def compare_methods():
+    """Comparar eficiencia de parámetros."""
+    print("=== Comparación de métodos ===")
+    print("Fine-tuning: 100% de parámetros")
+    print("Prompt tuning: ~0.1-1% de parámetros")
+    print("Prefix tuning: ~0.5-2% de parámetros")
+    print()
+    print("Para un modelo de 7B parámetros:")
+    print("  Fine-tuning: 7,000M parámetros")
+    print("  Prompt tuning (20 prompts, d=4096): ~328K parámetros")
+    print("  Prefix tuning (20 prefix, 32 capas): ~5.2M parámetros")
+
+
+# Uso básico
+if __name__ == "__main__":
+    compare_methods()
 </code></pre>
 <hr>
-<h2>🚀 Usando Pre-trained Embeddings</h2>
-<pre><code class="language-python">import gensim.downloader as api
+<h2>🔧 P-Tuning y Prompt Tokens Persistentes</h2>
+<pre><code class="language-python">class PTuning(nn.Module):
+    """P-Tuning: usa tokens virtuales como prompts (no son tokens reales)."""
+    def __init__(self, vocab_size, embed_dim=768, num_prompt_tokens=100):
+        super().__init__()
+        # Tokens virtuales (no corresponden a ninguna palabra real)
+        self.prompt_tokens = nn.Parameter(
+            torch.randn(num_prompt_tokens, embed_dim) * 0.01
+        )
+        # MLP pequeño para transformar los prompt tokens
+        self.prompt_mlp = nn.Sequential(
+            nn.Linear(embed_dim, embed_dim),
+            nn.ReLU(),
+            nn.Linear(embed_dim, embed_dim)
+        )
+        self.vocab_size = vocab_size
+        self.embed_dim = embed_dim
+    
+    def get_prompt_embeddings(self):
+        """Aplica MLP a los prompt tokens (mejora estabilidad)."""
+        return self.prompt_mlp(self.prompt_tokens)
 
-# Cargar embeddings pre-entrenados
-word2vec = api.load("glove-wiki-gigaword-100")
 
-# Buscar palabras similares
-similar = word2vec.most_similar("machine_learning", topn=5)
-print(similar)
+class HybridPromptTuner(nn.Module):
+    """Combina hard prompts (texto real) + soft prompts (aprendibles)."""
+    def __init__(self, model_name, num_soft_prompts=10):
+        super().__init__()
+        self.model = AutoModel.from_pretrained(model_name)
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        
+        # Soft prompts aprendibles
+        self.soft_prompt = nn.Parameter(
+            torch.randn(num_soft_prompts, self.model.config.hidden_size) * 0.01
+        )
+        
+        # Hard-coded prompt template
+        self.hard_prompt_template = "Responde de forma {estilo} sobre {tema}: "
+    
+    def build_prompt(self, estilo, tema):
+        """Combina hard + soft prompts."""
+        hard_prompt = self.hard_prompt_template.format(estilo=estilo, tema=tema)
+        hard_ids = self.tokenizer(hard_prompt, return_tensors="pt")["input_ids"]
+        hard_embeds = self.model.get_input_embeddings()(hard_ids)
+        
+        # Concatenar: hard_prompt + soft_prompt + input
+        return hard_embeds, hard_ids.shape[1]
+    
+    def forward(self, input_ids, estilo="formal", tema="general"):
+        hard_embeds, hard_len = self.build_prompt(estilo, tema)
+        soft_prompt = self.soft_prompt.unsqueeze(0).expand(input_ids.shape[0], -1, -1)
+        
+        inputs_embeds = self.model.get_input_embeddings()(input_ids)
+        inputs_embeds = torch.cat([hard_embeds, soft_prompt, inputs_embeds], dim=1)
+        
+        return self.model(inputs_embeds=inputs_embeds)
 </code></pre>
 <hr>
-<h2>⚠️ Errores Comunes</h2>
-<h3>Error 1: No Normalizar Los Vectores</h3>
-<p><strong>El problema</strong>: Similitud coseno da valores inconsistentes.</p>
-<p><strong>La solucion</strong>: Normaliza los vectores antes de calcular similitud.</p>
+<h2>⚠️ Errores Comunes (y Sus Fixes)</h2>
+<h3>Error 1: No Usar Soft Prompts Cuando Hard-Coded Prompts No Generalizan</h3>
+<p><strong>El problema</strong>: Escribes prompts fijos en texto. Si tu aplicación recibe variaciones no vistas, el prompt falla. Ejemplo:</p>
+<pre><code class="language-python"># ❌ Hard-coded - no generaliza
+PROMPT = "Clasifica como: positivo, negativo o neutral"
+
+# El usuario escribe: "esto es una basura horrible"
+# → funciona
+
+# El usuario escribe: "no puedo creer que sea tan malo"
+# → puede fallar porque "malo" no está explícitamente en el prompt
+
+# ✅ Soft prompt - aprende la representación semántica
+prompt_tuner = PromptTuner("bert-base-uncased", num_prompts=50)
+# El modelo aprende qué patrones son positivos/negativos/neutrales
+</code></pre>
+<p><strong>El fix</strong>: Implementa prompt tuning cuando necesites que el modelo se adapte a distribuciones de inputs no vistas en entrenamiento.</p>
+<h3>Error 2: Prompt Tuning Sin Suficiente Data</h3>
+<p><strong>El problema</strong>: Prompt tuning necesita suficientes ejemplos para aprender buenos embeddings. Con &lt;1000 ejemplos puede sobreajustar o no aprender nada útil.</p>
+<pre><code class="language-python"># ❌ Prompts learn慢慢地 con poca data (underfitting)
+num_prompts = 20
+num_examples = 100  # Muy pocos!
+
+# ✅ Regla práctica: mínimo 5-10 ejemplos por prompt token
+num_prompts = 10
+num_examples = 5000  # Suficiente para que los prompts aprendan
+
+# ⚠️ Si tienes poca data, usa few-shot prompting en vez de prompt tuning
+EXAMPLES = [
+    ("Me encanta", "positivo"),
+    ("Esto es terrible", "negativo"),
+    ("No está mal", "neutral"),
+]
+</code></pre>
+<p><strong>El fix</strong>: Asegura al menos 1K-5K ejemplos para prompt tuning efectivo. Si tienes menos, usa few-shot con ejemplos en el prompt.</p>
+<h3>Error 3: No Separar Optimización de Prompts de Fine-Tuning</h3>
+<p><strong>El problema</strong>: Mezclar ambos causa que los prompts aprendidos interfieran con los pesos del modelo. No sabes qué está aprendiendo qué.</p>
+<pre><code class="language-python"># ❌ Mezclar prompt tuning + fine-tuning simultáneamente
+class MixedModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.model = AutoModel.from_pretrained("bert-base")
+        self.prompt_embeds = nn.Parameter(torch.randn(20, 768))
+        # ¡ERROR! No separas qué optimiza qué
+    
+    def forward(self, input_ids):
+        # Ambos se entrenan juntos → confusión
+        ...
+
+# ✅ Dos fases separadas
+# Fase 1: Solo prompt tuning (modelo frozen)
+prompt_tuner = PromptTuner("bert-base")
+optimizer = torch.optim.Adam(prompt_tuner.prompt_embeddings, lr=1e-3)
+# Entrenar solo los prompts...
+
+# Fase 2: Fine-tuning ligero si necesitas más rendimiento
+for param in prompt_tuner.model.parameters():
+    param.requires_grad = True
+optimizer2 = torch.optim.Adam(prompt_tuner.model.parameters(), lr=1e-5)
+# Entrenar modelo + prompts juntos...
+</code></pre>
+<p><strong>El fix</strong>: Entrena en fases separadas. Primero optimiza prompts con modelo frozen. Depois, si necesitas más rendimiento, hace fine-tuning del modelo completo con learning rate muy bajo.</p>
 <hr>
-<p><em>Eso es todo! Nos vemos mañana en el Dia 196.</em></p>
+<h2>🚀 Integración en Production</h2>
+<pre><code class="language-python">import torch
+from transformers import AutoModelForSequenceClassification, AutoTokenizer
+
+class ProductionPromptTuner:
+    """Sistema de producción para prompt tuning."""
+    def __init__(self, model_name, num_prompts=20):
+        self.model = AutoModelForSequenceClassification.from_pretrained(model_name)
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        self.prompt_embeddings = nn.Parameter(
+            torch.randn(num_prompts, self.model.config.hidden_size)
+        )
+        # Cargar prompts entrenados
+        self.load_prompts("prompts_trained.pt")
+    
+    @torch.no_grad()
+    def predict(self, text, style="formal"):
+        """Inference con prompts aprendidos."""
+        inputs = self.tokenizer(text, return_tensors="pt")
+        inputs_embeds = self.model.get_input_embeddings()(inputs["input_ids"])
+        
+        # Concatenar prompts
+        prompt = self.prompt_embeddings.unsqueeze(0)
+        inputs_embeds = torch.cat([prompt.expand(inputs_embeds.shape[0], -1, -1), 
+                                   inputs_embeds], dim=1)
+        
+        # Adjust attention mask
+        mask = torch.ones_like(inputs_embeds[:, :, 0])
+        outputs = self.model(inputs_embeds=inputs_embeds, 
+                            attention_mask=mask)
+        return outputs.logits.argmax(dim=-1)
+    
+    def save_prompts(self, path):
+        torch.save(self.prompt_embeddings.state_dict(), path)
+    
+    def load_prompts(self, path):
+        self.prompt_embeddings.load_state_dict(torch.load(path))
+
+
+# En producción:
+# 1. Entrena prompts offline con datos etiquetados
+# 2. Guarda solo los embeddings de prompts (~MB)
+# 3. Carga prompts + modelo frozen en producción
+# 4. Inference rápido sin gradient tracking
+</code></pre>
+<hr>
+<h2>📊 Resumen</h2>
+<ul>
+<li><strong>Prompt tuning</strong>: Aprender embeddings de prompts con modelo frozen — 0.1-1% de parámetros.</li>
+<li><strong>Prefix tuning</strong>: Prepend a cada capa transformer — 0.5-2% de parámetros.</li>
+<li><strong>P-tuning</strong>: Tokens virtuales + MLP transformador — mejora estabilidad.</li>
+<li><strong>Hybrid</strong>: Combina hard prompts (texto real) + soft prompts (aprendibles).</li>
+</ul>
+<p>Usa <strong>soft prompts</strong> cuando necesites generalizar a inputs no vistos. Usa <strong>prefix tuning</strong> cuando tengas restricciones de memoria muy estrictas. Usa <strong>P-tuning</strong> cuando necesites más estabilidad en el entrenamiento.</p>
+<hr>
+<p><em>Hermanito, eso es todo por hoy. Día 195 y ya sabes cómo optimizar prompts de verdad — no solo escribir mejor, sino aprender representaciones automáticamente. Mañana llegamos al 196 con más. ¡Abrazo!</em></p>
   </article>
 
   <script>
