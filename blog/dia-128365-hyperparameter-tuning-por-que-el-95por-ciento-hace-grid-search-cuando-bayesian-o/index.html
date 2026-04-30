@@ -99,56 +99,421 @@ nav {
   </header>
 
   <article class="article-body">
-    <p>Hola, parcero. Llegamos al Día 128 y hoy vamos con HyperparameterTuning. Este tema es crítico porque el porcentaje que mencionamos en el título representa bugs y confusiones que veo constantemente en producción. Acompañame que esto va detallado.</p>
+    <p>Hola, parcero. Día 128 y hoy vamos con Hyperparameter Tuning. Si has seguido la serie, sabes que ayer hablamos de Cross-Validation — hoy vamos a usar esas técnicas para hacer algo más interesante: encontrar los hiperparámetros óptimos de un modelo. El dato triste es que el 95% de la gente sigue haciendo GridSearchCV cuando Bayesian Optimization con Optuna es dramáticamente mejor. Vamos a ver por qué y cómo implementarlo correctamente.</p>
+
 <hr>
 <h2>📐 Fundamentos Teóricos</h2>
-<p>Vamos paso a paso. Entender la teoría detrás de HyperparameterTuning es lo que separa a alguien que copia código de alguien que realmente sabe lo que está haciendo.</p>
-<h3>Conceptos Clave</h3>
+
+<p>Los hiperparámetros son los parámetros de un modelo ML que NO se aprenden de los datos — se configuran antes del entrenamiento. Learning rate, profundidad del árbol, regularización, número de capas... la diferencia entre un modelo mediocre y uno state-of-the-art muchas veces está en la combinación correcta de estos valores.</p>
+
+<h3>El пространство de Búsqueda</h3>
+
+<p>Definimos el espacio de hiperparámetros como:</p>
+
+$$\mathcal{H} = \prod_{i=1}^{d} \mathcal{H}_i$$
+
+<p>donde cada $\mathcal{H}_i$ es el dominio del i-ésimo hiperparámetro (puede ser continuo, discreto, o categórico). El objetivo es encontrar:</p>
+
+$$\theta^* = \arg\min_{\theta \in \mathcal{H}} \mathcal{L}_{\text{val}}(\theta)$$
+
+<p>donde $\mathcal{L}_{\text{val}}$ es la pérdida evaluada en el conjunto de validación (no en training, eso sería overfitting).</p>
+
+<h3>Grid Search vs Random Search vs Bayesian Optimization</h3>
+
+<p>Hay tres estrategias principales:</p>
+
 <ul>
-<li><strong>Concepto 1</strong>: Descripción del primer concepto fundamental.</li>
-<li><strong>Concepto 2</strong>: Descripción del segundo concepto que necesitas entender.</li>
-<li><strong>Concepto 3</strong>: Por qué esto importa en la práctica.</li>
+<li><strong>GridSearch:</strong> Explora todos los puntos en una grilla definida. Para $d$ hiperparámetros con $n$ valores cada uno, requiere $n^d$ evaluaciones. Imposible para más de 3-4 hiperparámetros.</li>
+<li><strong>RandomSearch:</strong> Explora $n$ combinaciones aleatorias. Sorprendentemente, funciona bien en la práctica — la razón es que con hyperparameters importantes, RandomSearch puede explorar más del espacio con las mismas $n$ evaluaciones.</li>
+<li><strong>Bayesian Optimization:</strong> Construye un modelo sustituto (surrogate) de la función de pérdida y selecciona las próximas evaluaciones de forma inteligente. Es sample-efficient: necesita muchas menos evaluaciones que Grid o Random para encontrar buenos óptimos.</li>
 </ul>
+
+<h3>Por qué Bayesian es mejor</h3>
+
+<p>Bayesian Optimization usa el teorema de Bayes:</p>
+
+$$P(\theta | \mathcal{D}) \propto P(\mathcal{D} | \theta) P(\theta)$$
+
+<p>donde $\mathcal{D}$ son las observaciones previas de $(\theta, \mathcal{L}_{\text{val}}(\theta))$. El modelo sustituto (típicamente un Gaussian Process o Tree Parzen Estimator) nos da una distribución predictiva $P(\mathcal{L}_{\text{val}} | \theta)$ que usamos para calcular la Expected Improvement (EI) o Expected Conformal Improvement:</p>
+
+$$\text{EI}(\theta) = \mathbb{E}[\max(0, \mathcal{L}_{\text{min}} - \mathcal{L}_{\text{val}}(\theta))]$$
+
+<p>Esto guía la búsqueda hacia regiones prometedoras sin desperdiciar evaluaciones en zonas sabemos que son malas.</p>
+
 <hr>
 <h2>💻 Implementación Práctica</h2>
-<p>Ahora vamos a lo bueno: código real que puedes usar en tus proyectos.</p>
-<pre><code class="language-python"># Ejemplo práctico de HyperparameterTuning
-import numpy as np
 
-def concepto_fundamental(data, param):
-    # Implementación básica del concepto
-    result = []
-    for item in data:
-        processed = item * param
-        result.append(processed)
-    return np.array(result)
+<p>Vamos con un ejemplo completo: una red neuronal en PyTorch con diferentes estrategias de tuning. Comparamos GridSearch, RandomSearch, y Optuna con TPE sampler.</p>
 
-data = [1, 2, 3, 4, 5]
-result = concepto_fundamental(data, 2)
-print(f"Resultado: {result}")
+<pre><code class="language-python">import numpy as np
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from sklearn.model_selection import GridSearchCV, RandomizedSearchCV, StratifiedKFold, cross_val_score
+from sklearn.base import BaseEstimator, ClassifierMixin
+from sklearn.datasets import make_classification
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import accuracy_score, make_scorer
+import optuna
+from optuna.samplers import TPESampler
+import warnings
+warnings.filterwarnings('ignore')
+optuna.logging.set_verbosity(optuna.logging.WARNING)
+
+# ============================================================
+# Setup: Dataset de clasificación
+# ============================================================
+print("=" * 65)
+print("HYPERPARAMETER TUNING — GRID VS RANDOM VS OPTUNA (BAYESIAN)")
+print("=" * 65)
+
+X, y = make_classification(
+    n_samples=1500, n_features=20, n_informative=15,
+    n_redundant=5, n_classes=2, weights=[0.70, 0.30],
+    random_state=42, flip_y=0.05
+)
+X = StandardScaler().fit_transform(X)
+
+print(f"\nDataset: {X.shape[0]} samples, {X.shape[1]} features")
+print(f"Clases: {np.bincount(y)}")
+
+# ============================================================
+# PyTorch Classifier wrapper para sklearn
+# ============================================================
+class PyTorchClassifier(BaseEstimator, ClassifierMixin):
+    def __init__(self, hidden_dim=64, dropout=0.3, lr=0.001, epochs=50):
+        self.hidden_dim = hidden_dim
+        self.dropout = dropout
+        self.lr = lr
+        self.epochs = epochs
+        self.model = None
+
+    def _build_model(self, input_dim):
+        return nn.Sequential(
+            nn.Linear(input_dim, self.hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(self.dropout),
+            nn.Linear(self.hidden_dim, self.hidden_dim // 2),
+            nn.ReLU(),
+            nn.Dropout(self.dropout / 2),
+            nn.Linear(self.hidden_dim // 2, 1),
+            nn.Sigmoid()
+        )
+
+    def fit(self, X, y):
+        torch.manual_seed(42)
+        np.random.seed(42)
+        self.model = self._build_model(X.shape[1])
+        optimizer = optim.Adam(self.model.parameters(), lr=self.lr, weight_decay=1e-4)
+        criterion = nn.BCELoss()
+        X_t = torch.FloatTensor(X)
+        y_t = torch.FloatTensor(y)
+
+        self.model.train()
+        for _ in range(self.epochs):
+            optimizer.zero_grad()
+            loss = criterion(self.model(X_t).squeeze(), y_t)
+            loss.backward()
+            optimizer.step()
+        return self
+
+    def predict(self, X):
+        self.model.eval()
+        with torch.no_grad():
+            X_t = torch.FloatTensor(X)
+            return (self.model(X_t) > 0.5).long().numpy()
+
+    def score(self, X, y):
+        return accuracy_score(y, self.predict(X))
+
+# ============================================================
+# 1) GRID SEARCH CV — la aproximación naïve pero común
+# ============================================================
+print("\n" + "-" * 65)
+print("1) GRID SEARCH CV —遍历 todo el espacio (muy costoso)")
+print("-" * 65)
+
+# Espacio de búsqueda: 3 valores x 3 valores x 3 valores = 27 combinaciones
+param_grid_grid = {
+    'hidden_dim': [32, 64, 128],
+    'dropout': [0.2, 0.3, 0.5],
+    'lr': [0.0005, 0.001, 0.005],
+    # epochs y otros fixed por ahora
+}
+
+print(f"  Grid search: {3*3*3} = 27 combinaciones")
+print(f"  CV: 3-fold stratified → {27*3} = 81 modelos entrenados")
+
+clf_grid = PyTorchClassifier(epochs=30)  # epochs fixed para speed
+cv_strat = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
+
+grid_search = GridSearchCV(
+    clf_grid, param_grid_grid,
+    cv=cv_strat, scoring='accuracy',
+    n_jobs=1, verbose=0, return_train_score=True
+)
+grid_search.fit(X, y)
+
+print(f"\n  Best params (GridSearch): {grid_search.best_params_}")
+print(f"  Best CV accuracy: {grid_search.best_score_:.4f}")
+print(f"  ⏱️  GridSearch CV: ~{27*3:.0f} modelos totales")
+
+# ============================================================
+# 2) RANDOMIZED SEARCH CV — más eficiente que Grid
+# ============================================================
+print("\n" + "-" * 65)
+print("2) RANDOMIZED SEARCH CV — exploración aleatoria")
+print("-" * 65)
+
+from scipy.stats import loguniform, uniform, randint
+
+param_dist_random = {
+    'hidden_dim': [32, 64, 128, 256],
+    'dropout': uniform(0.1, 0.5),       # uniforme en [0.1, 0.6]
+    'lr': loguniform(1e-4, 1e-2),       # log-uniform para learning rate
+    'epochs': randint(20, 80),          # entero entre 20 y 79
+}
+
+print(f"  Random search: 30 combinaciones aleatorias")
+print(f"  CV: 3-fold stratified → {30*3} = 90 modelos (aproximado)")
+
+clf_random = PyTorchClassifier()
+random_search = RandomizedSearchCV(
+    clf_random, param_dist_random,
+    n_iter=30, cv=cv_strat, scoring='accuracy',
+    n_jobs=1, verbose=0, random_state=42, return_train_score=True
+)
+random_search.fit(X, y)
+
+print(f"\n  Best params (RandomSearch): {random_search.best_params_}")
+print(f"  Best CV accuracy: {random_search.best_score_:.4f}")
+print(f"  ⏱️  RandomizedSearch CV: ~90 modelos (30 iteraciones × 3 folds)")
+
+# ============================================================
+# 3) OPTUNA — Bayesian Optimization con TPE Sampler
+# ============================================================
+print("\n" + "-" * 65)
+print("3) OPTUNA — Bayesian Optimization con TPE Sampler")
+print("-" * 65)
+
+def objective(trial):
+    """Función objetivo para Optuna. Retorna la métrica a minimizar."""
+    hidden_dim = trial.suggest_categorical('hidden_dim', [32, 64, 128, 256])
+    dropout = trial.suggest_float('dropout', 0.1, 0.6, step=0.05)
+    lr = trial.suggest_float('lr', 1e-4, 1e-2, log=True)
+    epochs = trial.suggest_int('epochs', 20, 80, step=10)
+
+    clf = PyTorchClassifier(
+        hidden_dim=hidden_dim,
+        dropout=dropout,
+        lr=lr,
+        epochs=epochs
+    )
+
+    # Cross-validation interna con StratifiedKFold
+    cv_score = cross_val_score(
+        clf, X, y,
+        cv=StratifiedKFold(n_splits=3, shuffle=True, random_state=42),
+        scoring='accuracy',
+        n_jobs=1
+    )
+    return cv_score.mean()
+
+# Crear study con TPE sampler (Tree-structured Parzen Estimator)
+sampler = TPESampler(seed=42, n_startup_trials=10)
+study = optuna.create_study(direction='maximize', sampler=sampler)
+
+print(f"  Optuna: 50 trials con TPE sampler")
+print(f"  CV: 3-fold stratified por trial")
+print(f"  Trials iniciales (random seed): {sampler._rng.n_startup_trials}")
+
+study.optimize(objective, n_trials=50, show_progress_bar=False, verbose=False)
+
+print(f"\n  Best params (Optuna TPE): {study.best_params}")
+print(f"  Best CV accuracy: {study.best_value:.4f}")
+print(f"  ⏱️  Optuna: 50 trials × 3 folds = 150 modelos (pero intelligent search!)")
+
+# ============================================================
+# 4) Visualizar la búsqueda de Optuna
+# ============================================================
+print("\n" + "-" * 65)
+print("4) ANALISIS DE LA BÚSQUEDA DE OPTUNA")
+print("-" * 65)
+
+# Optuna guarda el history completo
+trials_df = study.trials_dataframe()
+trials_df = trials_df.sort_values('value', ascending=False)
+
+print(f"  Top 5 trials:")
+for i, row in trials_df.head(5).iterrows():
+    print(f"    Trial {row['number']:3d}: acc={row['value']:.4f} | "
+          f"hidden_dim={int(row['params_hidden_dim'])} | "
+          f"dropout={row['params_dropout']:.2f} | "
+          f"lr={row['params_lr']:.4f} | epochs={int(row['params_epochs'])}")
+
+print(f"\n  Distribución de accuracy en los 50 trials:")
+print(f"    Mean: {trials_df['value'].mean():.4f} ± {trials_df['value'].std():.4f}")
+print(f"    Min:  {trials_df['value'].min():.4f}")
+print(f"    Max:  {trials_df['value'].max():.4f}")
+print(f"  ✅ Optuna encontró hiperparámetros competitivos con solo 50 trials (vs 27 de grid).")
+
+# ============================================================
+# 5) Entrenar modelo final con mejores hyperparams de Optuna
+# ============================================================
+print("\n" + "-" * 65)
+print("5) MODELO FINAL CON MEJORES HYPERPARAMS DE OPTUNA")
+print("-" * 65)
+
+best_clf = PyTorchClassifier(
+    hidden_dim=study.best_params['hidden_dim'],
+    dropout=study.best_params['dropout'],
+    lr=study.best_params['lr'],
+    epochs=study.best_params['epochs']
+)
+
+# Entrenar en todo el dataset
+best_clf.fit(X, y)
+
+# Evaluación final en training (solo para verificar que aprendió)
+train_acc = best_clf.score(X, y)
+print(f"  Best hyperparams: {study.best_params}")
+print(f"  Training accuracy (full data): {train_acc:.4f}")
+print(f"  CV accuracy (de Optuna): {study.best_value:.4f}")
+print(f"  Gap train-CV: {train_acc - study.best_value:.4f} (si es muy alto, overfitting de hyperparams)")
+
+# Hold-out final para evaluar generalización verdadera
+from sklearn.model_selection import train_test_split
+X_tr, X_te, y_tr, y_te = train_test_split(X, y, test_size=0.2, stratify=y, random_state=99)
+best_clf_final = PyTorchClassifier(
+    hidden_dim=study.best_params['hidden_dim'],
+    dropout=study.best_params['dropout'],
+    lr=study.best_params['lr'],
+    epochs=study.best_params['epochs']
+)
+best_clf_final.fit(X_tr, y_tr)
+test_acc = best_clf_final.score(X_te, y_te)
+
+print(f"\n  Test accuracy (hold-out separado): {test_acc:.4f}")
+print(f"  CV accuracy: {study.best_value:.4f}")
+print(f"  ✅ Gap aceptable si test ≈ CV. Si test << CV → hyperparams sobreajustados al CV.")
+
+print("\n" + "=" * 65)
+print("RESUMEN: ¿Qué estrategia usar?")
+print("=" * 65)
+print("""
+  • GridSearch     → Solo si tienes ≤ 3 hiperparámetros con dominios pequeños.
+                     Escalabilidad catastrófica: O(n^d).
+  • RandomSearch   → Mejor que Grid para dominios grandes. Muy simple de implementar.
+                     Buenos resultados en la práctica.
+  • Optuna TPE     → MUY superior para 4+ hiperparámetros. Sample-efficient.
+                     50 trials de Optuna >> 100 trials de RandomSearch en calidad.
+  •Early Stopping  → Optuna puede hacer pruning de trials que van mal. ¡Usarlo siempre!
+""")
+
+<hr>
+<h2>🚨 Los 3 Errores Más Comunes</h2>
+
+<h3>Error 1: Grid Search con Espacio Muy Fino — La Maldición de la Dimensionalidad</h3>
+
+<p>Si tienes 5 hiperparámetros y defines 10 valores para cada uno, grid search necesita evaluar $10^5 = 100,000$ combinaciones. Esto es computacionalmente prohibitivo para cualquier modelo que no sea trivial. Peor aún: la mayoría de esas 100,000 combinaciones son tiempo desperdiciado porque la función de pérdida es suave y no necesitas explorar todo el espacio con esa granularidad.</p>
+
+<p>La complejidad de grid search escala exponencialmente con la dimensión del espacio de búsqueda:</p>
+
+$$|\mathcal{H}_{\text{grid}}| = \prod_{i=1}^{d} |H_i|$$
+
+<p>donde $|H_i|$ es el número de valores probeados para el hiperparámetro $i$. Con 5 hiperparámetros de 10 valores cada uno, ya estamos en 100,000 combinaciones.</p>
+
+<p><strong>Fix:</strong> Usa RandomSearch con log-uniform distributions para learning rates y rangos continuos. O mejor aún, usa Optuna con TPE que explora el espacio de forma inteligente sin desperdiciar evaluaciones en regiones conocidas como malas:</p>
+
+<pre><code class="language-python"># MAL: grid search con 5 hiperparámetros de 10 valores = 100,000 combos!
+param_grid = {
+    'lr': [0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.2, 0.5, 1.0],
+    'hidden_dim': [16, 32, 64, 128, 256, 512],
+    'dropout': [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6],
+    'weight_decay': [1e-5, 1e-4, 1e-3, 1e-2],
+    'batch_size': [16, 32, 64, 128, 256],
+}
+# 10 * 6 * 7 * 4 * 5 = 8,400 combinaciones (todavía demasiado)
+
+# BIEN: Optuna con búsqueda inteligente
+study = optuna.create_study(direction='maximize')
+study.optimize(objective, n_trials=100)  # 100 trials intelligent
 </code></pre>
+
+<h3>Error 2: No Usar Early Stopping de Trials en Optuna — Pruning</h3>
+
+<p>Optuna tiene una funcionalidad de pruning que permite abandonar trials que van mal antes de completarlos. Si un trial después de 20 epochs tiene un loss mucho peor que el mejor actual, no tiene sentido esperar a que terminen las 100 epochs. El TPE sampler usa esta información para enfocar la búsqueda.</p>
+
+<p>Sin embargo, muchos usuarios olvidan implementar el callback de pruning o no lo activan correctamente. Esto significa que Optuna termina trials que ya se puede ver que van a dar resultados malos, desperdiciando cómputo.</p>
+
+<p><strong>Fix:</strong> Usa el callback de pruning con <code>study.report()</code> e <code>trial.should_prune()</code>:</p>
+
+<pre><code class="language-python">def objective(trial):
+    for epoch in range(100):
+        # Entrenar...
+        loss = evaluate(model, val_data)
+
+        # Reportar métrica intermediaria para pruning
+        trial.report(loss, epoch)
+
+        # Si el trial va mal, abandonar temprano
+        if trial.should_prune():
+            raise optuna.TrialPruned()
+
+    return final_accuracy
+
+# Optuna automaticamente hace pruning de trials que no prometen
+study.optimize(objective, n_trials=50)
+</code></pre>
+
+<h3>Error 3: Hyperparameter Tuning en Validation Set Sin Separate Test Set — Optimistic Bias</h3>
+
+<p>Este es quizás el error más sutil y más común. Si usas el mismo validation set tanto para (a) early stopping, (b) selección de hiperparámetros, y (c) evaluación final, estás filtrando información. El validation set se convierte en parte del training y tus métricas de evaluación son optimistically biased.</p>
+
+<p>La secuencia correcta es:</p>
+
+<ol>
+<li><strong>Training set:</strong> Para entrenar el modelo.</li>
+<li><strong>Validation set:</strong> Para early stopping y selección de hiperparámetros.</li>
+<li><strong>Test set:</strong> Solo para evaluación final, UNA vez, después de todo el tuning.</li>
+</ol>
+
+<p>Si tuned hiperparámetros en el validation set y luego reportas el accuracy del validation set como tu métrica de performance, estás inflando los números. El test set debería ser el judge final, no el validation.</p>
+
+<p><strong>Fix:</strong> Mantén un test set holdout que solo toques al final. Si el budget es limitado, usa nested cross-validation:</p>
+
+<pre><code class="language-python"># MAL: hyperparameter tuning en validation, luego reportar validation accuracy
+grid_search = GridSearchCV(clf, param_grid, cv=3)
+grid_search.fit(X_train_val)  # tunea en todo el dataset
+print(grid_search.best_score_)  # ¡Sesgado! Este es el score en validation, no en test
+
+# BIEN: nested CV o holdout separado
+X_tr_val, X_test, y_tr_val, y_test = train_test_split(
+    X, y, test_size=0.2, stratify=y, random_state=42
+)
+grid_search = GridSearchCV(clf, param_grid, cv=3)
+grid_search.fit(X_tr_val)  # tunea en training+validation
+
+best_clf = grid_search.best_estimator_
+test_accuracy = best_clf.score(X_test, y_test)  # evaluación FINAL en test
+print(f"Test accuracy (honesto): {test_accuracy:.4f}")
+</code></pre>
+
 <hr>
-<h2>🚨 Errores Comunes</h2>
-<h3>Error 1: No entender la matemática de fondo</h3>
-<p>El 80% de los practitioners implementa esto incorrectamente porque no entienden la base teórica.</p>
-<h3>Error 2: Ignorar los hiperparámetros</h3>
-<p>Muchos asumen que los valores por defecto son óptimos. En producción, esto raramente es cierto.</p>
-<hr>
-<h2>✅ Mejores Prácticas</h2>
+<h2>✅ Resumen y Cierre</h2>
+
+<p>Bueno parcero, vamos cerrando el Día 128. Lo más importante:</p>
+
 <ul>
-<li>Siempre documenta tu código y decisiones de diseño.</li>
-<li>Usa versionado para tus experimentos.</li>
-<li>Valida siempre con datos de prueba independientes.</li>
-<li>Monitorea las métricas en producción.</li>
+<li><strong>Optuna con TPE</strong> es superior a GridSearch y RandomSearch para 4+ hiperparámetros. La diferencia es dramática en tiempo y calidad de resultados.</li>
+<li><strong>Usa pruning</strong> — el callback de Optuna permite abandonar trials que van mal, ahorrando cómputo y enfocando la búsqueda.</li>
+<li><strong>Separate test set</strong> — el validation set es para desarrollo y tuning, el test set es solo para evaluación final. No mezcles estos roles.</li>
+<li><strong>Log-uniform para learning rates</strong> — el learning rate típicamente varía en órdenes de magnitud, no linealmente. Usa <code>loguniform</code> en lugar de uniforme.</li>
 </ul>
-<hr>
-<h2>📚 Recursos</h2>
-<ul>
-<li>Documentación oficial de optuna</li>
-<li>Tutoriales prácticos en el blog</li>
-<li>Código fuente en GitHub</li>
-</ul>
-  </article>
+
+<p>Mañana seguimos con más temas de ML. Si tienes dudas sobre cómo aplicar esto a tu modelo específico, deja tu comentario. Nos vemos, parcero.</p>
+
+<p><em>— Fabián</em></p>
 
   <script>
     const toggle = document.getElementById('themeToggle');
