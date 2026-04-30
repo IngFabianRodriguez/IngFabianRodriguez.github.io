@@ -99,55 +99,738 @@ nav {
   </header>
 
   <article class="article-body">
-    <p>Hola, parcero. Llegamos al Día 122 y hoy vamos con Word2Vec. Este tema es crítico porque el porcentaje que mencionamos en el título representa bugs y confusiones que veo constantemente en producción. Acompañame que esto va detallado.</p>
+    <p>Hola, parcero. Llegamos al Día 122 y hoy vamos con Word2Vec — el algoritmo que empezó todo esto de los embeddings vectoriales. Muchos dicen que Word2Vec está muerto, que para qué aprenderlo si ya hay transformers. Pero el 70% ignora que sin entender Word2Vec no entiendes por qué los transformers funcionan tan bien. Y lo peor: el que no sabe de embeddings simplemente copia código de blog sin entender qué está pasando. Acompañame.</p>
+
+<p>Además, en Colombia nos gusta entender las cosas desde la base. No vamos a llegar a los transformers mañana sin antes caminar bien. Así que vamos paso a paso: Skip-gram, CBOW, Negative Sampling, sub-sampling y las analogías que hicieron famoso a Word2Vec. Con código real de más de 80 líneas.</p>
+
 <hr>
-<h2>📐 Fundamentos Teóricos</h2>
-<p>Vamos paso a paso. Entender la teoría detrás de Word2Vec es lo que separa a alguien que copia código de alguien que realmente sabe lo que está haciendo.</p>
-<h3>Conceptos Clave</h3>
+<h2>📐 Fundamentos Teóricos — La Matemática De Los Embeddings</h2>
+
+<p>Word2Vec aprende representaciones vectoriales de palabras de forma que palabras con contextos similares tengan vectores similares. La intuición es simple: <em>"una palabra se reconoce por la compañía que mantiene"</em> (Firth, 1957). Pero la implementación tiene matemática detrás.</p>
+
+<h3>Skip-gram: Predecir contexto desde palabra centro</h3>
+
+<p>En Skip-gram, dado una palabra centro $w_c$, queremos predecir las palabras contexto $w_o$ dentro de una ventana de tamaño $2m$:</p>
+
+<p style="text-align:center">$\mathcal{L} = \sum_{c=1}^{T} \sum_{-m \leq j \leq m, j \neq 0} \log P(w_{c+j} \mid w_c; \theta)$</p>
+
+<p>La probabilidad se define usando softmax:</p>
+
+<p style="text-align:center">$P(w_o \mid w_c) = \frac{\exp(v_{w_o}'^\top v_{w_c})}{\sum_{w=1}^{W} \exp(v_w'^\top v_{w_c})}$</p>
+
+<p>Donde $v_w$ es el vector de entrada (input embedding) y $v_w'$ es el vector de salida (output embedding) de la palabra $w$.</p>
+
+<p>El problema: calcular el denominador requiere sumar sobre TODO el vocabulario ($W$ típicamente > 10,000). Esto es intratable. La solución: <strong>Negative Sampling</strong>.</p>
+
+<h3>Negative Sampling — El Truco Que Hace Funcionar Word2Vec</h3>
+
+<p>En lugar de softmax sobre todo el vocabulario, Negative Sampling convierte el problema en una clasificación binaria:</p>
+
 <ul>
-<li><strong>Concepto 1</strong>: Descripción del primer concepto fundamental.</li>
-<li><strong>Concepto 2</strong>: Descripción del segundo concepto que necesitas entender.</li>
-<li><strong>Concepto 3</strong>: Por qué esto importa en la práctica.</li>
+<li>Para un par positivo $(w_c, w_o)$ del corpus: label = 1</li>
+<li>Para $k$ pares negativos $(w_c, w_{neg_i})$ muestreados: label = 0</li>
 </ul>
+
+<p>La función de pérdida para un par es:</p>
+
+<p style="text-align:center">$\mathcal{L} = -\log \sigma(v_{w_o}'^\top v_{w_c}) - \sum_{i=1}^{k} \log \sigma(-v_{w_{neg_i}}'^\top v_{w_c})$</p>
+
+<p>Esto es mucho más eficiente: en vez de softmax sobre 50K tokens, solo calculamos $k+1$ sigmoids.</p>
+
+<h3>Sub-sampling de Palabras Frecuentes — El Detalle Que 60% Ignora</h3>
+
+<p>Palabras como "the", "is", "of" aparecen millones de veces y skew los embeddings. Mikolov et al. (2013) propusieron sub-sampling: cada palabra $w_i$ se descarta con probabilidad:</p>
+
+<p style="text-align:center">$P(w_i) = 1 - \sqrt{\frac{t}{f(w_i)}}$</p>
+
+<p>Donde $f(w_i)$ es la frecuencia de la palabra y $t$ es un threshold típico (10^{-5}). Palabras muy frecuentes se sub-samplifican, dejando más "señal" de las palabras realmente informative.</p>
+
 <hr>
-<h2>💻 Implementación Práctica</h2>
-<p>Ahora vamos a lo bueno: código real que puedes usar en tus proyectos.</p>
-<pre><code class="language-python"># Ejemplo práctico de Word2Vec
+<h2>💻 Implementación Completa en PyTorch</h2>
+
+<p>Vamos a implementar Skip-gram con Negative Sampling desde cero, luego CBOW, entrenar con Gensim, visualizar con t-SNE y hacer analogy tests.</p>
+
+<pre><code class="language-python">"""
+Word2Vec — Skip-gram con Negative Sampling + CBOW + Gensim + t-SNE.
+Implementación completa desde cero y comparación con la realidad de 2026.
+"""
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 import numpy as np
+from collections import Counter, defaultdict
+import random
+import math
+from typing import List, Tuple, Dict
+from sklearn.manifold import TSNE
+import matplotlib.pyplot as plt
 
-def concepto_fundamental(data, param):
-    # Implementación básica del concepto
-    result = []
-    for item in data:
-        processed = item * param
-        result.append(processed)
-    return np.array(result)
+# ============================================================
+# 1. Preprocesamiento y Construcción del Corpus
+# ============================================================
 
-data = [1, 2, 3, 4, 5]
-result = concepto_fundamental(data, 2)
-print(f"Resultado: {result}")
+def tokenize(text: str) -> List[str]:
+    """Tokenización simple: lowercase y split por espacios."""
+    return text.lower().replace(',', '').replace('.', '').replace('!', '').replace('?', '').split()
+
+
+def build_vocab(corpus: List[str], min_freq: int = 2) -> Dict[str, int]:
+    """
+    Construir vocabulario con minimum frequency threshold.
+    Retorna word → index y index → word mappings.
+    """
+    # Contar frecuencias
+    word_counts = Counter()
+    for sentence in corpus:
+        words = tokenize(sentence)
+        word_counts.update(words)
+    
+    # Filtrar por frecuencia mínima
+    vocab = {'&lt;UNK&gt;': 0, '&lt;PAD&gt;': 1}  #UNK para OOV, PAD para padding
+    for word, count in word_counts.items():
+        if count >= min_freq:
+            vocab[word] = len(vocab)
+    
+    idx_to_word = {idx: word for word, idx in vocab.items()}
+    return vocab, idx_to_word
+
+
+def subsample_sentence(sentence: List[str], word_counts: Counter, t: float = 1e-5) -> List[str]:
+    """
+    Sub-sampling de palabras frecuentes según Mikolov et al. (2013).
+    Palabras con alta frecuencia tienen mayor probabilidad de ser descartadas.
+    """
+    total_words = sum(word_counts.values())
+    freq_ratio = {word: count / total_words for word, count in word_counts.items()}
+    
+    sampled = []
+    for word in sentence:
+        # Probabilidad de descarte: P(w) = 1 - sqrt(t / f(w))
+        p_discard = 1 - math.sqrt(t / (freq_ratio.get(word, 0) + 1e-10))
+        if random.random() > p_discard:
+            sampled.append(word)
+    return sampled if sampled else [sentence[0]]  # Siempre mantener al menos una
+
+
+def generate_skip_gram_pairs(
+    sentence: List[str], 
+    vocab: Dict[str, int], 
+    window_size: int = 5,
+    subsample: bool = True,
+    word_counts: Counter = None,
+    t: float = 1e-5
+) -> List[Tuple[int, int]]:
+    """
+    Generar pares (center_word, context_word) para Skip-gram.
+    Si subsample=True, aplica sub-sampling de palabras frecuentes.
+    """
+    pairs = []
+    
+    # Aplicar sub-sampling si se pide
+    if subsample and word_counts is not None:
+        sentence = subsample_sentence(sentence, word_counts, t)
+    
+    # Convertir a índices
+    indexed = [vocab.get(w, vocab['&lt;UNK&gt;']) for w in sentence]
+    
+    for i, center in enumerate(indexed):
+        # Ventana contexto: m palabras a cada lado
+        start = max(0, i - window_size)
+        end = min(len(indexed), i + window_size + 1)
+        
+        for j in range(start, end):
+            if j != i:
+                pairs.append((center, indexed[j]))
+    
+    return pairs
+
+
+# ============================================================
+# 2. Modelo Skip-gram con Negative Sampling
+# ============================================================
+
+class SkipGramModel(nn.Module):
+    """
+    Skip-gram con Negative Sampling.
+    
+    Arquitectura:
+    - Input embedding: (vocab_size, embed_dim)
+    - Output embedding: (vocab_size, embed_dim)
+    - Se usa Negative Sampling loss en lugar de softmax completo
+    """
+    
+    def __init__(self, vocab_size: int, embed_dim: int, num_negatives: int = 5):
+        super().__init__()
+        self.vocab_size = vocab_size
+        self.embed_dim = embed_dim
+        self.num_negatives = num_negatives
+        
+        # Embeddings de entrada y salida (separados como en el paper original)
+        self.input_embeddings = nn.Embedding(vocab_size, embed_dim)
+        self.output_embeddings = nn.Embedding(vocab_size, embed_dim)
+        
+        # Inicialización Xavier
+        nn.init.xavier_uniform_(self.input_embeddings.weight)
+        nn.init.xavier_uniform_(self.output_embeddings.weight)
+        
+    def forward(
+        self, 
+        center_words: torch.Tensor,      # (batch_size,)
+        context_words: torch.Tensor,    # (batch_size,)
+        negative_words: torch.Tensor   # (batch_size, num_negatives)
+    ) -> torch.Tensor:
+        """
+        Compute loss para Skip-gram con negative sampling.
+        
+        Args:
+            center_words: índices de palabras centro (batch,)
+            context_words: índices de palabras contexto positivas (batch,)
+            negative_words: índices de palabras negativas (batch, num_neg)
+            
+        Returns:
+            Loss scalar
+        """
+        batch_size = center_words.size(0)
+        
+        # Embeddings
+        v_c = self.input_embeddings(center_words)        # (batch, embed_dim)
+        u_o = self.output_embeddings(context_words)     # (batch, embed_dim)
+        u_neg = self.output_embeddings(negative_words)  # (batch, num_neg, embed_dim)
+        
+        # Score positivo: log(sigmoid(u_o · v_c))
+        pos_score = torch.sum(u_o * v_c, dim=1)          # (batch,)
+        pos_loss = F.binary_cross_entropy_with_logits(
+            pos_score, 
+            torch.ones_like(pos_score),
+            reduction='sum'
+        )
+        
+        # Score negativo: sum over negatives of log(sigmoid(-u_neg · v_c))
+        # u_neg: (batch, num_neg, embed_dim) → v_c: (batch, embed_dim)
+        neg_score = torch.bmm(u_neg, v_c.unsqueeze(2)).squeeze(2)  # (batch, num_neg)
+        neg_loss = F.binary_cross_entropy_with_logits(
+            neg_score,
+            torch.zeros_like(neg_score),
+            reduction='sum'
+        )
+        
+        return (pos_loss + neg_loss) / batch_size
+    
+    def get_embeddings(self) -> torch.Tensor:
+        """Retornar embeddings promediados de input y output."""
+        return (self.input_embeddings.weight + self.output_embeddings.weight) / 2
+
+
+# ============================================================
+# 3. Modelo CBOW (Continuous Bag of Words)
+# ============================================================
+
+class CBOWModel(nn.Module):
+    """
+    CBOW: Predecir palabra centro desde contexto.
+    Toma los embeddings de las palabras contexto, los promedia, y predice.
+    """
+    
+    def __init__(self, vocab_size: int, embed_dim: int, window_size: int = 5):
+        super().__init__()
+        self.vocab_size = vocab_size
+        self.embed_dim = embed_dim
+        
+        # Embeddings (uno solo, no hay input/output separados)
+        self.embeddings = nn.Embedding(vocab_size, embed_dim)
+        self.output = nn.Linear(embed_dim, vocab_size, bias=False)
+        
+        # Inicialización
+        nn.init.xavier_uniform_(self.embeddings.weight)
+        nn.init.xavier_uniform_(self.output.weight)
+        
+    def forward(
+        self, 
+        context_words: torch.Tensor,  # (batch, 2*window_size)
+        center_words: torch.Tensor   # (batch,) — targets
+    ) -> torch.Tensor:
+        """
+        Args:
+            context_words: (batch, context_len) — palabras contexto
+            center_words: (batch,) — palabra centro a predecir
+        """
+        batch_size = context_words.size(0)
+        
+        # Obtener embeddings del contexto
+        context_embeds = self.embeddings(context_words)  # (batch, context_len, embed_dim)
+        
+        # Promedio de embeddings de contexto
+        context_mean = torch.mean(context_embeds, dim=1)   # (batch, embed_dim)
+        
+        # Proyectar a vocabulario
+        logits = self.output(context_mean)  # (batch, vocab_size)
+        
+        # Cross-entropy loss
+        loss = F.cross_entropy(logits, center_words)
+        return loss
+    
+    def get_embeddings(self) -> torch.Tensor:
+        return self.embeddings.weight
+
+
+# ============================================================
+# 4. Entrenamiento de Skip-gram
+# ============================================================
+
+def train_skip_gram(
+    corpus: List[str],
+    embed_dim: int = 100,
+    window_size: int = 5,
+    num_negatives: int = 5,
+    num_epochs: int = 50,
+    learning_rate: float = 0.01,
+    batch_size: int = 512,
+    subsample: bool = True,
+    t: float = 1e-5
+) -> Tuple[SkipGramModel, Dict[str, int], Counter]:
+    """
+    Entrenar Skip-gram con Negative Sampling.
+    
+    Returns:
+        model: Modelo entrenado
+        vocab: Vocabulary mapping
+        word_counts: Frecuencias de palabras
+    """
+    # Construir vocabulario
+    vocab, idx_to_word = build_vocab(corpus, min_freq=2)
+    print(f"Vocabulario: {len(vocab)} palabras")
+    
+    # Contar frecuencias para sub-sampling
+    word_counts = Counter()
+    for sentence in corpus:
+        word_counts.update(tokenize(sentence))
+    
+    # Generar todos los pares (center, context)
+    print("Generando pares Skip-gram...")
+    all_pairs = []
+    for sentence in corpus:
+        words = tokenize(sentence)
+        pairs = generate_skip_gram_pairs(words, vocab, window_size, subsample, word_counts, t)
+        all_pairs.extend(pairs)
+    print(f"Pares totales: {len(all_pairs)}")
+    
+    # Crear modelo
+    model = SkipGramModel(len(vocab), embed_dim, num_negatives)
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    
+    # Entrenamiento por épocas
+    for epoch in range(num_epochs):
+        random.shuffle(all_pairs)
+        total_loss = 0
+        num_batches = 0
+        
+        for i in range(0, len(all_pairs), batch_size):
+            batch_pairs = all_pairs[i:i+batch_size]
+            
+            # Preparar tensores
+            center_batch = torch.tensor([p[0] for p in batch_pairs], dtype=torch.long)
+            context_batch = torch.tensor([p[1] for p in batch_pairs], dtype=torch.long)
+            
+            # Muestrear negativos: para cada par, k palabras negativas
+            negative_batch = []
+            for _ in range(len(batch_pairs)):
+                negs = random.choices(range(len(vocab)), k=num_negatives)
+                negative_batch.append(negs)
+            negative_batch = torch.tensor(negative_batch, dtype=torch.long)
+            
+            # Forward y loss
+            optimizer.zero_grad()
+            loss = model(center_batch, context_batch, negative_batch)
+            loss.backward()
+            optimizer.step()
+            
+            total_loss += loss.item()
+            num_batches += 1
+        
+        avg_loss = total_loss / num_batches
+        if (epoch + 1) % 10 == 0:
+            print(f"  Época {epoch+1}/{num_epochs}, Loss: {avg_loss:.4f}")
+    
+    return model, vocab, word_counts
+
+
+# ============================================================
+# 5. Analogías con Word2Vec — king - man + woman ≈ queen
+# ============================================================
+
+def cosine_similarity(v1: np.ndarray, v2: np.ndarray) -> float:
+    """Similitud coseno entre dos vectores."""
+    dot = np.dot(v1, v2)
+    norm1 = np.linalg.norm(v1)
+    norm2 = np.linalg.norm(v2)
+    return dot / (norm1 * norm2 + 1e-10)
+
+
+def find_analogy(
+    word_a: str, word_b: str, word_c: str,
+    vocab: Dict[str, int], 
+    embeddings: np.ndarray,
+    idx_to_word: Dict[int, str],
+    top_k: int = 5
+) -> List[Tuple[str, float]]:
+    """
+    Resolver analogía: a es a b como c es a ?
+   典型: king - man + woman ≈ queen
+    
+    Args:
+        word_a, word_b, word_c: palabras de la analogía
+        vocab: word → idx mapping
+        embeddings: (vocab_size, embed_dim) array
+        top_k: número de resultados a retornar
+    """
+    # Obtener índices (manejando OOV)
+    idx_a = vocab.get(word_a, vocab.get('&lt;UNK&gt;'))
+    idx_b = vocab.get(word_b, vocab.get('&lt;UNK&gt;'))
+    idx_c = vocab.get(word_c, vocab.get('&lt;UNK&gt;'))
+    
+    # Vectores
+    vec_a = embeddings[idx_a]
+    vec_b = embeddings[idx_b]
+    vec_c = embeddings[idx_c]
+    
+    # king - man + woman = ?
+    target_vec = vec_a - vec_b + vec_c
+    
+    # Calcular similitud con todas las palabras
+    similarities = []
+    for idx, word in idx_to_word.items():
+        if word in ['&lt;UNK&gt;', '&lt;PAD&gt;', word_a, word_b, word_c]:
+            continue
+        sim = cosine_similarity(target_vec, embeddings[idx])
+        similarities.append((word, sim))
+    
+    # Ordenar por similitud
+    similarities.sort(key=lambda x: x[1], reverse=True)
+    return similarities[:top_k]
+
+
+def test_analogies(model: SkipGramModel, vocab: Dict[str, int], idx_to_word: Dict[int, str]):
+    """Testear analogías famosas de Word2Vec."""
+    embeddings = model.get_embeddings().detach().numpy()
+    
+    print("\n" + "=" * 50)
+    print("ANÁLISIS DE ANALOGÍAS")
+    print("=" * 50)
+    
+    # Test 1: Capital-País
+    print("\n1. Capital-País: Paris es a Francia como Berlin es a ?")
+    results = find_analogy('paris', 'france', 'berlin', vocab, embeddings, idx_to_word)
+    print(f"   Resultados: {results[:3]}")
+    
+    # Test 2: Género
+    print("\n2. Género: King - Man + Woman ≈ ?")
+    results = find_analogy('king', 'man', 'woman', vocab, embeddings, idx_to_word)
+    print(f"   Resultados: {results[:3]}")
+    
+    # Test 3: Verbo forma conjugada
+    print("\n3. Verbo: Walking es a Walked como Swimming es a ?")
+    results = find_analogy('walking', 'walked', 'swimming', vocab, embeddings, idx_to_word)
+    print(f"   Resultados: {results[:3]}")
+    
+    print("\n⚠️  ERROR COMÚN #3: Ignorar la dirección de la analogía.")
+    print("   king - man + woman ≈ queen  (correcto)")
+    print("   queen - man + woman ≠ king  (incorrecto — dirección importa)")
+    print("   Las analogías solo funcionan en una dirección.")
+    print("   El espacio vectorial no es perfectamente isotrópico.")
+
+
+# ============================================================
+# 6. Visualización con t-SNE
+# ============================================================
+
+def visualize_embeddings_tsne(
+    model: SkipGramModel,
+    vocab: Dict[str, int],
+    idx_to_word: Dict[int, str],
+    words_to_plot: List[str] = None,
+    n_points: int = 200
+):
+    """
+    Visualizar embeddings con t-SNE.
+    """
+    embeddings = model.get_embeddings().detach().numpy()
+    
+    if words_to_plot is None:
+        # Tomar las n palabras más frecuentes
+        words_to_plot = [idx_to_word[i] for i in range(min(n_points, len(idx_to_word)))]
+    
+    # Filtrar palabras en vocabulario
+    valid_words = [w for w in words_to_plot if w in vocab]
+    valid_indices = [vocab[w] for w in valid_words]
+    
+    if len(valid_indices) < 10:
+        print("No enough words to visualize")
+        return
+    
+    # Extraer embeddings
+    points = embeddings[valid_indices]
+    
+    # t-SNE
+    print(f"\nEjecutando t-SNE sobre {len(valid_words)} palabras...")
+    tsne = TSNE(n_components=2, random_state=42, perplexity=min(30, len(valid_words)-1))
+    points_2d = tsne.fit_transform(points)
+    
+    # Plot
+    plt.figure(figsize=(14, 10))
+    plt.scatter(points_2d[:, 0], points_2d[:, 1], alpha=0.5)
+    
+    for i, word in enumerate(valid_words):
+        plt.annotate(word, (points_2d[i, 0], points_2d[i, 1]), fontsize=8)
+    
+    plt.title('Word2Vec Embeddings — Visualización t-SNE')
+    plt.xlabel('t-SNE dim 1')
+    plt.ylabel('t-SNE dim 2')
+    plt.tight_layout()
+    plt.savefig('word2vec_tsne.png', dpi=150)
+    print("Visualización guardada en word2vec_tsne.png")
+    plt.close()
+
+
+# ============================================================
+# 7. Gensim Word2Vec — Uso Correcto en 2026
+# ============================================================
+
+def demo_gensim_word2vec(corpus: List[str]):
+    """
+    Uso correcto de Gensim Word2Vec para comparación.
+    En 2026, Gensim sigue siendo útil para embeddings rápidos
+    cuando no necesitas un transformer completo.
+    """
+    try:
+        from gensim.models import Word2Vec
+    except ImportError:
+        print("pip install gensim")
+        return
+    
+    print("\n" + "=" * 50)
+    print("USO CON GENSIM — Word2Vec")
+    print("=" * 50)
+    
+    # Tokenizar corpus
+    tokenized = [tokenize(sentence) for sentence in corpus]
+    
+    # Entrenar Skip-gram (sg=1) o CBOW (sg=0)
+    model = Word2Vec(
+        sentences=tokenized,
+        vector_size=100,
+        window=5,
+        min_count=2,
+        workers=4,
+        sg=1,              # Skip-gram
+        epochs=50,
+        negative=5,        # Negative sampling
+        ns_exponent=0.75   # Exponente para sampling de negativos
+    )
+    
+    print(f"\nVocabulario Gensim: {len(model.wv)} palabras")
+    
+    # Veranalogías más cercanas
+    if 'coffee' in model.wv:
+        similar = model.wv.most_similar('coffee', topn=5)
+        print(f"\nPalabras más similares a 'coffee': {similar}")
+    
+    # Analogía con Gensim
+    try:
+        result = model.wv.most_similar(positive=['king', 'woman'], negative=['man'])
+        print(f"\nking - man + woman = {result[0]}")
+    except KeyError:
+        print("Analogía no disponible (palabras OOV)")
+    
+    # Verificar que guarda y carga correctamente
+    model.save('word2vec_gensim.model')
+    loaded = Word2Vec.load('word2vec_gensim.model')
+    print(f"\nModelo guardado y cargado: {len(loaded.wv)} palabras")
+
+
+# ============================================================
+# 8. MAIN — Demo Completa
+# ============================================================
+
+def main():
+    # Corpus de ejemplo — documentos sobre café y machine learning
+    corpus = [
+        "the coffee plant grows in tropical regions with high rainfall",
+        "colombian coffee is known worldwide for its smooth and rich flavor",
+        "machine learning models learn patterns from large datasets",
+        "deep learning uses neural networks with many layers",
+        "natural language processing deals with text and speech data",
+        "word embeddings capture semantic meaning in vector form",
+        "the aroma of freshly brewed coffee fills the morning air",
+        "coffee beans are roasted at high temperatures to develop flavor",
+        "classification models predict categorical outcomes from input features",
+        "the taste of strong coffee wakes me up every morning",
+        "regression models predict continuous numerical values",
+        "barista skills are essential for making great espresso drinks",
+        "neural networks learn through backpropagation of errors",
+        "the caffeine in coffee provides a natural energy boost",
+        "transformer models revolutionized natural language understanding",
+        "coffee cultivation supports millions of farmers worldwide",
+        "embedding vectors represent words in continuous semantic space",
+        "the espresso machine uses pressure to extract coffee oils",
+        "training data quality determines machine learning performance",
+        "latte art requires skill and practice to master",
+        "gradient descent optimizes model parameters iteratively",
+        "the coffee shop atmosphere attracts many students and workers",
+        "word2vec skipgram learns by predicting surrounding context",
+        "cold brew coffee steeps for many hours in cold water",
+        "attention mechanisms improved sequence to sequence models",
+        "coffee exports are a major source of income for many countries",
+        "cbow predicts center word from surrounding context words",
+        "the arabica coffee bean is the most popular variety globally",
+        "validation data helps tune model hyperparameters correctly",
+    ]
+    
+    print("=" * 60)
+    print("WORD2VEC — Skip-gram, CBOW, Negative Sampling, t-SNE")
+    print("=" * 60)
+    
+    # Entrenar Skip-gram con nuestra implementación
+    model, vocab, word_counts = train_skip_gram(
+        corpus,
+        embed_dim=100,
+        window_size=5,
+        num_negatives=5,
+        num_epochs=50,
+        learning_rate=0.01,
+        subsample=True,
+        t=1e-5
+    )
+    
+    # Testear analogías
+    idx_to_word = {idx: word for word, idx in vocab.items()}
+    test_analogies(model, vocab, idx_to_word)
+    
+    # Visualizar con t-SNE
+    visualize_embeddings_tsne(model, vocab, idx_to_word)
+    
+    # Demo con Gensim
+    demo_gensim_word2vec(corpus)
+    
+    print("\n✅ Entrenamiento completado!")
+    print("\n⚠️  ERROR COMÚN #1: Usar Word2Vec en 2026 para NLP moderno.")
+    print("   Word2Vec es obsoleto para tareas que requieren contexto completo.")
+    print("   ✅ CORRECTO 2026: Usar BERT/RoBERTa/DeBERTa para NLP.")
+    print("   ✅ ÚTIL: Word2Vec para baseline rápido, clustering, search semántico simple.")
+
+
+if __name__ == "__main__":
+    main()
 </code></pre>
+
 <hr>
-<h2>🚨 Errores Comunes</h2>
-<h3>Error 1: No entender la matemática de fondo</h3>
-<p>El 80% de los practitioners implementa esto incorrectamente porque no entienden la base teórica.</p>
-<h3>Error 2: Ignorar los hiperparámetros</h3>
-<p>Muchos asumen que los valores por defecto son óptimos. En producción, esto raramente es cierto.</p>
+<h2>🚨 Los 3 Errores Que El 70% Comete Con Word2Vec</h2>
+
+<h3>Error 1: Usar Word2Vec En 2026 Cuando Hay Transformers</h3>
+
+<p>El error más común es usar Word2Vec para tareas de NLP moderno cuando deberías usar un transformer. Word2Vec produce embeddings <strong>context-independent</strong>: la palabra "banco" tiene el mismo vector sin importar si hablas de bancos de arena o instituciones financieras. Los transformers producen embeddings <strong>context-aware</strong>.</p>
+
+<pre><code class="language-python"># ❌ INCORRECTO — Word2Vec para sentiment analysis moderno
+from gensim.models import Word2Vec
+model = Word2Vec.load('word2vec.model')
+# Promediar embeddings de palabras → classifier
+# PROBLEMA: "Este banco es muy peligroso" vs "Este banco tiene buen servicio"
+# Ambos tienen la misma representación para "banco"
+
+# ✅ CORRECTO — BERT para sentiment analysis
+from transformers import pipeline
+classifier = pipeline("sentiment-analysis", model="nlptown/bert-base-multilingual-uncased-sentiment")
+result = classifier("Este banco es muy peligroso")
+# BERT entiende el contexto: "banco" aquí significa institución financiera, no banco de arena
+</code></pre>
+
+<h3>Error 2: No Hacer Sub-sampling De Palabras Frecuentes</h3>
+
+<p>Cuando entrenas Word2Vec sin sub-sampling, palabras como "the", "is", "of" dominan los pares de entrenamiento. Esto skew los embeddings hacia palabras frecuentes que no son informativas. El resultado: tus analogías no funcionan bien y los clusters son ruido.</p>
+
+<pre><code class="language-python"># ❌ INCORRECTO — Sin sub-sampling, embeddings skewed
+from gensim.models import Word2Vec
+tokenized = [sentence.split() for sentence in corpus]
+model = Word2Vec(
+    sentences=tokenized,
+    window=5,
+    min_count=2,
+    sg=1,
+    # ¡Falta sub-sampling!
+)
+
+# Los vectores de "the", "is", "of" dominan el espacio semántico
+
+# ✅ CORRECTO — Con sub-sampling adecuado
+# Nuestra implementación de arriba ya lo hace:
+# P(wi) = 1 - sqrt(t / f(wi))
+# donde t es threshold (típicamente 1e-5)
+
+# En Gensim, threshold para sub-sampling:
+model = Word2Vec(
+    sentences=tokenized,
+    window=5,
+    min_count=2,
+    sg=1,
+    sample=1e-5,  # Threshold de sub-sampling
+)
+# Palabras con frecuencia > threshold son sub-muestreadas
+</code></pre>
+
+<h3>Error 3: Ignorar La Dirección De La Analogía — king-man+woman ≠ queen-man+woman</h3>
+
+<p>Las analogías de Word2Vec no son simétricas. La operación $king - man + woman$ funciona para encontrar "queen", pero la dirección contraria no. Intentar $queen - man + woman$ no te da "king". Esto pasa porque el espacio vectorial no es perfectamente isotrópico y las relaciones tienen dirección.</p>
+
+<pre><code class="language-python"># ❌ INCORRECTO — Asumir que la analogía es bidireccional
+# king - man + woman = queen  ✅ Funciona
+# queen - man + woman = king  ❌ NO funciona
+
+# Demostración con código:
+result_forward = model.wv.most_similar(positive=['king', 'woman'], negative=['man'])
+print(result_forward[0])  # queen ✓
+
+result_backward = model.wv.most_similar(positive=['queen', 'man'], negative=['woman'])
+print(result_backward[0])  # NO es king, es otra palabra
+
+# ✅ CORRECTO — Entender que las analogías tienen dirección semántica
+# king → man :: queen → woman (género)
+# Paris → France :: Berlin → Germany (capital-país)
+
+# Solo funciona en la dirección correcta del espacio vectorial.
+# Las analogías son проекции del espacio, no operaciones geométricas perfectas.
+</code></pre>
+
 <hr>
-<h2>✅ Mejores Prácticas</h2>
+<h2>📊 Visualización y Analogías — La Magia De Los Embeddings</h2>
+
+<p>Lo más impresionante de Word2Vec es que las relaciones semánticas se reflejan en la geometría del espacio vectorial. Palabras similares están cerca, y las analogías son literalmente diferencias vectoriales:</p>
+
 <ul>
-<li>Siempre documenta tu código y decisiones de diseño.</li>
-<li>Usa versionado para tus experimentos.</li>
-<li>Valida siempre con datos de prueba independientes.</li>
-<li>Monitorea las métricas en producción.</li>
+<li><strong>king - man + woman ≈ queen</strong>: El vector de género</li>
+<li><strong>Paris - France + Germany ≈ Berlin</strong>: El vector de capital-país</li>
+<li><strong>walking - walked + swimming ≈ swam</strong>: El vector de conjugación verbal</li>
 </ul>
+
+<p>Cuando entrenas tu modelo, puedes verificar que funciona con analogías simples antes de usarlo en producción.</p>
+
 <hr>
-<h2>📚 Recursos</h2>
+<h2>📝 Resumen y Cierre</h2>
+
+<p>Hoy cubrimos Word2Vec a fondo, desde la matemática hasta código de producción:</p>
+
 <ul>
-<li>Documentación oficial de gensim</li>
-<li>Tutoriales prácticos en el blog</li>
-<li>Código fuente en GitHub</li>
+<li><strong>Skip-gram</strong>: Predecir contexto desde palabra centro — maximiza $P(w_{c+j} | w_c)$.</li>
+<li><strong>Negative Sampling</strong>: Convierte softmax intratable en $k+1$ sigmoids — el truco que hace funcionar Word2Vec.</li>
+<li><strong>Sub-sampling</strong>: $P(w_i) = 1 - \sqrt{t/f(w_i)}$ — evita que palabras frecuentes como "the" dominen los embeddings.</li>
+<li><strong>CBOW</strong>: Promedia contexto para predecir palabra centro — alternativa a Skip-gram.</li>
+<li><strong>Analogías</strong>: king - man + woman ≈ queen — la demostración más clara de que los embeddings capturan significado.</li>
+<li><strong>t-SNE</strong>: Visualiza el espacio de embeddings en 2D para entender clustering.</li>
 </ul>
+
+<p>Y lo más importante, parcero: en 2026, Word2Vec no es el state-of-the-art para NLP. Pero entenderlo es fundamental porque los transformers son literalmente Word2Vec a escala: attention es la versión differentiable de skip-gram, y los embeddings de transformers son Word2Vec con contexto.</p>
+
+<p>Si alguien te dice que los transformers son magia, mándalo a leer este artículo. Nada es magia.</p>
+
+<p>Mañana seguimos con más. #365DaysOfAI #Word2Vec #NLP #PyTorch #Embeddings</p>
   </article>
 
   <script>
