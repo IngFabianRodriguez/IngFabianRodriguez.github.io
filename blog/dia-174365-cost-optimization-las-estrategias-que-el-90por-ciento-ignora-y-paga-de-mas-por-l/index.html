@@ -99,55 +99,311 @@ nav {
   </header>
 
   <article class="article-body">
-    <p>Hola, parcero. Llegamos al Día 174 y hoy vamos con CostOptimization. Este tema es crítico porque el porcentaje que mencionamos en el título representa bugs y confusiones que veo constantemente en producción. Acompañame que esto va detallado.</p>
-<hr>
-<h2>📐 Fundamentos Teóricos</h2>
-<p>Vamos paso a paso. Entender la teoría detrás de CostOptimization es lo que separa a alguien que copia código de alguien que realmente sabe lo que está haciendo.</p>
-<h3>Conceptos Clave</h3>
-<ul>
-<li><strong>Concepto 1</strong>: Descripción del primer concepto fundamental.</li>
-<li><strong>Concepto 2</strong>: Descripción del segundo concepto que necesitas entender.</li>
-<li><strong>Concepto 3</strong>: Por qué esto importa en la práctica.</li>
-</ul>
-<hr>
-<h2>💻 Implementación Práctica</h2>
-<p>Ahora vamos a lo bueno: código real que puedes usar en tus proyectos.</p>
-<pre><code class="language-python"># Ejemplo práctico de CostOptimization
-import numpy as np
+    <p>Hola, parcero. Llegamos al Día 174 y hoy vamos con un tema que me fascinó cuando lo entendí bien: cómo el reasoning mejora (o empeora) la comprensión de los modelos. Si pensabas que chain-of-thought era solo "ponle unos pasos antes de responder", quédate que aquí vamos a la matemática detrás. Vamos.</p>
 
-def concepto_fundamental(data, param):
-    # Implementación básica del concepto
-    result = []
-    for item in data:
-        processed = item * param
-        result.append(processed)
-    return np.array(result)
+<h2>📐 Fundamentos: La matemática del razonamiento</h2>
 
-data = [1, 2, 3, 4, 5]
-result = concepto_fundamental(data, 2)
-print(f"Resultado: {result}")
+<p>Antes de implementar, necesitamos entender por qué el reasoning funciona. La teoría detrás de chain-of-thought se basa en el concepto de <strong>hidden state compression</strong> en transformers.</p>
+
+<p>En un transformer, cada token Attend a todos los anteriores via atención. Pero cuando generas una respuesta directamente, estás pidiendo que toda la información relevante esté en el contexto window actual. Con CoT, dispersas esa información en múltiples pasos, dejando que el modelo "piense en voz alta".</p>
+
+<p>La <strong>complejidad computacional</strong> de resolver un problema de razonamiento de $n$ pasos sin CoT es $O(n^2)$ en términos de context. Con CoT, divides en subproblemas de complejidad $O(k^2)$ donde $k < n$, reduciendo el requirement de context window.</p>
+
+<p>La <strong>función de effectiveness</strong> del reasoning es:</p>
+
+<div class="katex-display">E_{reasoning} = \frac{d \cdot P_{correct}}{1 + \lambda \cdot L}</div>
+
+<p>Donde $d$ es la "depth" del reasoning (cuántos pasos), $P_{correct}$ es la probabilidad de que cada paso sea correcto, y $L$ es la longitud del chain. El término $\lambda \cdot L$ penaliza chains muy largos que acumulan errores. Esto explica por qué chain-of-thought ayuda hasta cierto punto — después de eso, la penalización por longitud domina.</p>
+
+<h2>💻 Implementación: Chain-of-Thought y Tree-of-Thought</h2>
+
+<p>Vamos con código real. Implementemos CoT prompting y luego comparemos con ToT:</p>
+
+<pre><code class="language-python">"""
+Chain-of-Thought y Tree-of-Thought - Día 174
+Arquitectura: Sequential reasoning → Branching reasoning → Synthesis
+"""
+import json
+from typing import List, Dict, Optional
+from dataclasses import dataclass
+
+# ============================================================
+# 1. CHAIN-OF-THOUGHT PROMPTING
+# ============================================================
+
+def cot_prompt(question: str, include_steps: bool = True) -> str:
+    """
+    Chain-of-Thought prompting: genera un reasoning chain secuencial.
+    El modelo piensa paso a paso antes de dar la respuesta final.
+    """
+    if include_steps:
+        prompt = f"""Pregunta: {question}
+
+Razonemos paso a paso:
+1. Primero, identifiquemos qué se está pidiendo.
+2. Luego, consideremos qué información tenemos disponible.
+3. Después, apliquemos el razonamiento paso a paso.
+4. Finalmente, derivemos la respuesta.
+
+Respuesta:"""
+    else:
+        prompt = f"Pregunta: {question}\n\nRespuesta:"
+    return prompt
+
+def generate_cot_response(client, model: str, question: str, temperature: float = 0.3) -> Dict:
+    """Genera respuesta usando CoT prompting."""
+    prompt = cot_prompt(question, include_steps=True)
+
+    response = client.chat.completions.create(
+        model=model,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=temperature,
+        max_tokens=1000
+    )
+
+    return {
+        "question": question,
+        "prompt": prompt,
+        "reasoning_chain": response.choices[0].message.content,
+        "method": "chain-of-thought"
+    }
+
+# ============================================================
+# 2. SELF-CONSISTENCY CON CoT (MEJORA LA PRECISIÓN)
+# ============================================================
+
+def self_consistency_cot(
+    client,
+    model: str,
+    question: str,
+    n_samples: int = 5,
+    temperature: float = 0.7
+) -> Dict:
+    """
+    Self-consistency: genera múltiples reasoning chains y toma
+    la respuesta más frecuente (votación por mayoría).
+
+    Esto reduce errores de reasoning en ~15-20% según Wei et al.
+    """
+    prompts = [cot_prompt(question, include_steps=True) for _ in range(n_samples)]
+
+    responses = []
+    for prompt in prompts:
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=temperature,
+            max_tokens=500
+        )
+        responses.append(resp.choices[0].message.content)
+
+    # Extraer la respuesta final de cada chain
+    # Asumimos que la respuesta final está en la última línea
+    final_answers = []
+    for resp in responses:
+        lines = resp.strip().split('\n')
+        if lines:
+            final_answers.append(lines[-1])
+
+    # Votación: contar respuestas más comunes
+    from collections import Counter
+    vote_counts = Counter(final_answers)
+    consensus_answer = vote_counts.most_common(1)[0][0]
+
+    return {
+        "question": question,
+        "all_chains": responses,
+        "all_final_answers": final_answers,
+        "vote_counts": dict(vote_counts),
+        "consensus_answer": consensus_answer,
+        "method": "self-consistency-cot"
+    }
+
+# ============================================================
+# 3. TREE-OF-THOUGHT: BRANCHING REASONING
+# ============================================================
+
+@dataclass
+class ThoughtNode:
+    thought: str
+    score: Optional[float] = None
+    parent: Optional['ThoughtNode'] = None
+    children: List['ThoughtNode'] = None
+
+    def __post_init__(self):
+        if self.children is None:
+            self.children = []
+
+class TreeOfThoughts:
+    """
+    Tree-of-Thought: explora múltiples paths de razonamiento
+    en paralelo y selecciona el mejor branch.
+
+    Útil para problemas donde hay múltiples approches válidos.
+    """
+    def __init__(self, client, model: str = "gpt-4o", depth: int = 3, branches: int = 3):
+        self.client = client
+        self.model = model
+        self.depth = depth
+        self.branches = branches
+
+    def expand_node(self, node: ThoughtNode, step_num: int) -> List[ThoughtNode]:
+        """Genera branches alternativos desde un nodo."""
+        prompt = f"""Problema: {node.thought}
+
+Genera {self.branches} approcuhes alternativos diferentes para continuar el razonamiento.
+Sé creativo y considera approaches que puedan ser contraintuitivos.
+
+Approach 1:"""
+        resp = self.client.chat.completions.create(
+            model=self.model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.8,
+            max_tokens=800
+        )
+
+        # Parsear los branches generados
+        content = resp.choices[0].message.content
+        lines = content.split('\n')
+        branches = []
+        for line in lines:
+            if line.strip() and (line.startswith('Approach') or line[0].isdigit()):
+                branches.append(line)
+
+        child_nodes = []
+        for branch in branches[:self.branches]:
+            child = ThoughtNode(thought=branch.strip(), parent=node)
+            node.children.append(child)
+            child_nodes.append(child)
+
+        return child_nodes
+
+    def score_node(self, node: ThoughtNode, problem: str) -> float:
+        """Usa el modelo para puntuar qué tan prometedor es un nodo."""
+        prompt = f"""Problema original: {problem}
+
+Razonamiento actual: {node.thought}
+
+Del 0 al 10, qué tan prometedor es este approach para resolver el problema?
+Solo responde con el número."""
+        resp = self.client.chat.completions.create(
+            model=self.model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.0,
+            max_tokens=50
+        )
+        try:
+            score = float(resp.choices[0].message.content.strip())
+        except:
+            score = 5.0
+        node.score = score
+        return score
+
+    def solve(self, problem: str) -> Dict:
+        """Resuelve usando tree-of-thought exploration."""
+        # Nodo inicial
+        root = ThoughtNode(thought=problem)
+        current_level = [root]
+
+        # Búsqueda en profundidad limitada
+        for step in range(self.depth):
+            next_level = []
+            for node in current_level:
+                children = self.expand_node(node, step)
+                for child in children:
+                    self.score_node(child, problem)
+                    next_level.append(child)
+            current_level = next_level
+
+        # Encontrar el mejor leaf node (backtracking)
+        best_leaf = max(
+            [n for n in current_level if n.score is not None],
+            key=lambda x: x.score,
+            default=root
+        )
+
+        # Reconstruir el path
+        path = []
+        node = best_leaf
+        while node:
+            path.append(node.thought)
+            node = node.parent
+        path.reverse()
+
+        return {
+            "problem": problem,
+            "best_reasoning_path": path,
+            "best_score": best_leaf.score,
+            "method": "tree-of-thought"
+        }
+
+# Uso:
+# cot_result = generate_cot_response(client, "gpt-4o", "¿Cuál es el 15° número primo?")
+# sc_result = self_consistency_cot(client, "gpt-4o", "¿Cuál es el 15° número primo?", n_samples=7)
+# tot = TreeOfThoughts(client)
+# tot_result = tot.solve("Encuentra la ruta más corta entre Bogotá y Medellín")
 </code></pre>
-<hr>
-<h2>🚨 Errores Comunes</h2>
-<h3>Error 1: No entender la matemática de fondo</h3>
-<p>El 80% de los practitioners implementa esto incorrectamente porque no entienden la base teórica.</p>
-<h3>Error 2: Ignorar los hiperparámetros</h3>
-<p>Muchos asumen que los valores por defecto son óptimos. En producción, esto raramente es cierto.</p>
-<hr>
-<h2>✅ Mejores Prácticas</h2>
+
+<h2>📊 Comparación de Estrategias de Reasoning</h2>
+
+<table>
+<tr><th>Método</th><th>Best For</th><th>Latencia</th><th>Costo</th><th>Precisión</th></tr>
+<tr><td>Direct prompting</td><td>Tareas simples, facts</td><td>Muy baja</td><td>Mínimo</td><td>Básica</td></tr>
+<tr><td>Chain-of-Thought</td><td>Problemas multi-step, math</td><td>Baja</td><td>1x</td><td>+15-25%</td></tr>
+<tr><td>Self-consistency CoT</td><td>Math complejo, coding</td><td>Media-alta</td><td>n×</td><td>+20-35%</td></tr>
+<tr><td>Tree-of-Thought</td><td>Problemas con múltiples paths</td><td>Alta</td><td>Alto</td><td>Mejor en problemas abiertos</td></tr>
+</table>
+
+<h2>🚨 Los 3 Errores Que Destruyen Tu Razonamiento</h2>
+
+<h3>Error 1: Usar reasoning para tareas simples donde es overkill</h3>
+
+<p><strong>El problema</strong>: Estás usando chain-of-thought para preguntar "¿Cuál es la capital de Francia?". El modelo gasta 200 tokens pensando que es París y al final dice "París". Tardaste 10x más y gastaste 20x más en tokens para una respuesta que hubieras gotten con prompting directo.</p>
+
+<p><strong>La matemática</strong>: El costo adicional de CoT es:</p>
+
+<div class="katex-display">C_{CoT} = C_{base} \cdot (1 + \delta \cdot L)</div>
+
+<p>Donde $\delta$ es el overhead por paso y $L$ es la longitud del chain. Para hechos simples ($P_{correct} \approx 1.0$), el overhead no justifica la mejora.</p>
+
+<p><strong>La solución</strong>: Aplica el test de complejidad: si puedes resolver el problema en 1-2 pasos mentales, no necesitas CoT. Solo usa reasoning cuando el problema requiere 3+ pasos de lógica encadenada.</p>
+
+<h3>Error 2: No usar self-consistency con CoT</h3>
+
+<p><strong>El problema</strong>: Implementas CoT, pero ejecutas una sola vez. El modelo puede "tomar un wrong turn" en el reasoning y seguir por ese path incorrecto hasta el final. Sin self-consistency, no tienes forma de detectar eso.</p>
+
+<p><strong>La estadística</strong>: En math problems, un solo CoT tiene ~70% de precisión. Con self-consistency (5 samples), subes a ~85-90% porque la votación corrige errores de reasoning path.</p>
+
+<p><strong>La solución</strong>: Para problemas críticos, siempre usa self-consistency. El overhead de n samples vale la pena cuando el costo de error es alto. Código, matemáticas, decisiones de negocio — estos justifican el overhead.</p>
+
+<h3>Error 3: Reasoning chain tan largo que causa error accumulation</h3>
+
+<p><strong>El problema</strong>: Tu chain-of-thought tiene 15-20 pasos. Cada paso tiene digamos 95% de probabilidad de estar correcto. La probabilidad de que TODOS estén correctos es $0.95^{20} = 35.8\%$. Estás asegurando que el error sea casi seguro.</p>
+
+<p><strong>La fórmula del error acumulado</strong>:</p>
+
+<div class="katex-display">P_{all\ correct} = \prod_{i=1}^{L} P_i \approx (1 - \epsilon)^L \approx e^{-\epsilon L}</div>
+
+<p>Con $\epsilon = 0.05$ (5% error por paso) y $L = 20$, obtienes $e^{-1} \approx 0.37$.</p>
+
+<p><strong>La solución</strong>: Mantén tus chains razonables (5-8 pasos máximo). Si necesitas más, usa tree-of-thought para explorar branches en paralelo en lugar de alargar un solo chain. O usa descomposición: divide el problema grande en subproblemas más pequeños y resuelve cada uno independientemente.</p>
+
+<h2>✅ Resumen y Cierre</h2>
+
+<p>Parcero, el reasoning no es magia. Es matemática. Cuando lo entiendes, sabes cuándo usarlo y cuándo no:</p>
+
 <ul>
-<li>Siempre documenta tu código y decisiones de diseño.</li>
-<li>Usa versionado para tus experimentos.</li>
-<li>Valida siempre con datos de prueba independientes.</li>
-<li>Monitorea las métricas en producción.</li>
+<li><strong>Direct prompting</strong>: Preguntas simples, hechos, tareas de 1 paso.</li>
+<li><strong>Chain-of-Thought</strong>: Problemas de 3-8 pasos, matemáticas, lógica encadenada.</li>
+<li><strong>Self-consistency</strong>: Cuando la precisión es crítica y puedes pagar el overhead.</li>
+<li><strong>Tree-of-Thought</strong>: Problemas abiertos con múltiples approaches válidos.</li>
 </ul>
-<hr>
-<h2>📚 Recursos</h2>
-<ul>
-<li>Documentación oficial de litellm</li>
-<li>Tutoriales prácticos en el blog</li>
-<li>Código fuente en GitHub</li>
-</ul>
+
+<p>La próxima vez que tu modelo te dé una respuesta rara, pregúntate: ¿le estoy pidiendo que razone cuando no necesita hacerlo? Y si sí necesita razonar, ¿le estoy dando espacio para hacerlo bien o lo estoy forzando a un chain demasiado largo?</p>
+
+<p>En Bogotá decimos que "el que sabe pensar, no necesita pensar demasiado". Aplica eso a tus prompts.</p>
+
+<p>Nos vemos en el Día 175. keep building.</p>
   </article>
 
   <script>
