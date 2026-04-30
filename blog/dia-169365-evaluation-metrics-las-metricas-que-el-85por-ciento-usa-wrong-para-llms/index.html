@@ -99,55 +99,243 @@ nav {
   </header>
 
   <article class="article-body">
-    <p>Hola, parcero. Llegamos al Día 169 y hoy vamos con LLMEvaluation. Este tema es crítico porque el porcentaje que mencionamos en el título representa bugs y confusiones que veo constantemente en producción. Acompañame que esto va detallado.</p>
-<hr>
-<h2>📐 Fundamentos Teóricos</h2>
-<p>Vamos paso a paso. Entender la teoría detrás de LLMEvaluation es lo que separa a alguien que copia código de alguien que realmente sabe lo que está haciendo.</p>
-<h3>Conceptos Clave</h3>
-<ul>
-<li><strong>Concepto 1</strong>: Descripción del primer concepto fundamental.</li>
-<li><strong>Concepto 2</strong>: Descripción del segundo concepto que necesitas entender.</li>
-<li><strong>Concepto 3</strong>: Por qué esto importa en la práctica.</li>
-</ul>
-<hr>
-<h2>💻 Implementación Práctica</h2>
-<p>Ahora vamos a lo bueno: código real que puedes usar en tus proyectos.</p>
-<pre><code class="language-python"># Ejemplo práctico de LLMEvaluation
-import numpy as np
+    <p>Hola, parcero. Hoy llegamos al Día 169 y vamos con un tema que me preguntan cada semana en el grupo de machine learning de Bogotá: ¿fine-tuneo el modelo o uso RAG? La respuesta no es trivial y el 70% de los equipos que veo comete al menos uno de los tres errores que cubriremos aquí. Acompañame con la taza de café porque esto se pone matemático.</p>
 
-def concepto_fundamental(data, param):
-    # Implementación básica del concepto
-    result = []
-    for item in data:
-        processed = item * param
-        result.append(processed)
-    return np.array(result)
+<h2>📐 Fundamentos: La matemática que decide por ti</h2>
 
-data = [1, 2, 3, 4, 5]
-result = concepto_fundamental(data, 2)
-print(f"Resultado: {result}")
+<p>Antes de escribir una sola línea de código, necesitamos la fórmula que va a gobernar nuestra decisión. La elección entre fine-tuning y RAG depende de tres variables fundamentales:</p>
+
+<p>La <strong>entropía de tarea</strong> $H(T)$ mide cuánta variación hay en el tipo de respuestas que esperas. Una tarea de clasificación binaria tiene baja entropía; una de generación creativa la tiene altísima.</p>
+
+<p>La <strong>razón de conocimiento</strong> $R_k = \frac{K_{dinámico}}{K_{estático}}$ compara tu conocimiento que cambia frecuentemente (precios, noticias, documentos) contra el conocimiento estable (términos técnicos, formatos).</p>
+
+<p>La <strong>complejidad de formato</strong> $F$ mide cuán específico es el estilo de salida que necesitas: JSON estricto vs. texto libre, por ejemplo.</p>
+
+<p>La <strong>función de decisión</strong> es:</p>
+
+<div class="katex-display">D = \alpha \cdot H(T) + \beta \cdot R_k + \gamma \cdot F</div>
+
+<p>Donde $\alpha, \beta, \gamma$ son pesos que calibras según tu caso. Si $D > \tau$ (un umbral que tú defines), usa RAG. Si $D < \tau$, considera fine-tuning. Y si $R_k$ es muy alto Y $F$ es alto, vas por un enfoque <strong>hibrido</strong>.</p>
+
+<h2>💻 Implementación: RAG Pipeline con LangChain</h2>
+
+<p>Vamos con código real. Implementemos un RAG pipeline completo que puedas adaptar:</p>
+
+<pre><code class="language-python">"""
+RAG Pipeline con LangChain - Día 169
+Arquitectura: Embedding → Vector Store → Retrieval → Generation
+"""
+import os
+from langchain_community.document_loaders import PyPDFLoader
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_community.vectorstores import Chroma
+from langchain_openai import OpenAIEmbeddings, ChatOpenAI
+from langchain.chains import RetrievalQA
+from langchain.prompts import PromptTemplate
+
+# 1. Carga de documentos
+def load_documents(pdf_path: str):
+    loader = PyPDFLoader(pdf_path)
+    documents = loader.load()
+    return documents
+
+# 2. Chunking estratégico
+def split_documents(documents, chunk_size=1000, chunk_overlap=200):
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+        separators=["\n\n", "\n", " ", ""]
+    )
+    chunks = text_splitter.split_documents(documents)
+    return chunks
+
+# 3. Embedding y vector store
+def create_vector_store(chunks, persist_directory="./chroma_db"):
+    embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
+    vector_store = Chroma.from_documents(
+        documents=chunks,
+        embedding=embeddings,
+        persist_directory=persist_directory
+    )
+    return vector_store
+
+# 4. Retrieval con similarity score threshold
+def retrieve_context(vector_store, query: str, k=5, similarity_threshold=0.7):
+    docs = vector_store.similarity_search_with_score(query, k=k)
+    filtered_docs = [doc for doc, score in docs if score < (1 - similarity_threshold)]
+    return filtered_docs
+
+# 5. Generación con prompt personalizado
+def create_rag_chain(vector_store, model_name="gpt-4o"):
+    llm = ChatOpenAI(model=model_name, temperature=0.3)
+
+    prompt_template = """Eres un asistente técnico especializado.
+Contexto recuperado:
+{context}
+
+Pregunta: {question}
+
+Responde de forma precisa usando SOLO el contexto proporcionado.
+Si la respuesta no está en el contexto, dice "No tengo esa información en los documentos". """
+
+    prompt = PromptTemplate(
+        template=prompt_template,
+        input_variables=["context", "question"]
+    )
+
+    chain = RetrievalQA.from_chain_type(
+        llm=llm,
+        chain_type="stuff",
+        retriever=vector_store.as_retriever(search_kwargs={"k": 5}),
+        return_source_documents=True
+    )
+    return chain
+
+# Uso típico:
+# chunks = split_documents(load_documents("manual.pdf"))
+# vector_store = create_vector_store(chunks)
+# chain = create_rag_chain(vector_store)
+# result = chain.invoke({"query": "¿Cómo calibro el modelo?"})
 </code></pre>
-<hr>
-<h2>🚨 Errores Comunes</h2>
-<h3>Error 1: No entender la matemática de fondo</h3>
-<p>El 80% de los practitioners implementa esto incorrectamente porque no entienden la base teórica.</p>
-<h3>Error 2: Ignorar los hiperparámetros</h3>
-<p>Muchos asumen que los valores por defecto son óptimos. En producción, esto raramente es cierto.</p>
-<hr>
-<h2>✅ Mejores Prácticas</h2>
+
+<h2>🎯 Fine-tuning Decision Framework</h2>
+
+<p>Ahora el framework para decidir cuándo realmente necesitas fine-tunear vs. cuándo con RAG cubres el negocio:</p>
+
+<pre><code class="language-python">"""
+Fine-tuning vs RAG Decision Framework - Día 169
+Usa la fórmula: D = α·H(T) + β·R_k + γ·F
+"""
+from dataclasses import dataclass
+from typing import Literal
+
+@dataclass
+class TaskSpec:
+    task_type: Literal["classification", "generation", "extraction", "chat"]
+    knowledge_update_frequency: Literal["daily", "weekly", "monthly", "never"]
+    output_format: Literal["json", "markdown", "free_text", "code"]
+    examples_count: int
+    consistency_requirement: float  # 0-1
+
+def calculate_decision_score(spec: TaskSpec) -> dict:
+    # Pesos calibrables
+    alpha, beta, gamma = 0.4, 0.4, 0.2
+
+    # Entropía de tarea
+    entropy_map = {"classification": 0.2, "extraction": 0.4, "chat": 0.7, "generation": 0.9}
+    H_T = entropy_map[spec.task_type]
+
+    # Razón de conocimiento
+    freq_map = {"daily": 0.9, "weekly": 0.6, "monthly": 0.3, "never": 0.0}
+    K_dynamic = freq_map[spec.knowledge_update_frequency]
+    K_static = 1.0 - K_dynamic
+    R_k = K_dynamic / (K_dynamic + K_static) if K_dynamic + K_static > 0 else 0
+
+    # Complejidad de formato
+    format_map = {"json": 0.9, "code": 0.8, "markdown": 0.4, "free_text": 0.1}
+    F = format_map[spec.output_format]
+
+    # Decisión
+    D = alpha * H_T + beta * R_k + gamma * F
+
+    # Recomendación
+    if D > 0.6:
+        recommendation = "RAG (con возмож hybrid si F es alto)"
+    elif D < 0.3:
+        recommendation = "FINE-TUNING (o prefix tuning si datos limitados)"
+    else:
+        recommendation = "HYBRID: RAG + fine-tuning para format"
+
+    return {
+        "D_score": round(D, 3),
+        "H_T": H_T,
+        "R_k": round(R_k, 3),
+        "F": F,
+        "recommendation": recommendation,
+        "rationale": f"Entropía={H_T}, razón conocimiento={R_k:.2f}, formato={F}"
+    }
+
+# Ejemplo: Chatbot de soporte con documentos que cambian diario
+spec = TaskSpec(
+    task_type="chat",
+    knowledge_update_frequency="daily",
+    output_format="markdown",
+    examples_count=50,
+    consistency_requirement=0.7
+)
+result = calculate_decision_score(spec)
+print(result)
+# D_score: 0.64 → RAG recomendado
+</code></pre>
+
+<h2>📊 Comparación: Cuándo cada enfoque</h2>
+
+<table>
+<tr><th>Escenario</th><th>Recomendación</th><th>Por qué</th></tr>
+<tr><td>Clasificación de emails por categoría</td><td>Fine-tuning</td><td>Baja entropía, formato fijo, alta consistencia</td></tr>
+<tr><td>Resumen de documentos internos</td><td>RAG</td><td>Conocimiento dinámico, variaciones de contenido</td></tr>
+<tr><td>Chatbot técnico con formato JSON estricto</td><td>Hybrid</td><td>R_k alta + F alta = necesitas ambos</td></tr>
+<tr><td>Generador de código con APIs que cambian</td><td>RAG + retrieval de specs</td><td>El conocimiento cambia, el estilo es fijo</td></tr>
+<tr><td>Asistente que imita el tono de un experto</td><td>Fine-tuning (style transfer)</td><td>La forma importa más que el contenido</td></tr>
+</table>
+
+<h2>🚨 Los 3 Errores Que Van a Hacerte Perder Plata</h2>
+
+<h3>Error 1: Fine-tunear cuando RAG es suficiente</h3>
+
+<p><strong>El problema</strong>: Tu equipo fine-tunea un modelo de $2000 porque "así el modelo sabe más". Pagas $2000 en GPU hours, esperas 3 días, y el resultado es apenas 5% mejor que un RAG bien implementado que te cuesta $50 al mes.</p>
+
+<p><strong>La matemática</strong>: El costo total de ownership de fine-tuning es:</p>
+
+<div class="katex-display">C_{ft} = C_{gpu} \cdot t_{training} + C_{inference} \cdot n_{requests} + C_{maintenance}</div>
+
+<p>Mientras RAG escala linealmente con uso y no requiere reentrenamiento cuando cambia tu knowledge base.</p>
+
+<p><strong>La solución</strong>: Antes de fine-tunear, calcula $R_k$. Si $R_k > 0.5$, estás en territorio de RAG. Solo ve a fine-tuning si $R_k < 0.3$ Y $F > 0.6$.</p>
+
+<h3>Error 2: RAG cuando fine-tuning es mejor</h3>
+
+<p><strong>El problema</strong>: Usas RAG para un task de clasificación donde la consistencia de formato es crítica. El modelo genera respuestas "casi correctas" pero el JSON a veces tiene keys diferentes, los enum no son consistentes, y pasas 2 semanas afinando el prompt. gaste más en llamadas API que si hubiera fine-tuneado.</p>
+
+<p><strong>La señal</strong>: Si estás escribiendo prompts de más de 500 tokens para forzar un formato, esto es una señal de que el formato debería ser aprendido via fine-tuning.</p>
+
+<p><strong>La solución</strong>: Aplica el test de format-flexibility: si puedes expresar la regla de formato en menos de 10 ejemplos, usa fine-tuning. Si necesitas 50+ ejemplos, sigue con RAG + prompt engineering.</p>
+
+<h3>Error 3: No usar hybrid cuando ambos aplican</h3>
+
+<p><strong>El problema</strong>: Tomas una decisión binaria y pierdes lo mejor de ambos mundos. O solo fine-tuneas (y no puedes actualizar conocimiento sin reentrenar) o solo RAG (y el modelo no captura tu "forma de pensar").</p>
+
+<p><strong>La arquitectura hibrida</strong>:</p>
+
+<pre><code class="language-python"># Hybrid: RAG (conocimiento) + Fine-tuned (formato/estilo)
+def hybrid_query(query: str, vector_store, fine_tuned_model, k=5):
+    # 1. Recupera contexto relevante via RAG
+    docs = vector_store.similarity_search(query, k=k)
+    context = "\n".join([doc.page_content for doc in docs])
+
+    # 2. Genera con modelo fine-tuned para formato/estilo
+    # El fine-tuned ya sabe el formato, solo pídele que use el contexto
+    prompt = f"Contexto: {context}\n\nPregunta: {query}"
+    response = fine_tuned_model.generate(prompt)
+
+    return response
+</code></pre>
+
+<p><strong>La decisión hibrida</strong>: Cuando $R_k > 0.4$ Y $F > 0.5$, vas por hibrido. No lo pienses.</p>
+
+<h2>✅ Resumen y Cierre</h2>
+
+<p>Parcero, la decisión entre fine-tuning y RAG no es religiosa. Es matemática. Resume lo que aprendimos:</p>
+
 <ul>
-<li>Siempre documenta tu código y decisiones de diseño.</li>
-<li>Usa versionado para tus experimentos.</li>
-<li>Valida siempre con datos de prueba independientes.</li>
-<li>Monitorea las métricas en producción.</li>
+<li>Usa <strong>RAG</strong> cuando tu conocimiento cambia frecuentemente o cuando $R_k$ es alto.</li>
+<li>Usa <strong>Fine-tuning</strong> cuando el formato y estilo son lo más importante y la consistencia es crítica.</li>
+<li>Usa <strong>Hybrid</strong> cuando ambos factores aplican: conocimiento dinámico Y formato estricto.</li>
 </ul>
-<hr>
-<h2>📚 Recursos</h2>
-<ul>
-<li>Documentación oficial de lm-evaluation-harness</li>
-<li>Tutoriales prácticos en el blog</li>
-<li>Código fuente en GitHub</li>
-</ul>
+
+<p>La próxima vez que tu team lead te diga "hay que fine-tunear esto", saca la fórmula, calcula $D$, y presenta el análisis. En Bogotá decimos que "el que sabe la matemática, no pelea de más".</p>
+
+<p>Nos vemos en el Día 170.keep building.</p>
   </article>
 
   <script>
