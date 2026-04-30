@@ -99,55 +99,216 @@ nav {
   </header>
 
   <article class="article-body">
-    <p>Hola, parcero. Llegamos al Día 133 y hoy vamos con DockerML. Este tema es crítico porque el porcentaje que mencionamos en el título representa bugs y confusiones que veo constantemente en producción. Acompañame que esto va detallado.</p>
+    <p>Hola, parcero. Llegamos al Día 133 y hoy vamos con un tema que me toca deep el alma: Docker para Machine Learning. Ese gap entre "funciona en mi laptop" y "funciona en producción" tiene nombre y apellido — y casi siempre se llama *entorno mal configurado*. Acá te cuento cómo resolverlo de una vez por todas, con código que de verdad deploya.</p>
+
 <hr>
 <h2>📐 Fundamentos Teóricos</h2>
-<p>Vamos paso a paso. Entender la teoría detrás de DockerML es lo que separa a alguien que copia código de alguien que realmente sabe lo que está haciendo.</p>
-<h3>Conceptos Clave</h3>
+
+<h3>¿Por qué tu modelo funciona en todas partes menos en producción?</h3>
+<p>El problema central es que tu laptop tiene un entorno Python con X versión de CUDA, Y versión de cuDNN, Z paquetes con dependencias冲突. Cuando ese mismo código llega a un servidor nuevo, las cosas se rompen de formas que ni el log revela. Docker resuelve esto creando un entorno **aislado, portable y versionado** que incluyes con tu código.</p>
+
+<h3>Contenedores vs Imágenes</h3>
 <ul>
-<li><strong>Concepto 1</strong>: Descripción del primer concepto fundamental.</li>
-<li><strong>Concepto 2</strong>: Descripción del segundo concepto que necesitas entender.</li>
-<li><strong>Concepto 3</strong>: Por qué esto importa en la práctica.</li>
+<li><strong>Imagen</strong>: plantilla inmutable (el Dockerfile produce esto)</li>
+<li><strong>Contenedor</strong>: instancia corriendo de esa imagen</li>
+<li><strong>Registro</strong>: lugar donde subes/descargas imágenes (Docker Hub, GCR, ECR)</li>
 </ul>
+
+<h3>La matemática de la reproducibilidad</h3>
+<p>La reproducibilidad en ML depende de cuatro fuentes de no-determinismo:</p>
+<p>$$\text{Semilla global} = f(\text{Python seed}, \text{NumPy seed}, \text{TensorFlow seed}, \text{cuDNN seed})$$</p>
+<p>Si cualquiera de estos no se fija en Docker, los resultados varían entre ejecuciones — y eso en producción es un desastre.</p>
+
+<h3>nvidia-docker y CUDA compatibility matrix</h3>
+<p>NVIDIA mapea versiones de CUDA a capability de GPU. La fórmula de compatibilidad es:</p>
+<p>$$\text{Compute Capability} \leq \text{CUDA version soporte}$$</p>
+<p>Por ejemplo: una GPU con compute capability 8.6 (Ampere) necesita CUDA $\geq 11.0$. Usar `nvidia/cuda:latest` sin verificar esto causa el error clásico: <code>CUDA error: no kernel image is available for execution</code>.</p>
+
 <hr>
 <h2>💻 Implementación Práctica</h2>
-<p>Ahora vamos a lo bueno: código real que puedes usar en tus proyectos.</p>
-<pre><code class="language-python"># Ejemplo práctico de DockerML
-import numpy as np
 
-def concepto_fundamental(data, param):
-    # Implementación básica del concepto
-    result = []
-    for item in data:
-        processed = item * param
-        result.append(processed)
-    return np.array(result)
+<h3>Dockerfile para Training</h3>
+<pre><code class="language-dockerfile"># syntax=docker/dockerfile:1.4
+FROM nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04
 
-data = [1, 2, 3, 4, 5]
-result = concepto_fundamental(data, 2)
-print(f"Resultado: {result}")
+# Fijar seeds ANTES de cualquier operación
+ENV PYTHONHASHSEED=42
+ENV TORCH_USE_RTLD_GLOBAL=YES
+ENV CUDA_LAUNCH_BLOCKING=1
+
+WORKDIR /app
+
+# Copiar solo requirements primero (para cache de Docker)
+COPY requirements.txt .
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --no-cache-dir -r requirements.txt
+
+# Copiar código
+COPY . .
+
+# Fix: usar WORKDIR explícito y no hardcodear paths
+CMD ["python", "train.py"]
 </code></pre>
+
+<h3>Multi-stage build para reducir imagen de training</h3>
+<pre><code class="language-dockerfile"># syntax=docker/dockerfile:1.4
+# Stage 1: build
+FROM python:3.10-slim AS builder
+WORKDIR /app
+RUN pip install --user uv
+COPY requirements.txt .
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --user -r requirements.txt
+
+# Stage 2: runtime (imagen limpia y pequeña)
+FROM nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04
+WORKDIR /app
+COPY --from=builder /root/.local /root/.local
+COPY --from=builder /app/train.py .
+ENV PATH=/root/.local/bin:$PATH
+CMD ["python", "train.py"]
+</code></pre>
+
+<h3>Dockerfile para Inference con FastAPI</h3>
+<pre><code class="language-dockerfile"># syntax=docker/dockerfile:1.4
+FROM nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04
+
+WORKDIR /app
+
+# Instalar runtime de Python + FastAPI
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.10 python3-pip && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY ./app /app/app
+
+# Usuario no-root por seguridad
+RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
+USER appuser
+
+EXPOSE 8000
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+</code></pre>
+
+<h3>docker-compose.yml para training</h3>
+<pre><code class="language-yaml">version: "3.9"
+services:
+  train:
+    build:
+      context: .
+      dockerfile: Dockerfile.train
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=0
+      - PYTHONHASHSEED=42
+      - TORCH_NUM_THREADS=4
+    volumes:
+      - ./data:/app/data
+      - ./outputs:/app/outputs
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+</code></pre>
+
+<h3>Cómo usar nvidia-docker para GPU</h3>
+<pre><code class="language-bash"># Verificar que nvidia-docker está instalado
+nvidia-docker --version
+
+# Test rápido de GPU en contenedor
+docker run --rm --gpus all nvidia/cuda:11.8.0-base-ubuntu22.04 \
+    nvidia-smi
+
+# Build y corre con GPU
+docker build -f Dockerfile.train -t ml-train .
+docker run --rm --gpus all -v $(pwd)/data:/app/data ml-train python train.py
+</code></pre>
+
 <hr>
-<h2>🚨 Errores Comunes</h2>
-<h3>Error 1: No entender la matemática de fondo</h3>
-<p>El 80% de los practitioners implementa esto incorrectamente porque no entienden la base teórica.</p>
-<h3>Error 2: Ignorar los hiperparámetros</h3>
-<p>Muchos asumen que los valores por defecto son óptimos. En producción, esto raramente es cierto.</p>
+<h2>🚨 Errores Comunes (y sus fixes)</h2>
+
+<h3>Error 1: No fijar random seeds en Docker → sin reproducibilidad</h3>
+<p><strong>Síntoma:</strong> El mismo código produce loss diferente en cada `docker run`.</p>
+<p><strong>Causa raiz:</strong> Python heredan `PYTHONHASHSEED` del sistema, que por defecto es variable. Además, cuDNN tiene benchmark mode que optimiza pero no es determinístico.</p>
+<pre><code class="language-python"># Fix: importa esto AL PRINCIPIO de train.py, antes de cualquier import
+import random
+import numpy as np
+import torch
+
+SEED = 42
+random.seed(SEED)
+np.random.seed(SEED)
+torch.manual_seed(SEED)
+torch.cuda.manual_seed_all(SEED)
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
+os.environ["PYTHONHASHSEED"] = str(SEED)
+</code></pre>
+<p><strong>También en Dockerfile:</strong></p>
+<pre><code class="language-dockerfile">ENV PYTHONHASHSEED=42
+ENV CUDNN_DETERMINISTIC=1
+ENV CUDNN_BENCHMARK=0
+</code></pre>
+
+<h3>Error 2: No usar --mount type=cache para pip cache → builds lentos</h3>
+<p><strong>Síntoma:</strong> Cada `docker build` tarda 10+ minutos aunque no cambies requirements.</p>
+<p><strong>Causa raiz:</strong> Sin cache mount, pip descarga todos los paquetes desde cero en cada build layer nuevo.</p>
+<pre><code class="language-dockerfile"># Antes (sin cache)
+RUN pip install -r requirements.txt
+
+# Después (con cache mount)
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --no-cache-dir -r requirements.txt
+</code></pre>
+<p>El `--mount=type=cache` persiste el directorio de pip entre builds. Solo se reconstruye el layer si `requirements.txt` cambia.</p>
+
+<h3>Error 3: Usar latest CUDA image sin verificar compute capability</h3>
+<p><strong>Síntoma:</strong> <code>CUDA error: no kernel image is available for execution on the device</code></p>
+<p><strong>Causa raiz:</strong> `nvidia/cuda:latest` puede ser CUDA 12.x que requiere compute capability $\geq 5.0$ (Kepler+). Si tienes una GPU vieja, no es compatible.</p>
+<pre><code class="language-bash"># Primero: verifica tu GPU capability
+nvidia-smi --query-gpu=compute_cap --format=csv,noheader
+# Ejemplo output: 8.6
+
+# Segundo: match con tabla de compatibilidad
+# CC 8.0-9.0 (Ampere/Ada) → CUDA 11.0+
+# CC 7.0-7.5 (Turing/Volta) → CUDA 10.0+
+# CC 6.0-6.1 (Pascal) → CUDA 9.0+
+# CC 3.0-5.2 (Kepler-Maxwell) → CUDA 8.0
+
+# Tercero: elige la imagen correcta
+docker pull nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04  # Para CC 6.0+
+docker pull nvidia/cuda:12.2.0-cudnn8-runtime-ubuntu22.04   # Para CC 8.0+
+</code></pre>
+
 <hr>
 <h2>✅ Mejores Prácticas</h2>
 <ul>
-<li>Siempre documenta tu código y decisiones de diseño.</li>
-<li>Usa versionado para tus experimentos.</li>
-<li>Valida siempre con datos de prueba independientes.</li>
-<li>Monitorea las métricas en producción.</li>
+<li><strong>Multistage builds</strong>: reduce el tamaño final de la imagen separating build vs runtime deps</li>
+<li><strong>Usuario no-root</strong>: siempre crea un usuario para correr la app, nunca root</li>
+<li><strong>.dockerignore</strong>: exclude data, .git, __pycache__, .venv para que el build context sea pequeño</li>
+<li><strong>Health check</strong>: agrega `HEALTHCHECK` en docker-compose para saber cuándo tu contenedor está listo</li>
+<li><strong>Tags de imagen semánticos</strong>: nunca `latest` en producción — usa `11.8.0-cudnn8`</li>
+<li><strong>Versiona tu entorno</strong>: guarda el `requirements.txt` con hashes para reproducción exacta</li>
 </ul>
+
 <hr>
 <h2>📚 Recursos</h2>
 <ul>
-<li>Documentación oficial de docker</li>
-<li>Tutoriales prácticos en el blog</li>
-<li>Código fuente en GitHub</li>
+<li><a href="https://docs.nvidia.com/dgx/cuda-installation-guide/index.html">NVIDIA CUDA Installation Guide</a></li>
+<li><a href="https://docs.docker.com/develop/develop-images/dockerfile_best-practices/">Dockerfile best practices</a></li>
+<li><a href="https://github.com/NVIDIA/nvidia-docker">nvidia-docker GitHub</a></li>
 </ul>
+
+<hr>
+<h2>Resumen y cierre</h2>
+<p>Hoy cubrimos Docker para ML desde cero: containers, Dockerfiles para training e inference, nvidia-docker para GPU, y los tres errores que más veo en producción. La reproducibilidad no es opcional — es la base de todo.</p>
+<p>El 80% de los modelos que fallan en producción no fallan por el código ni por los datos. Fallan porque el entorno de deployment no matchea con el de desarrollo. Docker resuelve esto, pero hay que hacerlo bien: fijando seeds, usando cache mounts, y verificando compatibilidad de CUDA con tu GPU.</p>
+<p>Eso es todo por hoy, parcero. Mañana seguimos con APIs REST para ML — el endpoint que el 85% deploya sin batching ni cache. Nos vemos.</p>
   </article>
 
   <script>
