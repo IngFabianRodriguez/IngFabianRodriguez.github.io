@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="Vision Transformers - Transformers Para Imagenes | #365DaysOfAI por Fabian Rodriguez">
-  <title>Vision Transformers - Transformers Para Imagenes | #365DaysOfAI</title>
+  <meta name="description" content="Cost Optimization for ML — Cómo el 90% paga de más y no lo sabe | #365DaysOfAI por Fabian Rodriguez">
+  <title>Cost Optimization for ML — Cómo el 90% paga de más | #365DaysOfAI</title>
   
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
@@ -110,82 +110,385 @@ nav {
 
   <header class="article-hero">
     <div class="day-badge">Dia 228 / 365 &nbsp;·&nbsp; #365DaysOfAI</div>
-    <h1 class="article-title">Vision Transformers - Transformers Para Imagenes</h1>
+    <h1 class="article-title">Cost Optimization for ML — Cómo el 90% paga de más y no lo sabe</h1>
     <div class="article-meta">
       <time class="article-date">16 de agosto de 2026</time>
-      <div class="tags"><span class="tag">vit</span><span class="tag">vision-transformer</span><span class="tag">computer-vision</span><span class="tag">attention</span></div>
+      <div class="tags"><span class="tag">mlops</span><span class="tag">costs</span><span class="tag">spot-instances</span><span class="tag">quantization</span></div>
     </div>
   </header>
 
   <article class="article-body">
-    <h1>Vision Transformers - Transformers Para Imagenes</h1>
+<p>Hagale pues, parcero. Día 228 y hoy vamos a hablar de plata — literalmente. En asesoría, el problema número uno que veo en empresas Colombianas con ML en producción no es el modelo. Es que están tirando plata por la ventana en inferencia. El 90% de los equipos que evalúo están pagando al menos 3x más de lo que deberían. Café en mano, vamos a cambiar eso.</p>
 
-<p>Hagale pues, parcero. Hoy es el Dia 228 y hablamos de Vision Transformers (ViT), aplicando la revolucion de transformers a imagenes. Dejala el cafe.</p>
-<hr>
-<h2>🎯 Que Es ViT?</h2>
-<p>Vision Transformer (ViT) aplica la arquitectura transformer a imagenes, tratando cada imagen como una secuencia de patches. Reemplaza las capas convolucionales tradicionales con attention.</p>
-<h3>Conceptos clave:</h3>
-<ul>
-<li><strong>Patch Embedding</strong>: Dividir imagen en patches y linearizarlos</li>
-<li><strong>Position Embedding</strong>: Anadir informacion espacial</li>
-<li><strong>[CLS] Token</strong>: Token especial para clasificacion</li>
-</ul>
-<hr>
-<h2>📐 Implementacion De ViT</h2>
-<pre><code>import torch
-import torch.nn as nn
-from einops import rearrange
+<h2>🎯 Por Qué los Costos de ML Se Disparan en Producción</h2>
+<p>El entrenamiento es una inversión única. La inferencia es el costo recurrente. Y aquí está la matemática que nadie hace:</p>
 
-class PatchEmbed(nn.Module):
-    def __init__(self, img_size=224, patch_size=16, in_chans=3, embed_dim=768):
-        super().__init__()
-        self.img_size = img_size
-        self.patch_size = patch_size
-        self.num_patches = (img_size // patch_size) ** 2
+<p><strong>Costo por predicción = (Costo GPU/hora) / (Predicciones/hora con ese hardware)</strong></p>
+
+<p>Esa ecuación simple es lo que la mayoría ignora. No importa cuánto pagues por la GPU — lo que importa es cuántas predicciones rindes por peso invertido.</p>
+
+<h2>📐 Auto-Scaling Para ML Inference</h2>
+
+<p>El primer mistake que veo es dejar instancias fixed para inferencia. Esto es tirar plata:</p>
+
+<pre><code># Auto-scaling con Kubernetes y KEDA para ML inference
+# Install KEDA primero: kubectl apply -f https://github.com/kedacore/keda/releases/download/v2.10.0/keda-2.10.0.yaml
+
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: ml-model-scaler
+  namespace: ml-production
+spec:
+  scaleTargetRef:
+    name: ml-model-deployment
+  pollingInterval: 15
+  cooldownPeriod: 300
+  minReplicaCount: 1
+  maxReplicaCount: 10
+  metricsServer:
+    type: External
+    metrics:
+    - type: External
+      external:
+        metricName: http_requests_total
+        metricSelector:
+          matchLabels:
+            model: "nlp-classifier"
+        target:
+          type: AverageValue
+          averageValue: "50"  # 50 requests per replica antes de escalar
+</code></pre>
+
+<p>El valor de `averageValue: 50` significa: si hay más de 50 requests promedio por réplica, agrega otra. Este número depende de tu modelo y latencia objetivo.</p>
+
+<h3>Calculando el punto óptimo de replicas</h3>
+
+<p>La fórmula para el número óptimo de réplicas es:</p>
+<p><strong>Réplicas óptimas = (Requests/segundo × Latencia promedio en segundos) / Utilización objetivo</strong></p>
+
+<pre><code># Script para calcular replicas optimas
+def calcular_replicas_optimas(
+    requests_por_segundo: float,
+    latencia_p99_ms: float,
+    utilizacion_objetivo: float = 0.7,
+    max_replicas: int = 10
+) -> dict:
+    """
+    Calcula réplicas óptimas para inference endpoint.
+    
+    Args:
+        requests_por_segundo: QPS promedio durante peak
+        latencia_p99_ms: Latencia P99 del modelo en milisegundos
+        utilizacion_objetivo: % objetivo de utilización de GPU (default 70%)
+        max_replicas: Máximo de réplicas permitidas
+    
+    Returns:
+        Dict con análisis completo
+    """
+    latencia_segundos = latencia_p99_ms / 1000
+    
+    # Concurrencia = requests en flight
+    concurrencia = requests_por_segundo * latencia_segundos
+    
+    # Réplicas base (sin utilización)
+    replicas_base = concurrencia / utilizacion_objetivo
+    
+    # Redondear y limitar
+    replicas_necesarias = min(max(1, int(replicas_base) + 1), max_replicas)
+    
+    return {
+        'requests_por_segundo': requests_por_segundo,
+        'latencia_p99_ms': latencia_p99_ms,
+        'concurrencia': concurrencia,
+        'replicas_base': replicas_base,
+        'replicas_recomendadas': replicas_necesarias,
+        'costo_mensual_estimado': replicas_necesarias * 730 * 0.50  # $0.50/hora por ml.m5.large
+    }
+
+# Ejemplo: modelo de NLP con 100 RPS y 150ms latencia
+resultado = calcular_replicas_optimas(100, 150)
+print(f"Réplicas recomendadas: {resultado['replicas_recomendadas']}")
+print(f"Costo mensual estimado: ${resultado['costo_mensual_estimado']:.2f}")
+</code></pre>
+
+<h2>🚀 Spot Instances y Preemptible VMs Para Training</h2>
+
+<p>El segundo mistake gigante es no usar spot instances para training. Si tu training puede tolerar interrupciones (y el 80% de los trainings pueden), estás dejando dinero en la mesa:</p>
+
+<pre><code># AWS Spot Instances para training con checkpointing
+import boto3
+import time
+
+class SpotTrainingManager:
+    def __init__(self, instance_type='ml.p3.2xlarge'):
+        self.ec2 = boto3.client('ec2')
+        self.instance_type = instance_type
+        self.checkpoint_path = 's3://mi-bucket/checkpoints/'
         
-        self.proj = nn.Conv2d(in_chans, embed_dim, 
-                             kernel_size=patch_size, 
-                             stride=patch_size)
+    def request_spot_instance(self, max_price='2.50'):
+        """Solicita una spot instance para training."""
+        response = self.ec2.request_spot_instances(
+            InstanceType=self.instance_type,
+            LaunchSpecification={
+                'ImageId': 'ami-0c55b159cbfafe1f0',
+                'InstanceType': self.instance_type,
+                'Placement': {'AvailabilityZone': 'us-east-1a'}
+            },
+            SpotPrice=str(max_price),
+            Type='persistent'  # Se reinicia automáticamente si se interrumpe
+        )
+        return response['SpotInstanceRequests'][0]['SpotInstanceRequestId']
     
-    def forward(self, x):
-        # x: [B, C, H, W] -> [B, num_patches, embed_dim]
-        x = self.proj(x)  # [B, embed_dim, H/P, W/P]
-        x = rearrange(x, 'b e h w -> b (h w) e')
-        return x
+    def calculate_savings(self, on_demand_price=3.06, spot_price=1.50, hours=100):
+        """Calcula ahorro usando spot vs on-demand."""
+        on_demand_total = on_demand_price * hours
+        spot_total = spot_price * hours
+        savings = on_demand_total - spot_total
+        savings_percent = (savings / on_demand_total) * 100
+        
+        print(f"On-demand: ${on_demand_total:.2f}")
+        print(f"Spot: ${spot_total:.2f}")
+        print(f"Ahorro: ${savings:.2f} ({savings_percent:.1f}%)")
+        return savings
 
-class ViT(nn.Module):
-    def __init__(self, num_classes=1000):
-        super().__init__()
-        self.patch_embed = PatchEmbed()
-        self.cls_token = nn.Parameter(torch.randn(1, 1, 768))
-        self.transformer = nn.TransformerEncoder(...)
+# GCP Preemptible VMs (similar concepto)
+gcp_preemptible = {
+    'machine_type': 'n1-standard-8',
+    'accelerator_type': 'NVIDIA_TESLA_V100',
+    ' preemptible': True,
+    'spot_instance': True,  # Equivalent GCP
+    'discount': 0.60  # 60% cheaper than regular
+}
+</code></pre>
+
+<h2>📊 Cost Tracking Con Prometheus y Grafana</h2>
+
+<p>No puedes optimizar lo que no mides. El tercer error es no tener visibilidad de costo por predicción:</p>
+
+<pre><code># Prometheus metrics para tracking de costo por prediction
+# Agregar a tu inference service:
+
+from prometheus_client import Counter, Histogram, Gauge
+
+# Métricas de negocio
+predictions_total = Counter(
+    'ml_predictions_total',
+    'Total de predicciones',
+    ['model_name', 'model_version']
+)
+
+prediction_latency = Histogram(
+    'ml_prediction_latency_seconds',
+    'Latencia de predicción',
+    ['model_name'],
+    buckets=[0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0]
+)
+
+# Nueva métrica: costo estimado por request
+cost_per_prediction = Gauge(
+    'ml_cost_per_prediction_usd',
+    'Costo estimado por predicción',
+    ['model_name', 'instance_type']
+)
+
+# En tu código de predicción:
+def predict(model, input_data):
+    start = time.time()
+    result = model.predict(input_data)
+    latency = time.time() - start
     
-    def forward(self, x):
-        x = self.patch_embed(x)
-        cls_tokens = self.cls_token.expand(x.shape[0], -1, -1)
-        x = torch.cat([cls_tokens, x], dim=1)
-        x = self.transformer(x)
-        return x[:, 0]  # Return [CLS] token
+    # Registrar métricas
+    predictions_total.labels(model_name='nlp-classifier', model_version='v2').inc()
+    prediction_latency.labels(model_name='nlp-classifier').observe(latency)
+    
+    # Calcular costo basado en tiempo y tipo de instancia
+    costo_por_hora = {
+        'ml.m5.large': 0.10,
+        'ml.m5.xlarge': 0.20,
+        'ml.p3.2xlarge': 3.06,  # V100
+    }
+    instance_type = get_current_instance_type()
+    hourly_rate = costo_por_hora.get(instance_type, 0.10)
+    
+    # Costo = (tiempo en segundos / 3600) * costo por hora
+    cost_usd = (latency / 3600) * hourly_rate
+    cost_per_prediction.labels(model_name='nlp-classifier', instance_type=instance_type).set(cost_usd)
+    
+    return result
 </code></pre>
-<hr>
-<h2>🚀 ViT vs CNNs</h2>
-<pre><code># Ventajas de ViT:
-# - Mejor transfer learning (pre-training con JFT-300M)
-# - Mejor para tareas globais (detectar relaciones entre objetos)
-# - Mas interpretable attention maps
 
-# Desventajas:
-# - Requiere mas datos para training from scratch
-# - Mas costoso computacionalmente
-# - Menor eficiencia en imagenes pequenas
+<h2>⚠️ Los 3 Errores Más Comunes</h2>
+
+<h3>Error 1: No Usar Spot Instances Cuando el Training Puede Tolerar Interrupciones</h3>
+<p><strong>El problema:</strong> Estás pagando precio completo por instancias que podrían costar 60-70% menos. Un training de 100 horas a $3/hora = $300 on-demand. Con spot: ~$90.</p>
+<p><strong>La solución:</strong></p>
+<pre><code># Checklist para determinar si tu training puede usar spot:
+checklist_spot_friendly = {
+    'checkpointing_implementado': True,  # ¿Guardas checkpoints?
+    'epocas_independientes': False,       # ¿Puede continuar desde cualquier checkpoint?
+    'batch_size_grande': True,            # ¿Usa batches grandes para eficiencia?
+    'graceful_shutdown': True,            # ¿Maneja señales de terminación?
+    'max_duration_设置': True             # ¿Tienes un tiempo máximo para limitar costos?
+}
+
+# Si 4/5 son True, tu training es spot-friendly
+spot_friendly = sum(checklist_spot_friendly.values()) >= 4
+print(f"¿Training es spot-friendly? {spot_friendly}")
 </code></pre>
-<hr>
-<h2>⚠️ Errores Comunes</h2>
-<h3>Error 1: Patch Size Muy Grande</h3>
-<p><strong>El problema</strong>: Pierdes detalles locales importantes.</p>
-<p><strong>La solucion</strong>: 16x16 es standard, pero para imagenes pequenas usa 8x8.</p>
-<hr>
-<p><em>Eso es todo! Nos vemos en el Dia 229.</em></p>
+
+<h3>Error 2: No Implementar Efficient Batching (Enviando 1 Request a la Vez Cuando Podrías Batch=16)</h3>
+<p><strong>El problema:</strong> GPU utilization frustantes baja. Estás usando 1/16 de la capacidad de tu GPU porque envías requests uno por uno. Math:</p>
+<p>Si latency por request = 10ms, entonces:</p>
+<ul>
+<li>Sin batching: 100 requests/segundo por GPU</li>
+<li>Con batch=16: 1600 requests/segundo por GPU</li>
+</ul>
+<p><strong>La solución:</strong></p>
+<pre><code># Batching dinámico para inference
+import asyncio
+from typing import List
+import time
+
+class DynamicBatcher:
+    def __init__(self, model, max_batch_size=16, max_wait_ms=10):
+        self.model = model
+        self.max_batch_size = max_batch_size
+        self.max_wait_ms = max_wait_ms
+        self.queue = asyncio.Queue()
+        
+    async def add_request(self, input_data):
+        future = asyncio.Future()
+        await self.queue.put((input_data, future))
+        return await future
+    
+    async def process_loop(self):
+        while True:
+            batch = []
+            futures = []
+            
+            # Recolectar hasta max_batch_size o timeout
+            deadline = time.time() + self.max_wait_ms / 1000
+            
+            while len(batch) < self.max_batch_size:
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    break
+                    
+                try:
+                    item = await asyncio.wait_for(
+                        self.queue.get(),
+                        timeout=remaining
+                    )
+                    batch.append(item[0])
+                    futures.append(item[1])
+                except asyncio.TimeoutError:
+                    break
+            
+            if batch:
+                # Procesar batch
+                results = self.model.predict_batch(batch)
+                for future, result in zip(futures, results):
+                    future.set_result(result)
+
+# Uso:
+# batcher = DynamicBatcher(model, max_batch_size=16, max_wait_ms=10)
+# results = await batcher.add_request(user_input)
+</code></pre>
+
+<h3>Error 3: No Monitorear Costo Por Predicción</h3>
+<p><strong>El problema:</strong> No sabes cuánto te cuesta cada prediction. Cuando te preguntan "para 1 millón de requests al día, ¿cuánto gastamos?" no tienes respuesta.</p>
+<p><strong>La solución:</strong></p>
+<pre><code># Dashboard de costo por predicción en Grafana
+# Query Prometheus para costo mensual por modelo:
+
+"""
+sum(rate(ml_cost_per_prediction_usd_total[1h])) * 86400 * 30
+/ sum(rate(ml_predictions_total[1h])) 
+"""
+
+# Configurar alert cuando costo por predicción suba:
+# Alert si: costo_promedio > 2x costo_base
+
+alerta_costo = {
+    'name': 'costo_prediccion_alto',
+    'condition': 'costo_promedio > 0.001',  # $0.001 por predicción
+    'evaluation': 'avg_over_time(costo[5m])',
+    'severity': 'warning',
+    'action': 'revisar si hay batching ineficiente o modelo sobreprovisionado'
+}
+</code></pre>
+
+<h2>🧮 Quantization Para Reducir Costos</h2>
+
+<p>Finalmente, una de las herramientas más poderosas para reducir costos: quantization. Un modelo en FP32 ocupa 4 bytes por parámetro. En INT8 ocupa 1 byte. Math:</p>
+<p><strong>Reducción de memoria = 4x | Reducción de costo ≈ 2-4x (más predictions por GPU)</strong></p>
+
+<pre><code># Quantization con PyTorch
+import torch
+from torch.quantization import quantize_dynamic
+
+def quantize_model(model, dtype=torch.qint8):
+    """
+    Cuantiza modelo dinámicamente (ideal para inference).
+    Convierte pesos de float32 a int8.
+    """
+    quantized_model = quantize_dynamic(
+        model,
+        {torch.nn.Linear, torch.nn.LSTM, torch.nn.Linear},
+        dtype=dtype
+    )
+    return quantized_model
+
+# Verificar mejora
+def measure_inference_speedup(model_fp32, model_int8, input_data):
+    import time
+    
+    # Warm-up
+    for _ in range(10):
+        _ = model_fp32(input_data)
+        _ = model_int8(input_data)
+    
+    # Medir
+    iterations = 100
+    
+    start = time.time()
+    for _ in range(iterations):
+        _ = model_fp32(input_data)
+    time_fp32 = time.time() - start
+    
+    start = time.time()
+    for _ in range(iterations):
+        _ = model_int8(input_data)
+    time_int8 = time.time() - start
+    
+    speedup = time_fp32 / time_int8
+    print(f"Speedup con INT8: {speedup:.2f}x más rápido")
+    
+    return speedup
+
+# GPTQ o AWQ para LLMs son más sofisticados
+# pero el principio es el mismo: reducir precisión de weights
+</code></pre>
+
+<h2>📝 Resumen y Cierre</h2>
+
+<p>Para resumir lo que hemos visto:</p>
+<ul>
+<li><strong>Auto-scaling</strong>: No dejes instancias fixed. Usa KEDA o similar para escalar según demanda real.</li>
+<li><strong>Spot instances</strong>: 60-70% de descuento en training que puede checkpoint. No usarlos es tirar plata.</li>
+<li><strong>Batching eficiente</strong>: batch=16 puede darte 16x throughput. No enviar requests uno por uno.</li>
+<li><strong>Monitoring de costo por predicción</strong>: Si no lo mides, no lo puedes optimizar.</li>
+<li><strong>Quantization</strong>: INT8 reduce 4x la memoria y puede dar 2-4x speedup en throughput.</li>
+</ul>
+
+<p>La próxima vez que te llegue una factura de cloud y te sorprenda, recuerda esta frase: "El problema no es el cloud. Es que no sabes lo que estás pidiendo."</p>
+
+<p>Eso sí, Parcero, les dejo un consejo Colombian: antes de activar auto-scaling, aseguren que sus modelos estén cacheados apropiadamente. He visto casos donde el scaling dispara porque el cache no funciona y termina costando más que antes. Revisen bien las métricas antes de declarar victoria.</p>
+
+<p>Nos vemos en el día 229.</p>
+
+<p><em>— Fabian</em></p>
   </article>
 
   <script>
