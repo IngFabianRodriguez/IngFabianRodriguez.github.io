@@ -99,55 +99,371 @@ nav {
   </header>
 
   <article class="article-body">
-    <p>Hola, parcero. Llegamos al Día 130 y hoy vamos con SHAP. Este tema es crítico porque el porcentaje que mencionamos en el título representa bugs y confusiones que veo constantemente en producción. Acompañame que esto va detallado.</p>
+    <p>Hola, parcero. Llegamos al Día 130 y hoy vamos con **SHAP (SHapley Additive exPlanations)**. Este tema es crítico: el 80% de los equipos de data science que veo usan feature importance simple cuando podrían entender mucho mejor sus modelos con SHAP values. Y no es lo mismo — para nada. Acompañame que esto va detallado.</p>
+
 <hr>
 <h2>📐 Fundamentos Teóricos</h2>
-<p>Vamos paso a paso. Entender la teoría detrás de SHAP es lo que separa a alguien que copia código de alguien que realmente sabe lo que está haciendo.</p>
-<h3>Conceptos Clave</h3>
+
+<p>SHAP viene de <strong>SHapley Additive exPlanations</strong>, que a su vez viene de Shapley values de la teoría de juegos cooperativos. La idea central: dada una predicción, ¿cuánto contribuyó cada feature a que el modelo llegara a esa predicción?</p>
+
+<h3>SHAP Values: La Matemática</h3>
+
+<p>Para una predicción $f(x)$, el SHAP value de la feature $i$ se define como:</p>
+
+<div class="katex-display">
+<p>$$\phi_i = \sum_{S \subseteq F \setminus \{i\}} \frac{|S|! (|F| - |S| - 1)!}{|F|!} \left[ f_x(S \cup \{i\}) - f_x(S) \right]$$</p>
+</div>
+
+<p>Donde:</p>
 <ul>
-<li><strong>Concepto 1</strong>: Descripción del primer concepto fundamental.</li>
-<li><strong>Concepto 2</strong>: Descripción del segundo concepto que necesitas entender.</li>
-<li><strong>Concepto 3</strong>: Por qué esto importa en la práctica.</li>
+<li>$F$ es el conjunto de todas las features</li>
+<li>$S$ es un subconjunto de features sin $i$</li>
+<li>$f_x(S)$ es la predicción del modelo usando solo las features en $S$</li>
+<li>Los factoriales son los pesos de Shapley que aseguran eficiencia, simetría y additividad</li>
 </ul>
+
+<p>La propiedad clave de los SHAP values es que <strong>la suma de todos los SHAP values + el valor base (baseline) = predicción final</strong>:</p>
+
+<div class="katex-display">
+<p>$$f(x) = \phi_0 + \sum_{i=1}^{M} \phi_i$$</p>
+</div>
+
+<p>Esto se llama la <strong>additivity property</strong> y es lo que hace SHAP tan útil: puedes descomponer cualquier predicción en contribuciones individuales de cada feature.</p>
+
+<h3>TreeSHAP vs KernelSHAP</h3>
+
+<p>Existen dos algoritmos principales para computar SHAP values:</p>
+
+<ul>
+<li><strong>TreeSHAP:</strong> Algoritmo exacto para tree-based models (XGBoost, LightGBM, CatBoost, scikit-learn). Complejidad $O(T L 2^{M-1})$ pero optimizado a $O(TLD^2)$ donde $T$ = árboles, $L$ = leaves, $D$ = profundidad. Es rápido y exacto.</li>
+<li><strong>KernelSHAP:</strong> Método basado en regresión lineal con regularización LIME. Funciona para cualquier modelo (black-box). Necesita muestrear permutaciones de features y es $O(2^M)$ en el peor caso. Más lento pero universal.</li>
+</ul>
+
+<p><strong>Regla de oro: si tu modelo es tree-based, usa TreeSHAP. Si es una neural network o un modelo sin estructura conocida, usa KernelSHAP.</strong></p>
+
+<h3>El Baseline/Reference Value</h3>
+
+<p>El $\phi_0$ en la ecuación anterior es el valor base — la predicción promedio del modelo sobre el dataset de background o referencia. En términos prácticos:</p>
+
+<ul>
+<li>Para clasificación binaria, $\phi_0$ es el log-odds de la proporción de clase positiva en los datos de background.</li>
+<li>Para regresión, $\phi_0$ es la media de las predicciones.</li>
+</ul>
+
+<p>Este baseline es crucial: los SHAP values no te dicen el valor absoluto de la feature, te dicen la <strong>diferencia respecto al promedio</strong>. Si el SHAP de una feature es +0.3, significa que esa feature empujó la predicción 0.3 puntos por encima del promedio.</p>
+
 <hr>
 <h2>💻 Implementación Práctica</h2>
-<p>Ahora vamos a lo bueno: código real que puedes usar en tus proyectos.</p>
-<pre><code class="language-python"># Ejemplo práctico de SHAP
-import numpy as np
 
-def concepto_fundamental(data, param):
-    # Implementación básica del concepto
-    result = []
-    for item in data:
-        processed = item * param
-        result.append(processed)
-    return np.array(result)
+<p>Vamos a implementar TreeSHAP para XGBoost, KernelSHAP para una neural network, y generar los plots más útiles.</p>
 
-data = [1, 2, 3, 4, 5]
-result = concepto_fundamental(data, 2)
-print(f"Resultado: {result}")
+<pre><code class="language-python">import numpy as np
+import pandas as pd
+import shap
+import xgboost as xgb
+import torch
+import torch.nn as nn
+from sklearn.model_selection import train_test_split
+from sklearn.datasets import make_classification
+from sklearn.preprocessing import StandardScaler
+import matplotlib.pyplot as plt
+import warnings
+warnings.filterwarnings('ignore')
+
+# =============================================================
+# 1. DATASET Y ENTRENAMIENTO DE XGBOOST
+# =============================================================
+print("=" * 60)
+print("1. Dataset y XGBoost")
+print("=" * 60)
+
+X, y = make_classification(
+    n_samples=5000,
+    n_features=10,
+    n_informative=8,
+    n_redundant=2,
+    random_state=42,
+    class_sep=1.5
+)
+
+feature_names = [f'feature_{i}' for i in range(X.shape[1])]
+X_df = pd.DataFrame(X, columns=feature_names)
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X_df, y, test_size=0.3, random_state=42, stratify=y
+)
+
+# Entrenar XGBoost
+model_xgb = xgb.XGBClassifier(
+    n_estimators=200,
+    max_depth=5,
+    learning_rate=0.1,
+    random_state=42,
+    use_label_encoder=False,
+    eval_metric='logloss'
+)
+model_xgb.fit(X_train, y_train)
+
+accuracy_xgb = (model_xgb.predict(X_test) == y_test).mean()
+print(f"XGBoost accuracy: {accuracy_xgb:.4f}")
+
+# =============================================================
+# 2. TreeSHAP PARA XGBOOST
+# =============================================================
+print("\n" + "=" * 60)
+print("2. TreeSHAP para XGBoost")
+print("=" * 60)
+
+# Crear TreeExplainer
+explainer_xgb = shap.TreeExplainer(model_xgb)
+
+# Calcular SHAP values para el set de test
+shap_values_xgb = explainer_xgb.shap_values(X_test)
+
+print(f"SHAP values shape: {shap_values_xgb.shape}")
+print(f"Expected value (base): {explainer_xgb.expected_value}")
+
+# Verificar: suma de SHAP + base = predicción
+base = explainer_xgb.expected_value
+X_test_array = X_test.values
+for i in [0, 100, 500]:
+    pred_raw = model_xgb.predict_proba(X_test.iloc[[i]])[0, 1]
+    shap_sum = base + shap_values_xgb[i].sum()
+    print(f"Muestra {i}: predicción modelo={pred_raw:.4f}, SHAP sum + base={shap_sum:.4f}")
+
+# =============================================================
+# 3. BEESWARM PLOT (feature importance + direction)
+# =============================================================
+print("\n" + "=" * 60)
+print("3. Beeswarm Plot")
+print("=" * 60)
+
+plt.figure(figsize=(10, 8))
+shap.summary_plot(shap_values_xgb, X_test, feature_names=feature_names, plot_type="dot", show=False)
+plt.title("SHAP Beeswarm - Impacto de features en predicciones", fontsize=12)
+plt.tight_layout()
+plt.savefig("/tmp/shap_beeswarm.png", dpi=150, bbox_inches='tight')
+plt.close()
+print("Guardado: /tmp/shap_beeswarm.png")
+
+# =============================================================
+# 4. BAR PLOT (feature importance global)
+# =============================================================
+print("\n" + "=" * 60)
+print("4. SHAP Feature Importance (Bar Plot)")
+print("=" * 60)
+
+plt.figure(figsize=(10, 6))
+shap.summary_plot(shap_values_xgb, X_test, feature_names=feature_names, plot_type="bar", show=False)
+plt.title("SHAP Feature Importance - Contribución media absoluta", fontsize=12)
+plt.tight_layout()
+plt.savefig("/tmp/shap_bar.png", dpi=150, bbox_inches='tight')
+plt.close()
+print("Guardado: /tmp/shap_bar.png")
+
+# =============================================================
+# 5. WATERFALL PLOT (explicación individual)
+# =============================================================
+print("\n" + "=" * 60)
+print("5. Waterfall Plot - Explicación Individual")
+print("=" * 60)
+
+# Crear explicación para una muestra específica
+sample_idx = 0
+sample = X_test.iloc[[sample_idx]]
+sample_shap = shap_values_xgb[sample_idx]
+base_value = explainer_xgb.expected_value
+
+#shap Explanation object
+exp = shap.Explanation(
+    values=sample_shap,
+    base_values=base_value,
+    data=sample.values[0],
+    feature_names=feature_names
+)
+
+plt.figure(figsize=(10, 6))
+shap.plots.waterfall(exp, show=False)
+plt.title(f"Waterfall para muestra {sample_idx}", fontsize=12)
+plt.tight_layout()
+plt.savefig("/tmp/shap_waterfall.png", dpi=150, bbox_inches='tight')
+plt.close()
+print("Guardado: /tmp/shap_waterfall.png")
+
+# =============================================================
+# 6. KERNELSHAP PARA NEURAL NETWORK
+# =============================================================
+print("\n" + "=" * 60)
+print("6. KernelSHAP para Neural Network")
+print("=" * 60)
+
+# Neural network simple
+class SimpleNN(nn.Module):
+    def __init__(self, input_dim):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(input_dim, 64),
+            nn.ReLU(),
+            nn.Linear(64, 32),
+            nn.ReLU(),
+            nn.Linear(32, 1),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x):
+        return self.net(x)
+
+# Entrenar NN
+scaler = StandardScaler()
+X_train_scaled = scaler.fit_transform(X_train)
+X_test_scaled = scaler.transform(X_test)
+
+X_t = torch.tensor(X_train_scaled, dtype=torch.float32)
+y_t = torch.tensor(y_train, dtype=torch.float32)
+
+model_nn = SimpleNN(X.shape[1])
+criterion = nn.BCELoss()
+optimizer = torch.optim.Adam(model_nn.parameters(), lr=0.01)
+
+for epoch in range(100):
+    model_nn.train()
+    optimizer.zero_grad()
+    out = model_nn(X_t).squeeze()
+    loss = criterion(out, y_t)
+    loss.backward()
+    optimizer.step()
+
+print(f"NN entrenada. Loss: {loss.item():.4f}")
+
+# Crear background data (muestreo del training set para eficiencia)
+background = shap.sample(pd.DataFrame(X_train_scaled, columns=feature_names), 200, random_state=42)
+
+# KernelExplainer (función que recibe numpy arrays)
+def predict_nn(x):
+    model_nn.eval()
+    with torch.no_grad():
+        return model_nn(torch.tensor(x, dtype=torch.float32)).numpy().flatten()
+
+# Crear KernelExplainer
+print("Creando KernelExplainer (puede tomar tiempo)...")
+explainer_nn = shap.KernelExplainer(predict_nn, background)
+
+# Calcular SHAP para unas pocas muestras (KernelSHAP es lento)
+test_sample = X_test_scaled[:50]
+shap_values_nn = explainer_nn.shap_values(test_sample)
+
+print(f"SHAP values NN shape: {shap_values_nn.shape}")
+
+# =============================================================
+# 7. DEPENDENCY PLOT (efecto de una feature)
+# =============================================================
+print("\n" + "=" * 60)
+print("7. Dependency Plot")
+print("=" * 60)
+
+plt.figure(figsize=(10, 6))
+shap.dependence_plot(
+    'feature_0',
+    shap_values_xgb,
+    X_test,
+    feature_names=feature_names,
+    interaction_index='feature_1',
+    show=False
+)
+plt.title("SHAP Dependency - feature_0 con feature_1 como interact", fontsize=12)
+plt.tight_layout()
+plt.savefig("/tmp/shap_dependency.png", dpi=150, bbox_inches='tight')
+plt.close()
+print("Guardado: /tmp/shap_dependency.png")
+
+# =============================================================
+# 8. SHAP VALUES VS FEATURE IMPORTANCE (comparación)
+# =============================================================
+print("\n" + "=" * 60)
+print("8. SHAP vs Feature Importance")
+print("=" * 60)
+
+# XGBoost built-in feature importance
+xgb_importance = model_xgb.feature_importances_
+
+# SHAP-based importance (media absoluta de SHAP values)
+shap_importance = np.abs(shap_values_xgb).mean(axis=0)
+
+print("Feature       | XGB Importance | SHAP Importance | Diferencia")
+print("-" * 65)
+for i, fname in enumerate(feature_names):
+    diff = abs(xgb_importance[i] - shap_importance[i] / shap_importance.max())
+    print(f"{fname:12s} |    {xgb_importance[i]:.4f}       |     {shap_importance[i]:.4f}       |  {diff:.4f}")
+
+print("\nNota: XGB importance es normalizado (suma=1), SHAP es en unidades del modelo.")
+print("Las rankings pueden diferir porque miden cosas distintas.")
 </code></pre>
+
 <hr>
 <h2>🚨 Errores Comunes</h2>
-<h3>Error 1: No entender la matemática de fondo</h3>
-<p>El 80% de los practitioners implementa esto incorrectamente porque no entienden la base teórica.</p>
-<h3>Error 2: Ignorar los hiperparámetros</h3>
-<p>Muchos asumen que los valores por defecto son óptimos. En producción, esto raramente es cierto.</p>
-<hr>
-<h2>✅ Mejores Prácticas</h2>
+
+<h3>Error 1: Confundir SHAP values con feature importance</h3>
+
+<p>Este es el error más frecuente. Feature importance (como <code>feature_importances_</code> de XGBoost o <code>coef_</code> de logistic regression) te dice qué features contribuyen más al modelo en general. Los SHAP values te dicen qué features contribuyen más a <strong>cada predicción específica</strong>, tanto en dirección como en magnitud.</p>
+
+<p>La diferencia clave:</p>
+
 <ul>
-<li>Siempre documenta tu código y decisiones de diseño.</li>
-<li>Usa versionado para tus experimentos.</li>
-<li>Valida siempre con datos de prueba independientes.</li>
-<li>Monitorea las métricas en producción.</li>
+<li><strong>Feature importance</strong> = "¿Qué features son más importantes para el modelo?"</li>
+<li><strong>SHAP values</strong> = "¿Por qué el modelo predijo X para este caso específico? ¿Qué features empujaron la predicción arriba o abajo?"</li>
 </ul>
-<hr>
-<h2>📚 Recursos</h2>
+
+<p>Además, SHAP te dice la <strong>dirección</strong>: una feature puede tener SHAP +0.5 (empuja la predicción hacia clase positiva) o -0.3 (empuja hacia clase negativa). Feature importance tradicional no te da esa información.</p>
+
+<p><strong>Fix:</strong> Usa SHAP para explicaciones locales (por qué esta predicción específica) y para entender la dirección del efecto de cada feature. Solo usa feature importance tradicional cuando necesitas un resumen global rápido y no te importa la dirección.</p>
+
+<h3>Error 2: Usar KernelSHAP cuando TreeSHAP está disponible</h3>
+
+<p>TreeSHAP es órdenes de magnitud más rápido que KernelSHAP para modelos tree-based. KernelSHAP tiene complejidad exponencial en el número de features porque necesita muestrear todas las posibles combinaciones de features. TreeSHAP usa la estructura del árbol para ser exacto y polynomial.</p>
+
+<p>Para un XGBoost con 100 árboles y 50 features, TreeSHAP puede tomar segundos. KernelSHAP con las mismas features podría tomar horas. Y la diferencia en calidad es notable: TreeSHAP es exacto, KernelSHAP es una aproximación basada en muestreo.</p>
+
+<p>En la práctica:</p>
+
 <ul>
-<li>Documentación oficial de shap</li>
-<li>Tutoriales prácticos en el blog</li>
-<li>Código fuente en GitHub</li>
+<li>XGBoost, LightGBM, CatBoost, scikit-learn tree models → <strong>TreeExplainer</strong></li>
+<li>Redes neuronales, modelos sin estructura de árbol, modelos externos (APIs, modelos de sklearn sin método <code>predict_proba</code> que puedas derivar) → <strong>KernelExplainer</strong> o <strong>DeepExplainer</strong> para DL</li>
 </ul>
+
+<p><strong>Fix:</strong> Si tu modelo es un gradient boosting tree, no uses KernelExplainer. Revisa la <a href="https://shap.readthedocs.io/en/latest/api.html">documentación de SHAP</a> para verificar si existe un explainer especializado para tu tipo de modelo. Solo recurre a KernelSHAP como último recurso.</p>
+
+<h3>Error 3: No entender el baseline/reference value</h3>
+
+<p>Los SHAP values son diferencias respecto al baseline, no valores absolutos. $\phi_0$ (el expected value o base value) no es un "valor nulo" arbitrario — es el output promedio del modelo sobre el background dataset que le pasas al explainer.</p>
+
+<p>Errores comunes incluyen:</p>
+
+<ol>
+<li><strong>Interpretar SHAP values como valores absolutos:</strong> Un SHAP de +0.3 para feature_0 no significa "feature_0 tiene valor 0.3". Significa "feature_0 agregó +0.3 a la predicción相对于 el promedio".</li>
+<li><strong>No verificar que la suma de SHAP + base = predicción:</strong> Esta propiedad siempre debería cumplirse (dentro de floating point error). Si no se cumple, algo está mal con tu setup.</li>
+<li><strong>Elegir mal el background dataset:</strong> Para modelos de detección de anomalías, el background debería ser datos normales. Para modelos médicos, el background debería ser una población de referencia. Usar el training set completo vs. una submuestra puede cambiar la interpretación.</li>
+</ol>
+
+<p><strong>Fix:</strong> Siempre imprime y verifica <code>explainer.expected_value</code> y confirma que <code>base + sum(shap_values[i]) ≈ prediction[i]</code>. Si no, revisa cómo estás calculando los SHAP values.</p>
+
+<hr>
+<h2>✅ Resumen y Cierre</h2>
+
+<p>Hoy cubrimos SHAP en profundidad. Los puntos clave:</p>
+
+<ul>
+<li>Los <strong>SHAP values</strong> descomponen cada predicción en contribuciones individuales de cada feature, con la garantía matemática de Shapley de que la suma de contribuciones + baseline = predicción.</li>
+<li><strong>TreeSHAP</strong> es el algoritmo correcto para XGBoost/LightGBM — rápido y exacto. <strong>KernelSHAP</strong> es para cuando no hay alternativa mejor.</li>
+<li>SHAP captura <strong>dirección y magnitud</strong>; feature importance solo captura magnitud.</li>
+<li>El <strong>baseline/expected value</strong> es crucial para interpretar SHAP values correctamente — son diferencias, no valores absolutos.</li>
+<li>Los plots principales: <strong>Beeswarm</strong> (overview), <strong>Waterfall</strong> (explicación individual), <strong>Dependency</strong> (efecto de una feature), <strong>Bar</strong> (importancia global).</li>
+</ul>
+
+<p>En Colombia, donde los modelos de ML se usan cada vez más para decisiones de crédito, salud y seguridad, poder explicarle a alguien por qué un modelo tomó una decisión específica no es solo un requerimiento técnico — a veces es un requerimiento legal. SHAP te da ese superpoder de transparencia sin sacrificar la precisión del modelo.</p>
+
+<p>Nos vemos en el Día 131. Stay tuned, parcero.</p>
+
+<p><strong>#365DaysOfAI #MachineLearning #SHAP #XGBoost #Explainability</strong></p>
   </article>
 
   <script>
