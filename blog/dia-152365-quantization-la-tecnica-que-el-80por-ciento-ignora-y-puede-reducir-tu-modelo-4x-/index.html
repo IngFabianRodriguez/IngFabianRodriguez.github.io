@@ -91,63 +91,500 @@ nav {
 
   <header class="article-hero">
     <div class="day-badge">Día 152 / 365 &nbsp;·&nbsp; #365DaysOfAI</div>
-    <h1 class="article-title">Quantization - La técnica que el 80% ignora y puede reducir tu modelo 4x sin perder accuracy</h1>
+    <h1 class="article-title">Mixture of Experts — Por qué el modelo tiene más parámetros de los que parece</h1>
     <div class="article-meta">
-      <time class="article-date">02 de may de 2026</time>
-      <div class="tags"><span class="tag">bitsandbytes</span></div>
+      <time class="article-date">02 de mayo de 2026</time>
+      <div class="tags"><span class="tag">moe</span><span class="tag">llm</span><span class="tag">sparse</span></div>
     </div>
   </header>
 
   <article class="article-body">
-    <p>Hola, parcero. Llegamos al Día 152 y hoy vamos con Quantization. Este tema es crítico porque el porcentaje que mencionamos en el título representa bugs y confusiones que veo constantemente en producción. Acompañame que esto va detallado.</p>
+    <p>Hola, parcero. Día 152 y hoy vamos con Mixture of Experts — MoE. Si alguna vez te preguntaste cómo modelos como GPT-4 o Mixtral pueden tener trillions de parámetros pero inference relativamente económico, la respuesta está en MoE. Es uno de los concepts más elegantes en ML moderno. Acompañame que esto va bueno.</p>
+
 <hr>
-<h2>📐 Fundamentos Teóricos</h2>
-<p>Vamos paso a paso. Entender la teoría detrás de Quantization es lo que separa a alguien que copia código de alguien que realmente sabe lo que está haciendo.</p>
-<h3>Conceptos Clave</h3>
+<h2>📐 Fundamentos: ¿Qué es Mixture of Experts?</h2>
+
+<p>MoE es una arquitectura que reemplaza las FFN (Feed-Forward Networks) densas de un transformer por un conjunto de "experts" especializados, donde solo un subconjunto se activa por cada input. La idea central: <strong>no todos los parámetros necesitan activarse para cada token</strong>.</p>
+
+<h3>La Arquitectura Básica</h3>
+
+<p>En un transformer denso, cada token pasa por TODAS las FFN layers. En MoE, cada token pasa solo por K experts de un total de E experts. Esto se llama <strong>sparse gating</strong>.</p>
+
+<p>Formalmente, para un input <code>x</code>:</p>
+
+<code>y = Σ_{i=1}^{E} G(x)_i * E_i(x)</code>
+
+<p>donde <code>G(x)</code> es el gating vector que selecciona qué experts activar, y <code>E_i(x)</code> es el i-ésimo expert network. La magia está en <code>G</code>:</p>
+
+<code>G(x)_i = softmax(W_g(x))_i</code>
+
+<p>pero solo los top-k valores se usan — el resto se ponen a cero.</p>
+
+<h3>Por qué Funciona</h3>
+
+<p>La hipótesis es que diferentes expertos se especializan en diferentes aspectos del lenguaje: sintaxis, semántica, entities, código, etc. El gating learns qué expertos usar para qué tipos de inputs. Esto permite:</p>
+
 <ul>
-<li><strong>Concepto 1</strong>: Descripción del primer concepto fundamental.</li>
-<li><strong>Concepto 2</strong>: Descripción del segundo concepto que necesitas entender.</li>
-<li><strong>Concepto 3</strong>: Por qué esto importa en la práctica.</li>
+<li><strong>Más parámetros sin más compute</strong>: Si tienes E=8 experts y K=2, cada token solo usa 2/8 = 25% del compute de una FFN densa, pero el modelo tiene capacidad de 8x más parámetros.</li>
+<li><strong>Specialización natural</strong>: El modelo aprende a routing different types of inputs to different experts.</li>
+<li><strong>Eficiencia cuadrática del attention</strong>: MoE ayuda con el problema del attention quadratic complexity porque puedes tener más parámetros en el feed-forward path sin aumentar el compute por token.</li>
 </ul>
+
+<h3>Switch Transformer y la Frontera</h3>
+
+<p>El Switch Transformer (Google, 2022) fue uno de los primeros en escalar MoE masivamente: usaba E=2048 experts con K=1 (top-1 routing). La sorpresa: despite having more experts, el routing a un solo expert funcionaba bien y simplificaba el problema de load balancing.</p>
+
 <hr>
-<h2>💻 Implementación Práctica</h2>
-<p>Ahora vamos a lo bueno: código real que puedes usar en tus proyectos.</p>
-<pre><code class="language-python"># Ejemplo práctico de Quantization
-import numpy as np
+<h2>💻 Implementación Completa en PyTorch</h2>
 
-def concepto_fundamental(data, param):
-    # Implementación básica del concepto
-    result = []
-    for item in data:
-        processed = item * param
-        result.append(processed)
-    return np.array(result)
+<p>Vamos a implementar una MoE layer completa con top-k routing, load balancing loss, y comparación con dense MoE:</p>
 
-data = [1, 2, 3, 4, 5]
-result = concepto_fundamental(data, 2)
-print(f"Resultado: {result}")
+<pre><code class="language-python">"""
+Mixture of Experts (MoE) Implementation in PyTorch
+Implementación completa: sparse gating, top-k routing, load balancing loss,
+comparación dense vs sparse MoE, Switch Transformer-style routing
+"""
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import math
+from dataclasses import dataclass
+from typing import Tuple, Optional, List
+from collections import defaultdict
+
+
+@dataclass
+class MoEConfig:
+    """Configuración para una capa MoE."""
+    num_experts: int = 8           # Total de experts
+    top_k: int = 2                # Número de experts a activar por token
+    hidden_dim: int = 4096        # Dimensión oculta
+    intermediate_size: int = 11008  # FFN intermediate dim
+    gate_bias: bool = True        # Si el gating usa bias
+
+
+class Expert(nn.Module):
+    """
+    Un Expert individual - típicamente una FFN pequeña.
+    Cada expert tiene sus propios pesos y se especializa en algo diferente.
+    """
+    def __init__(self, hidden_dim: int, intermediate_size: int):
+        super().__init__()
+        self.w1 = nn.Linear(hidden_dim, intermediate_size, bias=False)
+        self.w2 = nn.Linear(intermediate_size, hidden_dim, bias=False)
+        self.w3 = nn.Linear(hidden_dim, intermediate_size, bias=False)  # SwiGLU variant
+        
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass del expert - típicamente FFN con activación."""
+        # SwiGLU: SiGLU(x) = SiLU(x) * W3(x)
+        return self.w2(F.silu(self.w1(x)) * self.w3(x))
+
+
+class SparseMoE(nn.Module):
+    """
+    Capa Mixture of Experts con sparse gating (top-k routing).
+    
+    Esta es la implementación estándar de MoE como la usa Mixtral y Switch Transformer.
+    """
+    def __init__(self, config: MoEConfig):
+        super().__init__()
+        self.config = config
+        self.num_experts = config.num_experts
+        self.top_k = config.top_k
+        
+        # Múltiples experts
+        self.experts = nn.ModuleList([
+            Expert(config.hidden_dim, config.intermediate_size)
+            for _ in range(config.num_experts)
+        ])
+        
+        # Gating network - aprende a rutear cada token a los mejores experts
+        self.gate = nn.Linear(config.hidden_dim, config.num_experts, bias=config.gate_bias)
+        
+        # Para load balancing
+        self.alpha = 0.02  # Factor de penalización por load imbalance
+        
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, dict]:
+        """
+        Forward pass con top-k routing.
+        
+        Args:
+            x: Input tensor [batch, seq_len, hidden_dim]
+            
+        Returns:
+            output: Output tensor [batch, seq_len, hidden_dim]
+            metrics: Diccionario con métricas de routing
+        """
+        batch_size, seq_len, hidden_dim = x.shape
+        x_flat = x.view(-1, hidden_dim)  # [batch*seq_len, hidden_dim]
+        num_tokens = x_flat.shape[0]
+        
+        # Step 1: Calcular gate logits
+        gate_logits = self.gate(x_flat)  # [num_tokens, num_experts]
+        
+        # Step 2: Obtener top-k experts por token
+        gate_softmax = F.softmax(gate_logits, dim=-1)
+        top_k_vals, top_k_indices = torch.topk(gate_softmax, self.top_k, dim=-1)
+        
+        # Normalizar las weights del top-k
+        top_k_vals = top_k_vals / top_k_vals.sum(dim=-1, keepdim=True)
+        
+        # Step 3: Inicializar output y accumulator de load
+        output = torch.zeros_like(x_flat)
+        expert_counts = torch.zeros(self.num_experts, device=x.device)
+        expert_fraction = torch.zeros(self.num_experts, device=x.device)
+        
+        # Step 4: Process cada expert y acumular outputs
+        for expert_idx in range(self.num_experts):
+            # Crear mask para tokens asignados a este expert
+            expert_mask = (top_k_indices == expert_idx).any(dim=-1)
+            if not expert_mask.any():
+                continue
+                
+            # Obtener los tokens asignados a este expert
+            expert_token_indices = expert_mask.nonzero(as_tuple=True)[0]
+            expert_input = x_flat[expert_token_indices]
+            
+            # Calcular weight para cada token asignado
+            if self.top_k == 1:
+                # Top-1 routing: usar directamente los valores
+                expert_weights = top_k_vals[expert_mask]
+            else:
+                # Top-k routing: sumar weights para este expert
+                expert_weights = top_k_vals[expert_mask].gather(
+                    1, 
+                    (top_k_indices[expert_mask] == expert_idx).nonzero(as_tuple=True)[1].unsqueeze(1)
+                ).squeeze()
+            
+            # Forward pass por el expert
+            expert_output = self.experts[expert_idx](expert_input)
+            
+            # Ponderar output por weight y acumular
+            output[expert_token_indices] += expert_output * expert_weights.unsqueeze(-1)
+            
+            # Track load para métricas
+            expert_counts[expert_idx] = expert_mask.sum()
+        
+        # Calcular fractions para load balancing
+        expert_fraction = expert_counts / num_tokens
+        
+        # Load balancing loss: penaliza si hay expertos sobre/sub-utilizados
+        # L_balance = α * Σ(f_i * P_i) donde f_i = utilization, P_i = gate probability
+        # Esta es una proxy de cómo de balanceado está el routing
+        routing_probs = gate_softmax.mean(dim=0)  # Probabilidad media por expert
+        balance_loss = self.alpha * (expert_fraction * routing_probs).sum()
+        
+        # Métricas adicionales
+        metrics = {
+            "expert_counts": expert_counts.cpu().tolist(),
+            "expert_fraction": expert_fraction.cpu().tolist(),
+            "balance_loss": balance_loss.item(),
+            "top_k_vals_mean": top_k_vals.mean().item(),
+            "routing_entropy": self._compute_entropy(gate_softmax).mean().item()
+        }
+        
+        return output.view(batch_size, seq_len, hidden_dim), metrics
+    
+    def _compute_entropy(self, probs: torch.Tensor) -> torch.Tensor:
+        """Computa entropía del routing para análisis."""
+        return -(probs * torch.log(probs + 1e-8)).sum(dim=-1)
+
+
+class DenseMoE(nn.Module):
+    """
+    Baseline: Dense MoE donde TODOS los experts se activan.
+    Esto es equivalente a tener experts independientes y sumar sus outputs.
+    Se usa como baseline para comparar con sparse MoE.
+    """
+    def __init__(self, config: MoEConfig):
+        super().__init__()
+        self.num_experts = config.num_experts
+        self.experts = nn.ModuleList([
+            Expert(config.hidden_dim, config.intermediate_size)
+            for _ in range(config.num_experts)
+        ])
+        
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, dict]:
+        """Forward pass denso - todos los experts contribute igualmente."""
+        batch_size, seq_len, hidden_dim = x.shape
+        x_flat = x.view(-1, hidden_dim)
+        
+        # Todos los experts procesan el input
+        outputs = []
+        for expert in self.experts:
+            outputs.append(expert(x_flat))
+        
+        # Promediar outputs (como baseline denso)
+        output = torch.stack(outputs, dim=0).mean(dim=0)
+        
+        # Métricas triviales para baseline
+        metrics = {
+            "expert_counts": [x_flat.shape[0] // self.num_experts] * self.num_experts,
+            "expert_fraction": [1.0 / self.num_experts] * self.num_experts,
+            "balance_loss": 0.0,
+            "top_k_vals_mean": 1.0 / self.num_experts,
+            "routing_entropy": math.log(self.num_experts)
+        }
+        
+        return output.view(batch_size, seq_len, hidden_dim), metrics
+
+
+def load_balancing_loss(gate_logits: torch.Tensor, top_k_indices: torch.Tensor,
+                       num_experts: int, alpha: float = 0.02) -> Tuple[torch.Tensor, dict]:
+    """
+    Calcula el load balancing loss propuesto en Switch Transformer.
+    
+    La idea: penalizar cuando un experto recibe demasiados tokens.
+    Esto previene que un solo experto se vuelva "dominante".
+    
+    Args:
+        gate_logits: Logits del gate [num_tokens, num_experts]
+        top_k_indices: Índices de los top-k experts por token [num_tokens, top_k]
+        num_experts: Número total de experts
+        alpha: Peso del loss de balanceo
+        
+    Returns:
+        (loss_total, metrics_dict)
+    """
+    num_tokens = gate_logits.shape[0]
+    
+    # Calcular cuántas veces cada experto aparece en top-k
+    expert_counts = torch.zeros(num_experts, device=gate_logits.device)
+    for expert_idx in range(num_experts):
+        expert_counts[expert_idx] = (top_k_indices == expert_idx).any(dim=-1).sum()
+    
+    # Fracción de tokens por experto
+    expert_fraction = expert_counts / num_tokens
+    
+    # Calcular probabilidad promedio de routing por experto
+    gate_probs = F.softmax(gate_logits, dim=-1)
+    routing_probs = gate_probs.mean(dim=0)  # [num_experts]
+    
+    # Load balancing loss: minimize (fraction * routing_prob)
+    # Si un experto tiene alta fraction Y alta routing_prob, recibe penalización
+    load_loss = alpha * (expert_fraction * routing_probs).sum()
+    
+    # Métricas adicionales
+    metrics = {
+        "expert_counts": expert_counts.cpu().tolist(),
+        "expert_fraction": expert_fraction.cpu().tolist(),
+        "routing_probs": routing_probs.cpu().tolist(),
+        "imbalance_score": (expert_fraction.std() / expert_fraction.mean()).item()
+    }
+    
+    return load_loss, metrics
+
+
+def demonstrate_moe_vs_dense():
+    """
+    Demo: Compara compute y outputs de Dense vs Sparse MoE.
+    """
+    print("=" * 60)
+    print("DENSE vs SPARSE MoE COMPARISON")
+    print("=" * 60)
+    
+    # Config para demo
+    config = MoEConfig(
+        num_experts=8,
+        top_k=2,
+        hidden_dim=512,
+        intermediate_size=1024
+    )
+    
+    # Crear modelos
+    sparse_moe = SparseMoE(config)
+    dense_moe = DenseMoE(config)
+    
+    # Input de prueba
+    batch_size, seq_len = 4, 16
+    x = torch.randn(batch_size, seq_len, config.hidden_dim)
+    
+    print(f"\nInput shape: {x.shape}")
+    print(f"Config: {config.num_experts} experts, top-{config.top_k} routing")
+    
+    # Forward pass
+    with torch.no_grad():
+        sparse_out, sparse_metrics = sparse_moe(x)
+        dense_out, dense_metrics = dense_moe(x)
+    
+    print(f"\n--- Sparse MoE (top-{config.top_k}) ---")
+    print(f"Output shape: {sparse_out.shape}")
+    print(f"Expert utilization:")
+    for i, frac in enumerate(sparse_metrics['expert_fraction']):
+        bar = "█" * int(frac * 50)
+        print(f"  Expert {i}: {frac:.2%} {bar}")
+    print(f"Load balance loss: {sparse_metrics['balance_loss']:.4f}")
+    
+    print(f"\n--- Dense MoE (baseline) ---")
+    print(f"Output shape: {dense_out.shape}")
+    print(f"(Todos los experts participan, load balance loss = 0)")
+    
+    print(f"\n--- Análisis ---")
+    total_params_sparse = sum(p.numel() for p in sparse_moe.parameters())
+    total_params_dense = sum(p.numel() for p in dense_moe.parameters())
+    print(f"Parámetros totales (same): {total_params_sparse:,}")
+    
+    # El sparse MoE usa ~25% del compute (2/8 experts)
+    compute_ratio = config.top_k / config.num_experts
+    print(f"Compute ratio (sparse/dense): {compute_ratio:.1%}")
+    print(f"→ Sparse MoE usa {compute_ratio:.1%} del compute de dense con los mismos parámetros")
+
+
+def compare_top_k_strategies():
+    """
+    Compara diferentes valores de top-k y su efecto en load balancing.
+    """
+    print("\n" + "=" * 60)
+    print("TOP-K ROUTING COMPARISON")
+    print("=" * 60)
+    
+    config_base = MoEConfig(
+        num_experts=16,
+        hidden_dim=256,
+        intermediate_size=512
+    )
+    
+    x = torch.randn(8, 32, config_base.hidden_dim)
+    
+    for top_k in [1, 2, 4, 8]:
+        config = MoEConfig(num_experts=16, top_k=top_k, hidden_dim=256, intermediate_size=512)
+        moe = SparseMoE(config)
+        
+        with torch.no_grad():
+            _, metrics = moe(x)
+        
+        print(f"\ntop_k={top_k}:")
+        print(f"  Load balance loss: {metrics['balance_loss']:.4f}")
+        fractions = metrics['expert_fraction']
+        print(f"  Expert utilization - min: {min(fractions):.2%}, max: {max(fractions):.2%}, std: {np.std(fractions):.4f}")
+
+
+# Demo completa
+if __name__ == "__main__":
+    import numpy as np
+    
+    print("Mixture of Experts - PyTorch Implementation")
+    print("=" * 60)
+    
+    # Comparar dense vs sparse
+    demonstrate_moe_vs_dense()
+    
+    # Comparar diferentes top-k
+    compare_top_k_strategies()
+    
+    print("\n" + "=" * 60)
+    print("KEY INSIGHTS:")
+    print("=" * 60)
+    print("""
+1. Sparse MoE permite más parámetros sin más compute:
+   - Con E=8 experts, K=2 → 25% del compute de dense
+   - Pero con 8x la capacidad de representación
+   
+2. Load balancing es CRUCIAL:
+   - Sin él, el modelo colapsa a usar solo 1-2 experts
+   - El auxiliary loss de balance previene esto
+   
+3. Top-k的选择 afecta significativamente:
+   - K=1: más eficiente pero más riesgo de collapse
+   - K=E: equivalente a dense MoE
+   - K>1: mejor load balance pero menos sparsity benefit
+   
+4. Switch Transformer usa top-1 con auxiliary load balancing:
+   - Simple pero efectivo
+   - Permite escalar a miles de experts
+""")
 </code></pre>
+
 <hr>
-<h2>🚨 Errores Comunes</h2>
-<h3>Error 1: No entender la matemática de fondo</h3>
-<p>El 80% de los practitioners implementa esto incorrectamente porque no entienden la base teórica.</p>
-<h3>Error 2: Ignorar los hiperparámetros</h3>
-<p>Muchos asumen que los valores por defecto son óptimos. En producción, esto raramente es cierto.</p>
-<hr>
-<h2>✅ Mejores Prácticas</h2>
+<h2>📊 Por qué MoE es Importante en LLMs Modernos</h2>
+
+<h3>Trade-offs de MoE vs Dense</h3>
+
 <ul>
-<li>Siempre documenta tu código y decisiones de diseño.</li>
-<li>Usa versionado para tus experimentos.</li>
-<li>Valida siempre con datos de prueba independientes.</li>
-<li>Monitorea las métricas en producción.</li>
+<li><strong>MoE (Sparse)</strong>: Más parámetros totales, menos compute por token, pero overhead de routing y riesgo de load imbalance</li>
+<li><strong>Dense</strong>: Todos los parámetros participate, compute proporcional, pero no escala tan eficientemente</li>
 </ul>
+
+<h3>Casos de Uso Ideales para MoE</h3>
+
+<ul>
+<li><strong>Models muy grandes</strong>: Cuando quieres 100B+ parámetros pero inference económico</li>
+<li><strong>Tasks variadas</strong>: Cuando diferentes inputs pueden benefit de diferentes specializations</li>
+<li><strong>Dominios mixtos</strong>: Si tu dataset tiene código, texto, y matemática, different experts pueden specializarse</li>
+</ul>
+
+<hr>
+<h2>🚨 Error 1: MoE Sin Load Balancing — Expert Collapse</h2>
+
+<p><strong>El Error</strong>: Implementar MoE sin el auxiliary load balancing loss. En ausencia de penalización, el gating rápidamente aprende a rutear TODOS los tokens al mejor experto (o 1-2), colapsando el sistema a un solo expert activo.</p>
+
+<p><strong>Por qué pasa</strong>: Sin supervisión, el gating optimiza solo para predicción accuracy. Si un expert es "bueno enough" para la mayoría de tokens, no hay presión para usar los demás. Esto defeats completamente el propósito de MoE.</p>
+
+<p><strong>El Fix</strong>: Implementa el load balancing loss de Switch Transformer:</p>
+
+<code>L_balance = α * Σ(f_i * P_i)</code>
+
+<p>donde <code>f_i</code> es la fracción de tokens asignados al expert i, y <code>P_i</code> es la probabilidad de routing. Minimizar esto fuerza uso uniforme de experts. Valores típicos de α: 0.01 - 0.05.</p>
+
+<hr>
+<h2>🚨 Error 2: Top-K Demasiado Alto — Defeats Sparsity Benefit</h2>
+
+<p><strong>El Error</strong>: Usar top_k muy alto (ej. K=8 para E=8) pensando que "más experts activos = mejor performance". En práctica, esto elimina el benefit de sparsity y puede empeorar el balance.</p>
+
+<p><strong>Por qué pasa</strong>: El compute saving de MoE viene de activar solo K de E experts. Si K ≈ E, estás esencialmente haciendo dense computation con overhead de routing adicional. Peor aún, si K=E, el load balancing se vuelve innecesario y la especialización se pierde.</p>
+
+<p><strong>El Fix</strong>: Mantén K bajo (1-3) para preservar sparsity. Mixtral usa K=2 con E=8, dando 75% sparsity. Si necesitas más expressiveness, considera más experts en lugar de más K:</p>
+
+<ul>
+<li>E=16, K=2 → 87.5% sparsity</li>
+<li>E=8, K=4 → 50% sparsity (mucho menos eficiente)</li>
+</ul>
+
+<hr>
+<h2>🚨 Error 3: Usar MoE para Tasks Simples Donde Dense Es Más Eficiente</h2>
+
+<p><strong>El Error</strong>: Aplicar MoE a todo, incluyendo tasks donde un modelo denso pequeño sería suficiente. MoE tiene overhead significativo: más parámetros (memoria), routing network (compute), y complexity de implementación.</p>
+
+<p><strong>Por qué pasa</strong>: MoE está de moda, y hay presión por usar architectures "avanzadas". Pero para tasks simples o modelos pequeños, el overhead de routing puede dominar y la especialización no tiene suficiente signal para desarrollarse.</p>
+
+<p><strong>El Fix</strong>: Considera MoE solo cuando:</p>
+
+<ul>
+<li>Tu modelo tiene >10B parámetros</li>
+<li>Tu task requiere capacidad de representación masiva</li>
+<li>Tienes suficiente data para que los experts se especialicen meaningfully</li>
+<li>El overhead de routing es aceptable para tu caso de uso</li>
+</ul>
+
+<p>Para modelos pequeños o tasks simples, un modelo denso bien entrenado será más eficiente y más fácil de debug.</p>
+
+<hr>
+<h2>✅ Mejores Prácticas para Implementar MoE</h2>
+
+<ul>
+<li><strong>Usa auxiliary load balancing desde el inicio</strong>: No intentes agregar después — el collapse puede happen rápido y es difícil de recovery.</li>
+<li><strong>Monitorea expert utilization durante training</strong>: Si ves utilization < 10% para algún expert después de 10% del training, hay problema.</li>
+<li><strong>Considera capacity factor en inference</strong>: En producción, puedes bound el número máximo de tokens por expert para garantizar latency.</li>
+<li><strong>Junta expertos relacionados</strong>: En lugar de E=8 experts independentes, agrupa por tipo de task si los，你知道 de antemano.</li>
+<li><strong>Ten cuidado con device placement</strong>: En distributed training, el routing cross-device puede ser bottleneck. Considera experts all on same device for simplicity.</li>
+</ul>
+
 <hr>
 <h2>📚 Recursos</h2>
 <ul>
-<li>Documentación oficial de bitsandbytes</li>
-<li>Tutoriales prácticos en el blog</li>
-<li>Código fuente en GitHub</li>
+<li>Shazeer et al. (2017) - "Outrageously Large Neural Networks: The Sparsely-Gated Mixture-of-Experts Layer"</li>
+<li>Fedus et al. (2022) - "Switch Transformers: Scaling to Trillion Parameter Models with Simple and Efficient Sparsity"</li>
+<li>Jacobs et al. (1991) - "Adaptive Mixture of Local Experts"</li>
 </ul>
+
+<hr>
+<h2>📌 Resumen</h2>
+
+<p>Hoy aprendimos que MoE es una forma inteligente de get more parameters without more compute. La clave: routing selectivo donde solo K de E experts se activan por token. Esto permite models como Mixtral (8x7B experts) con economics de inference de ~7B. Pero el éxito depende de load balancing — sin él, el sistema colapsa. Y como todo, MoE no es gratis: overhead de routing, complexity, y el riesgo de especialización insuficiente para tasks simples.</p>
+
+<p>La próxima vez que veas un modelo "trillion parameters", pregúntate: cuántos de esos parámetros se usan realmente por token? La respuesta probablemente sea mucho menos de lo que parece.</p>
+
+<p>¡Nos vemos mañana, parcero! Keep routing.</p>
   </article>
 
   <script>
