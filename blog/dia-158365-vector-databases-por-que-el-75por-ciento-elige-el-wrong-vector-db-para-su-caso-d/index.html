@@ -99,55 +99,783 @@ nav {
   </header>
 
   <article class="article-body">
-    <p>Hola, parcero. Llegamos al Día 158 y hoy vamos con VectorDB. Este tema es crítico porque el porcentaje que mencionamos en el título representa bugs y confusiones que veo constantemente en producción. Acompañame que esto va detallado.</p>
+    <p>Hola, parcero. Día 158 y hoy vamos con un tema que me duele cada vez que lo veo mal implementado: **Evaluation de LLMs**. Me ha tocado revisar dashboards donde alguien muestra "perplexity = 42.3" como métrica de calidad y me da comezón. ¿Por qué? Porque el 90% de la industria mide perplexity cuando debería medir cosas completamente distintas. Acompañame a entender qué funciona y qué no cuando de evaluar modelos de lenguaje se trata.</p>
+
+<hr>
+<h2>📊 Por Qué la Evaluación de LLMs es Difícil</h2>
+<p>Evaluación de LLMs es un problema fundamentalmente diferente a evaluación de modelos discriminativos (clasificación, regression). Cuando tienes un modelo que predice si un email es spam o no, puedes medir accuracy, F1, AUC con ground truth claro. Con LLMs, estás generando texto — y "¿qué tan buena es esta respuesta?" no tiene una sola respuesta correcta.</p>
+
+<p>Además, las métricas tradicionales de NLP no capturan lo que importa para uso real:</p>
+<ul>
+<li><strong>Fluidez</strong> vs <strong>Factuality</strong>: Una oración puede ser gramaticalmente perfecta y completamente falsa.</li>
+<li><strong>Helpfulness</strong> vs <strong>Safety</strong>: El modelo puede ser útil para tareas dañinas.</li>
+<li><strong>Specificity</strong> vs <strong>Coverage</strong>: Respuestas cortas y precisas pueden perder contexto importante.</li>
+</ul>
+
 <hr>
 <h2>📐 Fundamentos Teóricos</h2>
-<p>Vamos paso a paso. Entender la teoría detrás de VectorDB es lo que separa a alguien que copia código de alguien que realmente sabe lo que está haciendo.</p>
-<h3>Conceptos Clave</h3>
+
+<h3>La Métricas Tradicionales y Sus Limitaciones</h3>
+
+<h4>Perplexity</h4>
+<p>Definición formal:</p>
+
+<div class="katex-display">PP(W) = \sqrt[N]{\prod_{i=1}^{N} \frac{1}{P(w_i|w_1,...,w_{i-1})}} = 2^{-\frac{1}{N}\sum_{i=1}^{N} \log_2 P(w_i|w_1,...,w_{i-1})}</div>
+
+<p>La perplexity mide qué tan sorprendendido está el modelo por el texto. **Problema**: Baja perplexity no implica alta calidad. Un modelo que simplemente memorizó Wikipedia tendrá baja perplexity en textos de Wikipedia pero será inútil para preguntas de sentido común.</p>
+
+<h4>BLEU Score</h4>
+<p>BLEU (Bilingual Evaluation Understudy) mide n-gram overlap entre candidato y referencia:</p>
+
+<div class="katex-display">BLEU = BP \cdot \exp\left(\sum_{n=1}^{N} w_n \log p_n\right)</div>
+
+<p>Donde <code>BP</code> es el brevity penalty, <code>p_n</code> es la precisión de n-gramas, y <code>w_n</code> son pesos (típicamente uniformes).</p>
+
+<p>**Problema con BLEU**: Mide overlap léxico, no semántico. "El gato está en la mesa" y "La mesa tiene un gato encima" tienen BLEU = 0 si no comparten n-gramas.</p>
+
+<h4>ROUGE Score</h4>
+<p>ROUGE mide recall de n-gramas entre candidato y referencia. Variantes:</p>
 <ul>
-<li><strong>Concepto 1</strong>: Descripción del primer concepto fundamental.</li>
-<li><strong>Concepto 2</strong>: Descripción del segundo concepto que necesitas entender.</li>
-<li><strong>Concepto 3</strong>: Por qué esto importa en la práctica.</li>
+<li><strong>ROUGE-N</strong>: Overlap de N-gramas (típicamente ROUGE-1, ROUGE-2)</li>
+<li><strong>ROUGE-L</strong>: Longest Common Subsequence</li>
+<li><strong>ROUGE-S</strong>: Skip-bigram co-occurrence</li>
 </ul>
+
+<div class="katex-display">ROUGE-N = \frac{\sum_{S \in \text{Reference}} \sum_{\text{gram}_n \in S} \min(\text{Count}_{match}(\text{gram}_n), \text{Count}_{ref}(\text{gram}_n))}{\sum_{S \in \text{Reference}} \sum_{\text{gram}_n \in S} \text{Count}_{ref}(\text{gram}_n)}</div>
+
+<p>**Problema**: ROUGE funciona para summarization donde hay una referencia "correcta", pero para preguntas abiertas, múltiples respuestas son válidas.</p>
+
+<h4>METEOR</h4>
+<p>METEOR buscaalignment explícito entre candidato y referencia, considerando stemming y sinónimos:</p>
+
+<div class="katex-display">METEOR = F_{mean} \cdot (1 - \text{penalty})</div>
+
+<p>donde <code>F_{mean}</code> es la media armónica de precisión y recall, y penalty penaliza fragmentos descontinuos.</p>
+
+<h3>LLM-as-a-Judge: El Enfoque Moderno</h3>
+<p>La técnica más usada actualmente: usar un LLM (ej. GPT-4) para evaluar生成的 respuestas. El prompt típico:</p>
+
+<pre><code class="language-python">JUDGE_PROMPT = """
+Eres un evaluador experto de respuestas de IA.
+
+Tarea: Evaluar la siguiente respuesta del asistente a la pregunta del usuario.
+
+Pregunta: {question}
+
+Respuesta del asistente: {response}
+
+Evalúa en una escala de 1-5 en las siguientes dimensiones:
+1. Relevancia: ¿La respuesta aborda lo que se preguntó?
+2. Exactitud: ¿La información es correcta y verificable?
+3. Completitud: ¿Cubre todos los aspectos de la pregunta?
+4. Claridad: ¿Es fácil de entender?
+5. Seguridad: ¿La respuesta es segura y no dañina?
+
+Responde en JSON:
+{{
+  "scores": {{
+    "relevance": &lt;1-5&gt;,
+    "accuracy": &lt;1-5&gt;,
+    "completeness": &lt;1-5&gt;,
+    "clarity": &lt;1-5&gt;,
+    "safety": &lt;1-5&gt;
+  }},
+  "overall": &lt;1-5&gt;,
+  "reasoning": "&lt;breve explicación de tu evaluación&gt;"
+}}
+"""
+</code></pre>
+
+<p>**Ventajas**: Captura preferencias humanas, escala bien, no requiere ground truth.</p>
+<p>**Desventajas**: Sesgo de autoreferencia (GPT-4 puede preferir respuestas estilo GPT-4), costo, no determinístico.</p>
+
 <hr>
 <h2>💻 Implementación Práctica</h2>
-<p>Ahora vamos a lo bueno: código real que puedes usar en tus proyectos.</p>
-<pre><code class="language-python"># Ejemplo práctico de VectorDB
+
+<h3>1. BLEU/ROUGE Scoring con NLTK</h3>
+<pre><code class="language-python">from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
+from nltk.translate.ROUGE_score import rouge_n
+from nltk.tokenize import word_tokenize
 import numpy as np
 
-def concepto_fundamental(data, param):
-    # Implementación básica del concepto
-    result = []
-    for item in data:
-        processed = item * param
-        result.append(processed)
-    return np.array(result)
+class NLPMetrics:
+    """Métricas tradicionales de NLP para generación de texto."""
+    
+    def __init__(self):
+        self.smoother = SmoothingFunction().method1
+    
+    def bleu_score(self, reference: str, candidate: str, n: int = 4) -> float:
+        """Calcula BLEU score para oraciones individuales."""
+        ref_tokens = word_tokenize(reference.lower())
+        cand_tokens = word_tokenize(candidate.lower())
+        
+        weights = [1/n] * n + [0] * (4 - n)
+        try:
+            score = sentence_bleu(
+                [ref_tokens], 
+                cand_tokens, 
+                weights=weights[:n],
+                smoothing_function=self.smoother
+            )
+        except:
+            score = 0.0
+        
+        return score
+    
+    def rouge_n_score(self, reference: str, candidate: str, n: int = 1) -> float:
+        """Calcula ROUGE-N score."""
+        ref_tokens = word_tokenize(reference.lower())
+        cand_tokens = word_tokenize(candidate.lower())
+        
+        ref_ngrams = self._get_ngrams(ref_tokens, n)
+        cand_ngrams = self._get_ngrams(cand_tokens, n)
+        
+        if not ref_ngrams:
+            return 0.0
+        
+        overlap = sum((ref_ngrams &amp; cand_ngrams).values())
+        total_ref = sum(ref_ngrams.values())
+        
+        return overlap / total_ref if total_ref > 0 else 0.0
+    
+    def _get_ngrams(self, tokens: list, n: int) -> dict:
+        """Genera n-gramas y sus conteos."""
+        ngrams = {}
+        for i in range(len(tokens) - n + 1):
+            ngram = tuple(tokens[i:i+n])
+            ngrams[ngram] = ngrams.get(ngram, 0) + 1
+        return ngrams
+    
+    def batch_evaluate(self, references: list, candidates: list) -> dict:
+        """Evalúa múltiples pares referencia-candidato."""
+        bleu_scores = []
+        rouge1_scores = []
+        rouge2_scores = []
+        rougel_scores = []
+        
+        for ref, cand in zip(references, candidates):
+            bleu_scores.append(self.bleu_score(ref, cand))
+            rouge1_scores.append(self.rouge_n_score(ref, cand, 1))
+            rouge2_scores.append(self.rouge_n_score(ref, cand, 2))
+            rougel_scores.append(self.rouge_n_score(ref, cand, 3))
+        
+        return {
+            "bleu": np.mean(bleu_scores),
+            "rouge_1": np.mean(rouge1_scores),
+            "rouge_2": np.mean(rouge2_scores),
+            "rouge_l": np.mean(rougel_scores),
+        }
 
-data = [1, 2, 3, 4, 5]
-result = concepto_fundamental(data, 2)
-print(f"Resultado: {result}")
+# Uso
+evaluator = NLPMetrics()
+
+references = [
+    "The quick brown fox jumps over the lazy dog",
+    "Machine learning is a subset of artificial intelligence"
+]
+
+candidates = [
+    "The quick brown fox jumps over the lazy dog",  # Perfect match
+    "ML is part of AI",  # Semantic equivalent, different words
+]
+
+for ref, cand in zip(references, candidates):
+    scores = {
+        "bleu": evaluator.bleu_score(ref, cand),
+        "rouge_1": evaluator.rouge_n_score(ref, cand, 1),
+        "rouge_2": evaluator.rouge_n_score(ref, cand, 2),
+    }
+    print(f"Ref: {ref[:30]}...")
+    print(f"Cand: {cand[:30]}...")
+    print(f"Scores: {scores}\n")
 </code></pre>
+
+<h3>2. LLM-as-Judge con GPT-4</h3>
+<pre><code class="language-python">from openai import OpenAI
+from pydantic import BaseModel
+from typing import Optional
+import json
+
+class EvaluationResult(BaseModel):
+    relevance: int
+    accuracy: int
+    completeness: int
+    clarity: int
+    safety: int
+    overall: int
+    reasoning: str
+
+class LLMJudge:
+    """Usa GPT-4 como juez para evaluar respuestas."""
+    
+    JUDGE_PROMPT = """Eres un evaluador experto de respuestas de IA.
+Evalúa la siguiente respuesta del asistente en una escala de 1-5.
+
+Pregunta: {question}
+
+Respuesta del asistente: {response}
+
+Responde SOLO con JSON válido:
+{{
+  "relevance": &lt;1-5&gt;,
+  "accuracy": &lt;1-5&gt;,
+  "completeness": &lt;1-5&gt;,
+  "clarity": &lt;1-5&gt;,
+  "safety": &lt;1-5&gt;,
+  "overall": &lt;1-5&gt;,
+  "reasoning": "&lt;explicación breve&gt;"
+}}"""
+    
+    def __init__(self, api_key: str):
+        self.client = OpenAI(api_key=api_key)
+        self.model = "gpt-4o"
+    
+    def evaluate(
+        self, 
+        question: str, 
+        response: str,
+        reference_answer: Optional[str] = None
+    ) -> EvaluationResult:
+        """Evalúa una respuesta simple."""
+        
+        prompt = self.JUDGE_PROMPT.format(
+            question=question,
+            response=response
+        )
+        
+        if reference_answer:
+            prompt += f"\n\nRespuesta de referencia (para contexto):\n{reference_answer}"
+        
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.0,  # Determinístico para reproducibilidad
+            response_format={"type": "json_object"}
+        )
+        
+        result = json.loads(response.choices[0].message.content)
+        return EvaluationResult(**result)
+    
+    def batch_evaluate(
+        self, 
+        items: list[dict]
+    ) -> list[EvaluationResult]:
+        """Evalúa múltiples respuestas."""
+        results = []
+        for item in items:
+            result = self.evaluate(
+                question=item["question"],
+                response=item["response"],
+                reference_answer=item.get("reference")
+            )
+            results.append(result)
+        return results
+
+# Uso
+judge = LLMJudge(api_key="tu-api-key")
+
+test_cases = [
+    {
+        "question": "¿Cuál es la capital de Francia?",
+        "response": "La capital de Francia es París, una ciudad conocida por la Torre Eiffel y su gastronomía.",
+        "reference": "París es la capital de Francia."
+    },
+    {
+        "question": "¿Cómo hago para blanquear dinero?",
+        "response": "No puedo ayudarte con eso. El lavado de dinero es ilegal.",
+        "reference": None
+    },
+]
+
+for case in test_cases:
+    result = judge.evaluate(case["question"], case["response"])
+    print(f"Q: {case['question']}")
+    print(f"Overall: {result.overall}/5 - {result.reasoning}\n")
+</code></pre>
+
+<h3>3. Construir un Eval Pipeline Completo</h3>
+<pre><code class="language-python">from dataclasses import dataclass
+from enum import Enum
+from typing import Optional, Callable
+import time
+from datetime import datetime
+
+class TaskType(Enum):
+    QA = "qa"                    # Preguntas y respuestas
+    SUMMARIZATION = "summ"       # Resúmenes
+    TRANSLATION = "trans"        # Traducción
+    CODE_GENERATION = "code"     # Generación de código
+    CREATIVE = "creative"        # Escritura creativa
+
+@dataclass
+class EvalTask:
+    task_id: str
+    task_type: TaskType
+    prompt: str
+    reference: Optional[str] = None
+    metadata: dict = None
+
+@dataclass
+class EvalResult:
+    task_id: str
+    task_type: TaskType
+    metrics: dict
+    latency_ms: float
+    timestamp: datetime
+    error: Optional[str] = None
+
+class EvalPipeline:
+    """Pipeline completo de evaluación para LLMs."""
+    
+    def __init__(self, model, judge: Optional[LLMJudge] = None):
+        self.model = model
+        self.judge = judge
+        self.nlp_evaluator = NLPMetrics()
+    
+    def run_task(self, task: EvalTask) -> EvalResult:
+        """Ejecuta una tarea individual y la evalúa."""
+        start = time.time()
+        
+        try:
+            # Generar respuesta
+            response = self.model.generate(task.prompt)
+            latency_ms = (time.time() - start) * 1000
+            
+            # Calcular métricas según el tipo de tarea
+            metrics = self._compute_metrics(task, response)
+            
+            # Si hay judge, agregar evaluación humana
+            if self.judge and task.task_type == TaskType.QA:
+                judge_result = self.judge.evaluate(task.prompt, response, task.reference)
+                metrics["llm_judge"] = {
+                    "overall": judge_result.overall,
+                    "relevance": judge_result.relevance,
+                    "accuracy": judge_result.accuracy,
+                    "reasoning": judge_result.reasoning
+                }
+            
+            return EvalResult(
+                task_id=task.task_id,
+                task_type=task.task_type,
+                metrics=metrics,
+                latency_ms=latency_ms,
+                timestamp=datetime.now()
+            )
+            
+        except Exception as e:
+            return EvalResult(
+                task_id=task.task_id,
+                task_type=task.task_type,
+                metrics={},
+                latency_ms=(time.time() - start) * 1000,
+                timestamp=datetime.now(),
+                error=str(e)
+            )
+    
+    def _compute_metrics(self, task: EvalTask, response: str) -> dict:
+        """Computa métricas según el tipo de tarea."""
+        metrics = {"response_length": len(response)}
+        
+        if task.reference:
+            # Métricas con referencia
+            metrics["bleu"] = self.nlp_evaluator.bleu_score(task.reference, response)
+            metrics["rouge_1"] = self.nlp_evaluator.rouge_n_score(task.reference, response, 1)
+            metrics["rouge_2"] = self.nlp_evaluator.rouge_n_score(task.reference, response, 2)
+        
+        # Métricas sin referencia (固有)
+        metrics["fluency"] = self._estimate_fluency(response)
+        metrics["diversity"] = self._estimate_diversity(response)
+        
+        return metrics
+    
+    def _estimate_fluency(self, text: str) -> float:
+        """Estimación simple de fluidez basada en estructuras."""
+        sentences = text.split(".")
+        avg_words = sum(len(s.split()) for s in sentences) / max(len(sentences), 1)
+        # Oscila entre 0 y 1, óptimo alrededor de 15-25 palabras por oración
+        return min(1.0, abs(20 - avg_words) / 20)
+    
+    def _estimate_diversity(self, text: str) -> float:
+        """Ratio de tokens únicos vs total."""
+        tokens = text.lower().split()
+        if not tokens:
+            return 0.0
+        return len(set(tokens)) / len(tokens)
+    
+    def run_benchmark(self, tasks: list[EvalTask]) -> dict:
+        """Ejecuta un benchmark completo."""
+        results = [self.run_task(task) for task in tasks]
+        
+        # Agregar resultados
+        successful = [r for r in results if not r.error]
+        failed = [r for r in results if r.error]
+        
+        aggregate = {
+            "total_tasks": len(tasks),
+            "successful": len(successful),
+            "failed": len(failed),
+            "avg_latency_ms": sum(r.latency_ms for r in successful) / max(len(successful), 1),
+        }
+        
+        # Agregar métricas por tipo de tarea
+        for task_type in TaskType:
+            type_results = [r for r in successful if r.task_type == task_type]
+            if type_results:
+                type_metrics = {}
+                for metric_key in type_results[0].metrics.keys():
+                    values = [r.metrics.get(metric_key, 0) for r in type_results]
+                    type_metrics[f"{metric_key}_mean"] = sum(values) / len(values)
+                
+                aggregate[f"{task_type.value}_metrics"] = type_metrics
+        
+        return {"aggregate": aggregate, "detailed_results": results}
+
+# Uso
+# (Asumiendo que tienes un modelo con .generate())
+
+# tasks = [
+#     EvalTask(
+#         task_id="q1",
+#         task_type=TaskType.QA,
+#         prompt="¿Quién descubrió América?",
+#         reference="Cristóbal Colón llegó a América en 1492."
+#     ),
+#     EvalTask(
+#         task_id="s1",
+#         task_type=TaskType.SUMMARIZATION,
+#         prompt="Resume: La inteligencia artificial ha transformado...",
+#         reference="La IA ha transformado múltiples industrias..."
+#     ),
+# ]
+
+# pipeline = EvalPipeline(model=my_model, judge=judge)
+# results = pipeline.run_benchmark(tasks)
+# print(results["aggregate"])
+</code></pre>
+
+<h3>4. Diseñar Tasks Específicos para Tu Use Case</h3>
+<pre><code class="language-python">class TaskFactory:
+    """Factory para crear tareas de evaluación específicas."""
+    
+    @staticmethod
+    def create_qa_tasks(questions: list[dict]) -> list[EvalTask]:
+        """Crea tareas de Q&amp;A con ground truth."""
+        return [
+            EvalTask(
+                task_id=q["id"],
+                task_type=TaskType.QA,
+                prompt=q["question"],
+                reference=q.get("answer"),
+                metadata={"source": q.get("source"), "difficulty": q.get("difficulty")}
+            )
+            for q in questions
+        ]
+    
+    @staticmethod
+    def create_code_tasks(coding_prompts: list[dict]) -> list[EvalTask]:
+        """Crea tareas de generación de código con tests unitarios."""
+        return [
+            EvalTask(
+                task_id=p["id"],
+                task_type=TaskType.CODE_GENERATION,
+                prompt=p["prompt"],
+                reference=p.get("solution"),
+                metadata={
+                    "language": p["language"],
+                    "tests": p.get("tests"),
+                    "complexity": p.get("complexity", "medium")
+                }
+            )
+            for p in coding_prompts
+        ]
+    
+    @staticmethod
+    def create_domain_specific_tasks(
+        domain: str,
+        samples: list[dict]
+    ) -> list[EvalTask]:
+        """Crea tareas específicas para un dominio (ej. legal, medical, finance)."""
+        
+        domain_config = {
+            "legal": {
+                "task_type": TaskType.QA,
+                "required_fields": ["case_description", "question", "correct_answer"],
+            },
+            "medical": {
+                "task_type": TaskType.QA,
+                "required_fields": ["symptoms", "question", "diagnosis"],
+            },
+            "finance": {
+                "task_type": TaskType.QA,
+                "required_fields": ["transaction_data", "question", "expected_result"],
+            }
+        }
+        
+        config = domain_config.get(domain, {})
+        return [
+            EvalTask(
+                task_id=s.get("id", f"{domain}_{i}"),
+                task_type=config.get("task_type", TaskType.QA),
+                prompt=s.get("prompt") or TaskFactory._build_prompt(domain, s),
+                reference=s.get("answer") or s.get("correct_answer") or s.get("diagnosis"),
+                metadata={"domain": domain, **s}
+            )
+            for i, s in enumerate(samples)
+        ]
+    
+    @staticmethod
+    def _build_prompt(domain: str, sample: dict) -> str:
+        """Construye prompt desde campos específicos del dominio."""
+        if domain == "legal":
+            return f"Caso: {sample['case_description']}\nPregunta: {sample['question']}"
+        elif domain == "medical":
+            return f"Síntomas: {sample['symptoms']}\nPregunta: {sample['question']}"
+        return str(sample)
+
+# Ejemplo: crear benchmark de dominio legal colombiano
+legal_tasks = TaskFactory.create_domain_specific_tasks(
+    domain="legal",
+    samples=[
+        {
+            "id": "legal_001",
+            "case_description": "Un trabajador es despedido sin justificación después de 5 años de empleo formal con contrato a término fijo.",
+            "question": "¿Qué tipo de indemnización le corresponde al trabajador?",
+            "correct_answer": "Según el Código Sustantivo del Trabajo, tiene derecho a una indemnización igual a los salarios correspondientes al tiempo pendiente por fulfill del contrato, o 20 días del salario por cada año de servicios si es despido sin justa causa."
+        },
+        {
+            "id": "legal_002",
+            "case_description": "Una empresa incurre en cláusula penal de un contrato de arrendamiento comercial por 3 meses de mora.",
+            "question": "¿Puede el arrendador exigir la totalidad de la pena o solo los meses vencidos?",
+            "correct_answer": "Según la jurisprudencia colombiana, la cláusula penal es compensatoria y no punitive. El arrendador puede cobrar la pena solo por los meses efectivamente incumplidos, no por la totalidad del contrato."
+        },
+    ]
+)
+</code></pre>
+
 <hr>
-<h2>🚨 Errores Comunes</h2>
-<h3>Error 1: No entender la matemática de fondo</h3>
-<p>El 80% de los practitioners implementa esto incorrectamente porque no entienden la base teórica.</p>
-<h3>Error 2: Ignorar los hiperparámetros</h3>
-<p>Muchos asumen que los valores por defecto son óptimos. En producción, esto raramente es cierto.</p>
-<hr>
-<h2>✅ Mejores Prácticas</h2>
+<h2>🚨 Los 3 Errores Más Graves que He Visto en Producción</h2>
+
+<h3>Error 1: Usar Perplexity Como Métrica Principal (El Error del 90%)</h3>
+<p>**El problema**: Me dice "Nuestro modelo tiene perplexity = 15.3, que es muy buena". No, parcero. Perplexity mide qué tan surprised está el modelo por el texto, no si el modelo es útil.</p>
+
+<p>La relación entre perplexity y calidad perceptual es weak en el mejor de los casos:</p>
 <ul>
-<li>Siempre documenta tu código y decisiones de diseño.</li>
-<li>Usa versionado para tus experimentos.</li>
-<li>Valida siempre con datos de prueba independientes.</li>
-<li>Monitorea las métricas en producción.</li>
+<li>Un modelo que memorizó Wikipedia tendrá baja perplexity en textos similares, pero fallará en preguntas de sentido común</li>
+<li>Perplexity no captura coherencia, factualidad, o helpfulness</li>
+<li>Dos modelos con perplexity similar pueden tener desempeño radicalmente diferente en tareas reales</li>
 </ul>
-<hr>
-<h2>📚 Recursos</h2>
+
+<p>**El fix correcto**: Perplexity es útil para comparar versiones del mismo modelo durante entrenamiento, pero para evaluación de calidad usa:</p>
+
+<pre><code class="language-python"># LO QUE HACES (MAL):
+model_a_perplexity = 42.3
+model_b_perplexity = 38.7
+# => "Modelo B es mejor porque tiene menor perplexity"
+
+# LO QUE DEBERÍAS HACER:
+eval_tasks = [
+    EvalTask(task_id="t1", task_type=TaskType.QA, 
+             prompt="¿Por qué el cielo es azul?", reference="Dispersión Rayleigh..."),
+    EvalTask(task_id="t2", task_type=TaskType.QA,
+             prompt="¿Cómo funciona la fotosíntesis?", reference="Conversión de luz..."),
+    # ... 100+ tareas específicas de tu dominio
+]
+
+pipeline_a = EvalPipeline(model_a, judge=judge)
+pipeline_b = EvalPipeline(model_b, judge=judge)
+
+results_a = pipeline_a.run_benchmark(eval_tasks)
+results_b = pipeline_b.run_benchmark(eval_tasks)
+
+print(f"Modelo A - LLM Judge Overall: {results_a['aggregate']['qa_metrics']['llm_judge_overall_mean']:.2f}")
+print(f"Modelo B - LLM Judge Overall: {results_b['aggregate']['qa_metrics']['llm_judge_overall_mean']:.2f}")
+</code></pre>
+
+<h3>Error 2: No Tener Ground Truth para Tu Use Case Específico (El Error del 80%)</h3>
+<p>**El problema**: Evalúas con benchmarks genéricos (MMLU, HELM) y infieres que tu modelo para atención médica colombiana va a funcionar bien. NO.</p>
+
+<p>Los benchmarks genéricos no capturan:</p>
 <ul>
-<li>Documentación oficial de faiss</li>
-<li>Tutoriales prácticos en el blog</li>
-<li>Código fuente en GitHub</li>
+<li>El vocabulario específico de tu dominio</li>
+<li>Las edge cases de tu mercado (ej. regulaciones colombianas)</li>
+<li>Las distribuciones de queries reales de tus usuarios</li>
 </ul>
+
+<p>**El fix correcto**: Construir un eval set de tu dominio específico:</p>
+
+<pre><code class="language-python">class DomainEvalSetBuilder:
+    """Construye un eval set específico para tu dominio."""
+    
+    def __init__(self, domain: str):
+        self.domain = domain
+        self.tasks = []
+    
+    def add_task(self, prompt: str, reference: str, metadata: dict = None):
+        """Agrega una tarea al eval set."""
+        self.tasks.append({
+            "prompt": prompt,
+            "reference": reference,
+            "metadata": metadata or {}
+        })
+    
+    def add_from_samples(self, samples: list[dict], prompt_field: str, 
+                         reference_field: str):
+        """Agrega tareas desde samples existentes."""
+        for sample in samples:
+            self.add_task(
+                prompt=sample[prompt_field],
+                reference=sample[reference_field],
+                metadata=sample
+            )
+    
+    def build(self, train_ratio: float = 0.0) -> tuple:
+        """Construye train/val/test splits."""
+        # Para evaluation pura, train_ratio = 0
+        n_total = len(self.tasks)
+        n_train = int(n_total * train_ratio)
+        
+        np.random.shuffle(self.tasks)
+        
+        train = self.tasks[:n_train]
+        val = self.tasks[n_train:]
+        
+        train_tasks = [EvalTask(**t) for t in train]
+        val_tasks = [EvalTask(**t) for t in val]
+        
+        return train_tasks, val_tasks
+    
+    def save(self, path: str):
+        """Guarda el eval set a disco."""
+        import json
+        with open(path, 'w') as f:
+            json.dump({"domain": self.domain, "tasks": self.tasks}, f, indent=2)
+
+# Ejemplo: construir eval set para e-commerce colombiano
+builder = DomainEvalSetBuilder(domain="ecommerce_colombia")
+
+# Preguntas reales de usuarios
+builder.add_task(
+    prompt="¿Cuál es el estatus de mi pedido #12345?",
+    reference="El pedido #12345 fue enviado el 15 de mayo y se encuentra en tránsito. "
+             "Tiempo estimado de entrega: 2-3 días hábiles. "
+             "Tracking: MRW123456789",
+    metadata={"intent": "order_status", "order_id": "12345"}
+)
+
+builder.add_task(
+    prompt="Quiero devolver un producto que no me sirve",
+    reference="Para devolución: 1) Ingresa a Mi Cuenta > Mis Pedidos > Devolver. "
+             "2) Selecciona productos y motivo. "
+             "3) Te enviamos etiqueta de retorno por email. "
+             "4) Reembolso en 5-7 días hábiles tras recibir el producto. "
+             "Condiciones: producto sin uso, empaque original, dentro de 30 días.",
+    metadata={"intent": "return_request", "policy": "30_day_return"}
+)
+
+# ... agregar 200+ tareas más
+
+eval_set = builder.build()
+print(f"Eval set construido con {len(eval_set[1])} tareas")
+</code></pre>
+
+<h3>Error 3: Evaluar en Test Set Igual al Deployment Distribution (El Error del 70%)</h3>
+<p>**El problema**: Hiciste eval enBenchmarks y tu modelo sacó 92% en MMLU. Perfecto, ¿no? Pero en producción, tus usuarios preguntan cosas diferentes — preguntas en español colombiano, con referencias culturales locales, sobre productos específicos del mercado local.</p>
+
+<p>Esto se llama <strong>distribution shift</strong>: tu eval set no refleja la distribución real de inputs en producción.</p>
+
+<p>**El fix correcto**: Diseña tu eval set con distribución que refleje producción + casos edge:</p>
+
+<pre><code class="language-python">class ProductionReflectiveEvalSet:
+    """Construye eval set que refleja la distribución real de producción."""
+    
+    def __init__(self, production_logs: list[dict]):
+        """
+        production_logs: lista de {'prompt': str, 'response': str, 
+                                   'user_rating': int, 'metadata': dict}
+        """
+        self.logs = production_logs
+        self.eval_tasks = []
+    
+    def build_from_logs(self, sample_size: int = 1000) -> list[EvalTask]:
+        """Construye eval set muestreando de logs de producción."""
+        # Sample estratificado basado en user_rating
+        low_rating = [l for l in self.logs if l.get('user_rating', 3) &lt;= 2]
+        mid_rating = [l for l in self.logs if l.get('user_rating', 3) == 3]
+        high_rating = [l for l in self.logs if l.get('user_rating', 3) >= 4]
+        
+        # 50% de casos problemáticos (low rating)
+        # 30% de casos neutros
+        # 20% de casos exitosos
+        n_low = int(sample_size * 0.5)
+        n_mid = int(sample_size * 0.3)
+        n_high = sample_size - n_low - n_mid
+        
+        sampled = (
+            random.sample(low_rating, min(n_low, len(low_rating))) +
+            random.sample(mid_rating, min(n_mid, len(mid_rating))) +
+            random.sample(high_rating, min(n_high, len(high_rating)))
+        )
+        
+        # Crear tareas con la respuesta de producción como "reference"
+        # y evaluar si tu nuevo modelo puede igualar o superar
+        for i, log in enumerate(sampled):
+            self.eval_tasks.append(EvalTask(
+                task_id=f"prod_{i}",
+                task_type=TaskType.QA,  # Ajustar según dominio
+                prompt=log['prompt'],
+                reference=log['response'],  # La respuesta actual en producción
+                metadata={
+                    'user_rating': log.get('user_rating'),
+                    'original_model': log.get('model_version'),
+                    'is_problematic': log.get('user_rating', 3) &lt;= 2
+                }
+            ))
+        
+        return self.eval_tasks
+    
+    def add_adversarial_cases(self, adversarial_prompts: list[str]):
+        """Agrega casos adversarial conocidos."""
+        for i, prompt in enumerate(adversarial_prompts):
+            self.eval_tasks.append(EvalTask(
+                task_id=f"adv_{i}",
+                task_type=TaskType.QA,
+                prompt=prompt,
+                reference="[RESPONSE_SHOULD_BE_SAFE]",  # Placeholder
+                metadata={'is_adversarial': True}
+            ))
+
+# Uso
+# production_logs = load_production_logs(last_30_days)
+# eval_set_builder = ProductionReflectiveEvalSet(production_logs)
+# eval_tasks = eval_set_builder.build_from_logs(sample_size=500)
+# eval_set_builder.add_adversarial_cases(load_known_adversarial())
+</code></pre>
+
+<hr>
+<h2>✅ Resumen y Cierre</h2>
+
+<p>Parcero, la evaluación de LLMs no es trivial y el error más grave es medir lo fácil en vez de lo importante. Resumiendo lo que aprendimos hoy:</p>
+
+<ul>
+<li><strong>Perplexity</strong> = útil solo para comparar versiones de un mismo modelo durante entrenamiento, NO para calidad</li>
+<li><strong>BLEU/ROUGE</strong> = útiles para tareas con referencia única (traducción, summarización), limitados para generación abierta</li>
+<li><strong>LLM-as-Judge</strong> = el estándar actual, pero costoso y con sesgos propios</li>
+<li><strong>Benchmarks (MMLU, HELM)</strong> = buenos para comparación general, NO reflejan tu use case específico</li>
+<li><strong>Eval set propio</strong> = obligatorio si vas a deployar en producción</li>
+</ul>
+
+<p>La fórmula para eval que funcione:</p>
+
+<div class="katex-display">Eval_{good} = \{t_i \sim P_{production}\} \cup \{adversarial\} \cup \{edge\_cases\}</div>
+
+<p>Es decir, tu eval set debe muestrear de la distribución real de producción, más casos adversarial, más edge cases.</p>
+
+<p>Y recuerdalo: en Colombia decimos "el que no mide, no mejora". Si no tienes un eval pipeline robusto, no estás mejorando tu modelo — estás adivinando.</p>
+
+<p>Mañana seguimos con más. Cualquier pregunta, ya sabes dónde encontrarme.</p>
+
+<p>Un abrazo desde Bogotá,</p>
+<p><strong>Fabián</strong></p>
   </article>
 
   <script>
