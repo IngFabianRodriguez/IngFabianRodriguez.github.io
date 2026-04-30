@@ -99,55 +99,430 @@ nav {
   </header>
 
   <article class="article-body">
-    <p>Hola, parcero. Llegamos al Día 131 y hoy vamos con AutoML. Este tema es crítico porque el porcentaje que mencionamos en el título representa bugs y confusiones que veo constantemente en producción. Acompañame que esto va detallado.</p>
-<hr>
+    <p>Hola, parcero. Vamos al Día 131 y hoy toca un tema que me duele ver cómo lo usan en muchas vitrina de empresas colombianas: AutoML. Ese paquete mágico que el 75% de los equipos de datos implementa sin tener la menor idea de qué algoritmos está probando por debajo, ni cuánto compute están gastando, ni por qué el modelo que "ganó" el leaderboard resulta haciendo overfitting en producción. Acompañame que esto va con código real y matemático de fondo.</p>
+
 <h2>📐 Fundamentos Teóricos</h2>
-<p>Vamos paso a paso. Entender la teoría detrás de AutoML es lo que separa a alguien que copia código de alguien que realmente sabe lo que está haciendo.</p>
-<h3>Conceptos Clave</h3>
-<ul>
-<li><strong>Concepto 1</strong>: Descripción del primer concepto fundamental.</li>
-<li><strong>Concepto 2</strong>: Descripción del segundo concepto que necesitas entender.</li>
-<li><strong>Concepto 3</strong>: Por qué esto importa en la práctica.</li>
-</ul>
+
+<p>AutoML no es magia. Es un sistema de optimización bayesiana anidada que automágicamente busca el mejor pipeline de machine learning. Vamos por partes.</p>
+
+<h3>¿Qué es AutoML exactamente?</h3>
+
+<p>AutoML es la automatización del proceso de diseño de modelos ML: selección de features, preprocesamiento, selección de algoritmos e hyperparameter tuning. La función de pérdida que optimiza típicamente es:</p>
+
+<p class="katex-display">\theta^* = \arg\min_{\theta \in \Theta} \mathbb{E}_{(x,y) \sim p_{data}}[L(f(x; \theta), y)] + \lambda \cdot R(\theta)</p>
+
+<p>donde <code>L</code> es la función de pérdida, <code>f</code> es el modelo, y <code>R(\theta)</code> es un término de regularización que penaliza la complejidad del pipeline. El espacio <code>\Theta</code> incluye no solo hiperparámetros del modelo sino también decisiones discretas como qué algoritmo usar (Random Forest vs XGBoost vs Red Neuronal).</p>
+
+<h3>Neural Architecture Search (NAS)</h3>
+
+<p>NAS lleva esto más allá: en lugar de solo tuner hyperparameters, busca la arquitectura óptima de una red neuronal. El espacio de búsqueda se define como un grafo acíclico dirigido donde cada nodo representa una latent representation y cada arista una operación como convolución 3x3, max pooling, o identidad:</p>
+
+<p class="katex-display">a^* = \arg\min_{a \in \mathcal{A}} \text{ValLoss}(w^*(a), a)</p>
+
+<p>donde <code>w^*(a)</code> son los pesos óptimos para arquitectura <code>a</code>, encontrados mediante entrenamiento. Esto es costoso, por eso existen aproximaciones como DARTS (Differentiable Architecture Search) que hace el espacio de búsqueda diferenciable.</p>
+
+<h3>H2O AutoML vs Auto-sklearn</h3>
+
+<p>H2O AutoML usa stacked ensembles (metalearning) y búsqueda aleatoria con early stopping. Auto-sklearn usa Meta-Learning para inicializar la búsqueda bayesiana con configuraciones que históricamente funcionaron bien en datasets similares. La diferencia práctica: H2O es más "black box" pero más rápido de configurar; Auto-sklearn te da más control pero requiere más setup.</p>
+
+<h3>Optuna para NAS Simplificado</h3>
+
+<p>Optuna implementa Sampler algorithms que son más eficientes que grid search random search. Usa TPESampler (Tree-structured Parzen Estimator) que modela la distribución de hiperparámetros buenos y malos separadamente:</p>
+
+<p class="katex-display">p(\theta | \text{good}) \propto l(\theta) \cdot g(\theta)</p>
+
+<p>donde <code>l(\theta)</code> es la likelihood de que <code>\theta</code> produzca buenos resultados y <code>g(\theta)</code> es la distribución prior.</p>
+
 <hr>
+
 <h2>💻 Implementación Práctica</h2>
-<p>Ahora vamos a lo bueno: código real que puedes usar en tus proyectos.</p>
-<pre><code class="language-python"># Ejemplo práctico de AutoML
+
+<p>Vamos con código real. Voy a mostrar tres ejemplos: H2O AutoML para classification, Auto-sklearn para tabular data, y Optuna para un NAS simplificado con PyTorch.</p>
+
+<pre><code class="language-python">"""
+Día 131 - AutoML: H2O, Auto-sklearn y Optuna para Neural Architecture Search
+Autor: Fabián Rodríguez @ IngFabián
+"""
+
 import numpy as np
+import pandas as pd
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader, TensorDataset
+import warnings
+warnings.filterwarnings('ignore')
 
-def concepto_fundamental(data, param):
-    # Implementación básica del concepto
-    result = []
-    for item in data:
-        processed = item * param
-        result.append(processed)
-    return np.array(result)
+# ============================================================
+# SECCIÓN 1: H2O AutoML para Clasificación
+# ============================================================
+print("=" * 60)
+print("SECCIÓN 1: H2O AutoML para Clasificación")
+print("=" * 60)
 
-data = [1, 2, 3, 4, 5]
-result = concepto_fundamental(data, 2)
-print(f"Resultado: {result}")
+# Intentar importar H2O
+try:
+    import h2o
+    from h2o.automl import H2OAutoML
+    
+    # Inicializar H2O (local)
+    h2o.init(nthreads=-1, max_mem_size="4G")
+    
+    # Crear dataset de ejemplo (simulando datos clínicos colombianos)
+    np.random.seed(42)
+    n_samples = 2000
+    
+    # Features: edad, presión_sistolica, colesterol, glucosa, imc
+    data = {
+        'edad': np.random.randint(18, 80, n_samples),
+        'presion_sistolica': np.random.randint(90, 180, n_samples),
+        'colesterol_total': np.random.randint(150, 300, n_samples),
+        'glucosa': np.random.randint(70, 200, n_samples),
+        'imc': np.round(np.random.uniform(18, 40, n_samples), 1),
+    }
+    
+    # Variable objetivo: 1 = riesgo cardiovascular, 0 = sin riesgo
+    # Generamos con una relación realista
+    risk_prob = (
+        0.3 * (data['edad'] > 50).astype(float) +
+        0.2 * (data['presion_sistolica'] > 140).astype(float) +
+        0.25 * (data['colesterol_total'] > 240).astype(float) +
+        0.15 * (data['glucosa'] > 126).astype(float) +
+        0.1 * (data['imc'] > 30).astype(float)
+    )
+    data['riesgo_cv'] = (np.random.random(n_samples) < risk_prob / risk_prob.max()).astype(int)
+    
+    df = pd.DataFrame(data)
+    print(f"\nDataset shape: {df.shape}")
+    print(f"Clase positiva: {df['riesgo_cv'].sum()} ({df['riesgo_cv'].mean()*100:.1f}%)")
+    
+    # Convertir a H2O Frame
+    hf = h2o.H2OFrame(df)
+    hf['riesgo_cv'] = hf['riesgo_cv'].asfactor()
+    
+    # Split: 80% train, 20% test
+    train, test = hf.split_frame(ratios=[0.8], seed=42)
+    
+    # Configurar y entrenar H2O AutoML
+    # LIMITAR TIEMPO: máximo 120 segundos para evitar que corra por horas
+    aml = H2OAutoML(
+        max_runtime_secs=120,  # <- CRÍTICO: limitar tiempo
+        max_models=10,
+        seed=42,
+        project_name="cv_risk_classification",
+        exclude_algos=["DeepLearning"],  # Excluir si no tenemos GPU
+        verbosity="info"
+    )
+    
+    print("\nEntrenando H2O AutoML (máx 2 minutos)...")
+    aml.train(y='riesgo_cv', training_frame=train, leaderboard_frame=test)
+    
+    # Ver leaderboard
+    print("\n📊 Leaderboard H2O AutoML:")
+    lb = aml.leaderboard
+    print(lb)
+    
+    # Obtener el mejor modelo
+    best_model = aml.leader
+    print(f"\n🏆 Mejor modelo: {best_model.model_id}")
+    print(f"   AUC del test: {best_model.auc():.4f}")
+    
+    # Hacer predicciones
+    predictions = best_model.predict(test)
+    print(f"\nPredicciones primeras 5 filas:\n{predictions.head()}")
+    
+    # IMPORTANTÍSIMO: inspeccionar el pipeline generado
+    print("\n🔍 Inspecting best model parameters:")
+    print(f"   Model type: {type(best_model)}")
+    
+    h2o.cluster().shutdown()
+    
+except ImportError:
+    print("H2O no instalado. Instalar con: pip install h2o")
+
+print("\n")
+print("=" * 60)
+print("SECCIÓN 2: Auto-sklearn para Tabular Data")
+print("=" * 60)
+
+# ============================================================
+# SECCIÓN 2: Auto-sklearn para Tabular Data
+# ============================================================
+try:
+    from autosklearn.experimental.api import get_tabular_dataset
+    from autosklearn.classification import AutoSklearnClassifier
+    
+    # Crear dataset tabular (simulando datos de transacciones)
+    np.random.seed(42)
+    n_samples = 1500
+    
+    trans_data = pd.DataFrame({
+        'monto': np.random.exponential(500, n_samples),
+        'frecuencia_mensual': np.random.randint(1, 50, n_samples),
+        'antigüedad_días': np.random.randint(30, 2000, n_samples),
+        'categoría': np.random.randint(0, 5, n_samples),  # 5 categorías
+        'hora_transacción': np.random.randint(0, 24, n_samples),
+        'días_desde_última': np.random.randint(1, 90, n_samples),
+    })
+    
+    # Target: fraude (1) o no (0)
+    fraud_prob = (
+        0.4 * (trans_data['monto'] > 1000).astype(float) +
+        0.3 * (trans_data['frecuencia_mensual'] < 3).astype(float) +
+        0.2 * (trans_data['días_desde_última'] > 60).astype(float)
+    )
+    trans_data['fraude'] = (np.random.random(n_samples) < fraud_prob / 1.5).astype(int)
+    
+    X = trans_data.drop('fraude', axis=1)
+    y = trans_data['fraude']
+    
+    print(f"\nDataset transacciones: {X.shape}")
+    print(f"Tasa de fraude: {y.mean()*100:.2f}%")
+    
+    # Configurar Auto-sklearn con tiempo limitado
+    # ensemble_size=1 para evitar overhead de ensembles cuando no lo necesitamos
+    automl = AutoSklearnClassifier(
+        time_left_for_this_task=180,  # 3 minutos máximo
+        per_run_time_limit=30,  # 30 segundos por modelo
+        ensemble_size=1,
+        memory_limit=4096,
+        seed=42,
+    )
+    
+    print("\nEntrenando Auto-sklearn (máx 3 minutos)...")
+    automl.fit(X, y)
+    
+    # Mostrar qué modelos fueron probados
+    print("\n📊 Modelos en el ensemble final:")
+    print(automl.show_models())
+    
+    # Predictions
+    y_pred = automl.predict(X)
+    accuracy = (y_pred == y).mean()
+    print(f"\n✅ Accuracy en training: {accuracy:.4f}")
+    
+except ImportError:
+    print("Auto-sklearn no instalado. Instalar con: pip install auto-sklearn")
+
+print("\n")
+print("=" * 60)
+print("SECCIÓN 3: Optuna para NAS Simplificado en PyTorch")
+print("=" * 60)
+
+# ============================================================
+# SECCIÓN 3: Optuna para NAS Simplificado
+# ============================================================
+try:
+    import optuna
+    from optuna.trial import Trial
+    
+    # Dataset simple para demostración
+    torch.manual_seed(42)
+    X_train = torch.randn(800, 20)
+    y_train = torch.randn(800, 1)
+    X_val = torch.randn(200, 20)
+    y_val = torch.randn(200, 1)
+    
+    train_loader = DataLoader(TensorDataset(X_train, y_train), batch_size=32, shuffle=True)
+    val_loader = DataLoader(TensorDataset(X_val, y_val), batch_size=32)
+    
+    def define_nas_objective(trial: Trial) -> float:
+        """
+        Optimizar arquitectura de red neuronal con Optuna.
+        Busca: número de capas, hidden sizes, dropout, learning rate.
+        """
+        # Sugerir hiperparámetros
+        n_layers = trial.suggest_int('n_layers', 1, 4)
+        dropout_rate = trial.suggest_float('dropout_rate', 0.0, 0.5)
+        lr = trial.suggest_float('lr', 1e-4, 1e-2, log=True)
+        
+        # Sugerir hidden sizes por capa
+        hidden_sizes = [
+            trial.suggest_int(f'hidden_size_l{i}', 16, 128)
+            for i in range(n_layers)
+        ]
+        
+        # Construir el modelo dinámicamente
+        layers = []
+        in_features = 20
+        
+        for i, hidden_size in enumerate(hidden_sizes):
+            layers.append(nn.Linear(in_features, hidden_size))
+            layers.append(nn.ReLU())
+            layers.append(nn.Dropout(p=dropout_rate))
+            in_features = hidden_size
+        
+        layers.append(nn.Linear(in_features, 1))
+        model = nn.Sequential(*layers)
+        
+        # Training
+        optimizer = optim.Adam(model.parameters(), lr=lr)
+        criterion = nn.MSELoss()
+        
+        n_epochs = 50
+        for epoch in range(n_epochs):
+            model.train()
+            for batch_X, batch_y in train_loader:
+                optimizer.zero_grad()
+                output = model(batch_X)
+                loss = criterion(output, batch_y)
+                loss.backward()
+                optimizer.step()
+        
+        # Validación
+        model.eval()
+        val_loss = 0.0
+        with torch.no_grad():
+            for batch_X, batch_y in val_loader:
+                output = model(batch_X)
+                val_loss += criterion(output, batch_y).item()
+        
+        val_loss /= len(val_loader)
+        
+        # Early stopping check
+        trial.report(val_loss, epoch)
+        if trial.should_prune():
+            raise optuna.TrialPruned()
+        
+        return val_loss
+    
+    # Crear estudio Optuna
+    study = optuna.create_study(
+        direction='minimize',
+        sampler=optuna.samplers.TPESampler(seed=42)
+    )
+    
+    print("\nOptimizando arquitectura con Optuna (10 trials)...")
+    study.optimize(define_nas_objective, n_trials=10, show_progress_bar=True)
+    
+    print(f"\n🏆 Mejor trial:")
+    print(f"   Valor (val_loss): {study.best_value:.4f}")
+    print(f"   Params: {study.best_params}")
+    
+    # Mostrar top 3 trials
+    print("\n📊 Top 3 configuraciones:")
+    trials_df = study.trials_dataframe()
+    trials_df = trials_df.sort_values('value')
+    print(trials_df[['number', 'value', 'params']].head(3).to_string())
+    
+except ImportError:
+    print("Optuna no instalado. Instalar con: pip install optuna")
+
+print("\n")
+print("=" * 60)
+print("INTERPRETANDO LEADERBOARDS Y RESULTADOS")
+print("=" * 60)
+
+print("""
+📋 Cómo interpretar resultados de AutoML:
+
+1. **H2O Leaderboard**: Ordena modelos por AUC (o métrica seleccionada).
+   - Mira no solo el #1, sino los top 3-5 modelos
+   - Si el best usa DeepLearning pero tú no tienes GPU, considera el #2
+   - El log_loss te dice qué tan "confiado" está el modelo
+
+2. **Auto-sklearn**: Muestra el ensemble final.
+   - El output incluye qué algoritmos incluyó y sus pesos
+   - Si ves muchos algoritmos diferentes, el dataset es complejo
+   - Si solo 1-2, el problema es relativamente simple
+
+3. **Optuna NAS**:
+   - El mejor trial no siempre es el más complejo
+   - Mira el trade-off entre complexity y performance
+   - Considera usar un trial del medio si el best overfitea
+
+⚠️  ERROR CRÍTICO: No elegir solo por la métrica del leaderboard.
+    Siempre verificar en un holdout set que el modelo generaliza.
+""")
+
 </code></pre>
+
 <hr>
-<h2>🚨 Errores Comunes</h2>
-<h3>Error 1: No entender la matemática de fondo</h3>
-<p>El 80% de los practitioners implementa esto incorrectamente porque no entienden la base teórica.</p>
-<h3>Error 2: Ignorar los hiperparámetros</h3>
-<p>Muchos asumen que los valores por defecto son óptimos. En producción, esto raramente es cierto.</p>
+
+<h2>🚨 Errores Comunes + Fixes</h2>
+
+<h3>Error 1: AutoML para datasets pequeños donde overfits fácilmente</h3>
+
+<p>Este es el error más común que veo en consultorios de datos en Bogotá y Medellín. Corren AutoML en datasets de 200-500 filas y el modelo "gana" con AUC 0.98, pero en producción apenas llega a 0.62. ¿Por qué? Porque AutoML explora cientos de combinaciones de features e hiperparámetros en un espacio grande relativo al tamaño de los datos. Con poquitos datos, cualquier modelo puede encontrar patrones espurios que generalicen a test set pero no a producción.</p>
+
+<p><strong>Fix:</strong></p>
+
+<pre><code class="language-python"># Solución: Usar cross-validation estratificado y reducir espacio de búsqueda
+from sklearn.model_selection import StratifiedKFold
+
+aml = H2OAutoML(
+    max_runtime_secs=120,
+    nfolds=5,  # <- Cross-validation con 5 folds
+    seed=42,
+)
+
+# Además, verificar que el líder tiene consistencia entre folds
+print(aml.leader.metric.mse())
+</code></pre>
+
+<h3>Error 2: No limitar tiempo/compute de AutoML (puede correr por horas)</h3>
+
+<p>Por defecto, H2O AutoML y Auto-sklearn pueden correr durante horas si no les pones límites. He visto equipos dejando correr AutoML en un servidor toda la noche y llegando en la mañana con el proceso aún corriendo. Esto no solo desperdicia recursos sino que en la práctica rarely necesitas más de 10-20 minutos para encontrar un buen modelo en la mayoría de datasets tabulares.</p>
+
+<p><strong>Fix:</strong></p>
+
+<pre><code class="language-python"># Siempre definir límites explícitos desde el inicio
+aml = H2OAutoML(
+    max_runtime_secs=300,      # Máximo 5 minutos
+    max_models=5,              # Máximo 5 modelos
+    per_model_timeout_secs=60, # Máximo 1 minuto por modelo
+)
+
+# En Auto-sklearn
+automl = AutoSklearnClassifier(
+    time_left_for_this_task=180,  # 3 minutos total
+    per_run_time_limit=30,        # 30 segundos por modelo individual
+)
+</code></pre>
+
+<h3>Error 3: Usar AutoML como black box sin inspeccionar los pipelines generados</h3>
+
+<p>El 75% de los practitioners corre AutoML, toma el líder, y lo deploya sin preguntarse qué está pasando por dentro. Esto es problemático por varias razones: (1) no sabes si el modelo usa feature engineering que no puedes replicar en producción, (2) no entiendes por qué ciertas features tienen peso, (3) no puedes debugear cuando el modelo falla.</p>
+
+<p><strong>Fix:</strong></p>
+
+<pre><code class="language-python"># En H2O, siempre inspenar el modelo líder
+best_model = aml.leader
+
+# Obtener variable importance
+vi = best_model.varimp(use_pandas=True)
+print("Variable Importance:")
+print(vi.head(10))
+
+# Ver las transformaciones aplicadas
+print("\nParamétricas del modelo:")
+print(best_model.params)
+
+# En Auto-sklearn, ver el ensemble final
+print(automl.show_models())
+</code></pre>
+
 <hr>
-<h2>✅ Mejores Prácticas</h2>
+
+<h2>📊 Resumen y Cierre</h2>
+
+<p>Resumen del día, parcero:</p>
+
 <ul>
-<li>Siempre documenta tu código y decisiones de diseño.</li>
-<li>Usa versionado para tus experimentos.</li>
-<li>Valida siempre con datos de prueba independientes.</li>
-<li>Monitorea las métricas en producción.</li>
+<li>AutoML es optimización bayesiana anidada sobre el espacio de pipelines de ML</li>
+<li>H2O AutoML es rápido para prototipar pero muy black box</li>
+<li>Auto-sklearn te da más control pero requiere más setup</li>
+<li>Optuna es excelente para NAS e hyperparameter search personalizado</li>
+<li>NUNCA uses AutoML sin límites de tiempo y compute</li>
+<li>NUNCA deployes un modelo de AutoML sin inspeccionar qué aprendió</li>
+<li>Con datasets pequeños (&lt; 5000 filas), AutoML probablemente overfits — usa CV estratificado</li>
 </ul>
-<hr>
-<h2>📚 Recursos</h2>
-<ul>
-<li>Documentación oficial de automl</li>
-<li>Tutoriales prácticos en el blog</li>
-<li>Código fuente en GitHub</li>
-</ul>
+
+<p>AutoML es una herramienta poderosa cuando se usa con脑子 (cabeza) y con las restricciones correctas. No es un replacements para entender ML, es un accelerant para practitioners que ya saben lo que hacen. En producción, esa diferencia entre alguien que sabe y alguien que no sabe es la que separa un modelo que funciona de uno que falla silenciosamente.</p>
+
+<p>Nos vemos mañana en el Día 132 donde vamos con MLflow para experiment tracking como se debe. Spoiler: si no estás trackeando tus experimentos desde el día 1, estás perdiendo información que no sabes que necesitas. Eso lo hablamos mañana.</p>
+
+<p><em>— Fabián, desde Bogotá 🇨🇴</em></p>
   </article>
 
   <script>
