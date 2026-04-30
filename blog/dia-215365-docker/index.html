@@ -118,66 +118,201 @@ nav {
   </header>
 
   <article class="article-body">
-    <h1>Knowledge Distillation - Aprendiendo De Modelos Grandes</h1>
+    <h1>Feature Stores — Feast, Tecton y el Data Que el 80% Recalcula Constantemente</h1>
 
-<p>Hagale pues, parcero. Llegamos al Dia 215 y hoy hablamos de Knowledge Distillation, el arte de transferir conocimiento de un modelo grande a uno pequeno. Dejala el cafe, que esto esta interesante.</p>
+<p>Hagale pues, parcero. Llegamos al Día 215 y hoy vamos a hablar de algo que en Colombia diríamos que es "el cuento de la abuela" pero en versión de datos: los Feature Stores. Sí, esos servidores de features que el 80% de los equipos de ML están recalculando constantemente porque nadie sabe que ya existían. Dejala ahí la arepa que esto está bueno.</p>
+
 <hr>
-<h2>🎯 Que Es La Knowledge Distillation?</h2>
-<p>Knowledge distillation es el proceso de entrenar un modelo pequeno (student) para que复刻 el comportamiento de uno grande (teacher). El modelo pequeno aprende de los "soft targets" del modelo grande, no solo de las etiquetas duras.</p>
-<h3>Conceptos clave:</h3>
+<h2>🎯 Qué Es Un Feature Store?</h2>
+<p>Un Feature Store es un repositorio centralizado que almacena y sirve features (variables engineered) tanto para entrenamiento como para inferencia en tiempo real. Básicamente, es la "nevera" donde guardas todos los ingredientes que luego usas para cocinar tus modelos.</p>
+
+<h3>Componentes clave:</h3>
 <ul>
-<li><strong>Teacher Model</strong>: Modelo grande pre-entrenado con todo su conocimiento</li>
-<li><strong>Student Model</strong>: Modelo pequeno que aprende del teacher</li>
-<li><strong>Soft Targets</strong>: Probabilidades de salida del teacher</li>
-<li><strong>Temperature</strong>: Parametro que controla la "suavidad" de las predicciones</li>
+<li><strong>Offline Store</strong>: Almacenamiento para entrenamiento batch — usualmente un data lake o warehouse (Parquet, BigQuery, Snowflake)</li>
+<li><strong>Online Store</strong>: Base de datos de baja latencia para inference en tiempo real — Redis, DynamoDB, PostgreSQL</li>
+<li><strong>Feature Registry</strong>: Catálogo donde documentas qué features existen, de dónde vienen, cómo se calculan y quién es el dueño</li>
+<li><strong>Training Pipeline</strong>: Job que genera features históricas para entrenamiento</li>
+<li><strong>Serving Pipeline</strong>: Job que mantiene actualizadas las features online</li>
 </ul>
-<hr>
-<h2>📐 La Matematica De La Distilacion</h2>
-<p>La loss combina dos componentes: la loss硬的 (cross-entropy con labels) y la loss软的 (KL divergence con soft targets):</p>
-<pre><code>import torch
-import torch.nn.functional as F
 
-def distillation_loss(student_logits, teacher_logits, labels, T=2.0, alpha=0.5):
-    # Soft loss: KL divergence entre distributions
-    soft_loss = F.kl_div(
-        F.log_softmax(student_logits / T, dim=-1),
-        F.softmax(teacher_logits / T, dim=-1),
-        reduction='batchmean'
-    ) * (T * T)
-    
-    # Hard loss: cross-entropy normal
-    hard_loss = F.cross_entropy(student_logits, labels)
-    
-    # Combinacion
-    return alpha * soft_loss + (1 - alpha) * hard_loss
+<hr>
+<h2>📐 La Matemática Detrás Del Feature Engineering Consistency</h2>
+<p>El problema fundamental que resuelve un feature store es el <strong>training-serving skew</strong>. La matemática es sencilla pero dolorosa cuando no la resuelves:</p>
+
+<p>En entrenamiento, típicamente calculas una feature con una ventana temporal definida:</p>
+
+<pre><code># Entrenamiento: feature con ventana de 7 días
+user_transaction_count_7d = df.groupby('user_id')['amount'].transform(
+    lambda x: x.rolling(window='7D', min_periods=1).sum()
+)
 </code></pre>
+
+<p>En inference, si alguien calcula la misma feature con lógica diferente (o sin darse cuenta), obtienes valores distintos. El modelo aprendió con datos diferentes a los que recibe en producción. Esa diferencia es el skew:</p>
+
+<p><strong>Skew = f(features_entrenamiento) ≠ g(features_inferencia)</strong></p>
+
+<p>Un feature store garantiza que <code>f == g</code>, que la misma lógica se aplica en ambos lados. El framework lo hace por ti.</p>
+
 <hr>
-<h2>🚀 Ejemplo Practico</h2>
-<pre><code>def train_student(teacher, student, dataloader, optimizer, T=2.0, alpha=0.7):
-    for batch in dataloader:
-        inputs, labels = batch
-        
-        # Teacher predictions (no gradients)
-        with torch.no_grad():
-            teacher_logits = teacher(inputs)
-        
-        # Student predictions
-        student_logits = student(inputs)
-        
-        # Distillation loss
-        loss = distillation_loss(student_logits, teacher_logits, labels, T, alpha)
-        
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+<h2>🚀 Implementando Un Feature Store Con Feast</h2>
+<p>Feast es el feature store open-source más popular. Vamos a ver cómo configurarlo:</p>
+
+<pre><code># feast_repo/feature_store.yaml
+project: mi_feature_store
+registry: data/registry.db
+provider: local
+online_store:
+  type: redis
+  connection_string: localhost:6379
+offline_store:
+  type: file
+  &nbspnbsppath: data/warehouse/
+entities:
+  - name: user
+    entities:
+      - name: user_id
+        type: int
+      - name: timestamp
+        type: float
+data_sources:
+  - name: user_transactions_source
+    type: file
+    path: data/user_transactions.parquet
+    timestamp_field: timestamp
+feature_views:
+  - name: user_transaction_features
+    entities:
+      - user_id
+    ttl: 7 day
+    schema:
+      - name: user_id
+        type: int
+      - name: transaction_count_7d
+        type: float
+      - name: transaction_amount_sum_7d
+        type: float
+      - name: avg_transaction_amount_7d
+        type: float
 </code></pre>
+
+<h3>Registrando Features y Feature Views</h3>
+
+<pre><code>from feast import FeatureStore
+import pandas as pd
+
+# Inicializar el feature store
+fs = FeatureStore(repo_path="feast_repo")
+
+# Registrar una feature view desde un DataFrame
+df = pd.read_parquet("data/user_transactions.parquet")
+
+# apply: registra en el registry
+fs.apply([
+    user_entity,
+    user_transaction_source,
+    user_transaction_view,
+])
+
+# Materialize: carga features online desde offline store
+fs.materialize_incremental(
+    end_date=datetime.now(),
+    start_date=datetime.now() - timedelta(days=7)
+)
+</code></pre>
+
+<h3>Sirviendo Features Online vs Offline</h3>
+
+<pre><code># ONLINE: Inference en tiempo real (baja latencia)
+from feast import FeatureStore
+
+fs = FeatureStore(repo_path="feast_repo")
+
+# Obtener features para UN usuario
+feature_vector = fs.get_online_features(
+    entity_rows=[{"user_id": 12345}],
+    features=[
+        "user_transaction_features:transaction_count_7d",
+        "user_transaction_features:transaction_amount_sum_7d",
+        "user_transaction_features:avg_transaction_amount_7d",
+    ]
+).to_dict()
+
+# Resultado: {'transaction_count_7d': [42], 'transaction_amount_sum_7d': [1250000.0], ...}
+
+
+# OFFLINE: Entrenamiento (batch, datos históricos)
+training_df = fs.get_historical_features(
+    entity_df=entity_df,  # DataFrame con entity keys y timestamps
+    features=[
+        "user_transaction_features:transaction_count_7d",
+        "user_transaction_features:transaction_amount_sum_7d",
+    ],
+).to_df()
+
+# Esto genera el dataset de entrenamiento con features point-in-time correctas
+</code></pre>
+
 <hr>
-<h2>⚠️ Errores Comunes</h2>
-<h3>Error 1: Temperature Muy Alta</h3>
-<p><strong>El problema</strong>: Predicciones muy suaves pierden informacion util.</p>
-<p><strong>La solucion</strong>: Empieza con T=2.0 a 4.0 y ajusta segun resultados.</p>
+<h2>⚠️ Los 3 Errores Más Costosos</h2>
+
+<h3>Error 1: Feature Engineering Diferente En Training vs Inference — Training-Serving Skew</h3>
+<p><strong>El problema</strong>: El equipo de datos calcula las features para entrenamiento en un notebook con cierta lógica (digamos, ventana de 7 días con media móvil), pero en producción el servicio de inference calcula la misma feature con lógica ligeramente diferente (ventana de 7 días corridos, sin min_periods). El modelo se entrenó con datos A pero predice con datos B. Esto hace que tu AUC sea de 0.92 en validación pero 0.67 en producción. En Colombia diríamos que "el que cogió la cosa, cogió el malecón".</p>
+
+<p><strong>El fix</strong>: Usar un feature store como Feast o Tecton donde la lógica de la feature se define UNA sola vez en el feature registry y se aplica tanto en el offline store (training) como en el online store (inference). No hay dos lógicas — hay una sola fuente de la verdad.</p>
+
+<pre><code># ANTES (skew guarantee):
+# Notebook:  df['feature'] = df.groupby('x').y.transform('mean')  # pandas mean
+# API:       feature = df.groupby('x').y.mean()  #有不同的NaN处理!
+
+# DESPUÉS (con feature store):
+# Una sola definicion en feature_view.schema, Feast se encarga de materializar
+# tanto para entrenamiento como para inference
+</code></pre>
+
+<h3>Error 2: No Reusar Features Entre Modelos</h3>
+<p><strong>El problema</strong>: El equipo A construye un modelo de churn y calcula <code>days_since_last_login</code>, <code>session_count_30d</code>, <code>feature_eng_xyz</code>. Meses después, el equipo B construye un modelo de propensity y recalcula las MISMAS features desde cero, probablemente con lógica ligeramente diferente. Resultado: 3 equipos calculando las mismas features 5 veces con lógicas distintas. En Colombia: "a buenas horas, mangas verdes".</p>
+
+<p><strong>El fix</strong>: El feature registry no solo almacena features — también las hace descubribles. Cuando el equipo B necesita una feature, busca en el registry primero. Si existe y sirve, se reutiliza. Si no existe, se crea UNA vez y se registra. Los feature stores tienen sistemas de búsqueda y lineage para esto.</p>
+
+<pre><code># Buscar features en el registry
+fs.list_feature_views()
+fs.get_feature_view("user_transaction_features")
+
+# Ver el lineage: de dónde viene la feature, quién la creó, cuándo se actualizó
+fs.get_streamingStats("user_transaction_features:transaction_count_7d")
+</code></pre>
+
+<h3>Error 3: No Documentar Feature Lineage</h3>
+<p><strong>El problema</strong>: Tres meses después de deployar el modelo de fraude, alguien pregunta "¿de dónde salió esa feature de velocity_score"? Nadie sabe con certeza. ¿Viene del evento de clickstream o de la tabla de transacciones? ¿Con qué transformación? ¿Qué pasa si el equipo de datos cambia la tabla fuente y nadie lo sabe? El modelo empieza a degrade silenciosamente. En Colombia: "el que no tiene memoria, tiene olvido".</p>
+
+<p><strong>El fix</strong>: Cada feature en el registry debe tener metadata completa: nombre, descripción,owner/equipo responsable, tabla/fuente de datos original, transformación aplicada, tags de negocio, y fecha de creación. Feast soporta esto nativamente con la documentación del feature view. Tecton va más allá con approval workflows y feature SLA monitoring.</p>
+
+<pre><code>feature_view = FeatureView(
+    name="fraud_detection_features",
+    entities=[user_entity],
+    ttl=timedelta(days=7),
+    schema=[
+        Field(name="velocity_score", dtype=Float32),
+        Field(name="account_age_days", dtype=Int32),
+    ],
+    description="Features para detección de fraude. "
+                "velocity_score = suma de transacciones últimas 24h / desviación estándar. "
+                "Fuente: fraud_events_stream. "
+                "Owner: equipo-riesgo. "
+                "Tags: ['fraude', 'tiempo-real', 'critical'].",
+    tags={"team": "riesgo", "model": "fraud-v2", "sla": "99.9"},
+)
+</code></pre>
+
 <hr>
-<p><em>Eso es todo! Nos vemos mañana en el Dia 216.</em></p>
+<h2>🏁 Resumen y Cierre</h2>
+<p>Hagale pues, como decimos en Colombia: un feature store no es solo "guardar features en una base de datos". Es tener UNA sola forma de calcularlas, documentarlas, y servirlas tanto para entrenamiento como para inference. Es eliminar el skew, evitar el retrabajo y mantener el lineage.</p>
+
+<p>Feast es el punto de entrada más accesible (gratis, open source, local-first). Tecton es la versión enterprise con más features pero con costo. Para la mayoría de equipos, empezar con Feast y un Redis como online store es más que suficiente.</p>
+
+<p>El que no documenta sus features, termina recalculándolas. Y en esto de datos, como en la vida: "quien no sabe de dónde viene, no sabe a dónde va".</p>
+
+<p><em>Eso es todo, parcero. Mañana en el Día 216 hablamos de Data Validation con Great Expectations — el quality guard que tu pipeline necesita. Dejala ahí la curiosidad.</em></p>
   </article>
 
   <script>
