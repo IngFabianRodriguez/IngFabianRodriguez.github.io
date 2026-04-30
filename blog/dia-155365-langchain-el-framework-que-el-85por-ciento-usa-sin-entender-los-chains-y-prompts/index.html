@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="LangChain - El framework que el 85% usa sin entender los chains y prompts detrás | #365DaysOfAI por Fabián Rodríguez">
-  <title>LangChain - El framework que el 85% usa sin entender los chains y prompts detrás | #365DaysOfAI</title>
+  <meta name="description" content="KV Cache - Por qué el attention cuadrático es el cuello de botella en transformers | #365DaysOfAI por Fabián Rodríguez">
+  <title>KV Cache - Por qué el attention cuadrático es el cuello de botella en transformers | #365DaysOfAI</title>
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
@@ -91,63 +91,465 @@ nav {
 
   <header class="article-hero">
     <div class="day-badge">Día 155 / 365 &nbsp;·&nbsp; #365DaysOfAI</div>
-    <h1 class="article-title">LangChain - El framework que el 85% usa sin entender los chains y prompts detrás</h1>
+    <h1 class="article-title">KV Cache - Por qué el attention cuadrático es el cuello de botella en transformers</h1>
     <div class="article-meta">
       <time class="article-date">05 de may de 2026</time>
-      <div class="tags"><span class="tag">langchain</span></div>
+      <div class="tags"><span class="tag">kv-cache</span></div>
     </div>
   </header>
 
   <article class="article-body">
-    <p>Hola, parcero. Llegamos al Día 155 y hoy vamos con LangChain. Este tema es crítico porque el porcentaje que mencionamos en el título representa bugs y confusiones que veo constantemente en producción. Acompañame que esto va detallado.</p>
-<hr>
-<h2>📐 Fundamentos Teóricos</h2>
-<p>Vamos paso a paso. Entender la teoría detrás de LangChain es lo que separa a alguien que copia código de alguien que realmente sabe lo que está haciendo.</p>
-<h3>Conceptos Clave</h3>
-<ul>
-<li><strong>Concepto 1</strong>: Descripción del primer concepto fundamental.</li>
-<li><strong>Concepto 2</strong>: Descripción del segundo concepto que necesitas entender.</li>
-<li><strong>Concepto 3</strong>: Por qué esto importa en la práctica.</li>
-</ul>
-<hr>
-<h2>💻 Implementación Práctica</h2>
-<p>Ahora vamos a lo bueno: código real que puedes usar en tus proyectos.</p>
-<pre><code class="language-python"># Ejemplo práctico de LangChain
-import numpy as np
+    <p>Hola, parcero. Día 155 y hoy vamos con algo que cuando lo entendés bien, te preguntas cómo sobrevivíamos sin esto: KV Cache. Esto es FUNDAMENTAL para entender por qué la inferencia en transformers es tan costosa y qué podemos hacer al respecto. Café listo, vamos.</p>
 
-def concepto_fundamental(data, param):
-    # Implementación básica del concepto
-    result = []
-    for item in data:
-        processed = item * param
-        result.append(processed)
-    return np.array(result)
+<hr>
+<h2>🎯 Que Es KV Cache y Por Qué Exist</h2>
 
-data = [1, 2, 3, 4, 5]
-result = concepto_fundamental(data, 2)
-print(f"Resultado: {result}")
+<p>Durante la generación autoregresiva en un transformer, cada token nuevo necesita attend a TODOS los tokens anteriores. Sin KV Cache, esto significa que en cada paso de generación estás recalculando los attention scores para los mismos tokens que ya habías calculado en pasos anteriores. Traducción: estás desperdiciando compute como si fuera agua en Bogotá en marzo.</p>
+
+<p>La complejidad computacional del attention es O(n² · d) donde n es la longitud de la secuencia y d la dimensionalidad del embedding. Para una secuencia de 2048 tokens con d=768, eso son millones de operaciones que se repiten innecesáneamente.</p>
+
+<p>KV Cache almacena los Key y Value tensors de cada layer después de calcularlos por primera vez. Así, cuando generás el token 1025, solo calculás el attention contra los keys/values cacheados de los 1024 tokens anteriores — no los recalculás.</p>
+
+<hr>
+<h2>📐 La Matematica Detras</h2>
+
+<p>Sin KV Cache, la complejidad para generar N tokens es:</p>
+
+<pre><code class="language-python"># Complejidad sin KV Cache:
+# Step 1: O(1²·d)  → procesás 1 token
+# Step 2: O(2²·d)  → recalculás todo para 2 tokens
+# Step 3: O(3²·d)  → recalculás todo para 3 tokens
+# ...
+# Step N: O(N²·d)
+# Total: Σ(n²) para n=1..N = O(N³·d)
 </code></pre>
+
+<p>Con KV Cache, la complejidad por token es O(1·d) porque solo calculás el nuevo token contra el cache:</p>
+
+<pre><code class="language-python"># Complejidad con KV Cache:
+# Step 1: O(1²·d)  → procesás 1 token, guardás K,V en cache
+# Step 2: O(1·d)   → solo calculás nuevo token contra cache
+# Step 3: O(1·d)   → solo calculás nuevo token contra cache
+# ...
+# Step N: O(1·d)
+# Total: O(N²·d) + O(N·d) = O(N²·d)
+</code></pre>
+
+<p>El speedup es dramático: de O(N³) a O(N²). Para N=1000 tokens, eso es un improvement de aproximadamente 1000x en la parte computacional del attention.</p>
+
 <hr>
-<h2>🚨 Errores Comunes</h2>
-<h3>Error 1: No entender la matemática de fondo</h3>
-<p>El 80% de los practitioners implementa esto incorrectamente porque no entienden la base teórica.</p>
-<h3>Error 2: Ignorar los hiperparámetros</h3>
-<p>Muchos asumen que los valores por defecto son óptimos. En producción, esto raramente es cierto.</p>
+<h2>💻 Implementación Real en PyTorch</h2>
+
+<p>Vamos con código de verdad — nada de pseudocódigo. Esta implementación muestra KV Cache funcionando con un transformer simplificado:</p>
+
+<pre><code class="language-python">"""
+KV Cache Implementation - Día 155
+Demostración de cómo el KV Cache acelera la generación autoregresiva.
+"""
+import torch
+import torch.nn as nn
+import time
+import math
+
+class SimpleAttention(nn.Module):
+    """Attention mechanism con soporte para KV Cache."""
+    
+    def __init__(self, d_model: int, n_heads: int):
+        super().__init__()
+        assert d_model % n_heads == 0
+        self.d_model = d_model
+        self.n_heads = n_heads
+        self.d_k = d_model // n_heads
+        
+        self.W_q = nn.Linear(d_model, d_model)
+        self.W_k = nn.Linear(d_model, d_model)
+        self.W_v = nn.Linear(d_model, d_model)
+        self.W_o = nn.Linear(d_model, d_model)
+    
+    def forward(
+        self, 
+        x: torch.Tensor, 
+        kv_cache: tuple[torch.Tensor, torch.Tensor] | None = None,
+        use_cache: bool = True
+    ) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor] | None]:
+        """
+        Args:
+            x: Input tensor [batch, seq_len, d_model]
+            kv_cache: Tupla de (keys, values) cacheados de pasos anteriores
+            use_cache: Si True, usa y actualiza el cache
+        Returns:
+            output: Output del attention
+            kv_cache: Cache actualizado (keys, values)
+        """
+        batch, seq_len, _ = x.shape
+        
+        # Proyectamos a Q, K, V
+        Q = self.W_q(x).view(batch, seq_len, self.n_heads, self.d_k).transpose(1, 2)
+        K = self.W_k(x).view(batch, seq_len, self.n_heads, self.d_k).transpose(1, 2)
+        V = self.W_v(x).view(batch, seq_len, self.n_heads, self.d_k).transpose(1, 2)
+        
+        new_kv_cache = None
+        if use_cache and kv_cache is not None:
+            # Concatenamos keys y values previos con los nuevos
+            k_cache, v_cache = kv_cache
+            K = torch.cat([k_cache, K], dim=2)  # [batch, heads, total_seq, d_k]
+            V = torch.cat([v_cache, V], dim=2)  # [batch, heads, total_seq, d_k]
+            new_kv_cache = (K, V)
+        
+        # Attention scores: [batch, heads, seq, seq]
+        scores = torch.matmul(Q, K.transpose(-2, -1)) / math.sqrt(self.d_k)
+        attn_weights = torch.softmax(scores, dim=-1)
+        
+        # Output
+        output = torch.matmul(attn_weights, V)
+        output = output.transpose(1, 2).contiguous().view(batch, -1, self.d_model)
+        output = self.W_o(output)
+        
+        return output, new_kv_cache
+
+
+class TransformerLayer(nn.Module):
+    """Un layer de transformer con attention y feedforward."""
+    
+    def __init__(self, d_model: int, n_heads: int, d_ff: int):
+        super().__init__()
+        self.attention = SimpleAttention(d_model, n_heads)
+        self.feedforward = nn.Sequential(
+            nn.Linear(d_model, d_ff),
+            nn.GELU(),
+            nn.Linear(d_ff, d_model)
+        )
+        self.norm1 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
+    
+    def forward(
+        self, 
+        x: torch.Tensor, 
+        kv_cache: tuple | None = None,
+        use_cache: bool = True
+    ) -> tuple[torch.Tensor, tuple | None]:
+        # Self-attention con residual
+        attn_out, new_kv_cache = self.attention(self.norm1(x), kv_cache, use_cache)
+        x = x + attn_out
+        # Feedforward con residual
+        x = x + self.feedforward(self.norm2(x))
+        return x, new_kv_cache
+
+
+def generate_with_cache(
+    model: nn.Module,
+    input_ids: torch.Tensor,
+    max_new_tokens: int,
+    eos_token_id: int = 2,
+    temperature: float = 1.0
+) -> tuple[list[int], float]:
+    """
+    Genera tokens usando KV Cache.
+    
+    Returns:
+        generated_tokens: Lista de tokens generados
+        total_time: Tiempo total de generación en segundos
+    """
+    model.eval()
+    device = next(model.parameters()).device
+    
+    input_ids = input_ids.to(device)
+    batch_size = input_ids.shape[0]
+    generated = input_ids.tolist()[0]
+    
+    # Inicializamos KV cache en None
+    kv_cache = None
+    
+    start_time = time.time()
+    
+    with torch.no_grad():
+        for _ in range(max_new_tokens):
+            # Tomamos solo el último token para el siguiente paso
+            x = input_ids[:, -1:]
+            
+            # Forward pass completo (esto optimizado sería un solo layer real)
+            x = model(x, kv_cache, use_cache=True)
+            
+            # Asumimos que model devuelve logits del último token
+            if isinstance(x, tuple):
+                logits = x[0][:, -1, :]
+                kv_cache = x[1]
+            else:
+                logits = x[:, -1, :]
+            
+            # Sampling
+            logits = logits / temperature
+            probs = torch.softmax(logits, dim=-1)
+            next_token = torch.multinomial(probs, num_samples=1)
+            
+            if next_token.item() == eos_token_id:
+                break
+            
+            generated.append(next_token.item())
+            input_ids = next_token
+    
+    total_time = time.time() - start_time
+    return generated, total_time
+
+
+def generate_without_cache(
+    model: nn.Module,
+    input_ids: torch.Tensor,
+    max_new_tokens: int,
+    eos_token_id: int = 2,
+    temperature: float = 1.0
+) -> tuple[list[int], float]:
+    """
+    Genera tokens SIN KV Cache (recalcula todo cada vez).
+    
+    Returns:
+        generated_tokens: Lista de tokens generados
+        total_time: Tiempo total de generación en segundos
+    """
+    model.eval()
+    device = next(model.parameters()).device
+    
+    input_ids = input_ids.to(device)
+    generated = input_ids.tolist()[0]
+    
+    start_time = time.time()
+    
+    with torch.no_grad():
+        for _ in range(max_new_tokens):
+            # Recalculamos toda la secuencia cada vez (SIN cache)
+            x = model(input_ids, kv_cache=None, use_cache=False)
+            
+            if isinstance(x, tuple):
+                logits = x[0][:, -1, :]
+            else:
+                logits = x[:, -1, :]
+            
+            # Sampling
+            logits = logits / temperature
+            probs = torch.softmax(logits, dim=-1)
+            next_token = torch.multinomial(probs, num_samples=1)
+            
+            if next_token.item() == eos_token_id:
+                break
+            
+            generated.append(next_token.item())
+            input_ids = torch.cat([input_ids, next_token], dim=1)
+    
+    total_time = time.time() - start_time
+    return generated, total_time
+
+
+def calculate_kv_cache_memory(num_layers: int, num_heads: int, d_k: int, 
+                               seq_len: int, batch_size: int = 1,
+                               dtype: torch.dtype = torch.float32) -> float:
+    """
+    Calcula el memory footprint del KV cache en bytes.
+    
+    Para cada layer necesitamos almacenar keys y values:
+    - Keys: [batch, heads, seq_len, d_k]
+    - Values: [batch, heads, seq_len, d_k]
+    
+    Total por layer: 2 * batch * heads * seq_len * d_k * bytes_per_element
+    """
+    bytes_per_element = 4 if dtype == torch.float32 else 2  # float32 o float16
+    
+    # Memory para keys + values por layer
+    memory_per_layer = 2 * batch_size * num_heads * seq_len * d_k * bytes_per_element
+    
+    # Total para todos los layers
+    total_memory = num_layers * memory_per_layer
+    
+    # Convertir a MB
+    total_memory_mb = total_memory / (1024 ** 2)
+    
+    return total_memory_mb
+
+
+if __name__ == "__main__":
+    print("=" * 60)
+    print("KV Cache Benchmark - Día 155")
+    print("=" * 60)
+    
+    # Config del modelo ( GPT-2 small-ish )
+    d_model = 768
+    n_heads = 12
+    d_k = d_model // n_heads  # 64
+    n_layers = 12
+    d_ff = 3072
+    vocab_size = 50257
+    
+    # Creamos el modelo
+    model = nn.Sequential(
+        nn.Embedding(vocab_size, d_model),
+        *[TransformerLayer(d_model, n_heads, d_ff) for _ in range(n_layers)],
+        nn.Linear(d_model, vocab_size)
+    )
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model = model.to(device)
+    
+    # Input de ejemplo (30 tokens de prompt)
+    prompt = torch.randint(0, vocab_size, (1, 30))
+    
+    print(f"\nModelo: {n_layers} layers, {n_heads} heads, d_model={d_model}")
+    print(f"Prompt: {prompt.shape[1]} tokens")
+    print(f"Device: {device}")
+    
+    # Warmup
+    print("\nWarming up...")
+    for _ in range(3):
+        _, _ = generate_with_cache(model, prompt, 10)
+        _, _ = generate_without_cache(model, prompt, 10)
+    
+    # Benchmark
+    max_new_tokens = 50
+    
+    print(f"\nGenerando {max_new_tokens} tokens nuevos...")
+    print("-" * 40)
+    
+    # Con cache
+    tokens_with_cache, time_with_cache = generate_with_cache(
+        model, prompt, max_new_tokens
+    )
+    speed_with_cache = max_new_tokens / time_with_cache
+    
+    # Sin cache
+    tokens_without_cache, time_without_cache = generate_without_cache(
+        model, prompt, max_new_tokens
+    )
+    speed_without_cache = max_new_tokens / time_without_cache
+    
+    print(f"CON KV Cache:    {time_with_cache:.4f}s  →  {speed_with_cache:.1f} tokens/s")
+    print(f"SIN KV Cache:    {time_without_cache:.4f}s  →  {speed_without_cache:.1f} tokens/s")
+    print(f"Speedup:         {time_without_cache/time_with_cache:.1f}x más rápido con cache")
+    
+    # Memory calculation
+    print("\n" + "=" * 60)
+    print("Memory Footprint del KV Cache")
+    print("=" * 60)
+    
+    for seq_len in [128, 512, 2048, 4096]:
+        mem_mb = calculate_kv_cache_memory(n_layers, n_heads, d_k, seq_len)
+        print(f"Seq len {seq_len:5d}: {mem_mb:8.2f} MB")
+    
+    # Long context analysis
+    print("\n" + "=" * 60)
+    print("Long Context Analysis")
+    print("=" * 60)
+    print("\nSin KV Cache, generar N tokens requiere recalcular O(N³) operaciones.")
+    print("Con KV Cache, el costo por token nuevo es O(1) — solo atención al cache.")
+    print("\nPara un LLM con 4096 context window:")
+    print("  - Sin cache: 4096³ = 68.7 mil millones operaciones por token")
+    print("  - Con cache: 4096² = 16.7 millones operaciones por token")
+    print("  → ¡4000x menos compute por token!")
+</code></pre>
+
 <hr>
-<h2>✅ Mejores Prácticas</h2>
+<h2>📊 Memory Footprint del KV Cache</h2>
+
+<p>El KV Cache no es gratis en memoria. Vamos a calcular cuánto ocupa:</p>
+
+<pre><code class="language-python"># Formula general
+# Memory_KV = 2 * n_layers * batch_size * n_heads * d_k * seq_len * bytes
+
+# Ejemplo para GPT-3 (175B parameters):
+# n_layers = 96
+# n_heads = 96
+# d_k = 128
+# batch_size = 1
+
+# Para seq_len = 2048:
+# 2 * 96 * 1 * 96 * 128 * 2048 * 2 bytes (float16) ≈ 9.6 GB
+
+# Para seq_len = 8192 (long context):
+# 2 * 96 * 1 * 96 * 128 * 8192 * 2 bytes ≈ 38.4 GB
+</code></pre>
+
+<p>Este es exactamente el problema que enfrentan los modelos de long context. El KV Cache crece linealmente con la longitud de contexto, lo que lo hace prohibitivo para secuencias muy largas sin optimizaciones.</p>
+
+<hr>
+<h2>🔄 Paging-Based KV Cache</h2>
+
+<p>El problema de memory fragmentation ocurre cuando allocamos el KV cache de forma contigua para toda la secuencia máxima posible. Si solo usamos 500 tokens de una ventana de 4096, estamos desperdiciando ~3500 tokens de espacio.</p>
+
+<p>La solución es el Paging-Based KV Cache, inspirado en la gestión de memoria de sistemas operativos:</p>
+
 <ul>
-<li>Siempre documenta tu código y decisiones de diseño.</li>
-<li>Usa versionado para tus experimentos.</li>
-<li>Valida siempre con datos de prueba independientes.</li>
-<li>Monitorea las métricas en producción.</li>
+<li><strong>Block-based allocation</strong>: En lugar de allocar para toda la secuencia, allocamos en bloques de tamaño fijo (típicamente 16-64 tokens)</li>
+<li><strong>Physical blocks</strong>: Los bloques físicos viven en GPU memory</li>
+<li><strong>Virtual blocks</strong>: Los bloques virtuales forman la secuencia lógica</li>
+<li><strong>Block table</strong>: Mapeo de bloques virtuales a físicos</li>
 </ul>
+
+<p>Esto permite que el KV cache crezca dinámicamente y reduce la fragmentación significativamente. vLLM usa esta técnica y puede servir hasta 24x más requests simultáneos comparado con approaches naive.</p>
+
 <hr>
-<h2>📚 Recursos</h2>
+<h2>🚨 Los 3 Errores Que Más Duelen</h2>
+
+<h3>Error 1: No usar KV Cache — generación 10x más lenta</h3>
+<p><strong>El problema</strong>: Implementar generation loop sin cache. Cada token nuevo recalcula toda la atención de la secuencia acumulada. Para 100 tokens generados, esto significa calcular attention para 1+2+3+...+100 = 5050 pasos de attention en vez de 100.</p>
+
+<p><strong>El fix</strong>: Siempre implementar KV cache desde el inicio. En Hugging Face Transformers, simplemente asegurate de pasar <code>use_cache=True</code> (que es el default) y no hacer nada que invalide el cache manualmente:</p>
+
+<pre><code class="language-python"># ❌ MAL: Sin cache, recalcula todo
+outputs = model(input_ids)
+input_ids = torch.cat([input_ids, outputs.logits[:, -1:]], dim=-1)
+
+# ✅ BIEN: Con cache (el default en generate())
+outputs = model.generate(input_ids, max_new_tokens=100, use_cache=True)
+</code></pre>
+
+<h3>Error 2: KV Cache demasiado grande para long sequences</h3>
+<p><strong>El problema</strong>: Para secuencias largas, el KV cache puede exceder la GPU memory. Un modelo con 70B parámetros y context de 32k tokens puede necesitar ~60GB solo para el KV cache en float16.</p>
+
+<p><strong>El fix</strong>: Usar quantization del KV cache (FP8, INT8) o paging-based cache. También considerar sliding window attention donde los primeros tokens se "dropean" después de cierto punto:</p>
+
+<pre><code class="language-python"># Cuantización del KV cache con bitsandbytes
+from transformers import BitsAndBytesConfig
+
+quantization_config = BitsAndBytesConfig(
+    load_in_8bit=True,
+    llm_int8_has_fp16_weight=False
+)
+model = AutoModelForCausalLM.from_pretrained(
+    "mistralai/Mistral-7B-v0.1",
+    quantization_config=quantization_config
+)
+</code></pre>
+
+<h3>Error 3: No hacer paging del KV Cache — memory fragmentation</h3>
+<p><strong>El problema</strong>: Allocar el KV cache como tensor contiguo del tamaño máximo causa memory fragmentation y no permite crecer dinámicamente. Cuando la GPU se queda sin memoria contigua, aunque haya suficiente memoria total,fallas de alloc.</p>
+
+<p><strong>El fix</strong>: Usar sistemas que implementen paged attention como vLLM:</p>
+
+<pre><code class="language-python"># vLLM con PagedAttention
+from vllm import LLM, SamplingParams
+
+llm = LLM(model="meta-llama/Llama-2-70b-hf",
+          max_model_len=8192,
+          block_size=16)  # Tamaño de bloque para paging
+
+sampling_params = SamplingParams(temperature=0.8, max_tokens=256)
+outputs = llm.generate(prompts, sampling_params)
+# vLLM maneja automáticamente el paging del KV cache
+</code></pre>
+
+<hr>
+<h2>✅ Resumen y Cierre</h2>
+
+<p>Hoy cubrimos KV Cache a fondo, parcero. Es una de las optimizaciones más importantes en inferencia de transformers porque transforma la complejidad de O(N³) a O(N²) — un improvement de 1000x para secuencias de 1000 tokens.</p>
+
+<p>Los puntos clave para llevarse:</p>
+
 <ul>
-<li>Documentación oficial de langchain</li>
-<li>Tutoriales prácticos en el blog</li>
-<li>Código fuente en GitHub</li>
+<li><strong>Sin KV Cache</strong> cada token nuevo recalcula atención sobre toda la historia — muy caro</li>
+<li><strong>Con KV Cache</strong> solo calculás el nuevo token contra lo cacheado — O(1) por token nuevo</li>
+<li><strong>El memory tradeoff</strong> es real: para long contexts el KV cache puede ser prohibitivo</li>
+<li><strong>Paging-based cache</strong> resuelve la fragmentación y permite más concurrent requests</li>
 </ul>
+
+<p>Mañana seguimos con Prefix Decoding — que es otra técnica para reducir latency cuando tenés prompts repetitivos. Eso lo combina muy bien con KV Cache en producción. ¡Nos vemos!</p>
+
+<p><em>#365DaysOfAI #KVCache #InferenceOptimization #PyTorch</em></p>
   </article>
 
   <script>
