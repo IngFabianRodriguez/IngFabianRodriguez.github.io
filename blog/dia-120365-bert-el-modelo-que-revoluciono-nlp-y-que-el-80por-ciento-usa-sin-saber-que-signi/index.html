@@ -99,55 +99,524 @@ nav {
   </header>
 
   <article class="article-body">
-    <p>Hola, parcero. Llegamos al Día 120 y hoy vamos con BERT. Este tema es crítico porque el porcentaje que mencionamos en el título representa bugs y confusiones que veo constantemente en producción. Acompañame que esto va detallado.</p>
+    <p>Hola, parcero. Llegamos al Día 120 y hoy vamos con BERT: <em>Bidirectional Encoder Representations from Transformers</em>. Si Attention fue la teoría, BERT es la aplicación que cambió cómo hacemos NLP. Fue introduced by Google in 2018 y hoy el 80% de los practitioners lo usa sin entender qué significa cada token en la entrada. Vamos a cambiar eso.</p>
+
 <hr>
-<h2>📐 Fundamentos Teóricos</h2>
-<p>Vamos paso a paso. Entender la teoría detrás de BERT es lo que separa a alguien que copia código de alguien que realmente sabe lo que está haciendo.</p>
-<h3>Conceptos Clave</h3>
+<h2>📜 Contexto: De Transformer a BERT</h2>
+
+<p>Después del paper de Attention en 2017, la pregunta era: ¿podemos usar solo el encoder del transformer para crear un modelo que entienda bidireccional context? La respuesta de Google fue BERT en 2018.</p>
+
+<p>La innovación clave: <strong>Masked Language Modeling (MLM)</strong>. En lugar de predecir la siguiente palabra (como GPT), BERT mask tokens aleatorios y predice el token enmascarado. Esto permite que el modelo vea contexto de ambas direcciones.</p>
+
+<blockquote>El paper original: "BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding" por Jacob Devlin, Ming-Wei Chang, Kenton Lee y Kristina Toutanova (Google AI, 2018).</blockquote>
+
+<hr>
+<h2>🧠 Arquitectura y Objetivos de Pre-training</h2>
+
+<h3>2.1 Masked Language Model (MLM)</h3>
+
+<p>El objetivo principal de BERT. Del 15% de tokens en cada secuencia:</p>
 <ul>
-<li><strong>Concepto 1</strong>: Descripción del primer concepto fundamental.</li>
-<li><strong>Concepto 2</strong>: Descripción del segundo concepto que necesitas entender.</li>
-<li><strong>Concepto 3</strong>: Por qué esto importa en la práctica.</li>
+<li>80% se reemplazan con <code>[MASK]</code></li>
+<li>10% se reemplazan con un token aleatorio</li>
+<li>10% se mantienen igual (pero el modelo aún debe predecirlos)</li>
 </ul>
+
+<div class="katex-display">\mathcal{L}_{\text{MLM}} = -\sum_{i \in \text{masked}} \log P(w_i | \text{context})</div>
+
+<h3>2.2 Next Sentence Prediction (NSP)</h3>
+
+<p>Para tareas que requieren entender relaciones entre oraciones (QA, NLI):</p>
+<ul>
+<li>50% de las veces, la segunda oración es realmente la siguiente</li>
+<li>50% de las veces, es una oración aleatoria del corpus</li>
+</ul>
+
+<div class="katex-display">\mathcal{L}_{\text{NSP}} = -\sum_{i} \log P(\text{isNext} | \text{sentence}_A, \text{sentence}_B)</div>
+
+<h3>2.3 Input Representation: Los Tokens que Nadie Entiende</h3>
+
+<p>BERT usa WordPiece tokenization con tres embeddings相加:</p>
+
+<div class="katex-display">\text{input} = \text{TokenEmbeddings} + \text{SegmentEmbeddings} + \text{PositionEmbeddings}</div>
+
+<ul>
+<li><code>[CLS]</code>: token de clasificación al inicio. Su representación final se usa para clasificación de secuencias.</li>
+<li><code>[SEP]</code>: separator entre oraciones en tareas de sentence pair.</li>
+<li><code>[PAD]</code>: padding para secuencias cortas.</li>
+<li><code>Token Type IDs</code>: distingue oración A (0) de oración B (1) — esto es CRÍTICO para sentence pair tasks.</li>
+</ul>
+
 <hr>
-<h2>💻 Implementación Práctica</h2>
-<p>Ahora vamos a lo bueno: código real que puedes usar en tus proyectos.</p>
-<pre><code class="language-python"># Ejemplo práctico de BERT
-import numpy as np
+<h2>💻 Implementación Completa en PyTorch</h2>
 
-def concepto_fundamental(data, param):
-    # Implementación básica del concepto
-    result = []
-    for item in data:
-        processed = item * param
-        result.append(processed)
-    return np.array(result)
+<p>Vamos a implementar BERT desde cero: pre-training objective, MLM head, NSP head, y BERTForSequenceClassification.</p>
 
-data = [1, 2, 3, 4, 5]
-result = concepto_fundamental(data, 2)
-print(f"Resultado: {result}")
+<pre><code class="language-python">import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import math
+import random
+
+
+class BertConfig:
+    """Configuración de BERT-base (original).
+    
+    BERT-base: L=12, H=768, A=12, Total=110M parameters
+    BERT-large: L=24, H=1024, A=16, Total=340M parameters
+    """
+    vocab_size: int = 30522  # WordPiece vocabulary
+    hidden_size: int = 768
+    num_hidden_layers: int = 12
+    num_attention_heads: int = 12
+    intermediate_size: int = 3072
+    hidden_dropout_prob: float = 0.1
+    attention_probs_dropout_prob: float = 0.1
+    max_position_embeddings: int = 512
+    type_vocab_size: int = 2  # Para token_type_ids (oración A vs B)
+
+
+class PositionalEmbedding(nn.Module):
+    """Positional Embeddings Learned — igual que BERT original."""
+    
+    def __init__(self, max_len: int, d_model: int, dropout: float = 0.1):
+        super().__init__()
+        self.pe = nn.Embedding(max_len, d_model)
+        self.dropout = nn.Dropout(p=dropout)
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        batch, seq_len, _ = x.shape
+        positions = torch.arange(seq_len, device=x.device).unsqueeze(0).expand(batch, -1)
+        return self.dropout(x + self.pe(positions))
+
+
+class TokenTypeEmbedding(nn.Module):
+    """Segment Embeddings — distingue oración A (0) de oración B (1).
+    
+    CRÍTICO: Esto es lo que muchos ignoran en sentence pair tasks.
+    Sin esto, BERT no sabe qué oración es cuál.
+    """
+    
+    def __init__(self, num_types: int, d_model: int):
+        super().__init__()
+        self.embed = nn.Embedding(num_types, d_model)
+    
+    def forward(self, token_type_ids: torch.Tensor) -> torch.Tensor:
+        return self.embed(token_type_ids)
+
+
+class BertEmbedding(nn.Module):
+    """Embedding completo de BERT.
+    
+    Suma tres componentes:
+    1. Token embeddings (WordPiece)
+    2. Position embeddings (aprendidas)
+    3. Segment embeddings (oración A vs B)
+    """
+    
+    def __init__(self, config: BertConfig):
+        super().__init__()
+        self.token_embed = nn.Embedding(config.vocab_size, config.hidden_size)
+        self.pos_embed = PositionalEmbedding(
+            config.max_position_embeddings, config.hidden_size
+        )
+        self.seg_embed = TokenTypeEmbedding(
+            config.type_vocab_size, config.hidden_size
+        )
+        self.norm = nn.LayerNorm(config.hidden_size)
+        self.dropout = nn.Dropout(p=config.hidden_dropout_prob)
+    
+    def forward(self, input_ids: torch.Tensor, token_type_ids: torch.Tensor = None) -> torch.Tensor:
+        # input_ids: (batch, seq_len)
+        # token_type_ids: (batch, seq_len) — 0 para oración A, 1 para oración B
+        
+        x = self.token_embed(input_ids)
+        
+        # Si no hay token_type_ids, asumimos todo oración A
+        if token_type_ids is None:
+            token_type_ids = torch.zeros_like(input_ids)
+        
+        x = x + self.seg_embed(token_type_ids)
+        x = self.pos_embed(x)
+        x = self.norm(x)
+        x = self.dropout(x)
+        
+        return x
+
+
+class BertAttention(nn.Module):
+    """Multi-Head Self-Attention para BERT.
+    
+    A diferencia del decoder, aquí NO hay masked attention
+    porque BERT necesita contexto bidireccional completo.
+    """
+    
+    def __init__(self, config: BertConfig):
+        super().__init__()
+        assert config.hidden_size % config.num_attention_heads == 0
+        
+        self.num_heads = config.num_attention_heads
+        self.head_dim = config.hidden_size // config.num_attention_heads
+        
+        self.qkv = nn.Linear(config.hidden_size, config.hidden_size * 3)
+        self.proj = nn.Linear(config.hidden_size, config.hidden_size)
+        self.dropout = nn.Dropout(p=config.attention_probs_dropout_prob)
+    
+    def forward(self, x: torch.Tensor, mask: torch.Tensor = None) -> torch.Tensor:
+        batch, seq_len, _ = x.shape
+        
+        # Q, K, V de una vez
+        qkv = self.qkv(x).reshape(batch, seq_len, 3, self.num_heads, self.head_dim)
+        qkv = qkv.permute(2, 0, 3, 1, 4)  # (3, batch, heads, seq_len, head_dim)
+        q, k, v = qkv[0], qkv[1], qkv[2]
+        
+        # Attention scores
+        scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.head_dim)
+        
+        if mask is not None:
+            scores = scores.masked_fill(mask == 0, float('-inf'))
+        
+        attn = F.softmax(scores, dim=-1)
+        attn = self.dropout(attn)
+        
+        # Apply attention to values
+        x = torch.matmul(attn, v).transpose(1, 2).reshape(batch, seq_len, -1)
+        x = self.proj(x)
+        
+        return x
+
+
+class BertLayer(nn.Module):
+    """Un Transformer Encoder Layer para BERT.
+    
+    Usa pre-layer norm (más estable que post-layer norm).
+    """
+    
+    def __init__(self, config: BertConfig):
+        super().__init__()
+        self.norm1 = nn.LayerNorm(config.hidden_size)
+        self.norm2 = nn.LayerNorm(config.hidden_size)
+        self.attn = BertAttention(config)
+        self.ffn = nn.Sequential(
+            nn.Linear(config.hidden_size, config.intermediate_size),
+            nn.GELU(),  # BERT usa GELU, no ReLU como el paper original
+            nn.Linear(config.intermediate_size, config.hidden_size)
+        )
+        self.dropout = nn.Dropout(p=config.hidden_dropout_prob)
+    
+    def forward(self, x: torch.Tensor, mask: torch.Tensor = None) -> torch.Tensor:
+        # Pre-layer norm (más estable en training)
+        x = x + self.dropout(self.attn(self.norm1(x), mask))
+        x = x + self.dropout(self.ffn(self.norm2(x)))
+        return x
+
+
+class BertEncoder(nn.Module):
+    """Stack de Encoder Layers de BERT."""
+    
+    def __init__(self, config: BertConfig):
+        super().__init__()
+        self.layers = nn.ModuleList([
+            BertLayer(config) for _ in range(config.num_hidden_layers)
+        ])
+    
+    def forward(self, x: torch.Tensor, mask: torch.Tensor = None) -> torch.Tensor:
+        for layer in self.layers:
+            x = layer(x, mask)
+        return x
+
+
+class BertPooler(nn.Module):
+    """Pooling del token [CLS].
+    
+    El output de [CLS] se usa para clasificación de secuencias.
+    """
+    
+    def __init__(self, config: BertConfig):
+        super().__init__()
+        self.dense = nn.Linear(config.hidden_size, config.hidden_size)
+        self.activation = nn.Tanh()
+    
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        # hidden_states: (batch, seq_len, hidden_size)
+        # Tomamos el primer token ([CLS])
+        first_token = hidden_states[:, 0]
+        return self.activation(self.dense(first_token))
+
+
+class BertMLMHead(nn.Module):
+    """Masked Language Model prediction head.
+    
+    Incluye dense layer + layer norm + linear (como en paper).
+    """
+    
+    def __init__(self, config: BertConfig):
+        super().__init__()
+        self.dense = nn.Linear(config.hidden_size, config.hidden_size)
+        self.activation = nn.GELU()
+        self.norm = nn.LayerNorm(config.hidden_size)
+        self.decoder = nn.Linear(config.hidden_size, config.vocab_size)
+    
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        x = self.dense(hidden_states)
+        x = self.activation(x)
+        x = self.norm(x)
+        x = self.decoder(x)
+        return x
+
+
+class BertNSPHead(nn.Module):
+    """Next Sentence Prediction head.
+    
+    Predice si la segunda oración es la siguiente o no.
+    """
+    
+    def __init__(self, config: BertConfig):
+        super().__init__()
+        self.dense = nn.Linear(config.hidden_size, config.hidden_size)
+        self.activation = nn.Tanh()
+        self.out = nn.Linear(config.hidden_size, 2)  # is_next vs not_next
+    
+    def forward(self, pooled_output: torch.Tensor) -> torch.Tensor:
+        x = self.dense(pooled_output)
+        x = self.activation(x)
+        return self.out(x)
+
+
+class BertPreTrainingHeads(nn.Module):
+    """Head para pre-training: MLM + NSP."""
+    
+    def __init__(self, config: BertConfig):
+        super().__init__()
+        self.mlm = BertMLMHead(config)
+        self.nsp = BertNSPHead(config)
+    
+    def forward(self, sequence_output: torch.Tensor, pooled_output: torch.Tensor):
+        mlm_logits = self.mlm(sequence_output)
+        nsp_logits = self.nsp(pooled_output)
+        return mlm_logits, nsp_logits
+
+
+class BertModel(nn.Module):
+    """Modelo base de BERT (solo encoder).
+    
+    Esto es lo que大多数人 usa. No genera texto — solo entiende contexto.
+    Para generación, necesitas un decoder (como GPT).
+    """
+    
+    def __init__(self, config: BertConfig):
+        super().__init__()
+        self.config = config
+        self.embeddings = BertEmbedding(config)
+        self.encoder = BertEncoder(config)
+        self.pooler = BertPooler(config)
+    
+    def forward(self, input_ids: torch.Tensor, token_type_ids: torch.Tensor = None,
+                attention_mask: torch.Tensor = None):
+        # Embedding
+        x = self.embeddings(input_ids, token_type_ids)
+        
+        # Encoder
+        x = self.encoder(x, attention_mask)
+        
+        # Pool [CLS]
+        pooled = self.pooler(x)
+        
+        return x, pooled  # sequence_output, pooled_output
+
+
+class BertForSequenceClassification(nn.Module):
+    """BERT para clasificación de secuencias.
+    
+    Output de [CLS] → clasificación.
+    """
+    
+    def __init__(self, config: BertConfig, num_labels: int = 2):
+        super().__init__()
+        self.bert = BertModel(config)
+        self.classifier = nn.Linear(config.hidden_size, num_labels)
+    
+    def forward(self, input_ids: torch.Tensor, token_type_ids: torch.Tensor = None,
+                attention_mask: torch.Tensor = None, labels: torch.Tensor = None):
+        _, pooled = self.bert(input_ids, token_type_ids, attention_mask)
+        logits = self.classifier(pooled)
+        
+        loss = None
+        if labels is not None:
+            loss = F.cross_entropy(logits, labels)
+        
+        return {'loss': loss, 'logits': logits}
+
+
+class BertPreTraining(nn.Module):
+    """BERT completo para pre-training (MLM + NSP).
+    
+    Para pre-training desde scratch necesitas:
+    1. MLM loss: predecir tokens enmascarados
+    2. NSP loss: predecir si B es siguiente de A
+    
+    ADVERTENCIA: Pre-training desde scratch requiere datos MASSIVOS
+    (BooksCorpus + English Wikipedia = 3.3B words).
+    Para la mayoría de casos, usa un modelo ya pre-entrenado.
+    """
+    
+    def __init__(self, config: BertConfig):
+        super().__init__()
+        self.bert = BertModel(config)
+        self.cls = BertPreTrainingHeads(config)
+    
+    def forward(self, input_ids: torch.Tensor, token_type_ids: torch.Tensor = None,
+                attention_mask: torch.Tensor = None, mlm_labels: torch.Tensor = None,
+                nsp_labels: torch.Tensor = None):
+        sequence_output, pooled_output = self.bert(input_ids, token_type_ids, attention_mask)
+        mlm_logits, nsp_logits = self.cls(sequence_output, pooled_output)
+        
+        loss = None
+        if mlm_labels is not None and nsp_labels is not None:
+            mlm_loss = F.cross_entropy(
+                mlm_logits.view(-1, self.config.vocab_size), 
+                mlm_labels.view(-1)
+            )
+            nsp_loss = F.cross_entropy(nsp_logits, nsp_labels)
+            loss = mlm_loss + nsp_loss
+        
+        return {'loss': loss, 'mlm_logits': mlm_logits, 'nsp_logits': nsp_logits}
+
+
+def mask_tokens(input_ids: torch.Tensor, tokenizer, mlm_prob: float = 0.15):
+    """Aplica masking para MLM pre-training.
+    
+    80% [MASK], 10% random, 10% keep.
+    """
+    labels = input_ids.clone()
+    probability_matrix = torch.full(labels.shape, mlm_prob)
+    
+    # Tokens especiales no se mask
+    special_tokens_mask = (input_ids == 0) | (input_ids == 101) | (input_ids == 102)
+    probability_matrix.masked_fill_(special_tokens_mask, value=0.0)
+    
+    masked_indices = torch.bernoulli(probability_matrix).bool()
+    labels[~masked_indices] = -100  # Solo computa loss en masked positions
+    
+    # 80% → [MASK], 10% → random, 10% → keep
+    indices_replaced = torch.bernoulli(torch.full(labels.shape, 0.8)).bool() & masked_indices
+    input_ids[indices_replaced] = 103  # [MASK] token
+    
+    indices_random = torch.bernoulli(torch.full(labels.shape, 0.5)).bool() & masked_indices & ~indices_replaced
+    random_words = torch.randint(len(tokenizer), input_ids.shape, dtype=torch.long)
+    input_ids[indices_random] = random_words[indices_random]
+    
+    return input_ids, labels
+
+
+def compare_bert_gpt():
+    """Comparación BERT vs GPT — arquitecturas diferentes para propósitos diferentes."""
+    
+    comparison = """
+    | Aspecto              | BERT (Encoder-only)         | GPT (Decoder-only)           |
+    |----------------------|-----------------------------|------------------------------|
+    | Contexto             | Bidireccional               | Unidireccional (causal)      |
+    | Uso principal         | Entendimiento (MLM)         | Generación (LM)             |
+    | Puede generar?       | NO                          | SÍ                           |
+    | [CLS] token          | Sí (clasificación)           | No tiene                     |
+    | Segment embeddings   | Sí (oración A/B)            | No tiene                     |
+    | Pre-training         | MLM + NSP                   | Next token prediction       |
+    | Fine-tuning          | Clasificación/QA/NLI        | Conditional generation       |
+    """
+    print(comparison)
+    
+    print("\n--- BERT ES ENCODER-ONLY: NO PUEDE GENERAR ---")
+    print("Si necesitas generación, usa GPT, T5, BART.")
+    print("Si necesitas entendimiento, usa BERT.")
+
+
+if __name__ == "__main__":
+    config = BertConfig()
+    
+    # Test
+    batch_size, seq_len = 2, 32
+    model = BertPreTraining(config)
+    
+    input_ids = torch.randint(0, config.vocab_size, (batch_size, seq_len))
+    token_type_ids = torch.zeros(batch_size, seq_len, dtype=torch.long)
+    
+    output = model(input_ids, token_type_ids)
+    print(f"MLM logits shape: {output['mlm_logits'].shape}")  # (batch, seq_len, vocab)
+    print(f"NSP logits shape: {output['nsp_logits'].shape}")  # (batch, 2)
+    
+    compare_bert_gpt()
 </code></pre>
+
 <hr>
-<h2>🚨 Errores Comunes</h2>
-<h3>Error 1: No entender la matemática de fondo</h3>
-<p>El 80% de los practitioners implementa esto incorrectamente porque no entienden la base teórica.</p>
-<h3>Error 2: Ignorar los hiperparámetros</h3>
-<p>Muchos asumen que los valores por defecto son óptimos. En producción, esto raramente es cierto.</p>
+<h2>📊 BERT-base vs BERT-large vs RoBERTa</h2>
+
+<table>
+<thead>
+<tr><th>Modelo</th><th>Layers</th><th>Hidden</th><th>Heads</th><th>Params</th><th>Notas</th></tr>
+</thead>
+<tbody>
+<tr><td>BERT-base</td><td>12</td><td>768</td><td>12</td><td>110M</td><td>Original, estándar</td></tr>
+<tr><td>BERT-large</td><td>24</td><td>1024</td><td>16</td><td>340M</td><td>Más grande, mejor accuracy</td></tr>
+<tr><td>RoBERTa</td><td>12</td><td>768</td><td>12</td><td>125M</td><td>Sin NSP, más datos, más training</td></tr>
+</tbody>
+</table>
+
+<p>RoBERTa去掉 NSP y usa más datos (16GB vs 13GB) con training más largo. Su performance es consistentemente mejor que BERT.</p>
+
 <hr>
-<h2>✅ Mejores Prácticas</h2>
+<h2>🚨 Los 3 Errores Más Comunes</h2>
+
+<h3>Error 1: Usar BERT para Generación de Texto</h3>
+
+<p><strong>El error:</strong> Mucha gente intenta usar BERT para generar texto. No funciona. BERT es encoder-only — no tiene causal masking y no puede predecir secuencialmente.</p>
+
+<p><strong>El fix:</strong> Para generación, usa GPT-2, T5, BART, o cualquier modelo decoder-based. BERT es para entendimiento, no generación.</p>
+
+<h3>Error 2: No Usar Segment Embeddings en Sentence Pair Tasks</h3>
+
+<p><strong>El error:</strong> En tareas como QA o NLI, donde hay dos oraciones, muchos olvidan pasar <code>token_type_ids</code> para distinguir oración A de oración B.</p>
+
+<pre><code class="language-python"># MAL: sin token_type_ids
+outputs = model(input_ids=input_ids)
+
+# BIEN: con token_type_ids (0 para oración A, 1 para oración B)
+outputs = model(input_ids=input_ids, token_type_ids=token_type_ids)
+</code></pre>
+
+<p><strong>El fix:</strong> Siempre pasa <code>token_type_ids</code> cuando tienes sentence pairs. Sin esto, BERT no sabe qué oración es cuál.</p>
+
+<h3>Error 3: Pre-training BERT Desde Scratch con Datos Insuficientes</h3>
+
+<p><strong>El error:</strong> Intentar pre-trainear BERT desde cero con datasets pequeños. El pre-training original usó BooksCorpus (800M words) + English Wikipedia (2,500M words).</p>
+
+<p><strong>El fix:</strong> Para la mayoría de casos, usa un modelo ya pre-entrenado (BERT-base, RoBERTa, etc.) y hace fine-tuning en tu dataset. Pre-training desde scratch solo si tienes acceso a datos a escala de internet.</p>
+
+<hr>
+<h2>📚 Recursos y Referencias</h2>
+
 <ul>
-<li>Siempre documenta tu código y decisiones de diseño.</li>
-<li>Usa versionado para tus experimentos.</li>
-<li>Valida siempre con datos de prueba independientes.</li>
-<li>Monitorea las métricas en producción.</li>
+<li><a href="https://arxiv.org/abs/1810.04805">Paper original: BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding</a></li>
+<li><a href="https://huggingface.co/bert-base-uncased">Hugging Face: BERT-base-uncased</a></li>
+<li><a href="https://huggingface.co/docs/transformers/model_doc/bert">Hugging Face BERT Documentation</a></li>
+<li><a href="https://arxiv.org/abs/1907.11692">RoBERTa: A Robustly Optimized BERT Pretraining Approach</a></li>
 </ul>
+
 <hr>
-<h2>📚 Recursos</h2>
+<h2>🏁 Resumen y Cierre</h2>
+
+<p>Hoy aprendimos que BERT es:</p>
 <ul>
-<li>Documentación oficial de transformers</li>
-<li>Tutoriales prácticos en el blog</li>
-<li>Código fuente en GitHub</li>
+<li><strong>Encoder-only</strong>: bidireccional, pero no puede generar</li>
+<li><strong>MLM + NSP</strong>: pre-training objectives que lo hacen poderoso para entendimiento</li>
+<li><strong>Segment embeddings</strong>: CRÍTICOS para sentence pair tasks</li>
+<li><strong>Fine-tuning</strong>: la mayoría de casos, no pre-training desde scratch</li>
 </ul>
+
+<p>Los errores comunes: usarlo para generación, olvidar segment embeddings, y pre-trainear con datos insuficientes. Con esto, ya sabes lo que el 80% no sabe.</p>
+
+<p>Parcero, mañana es Día 121 y vamos a seguir con más. Nos vemos.</p>
+
+<p><em>— Fabián</em></p>
   </article>
 
   <script>
