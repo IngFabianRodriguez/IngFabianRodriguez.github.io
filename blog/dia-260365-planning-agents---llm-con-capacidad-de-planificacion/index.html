@@ -119,430 +119,295 @@ nav {
 
   <article class="article-body">
 <h2>☕ Intro</h2>
-<p>Hagale pues, parcero. Día 260 y hoy voy a hablarte de algo que el 85% IGNORA y que puede ahorrarte el 70% de tus costos de inference: <strong>Caching y Semantic Caching</strong>. Si estás pagando $0.01 por cada query a tu LLM y el 40% de tus usuarios preguntan lo mismo 3 veces... pues ahí tienes el problema.短<span id="mttsp">局部变量</span> oKey takeaway: cada query que no cacheas es dinero quemado.</p>
-<p>En Colombia, una fintech mediana procesa 50K conversaciones de soporte al mes con un LLM. Sin cache, eso son $500/mes en inference. Con semantic cache efectivo, bajan a $150/mes. La diferencia: $350/mes ahorrados, o $4,200/año. Eso paga un viaje a San Andrés, parcero.</p>
-<h2>🔎 ¿Por qué Caching?</h2>
-<p>El problema fundamental: <strong>las queries se repiten</strong>. No importa qué chatbot construyas:</p>
+<p>Hagale pues, parcero. Día 260 y hoy vamos a hablar de algo que el 80% de los practitioners de agentes IGNORAN: <strong>Planning Agents</strong>. Si tu agente hace las cosas sin un plan, sin pensar en la secuencia de pasos, sin anticipar obstáculos... pues eso no es un agente, es un script chamarrón.</p>
+<p>En una empresa de logística en Medellín, tenían un chatbot que procesaba órdenes de envío. El bot hacía las cosas en orden aleatorio: a veces cobraba primero, a veces verificaba inventario después, a veces neither. El resultado: 30% de errores en órdenes. La solución: un agent con capacidad de planificación que define la secuencia óptima de acciones antes de ejecutar.</p>
+<h2>🔎 ¿Qué es un Planning Agent?</h2>
+<p>Un Planning Agent es un agente que, dado un objetivo, <strong>delibera y genera un plan</strong> (secuencia de acciones) antes de ejecutar. No actúa impulsivamente — razona primero.</p>
+<p>La diferencia con ReAct:</p>
 <ul>
-<li>Preguntas frecuentes (FAQ) — "¿cómo resetear mi contraseña?"</li>
-<li>Explicaciones técnicas — "¿qué es RAG?"</li>
-<li>Instrucciones de uso — "¿cómo hago el reporte?"</li>
-<li>Respuestas comunes — confirmaciones, saludos, despedidas</li>
+<li><strong>ReAct</strong>: pensamiento y acción entrelazados, un paso a la vez</li>
+<li><strong>Planning Agent</strong>: piensa en TODOS los pasos primero, luego ejecuta el plan</li>
 </ul>
-<p>La matemática:</p>
-<p><strong>Sin cache:</strong> cada query = 1 inference call = costo total</p>
-<p><strong>Con cache:</strong> cache hit = 0 inference calls = costo ~0</p>
-<p><strong>Cache hit rate</strong> = hits / (hits + misses)</p>
-<p>Si tu cache hit rate es 0.4 y tienes 10K queries/mes a $0.01/query:</p>
-<p><code>Costo sin cache = 10,000 × $0.01 = $100/mes</code></p>
-<p><code>Costo con cache = 6,000 × $0.01 + 4,000 × $0 = $60/mes</code></p>
-<p>¡50% de ahorro con solo cache básico!</p>
-<h2>📐 Exact Cache vs Semantic Cache</h2>
-<h3>Exact Cache (Cache Exacto)</h3>
-<p>La forma más simple: guardar hash de query → respuesta.</p>
-<pre><code class="language-python">import hashlib
-from typing import Optional, Dict, Any
-
-class ExactCache:
+<h2>📐 El Proceso de Planificación</h2>
+<p>El pipeline clásico:</p>
+<p><code>Goal → Decompose → Plan → Execute → Monitor → Revise</code></p>
+<h3>Step 1: Goal Decomposition</h3>
+<p>Dividir el objetivo en sub-objetivos manejables:</p>
+<pre><code class="language-python">def decompose_goal(goal: str, llm) -> List[str]:
     """
-    Exact cache: misma query exacta = cache hit.
-    Funciona bien para queries literales repetidas.
+    Descompone un objetivo en sub-objetivos.
+    
+    Ejemplo:
+    Input: "Organizar una fiesta de cumpleaños"
+    Output: ["Definir presupuesto", "Invitar amigos", "Comprar comida", 
+             "Decorar lugar", "Preparar juegos"]
     """
+    prompt = f"""Descompón el siguiente objetivo en 5-8 pasos concretos
+    y ordenados cronologicamente.
     
-    def __init__(self, max_size: int = 10000):
-        self.cache: Dict[str, Dict] = {}
-        self.max_size = max_size
+    Objetivo: {goal}
     
-    def _hash_query(self, query: str) -> str:
-        """Hash SHA256 de la query exacta."""
-        return hashlib.sha256(query.encode()).hexdigest()
+    Devuelve una lista de pasos, uno por linea."""
     
-    def get(self, query: str) -> Optional[Dict]:
-        """Devuelve respuesta cacheada si existe."""
-        key = self._hash_query(query)
-        return self.cache.get(key)
-    
-    def set(self, query: str, response: Dict, metadata: Dict = None) -> None:
-        """Guarda query → respuesta."""
-        if len(self.cache) >= self.max_size:
-            # Evict oldest (FIFO)
-            oldest_key = next(iter(self.cache))
-            del self.cache[oldest_key]
-        
-        key = self._hash_query(query)
-        self.cache[key] = {
-            "response": response,
-            "metadata": metadata or {},
-            "query": query  # Guardar para debug
-        }
-    
-    def invalidate(self, query: str) -> None:
-        """Invalida una entrada específica."""
-        key = self._hash_query(query)
-        self.cache.pop(key, None)
-    
-    def clear(self) -> None:
-        """Limpia todo el cache."""
-        self.cache.clear()
+    response = llm.complete(prompt)
+    steps = [s.strip() for s in response.split("\n") if s.strip()]
+    return steps
 
-# Demo
-cache = ExactCache(max_size=1000)
+# Ejemplo
+goal = "Desplegar una aplicacion web en produccion"
+steps = decompose_goal(goal, llm)
+for i, step in enumerate(steps, 1):
+    print(f"{i}. {step}")</code></pre>
+<h3>Step 2: Plan Generation</h3>
+<pre><code class="language-python">from dataclasses import dataclass
+from typing import List, Optional
 
-query = "¿Cómo resetear mi contraseña?"
-response = {"answer": "Ve a Configuración > Seguridad > Resetear contraseña"}
+@dataclass
+class Action:
+    name: str
+    description: str
+    preconditions: List[str]  # Que debe ser verdad antes de esta accion
+    effects: List[str]        # Que cambia despues de esta accion
+    tool: Optional[str] = None
 
-cache.set(query, response)
-cached = cache.get(query)
+@dataclass
+class PlanStep:
+    step_number: int
+    action: Action
+    params: dict
+    expected_state: dict
 
-print(f"Cache hit: {cached is not None}")
-print(f"Respuesta: {cached['response']['answer']}")</code></pre>
-<h3>Semantic Cache (Cache Semántico)</h3>
-<p>El problema del exact cache: "resetear clave" ≠ "¿cómo resetear mi contraseña?" (aunque significan lo mismo). Para eso existe semantic cache.</p>
-<pre><code class="language-python">import numpy as np
-from typing import Optional, List, Dict, Tuple
-from sentence_transformers import SentenceTransformer
-
-class SemanticCache:
+class PlanningAgent:
     """
-    Semantic cache: queries semánticamente similares = cache hit.
+    Agente con capacidad de planificacion.
     
-    Usa embeddings para medir similitud semántica.
-    ERROR COMÚN #3: sin tune threshold → false positives.
-    
-    Si el threshold es muy bajo, "cómo matar gente" y "cómo cocinar arroz"
-    se consideran similares. threshold correcto es domain-specific.
+    Usa un LLM para generar planes estructurados
+    y luego los ejecuta paso a paso.
     """
     
-    def __init__(
-        self,
-        max_size: int = 5000,
-        embedding_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
-        similarity_threshold: float = 0.85  # Ajustar según dominio!
-    ):
-        self.max_size = max_size
-        self.similarity_threshold = similarity_threshold
-        
-        # Embedding model (multilingual para español)
-        self.encoder = SentenceTransformer(embedding_model)
-        
-        # Almacenamiento
-        self.queries: List[str] = []  # Queries originales
-        self.embeddings: np.ndarray = None  # Embeddings pre-computados
-        self.responses: List[Dict] = []  # Respuestas cacheadas
-        self.hit_count = 0
-        self.miss_count = 0
+    def __init__(self, llm, tools: List, max_replan: int = 3):
+        self.llm = llm
+        self.tools = tools
+        self.max_replan = max_replan
     
-    def _get_embedding(self, query: str) -> np.ndarray:
-        """Computa embedding para una query."""
-        return self.encoder.encode(query, convert_to_numpy=True)
-    
-    def _compute_similarity(self, emb1: np.ndarray, emb2: np.ndarray) -> float:
-        """Similitud coseno entre dos embeddings."""
-        # Normalizar
-        emb1_norm = emb1 / np.linalg.norm(emb1)
-        emb2_norm = emb2 / np.linalg.norm(emb2)
-        return float(np.dot(emb1_norm, emb2_norm))
-    
-    def get(self, query: str) -> Tuple[Optional[Dict], float]:
+    def plan(self, goal: str) -> List[PlanStep]:
         """
-        Busca query en cache.
-        Devuelve (response, similarity_score).
-        Si score < threshold, es cache miss.
+        Genera un plan para alcanzar el objetivo.
         """
-        if not self.queries:
-            self.miss_count += 1
-            return None, 0.0
+        # 1. Descomponer objetivo
+        sub_goals = self.decompose(goal)
         
-        query_emb = self._get_embedding(query)
+        # 2. Crear plan estructurado
+        plan = []
+        for i, sub_goal in enumerate(sub_goals):
+            action = self.select_action(sub_goal)
+            plan.append(PlanStep(
+                step_number=i + 1,
+                action=action,
+                params={"goal": sub_goal},
+                expected_state=self.get_expected_state(action, sub_goal)
+            ))
         
-        # Buscar el más similar
-        best_idx = -1
-        best_similarity = 0.0
-        
-        for i, cached_emb in enumerate(self.embeddings):
-            sim = self._compute_similarity(query_emb, cached_emb)
-            if sim > best_similarity:
-                best_similarity = sim
-                best_idx = i
-        
-        if best_idx >= 0 and best_similarity >= self.similarity_threshold:
-            self.hit_count += 1
-            return self.responses[best_idx], best_similarity
-        
-        self.miss_count += 1
-        return None, best_similarity
+        return plan
     
-    def set(self, query: str, response: Dict) -> None:
-        """Añade query + embedding al cache."""
-        # Evict si está lleno (FIFO)
-        if len(self.queries) >= self.max_size:
-            self.queries.pop(0)
-            self.embeddings = self.embeddings[1:]
-            self.responses.pop(0)
+    def execute_plan(self, plan: List[PlanStep]) -> dict:
+        """
+        Ejecuta el plan paso a paso.
+        Si un paso falla, replanifica.
+        """
+        results = []
+        state = {}
         
-        query_emb = self._get_embedding(query)
+        for step in plan:
+            # Verificar precondiciones
+            if not self.check_preconditions(step.action, state):
+                # Replanificar desde este punto
+                remaining_goals = [s.params["goal"] for s in plan[step.step_number:]]
+                new_plan = self.replan(remaining_goals, state)
+                results.extend(self.execute_plan(new_plan))
+                return results
+            
+            # Ejecutar accion
+            result = self.execute_action(step.action, step.params)
+            state.update(result)
+            results.append({"step": step.step_number, "result": result})
         
-        if self.embeddings is None:
-            self.embeddings = query_emb.reshape(1, -1)
-        else:
-            self.embeddings = np.vstack([self.embeddings, query_emb])
+        return results
+    
+    def decompose(self, goal: str) -> List[str]:
+        """Descompone el objetivo en sub-objetivos."""
+        prompt = f"""Para el objetivo: {goal}
         
-        self.queries.append(query)
-        self.responses.append(response)
-    
-    def get_stats(self) -> Dict:
-        """Estadísticas del cache."""
-        total = self.hit_count + self.miss_count
-        hit_rate = self.hit_count / total if total > 0 else 0.0
+        Lista 5-8 sub-objetivos ordenados.
+        Formato: uno por linea, sin numeros."""
         
-        return {
-            "hits": self.hit_count,
-            "misses": self.miss_count,
-            "hit_rate": hit_rate,
-            "size": len(self.queries),
-            "max_size": self.max_size,
-            "threshold": self.similarity_threshold
-        }
-
-# Demo
-cache = SemanticCache(similarity_threshold=0.85)
-
-# Queries de ejemplo
-q1 = "¿Cómo resetear mi contraseña?"
-r1 = {"answer": "Ve a Configuración > Seguridad > Resetear contraseña"}
-
-q2 = "¿Cómo puedo cambiar mi clave?"
-r2 = {"answer": "Ve a Configuración > Seguridad > Cambiar clave"}
-
-cache.set(q1, r1)
-
-# Queries similares deberían hit
-result1, score1 = cache.get(q1)  # Exact match
-result2, score2 = cache.get(q2)  # Semantic match (similar meaning)
-
-print(f"Query 1: hit={result1 is not None}, score={score1:.3f}")
-print(f"Query 2: hit={result2 is not None}, score={score2:.3f}")
-print(f"Stats: {cache.get_stats()}")</code></pre>
-<h2>📊 Midiendo Cache Efficiency</h2>
-<pre><code class="language-python">def measure_cache_efficiency(cache: SemanticCache, test_queries: List[str]) -> Dict:
-    """
-    Mide efficiency del cache con un set de queries de prueba.
+        response = self.llm.complete(prompt)
+        return [s.strip() for s in response.split("\n") if s.strip()]
     
-    Métricas clave:
-    - Hit rate: % de queries servidas desde cache
-    - Average similarity: similitud promedio de hits
-    - Coverage: % de queries únicas que fueron cacheadas
-    """
-    results = {
-        "total_queries": len(test_queries),
-        "cache_hits": 0,
-        "cache_misses": 0,
-        "similarity_scores": [],
-        "unique_queries_cached": set()
-    }
-    
-    for query in test_queries:
-        response, similarity = cache.get(query)
+    def select_action(self, sub_goal: str) -> Action:
+        """Selecciona la mejor accion para un sub-objetivo."""
+        # Logica de seleccion de accion
+        for tool in self.tools:
+            if tool.can_handle(sub_goal):
+                return Action(
+                    name=tool.name,
+                    description=tool.description,
+                    preconditions=tool.preconditions,
+                    effects=tool.effects,
+                    tool=tool.name
+                )
         
-        if response is not None:
-            results["cache_hits"] += 1
-            results["similarity_scores"].append(similarity)
-        else:
-            results["cache_misses"] += 1
-            # Simular que guardamos la respuesta
-            cache.set(query, {"generated": True})
-            results["unique_queries_cached"].add(query)
+        return Action(
+            name="general",
+            description=f"Accion para: {sub_goal}",
+            preconditions=[],
+            effects=[sub_goal]
+        )
     
-    total = results["cache_hits"] + results["cache_misses"]
-    results["hit_rate"] = results["cache_hits"] / total if total > 0 else 0
-    results["avg_similarity"] = np.mean(results["similarity_scores"]) if results["similarity_scores"] else 0
-    results["coverage"] = len(results["unique_queries_cached"]) / len(test_queries) if test_queries else 0
+    def execute_action(self, action: Action, params: dict) -> dict:
+        """Ejecuta una accion."""
+        for tool in self.tools:
+            if tool.name == action.tool:
+                return tool.run(**params)
+        return {"status": "no_tool_found"}
     
-    return results
-
-# Ejemplo de uso
-test_queries = [
-    "¿Cómo resetear mi contraseña?",
-    "¿Cómo puedo cambiar mi clave?",
-    "¿Olvidé mi password",
-    "¿Qué es un embedding vectorial?",
-    "¿Cómo funcionan los embeddings?",
-    "¿Cómo resetear mi contraseña?",  # Repetida
-    "¿Cómo cambiar mi clave?",  # Similar a anterior
-]
-
-stats = measure_cache_efficiency(cache, test_queries)
-print(f"Hit rate: {stats['hit_rate']:.1%}")
-print(f"Avg similarity (hits): {stats['avg_similarity']:.3f}")
-print(f"Coverage: {stats['coverage']:.1%}")
-print(f"Cache size: {len(cache.queries)}")</code></pre>
-<h2>🔄 Invalidation Strategies</h2>
-<p><strong>ERROR COMÚN #2: Cache sin invalidation = stale responses</strong></p>
-<p>Si actualizas tu base de conocimiento y no invalidas el cache, los usuarios siguen obteniendo respuestas obsoletas. Hay que invalidar.</p>
-<pre><code class="language-python">from datetime import datetime, timedelta
-from enum import Enum
-
-class InvalidationStrategy(Enum):
-    TTL = "time_to_live"  # Invalidar por tiempo
-    LRU = "least_recently_used"  # Evict menos usado
-    TAG_BASED = "tag_based"  # Invalidar por tags/categorías
-    VERSION_BASED = "version_based"  # Invalidar por versión de datos
-
-class CacheWithInvalidation(SemanticCache):
-    """
-    Semantic cache con estrategias de invalidación.
-    """
-    
-    def __init__(self, *args, invalidation: InvalidationStrategy = InvalidationStrategy.TTL, ttl_seconds: int = 3600, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.invalidation = invalidation
-        self.ttl_seconds = ttl_seconds
-        self.timestamps: List[datetime] = []
-        self.tags: List[set] = []  # Tags por entrada
-        self.data_version = 1
-    
-    def set(self, query: str, response: Dict, tags: set = None) -> None:
-        """Añade con timestamp y tags."""
-        super().set(query, response)
-        self.timestamps.append(datetime.now())
-        self.tags.append(tags or set())
-    
-    def _is_valid(self, index: int) -> bool:
-        """Check si una entrada sigue siendo válida."""
-        if self.invalidation == InvalidationStrategy.TTL:
-            age = datetime.now() - self.timestamps[index]
-            return age.total_seconds() < self.ttl_seconds
-        
-        # LRU y otros requerirían tracking adicional
+    def check_preconditions(self, action: Action, state: dict) -> bool:
+        """Verifica si las precondiciones de la accion se cumplen."""
+        for pre in action.preconditions:
+            if pre not in state:
+                return False
         return True
     
-    def get(self, query: str) -> Tuple[Optional[Dict], float]:
-        """Get con check de validity."""
-        response, similarity = super().get(query)
-        
-        # Encontrar el índice del resultado
-        if response is not None:
-            # Buscar índice matching
-            for i, (q, r) in enumerate(zip(self.queries, self.responses)):
-                if r == response and i < len(self.timestamps):
-                    if not self._is_valid(i):
-                        # Invalidar y devolver miss
-                        self._invalidate_index(i)
-                        return None, 0.0
-        
-        return response, similarity
+    def get_expected_state(self, action: Action, goal: str) -> dict:
+        """Predice el estado despues de ejecutar la accion."""
+        return {**action.effects, "goal_achieved": goal}
     
-    def _invalidate_index(self, index: int) -> None:
-        """Invalida entrada por índice."""
-        self.queries.pop(index)
-        self.embeddings = np.delete(self.embeddings, index, axis=0)
-        self.responses.pop(index)
-        self.timestamps.pop(index)
-        self.tags.pop(index)
-    
-    def invalidate_by_tag(self, tag: str) -> int:
-        """Invalida todas las entradas con un tag."""
-        invalidated = 0
-        i = 0
-        while i < len(self.tags):
-            if tag in self.tags[i]:
-                self._invalidate_index(i)
-                invalidated += 1
-            else:
-                i += 1
-        return invalidated
-    
-    def invalidate_all(self) -> None:
-        """Invalida todo el cache."""
-        self.queries.clear()
-        self.embeddings = None
-        self.responses.clear()
-        self.timestamps.clear()
-        self.tags.clear()
-    
-    def bump_version(self) -> None:
-        """Invalidar todo cuando cambia la versión de datos."""
-        self.data_version += 1
-        self.invalidate_all()
-
-# Demo invalidation
-cache = CacheWithInvalidation(
-    invalidation=InvalidationStrategy.TTL,
-    ttl_seconds=60  # 1 minuto para demo
-)
-
-cache.set("¿Qué es RAG?", {"answer": "RAG es..."}, tags={"tech", "llm"})
-print(f"Cache size antes: {len(cache.queries)}")
-
-# Simular paso del tiempo (en código real usar time.sleep)
-import time
-time.sleep(1)  # 1 segundo
-
-# Query que debería invalidar por TTL si pasó el tiempo
-response, _ = cache.get("¿Qué es RAG?")
-print(f"Response after 1s (TTL=60s): {response is not None}")</code></pre>
-<h2>⚠️ Los 3 Errores Fatales</h2>
-<h3>Error 1: No cachear y recomputar las mismas responses</h3>
-<p><strong>El problema:</strong> En producción, el 30-50% de las queries son duplicados o variaciones de queries anteriores. Sin cache, estás pagando inference cost por cada una. En una startup con 100K queries/mes a $0.002/query, eso son $200/mes desperdiciados.</p>
-<p><strong>La solución:</strong> Implementa semantic cache desde el día 1. Mide tu hit rate y optimiza el threshold.</p>
-<h3>Error 2: Cache sin invalidation causing stale responses</h3>
-<p><strong>El problema:</strong> Si actualizas tu producto, FAQ, o base de conocimiento y no invalidas el cache semántico, sigues devolviendo información obsoleta. Los usuarios preguntan "¿cuál es el precio del plan premium?" y obtienen el precio de hace 6 meses.</p>
-<p><strong>La solución:</strong> Implementa TTL (time-to-live) + invalidation por tags cuando actualices contenido. Si cambias precios, invalida entradas con tag "pricing".</p>
-<h3>Error 3: Semantic cache sin tune threshold (false positives)</h3>
-<p><strong>El problema:</strong> Si el threshold es muy bajo (ej: 0.6), queries muy distintas se consideran "similares". "¿Cómo cocinar arroz?" y "¿Cómo hacer paella?" podrían dar el mismo resultado si comparten embeddings cercanos, aunque sean cosas distintas.</p>
-<p><strong>La solución:</strong> Tunea el threshold con datos de producción. Empieza en 0.85-0.90 para texto en español. Mide false positive rate (queries que dio hit pero eran incorrectas) y ajusta.</p>
-<pre><code class="language-python"># Cómo tunejar threshold
-def tune_semantic_threshold(
-    cache: SemanticCache,
-    validation_queries: List[Tuple[str, bool]],  # (query, expected_hit)
-    thresholds: List[float] = [0.7, 0.75, 0.8, 0.85, 0.9, 0.95]
-) -> Dict:
+    def replan(self, remaining_goals: List[str], current_state: dict) -> List[PlanStep]:
+        """Genera un nuevo plan dado el estado actual."""
+        # Logica de replanificacion
+        full_goal = " AND ".join(remaining_goals)
+        return self.plan(full_goal)</code></pre>
+<h2>🔄 Replanificación</h2>
+<p>El planning agent debe manejar fallos y replanificar:</p>
+<pre><code class="language-python">class RobustPlanningAgent(PlanningAgent):
     """
-    Encuentra el threshold óptimo midiendo precision y recall.
-    
-    precision = true_hits / (true_hits + false_hits)
-    recall = true_hits / total_expected_hits
+    Planning agent con capacidad de replanificacion.
+    Si un paso falla, analiza el error y genera nuevo plan.
     """
-    results = {}
     
-    for threshold in thresholds:
-        cache.similarity_threshold = threshold
+    def execute_plan(self, plan: List[PlanStep]) -> dict:
+        results = []
+        state = {}
+        execution_attempts = 0
         
-        true_positives = 0
-        false_positives = 0
-        false_negatives = 0
-        
-        for query, expected_hit in validation_queries:
-            response, _ = cache.get(query)
-            actual_hit = response is not None
+        for step in plan:
+            success = False
+            attempts = 0
             
-            if expected_hit and actual_hit:
-                true_positives += 1
-            elif expected_hit and not actual_hit:
-                false_negatives += 1
-            elif not expected_hit and actual_hit:
-                false_positives += 1
+            while not success and attempts < 3:
+                try:
+                    # Verificar precondiciones
+                    if not self.check_preconditions(step.action, state):
+                        # Replanificar
+                        remaining = [s.params["goal"] for s in plan[step.step_number:]]
+                        new_plan = self.replan_with_state(remaining, state)
+                        results.extend(self.execute_plan(new_plan))
+                        return results
+                    
+                    # Ejecutar
+                    result = self.execute_action(step.action, step.params)
+                    state.update(result)
+                    results.append({
+                        "step": step.step_number,
+                        "action": step.action.name,
+                        "result": result,
+                        "success": True
+                    })
+                    success = True
+                    
+                except Exception as e:
+                    attempts += 1
+                    results.append({
+                        "step": step.step_number,
+                        "action": step.action.name,
+                        "error": str(e),
+                        "attempt": attempts
+                    })
+                    
+                    if attempts >= 3:
+                        # Analizar error y replanificar
+                        error_analysis = self.analyze_error(step, e, state)
+                        recovery_plan = self.generate_recovery_plan(error_analysis, state)
+                        results.extend(self.execute_plan(recovery_plan))
+                        return results
         
-        precision = true_positives / (true_positives + false_positives) if (true_positives + false_positives) > 0 else 0
-        recall = true_positives / (true_positives + false_negatives) if (true_positives + false_negatives) > 0 else 0
-        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
-        
-        results[threshold] = {"precision": precision, "recall": recall, "f1": f1}
+        return results
     
-    # Mejor threshold por F1
-    best_threshold = max(results, key=lambda t: results[t]["f1"])
-    return {"results": results, "best_threshold": best_threshold}</code></pre>
-<h2>✅ Resumen</h2>
-<p>Hagale pues, parcero. Lo esencial del día:</p>
+    def analyze_error(self, step: PlanStep, error: Exception, state: dict) -> dict:
+        """Analiza por que fallo el paso."""
+        prompt = f"""Analiza el error en el paso '{step.action.name}'.
+        
+        Error: {str(error)}
+        Estado actual: {state}
+        Objetivo del paso: {step.params}
+        
+        Explica:
+        1. Por que fallo
+        2. Como afecta al plan general
+        3. Que se necesita para recuperarse"""
+        
+        return self.llm.complete_json(prompt)
+    
+    def generate_recovery_plan(self, error_analysis: dict, state: dict) -> List[PlanStep]:
+        """Genera un plan de recuperacion."""
+        recovery_goals = error_analysis.get("recovery_actions", [])
+        plan = []
+        
+        for i, goal in enumerate(recovery_goals):
+            action = self.select_action(goal)
+            plan.append(PlanStep(
+                step_number=i + 1,
+                action=action,
+                params={"goal": goal},
+                expected_state=self.get_expected_state(action, goal)
+            ))
+        
+        return plan</code></pre>
+<h2>⚖️ Planning vs Reactive</h2>
+<p><strong>Planning Agent</strong>:</p>
 <ul>
-<li><strong>Exact cache</strong> = misma query exacta (case-sensitive). Rápido pero limitado.</li>
-<li><strong>Semantic cache</strong> = queries similares semanticamente. Más flexible, requiere embeddings.</li>
-<li><strong>Hit rate</strong> = hits / total. Mide qué % de queries se sirven desde cache.</li>
-<li><strong>Invalidation</strong> = TTL, tags, o version-based. Sin esto, cache = stale data.</li>
-<li><strong>Threshold tuning</strong> = domain-specific. Empieza en 0.85-0.90 para español.</li>
-<li>El 85% ignora caching → 70% de costos de inference desperdiciados.</li>
+<li>Piensa antes de actuar</li>
+<li>Genera un plan completo</li>
+<li>Mejor para tareas complejas con múltiples pasos</li>
+<li>Puede anticipar obstáculos</li>
 </ul>
-<p>Short version: cada query que no cacheas es plata que echas al agua. 🇨🇴</p>
+<p><strong>Reactive Agent</strong>:</p>
+<ul>
+<li>Actúa y observa en cada paso</li>
+<li>No tiene vista global del plan</li>
+<li>Mejor para entornos dinámicos</li>
+<li>Mas simple de implementar</li>
+</ul>
+<h2>⚠️ Errores Comunes</h2>
+<h3>Error 1: Sobreplanificación</h3>
+<p><strong>El problema:</strong> Planear 50 pasos de ahead cuando solo necesitas 5. Overhead de planificación sin beneficio.</p>
+<p><strong>La solución:</strong> Limita la profundidad del plan inicial (5-8 pasos) y replanifica según necesidad.</p>
+<h3>Error 2: Plan Rígido</h3>
+<p><strong>El problema:</strong> No hay replanificación cuando las cosas fallan. El agente sigue el plan aunque sea obvio que no va a funcionar.</p>
+<p><strong>La solución:</strong> Implementa checkpointing y replanificación con análisis de errores.</p>
+<h3>Error 3: Sin Monitoreo</h3>
+<p><strong>El problema:</strong> Ejecutar el plan sin verificar que cada paso funciona. Errores se acumulan.</p>
+<p><strong>La solución:</strong> Añade verificación post-acción: "did this actually work?" antes de proceder.</p>
+<hr>
+<h2>✅ Resumen</h2>
+<p>Hagale pues, lo esencial del día:</p>
+<ul>
+<li><strong>Planning Agent</strong> = piensa antes de actuar. Genera un plan completo antes de ejecutar.</li>
+<li>Pipeline: <strong>Goal → Decompose → Plan → Execute → Monitor → Revise</strong></li>
+<li><strong>Replanificación</strong> es clave: cuando algo falla, analiza y genera nuevo plan.</li>
+<li>Planning vs Reactive: Planning para tareas complejas, Reactive para entornos dinámicos.</li>
+<li><strong>No sobreplanifiques</strong>: limita profundidad inicial, replanifica según necesidad.</li>
+</ul>
 <p><em>Eso es todo por hoy. Nos vemos en el Día 261. ☕</em></p>
   </article>
 
