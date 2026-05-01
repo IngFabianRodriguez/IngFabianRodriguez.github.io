@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="Video Generation - Creando Videos Con AI | #365DaysOfAI por Fabian Rodriguez">
-  <title>Video Generation - Creando Videos Con AI | #365DaysOfAI</title>
+  <meta name="description" content="LLM Prompt Versioning - Qué el 80% no hace y qué el 20% hace para controlar cambios | #365DaysOfAI por Fabian Rodriguez">
+  <title>LLM Prompt Versioning - Control de Cambios en Prompts | #365DaysOfAI</title>
   
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
@@ -110,17 +110,633 @@ nav {
 
   <header class="article-hero">
     <div class="day-badge">Dia 289 / 365 &nbsp;·&nbsp; #365DaysOfAI</div>
-    <h1 class="article-title">Video Generation - Creando Videos Con AI</h1>
+    <h1 class="article-title">LLM Prompt Versioning — Qué el 80% No Hace y Qué el 20% Hace Para Controlar Cambios</h1>
     <div class="article-meta">
       <time class="article-date">16 de octubre de 2026</time>
-      <div class="tags"><span class="tag">video-generation</span><span class="tag">sora</span><span class="tag">runway</span><span class="tag">generative</span></div>
+      <div class="tags"><span class="tag">prompt-versioning</span><span class="tag">git</span><span class="tag">llmops</span><span class="tag">production</span></div>
     </div>
   </header>
 
   <article class="article-body">
-    <h1>Video Generation - Creando Videos Con AI</h1>
-<p>Content for day 289 coming soon.</p>
-  </article>
+<h2>Intro</h2>
+<p>El mes pasado tocó hacer rollback en producción. No por un bug de código — por un prompt que alguien cambió el viernes a las 5pm "para probar algo". El modelo empezó a responder en español neutral cuando el cliente esperaba tono colombiano. Nadie sabía qué cambió, quién cambió, o desde cuándo estaba así. Eso le pasa al 80% de los equipos que usan LLMs en producción.</p>
+
+<p>El 20% que no tiene este problema hace algo simple: trata los prompts como código. Con git, con tests, con review. Hoy te muestro cómo implementar un prompt versioning system serio, con la estructura que el 20% usa pero que el 80% no sabe que existe.</p>
+
+<h2>Por qué tus prompts necesitan version control</h2>
+
+<p>Piensa en esto: inviertes 3 semanas entrenando un modelo con fine-tuning, ottimizando RAG, tunear embeddings. Pero el prompt que le dice al modelo cómo comportarse? Ese vive en un archivo .txt que alguien editó en production sin avisarle a nadie.</p>
+
+<p>La diferencia entre código y prompts se ha borrado. Un prompt mal cambiado puede:</p>
+
+<ul>
+<li>Cambiar el tono de todas las respuestas</li>
+<li>Introducir alucinaciones que antes no existían</li>
+<li>Hacer que el modelo ignore instrucciones de safety</li>
+<li>Renderizar inútil tu whole investment en infraestructura</li>
+</ul>
+
+<p>La matemática es simple: si tu prompt está en production y afecta 100k requests diarios, un cambio sin control de versiones puede impactar miles de usuarios antes de que alguien se dé cuenta. Con un sistema de versioning como git, cada cambio tiene autor, timestamp, diff visible, y rollback atómico. Sin eso, estás operando con los ojos vendados.</p>
+
+<h2>El sistema: git-style prompt versioning</h2>
+
+<p>La idea central: estructura tus prompts como código fuente. Cada prompt vive en su propio archivo, tiene un historial de cambios, y pasa por el mismo flujo de revisión que tu código.</p>
+
+<h3>Estructura de directorios</h3>
+
+<pre><code>prompts/
+├── README.md                    # Documentación central
+├── .promptversion               # Config del sistema
+├── v1.0.0/                     # Tag de versión (semver)
+│   ├── metadata.json           # Versión, autor, fecha, changelog
+│   ├── system.txt              # System prompt
+│   ├── user-guidelines.txt     # Instrucciones de formato
+│   └── examples/               # few-shot examples
+│       ├── example-001.json
+│       └── example-002.json
+├── v1.1.0/
+│   └── ...
+└── production/
+    └── current -> ../v1.2.0   # Symlink al ambiente prod
+</code></pre>
+
+<h3>Metadata por versión</h3>
+
+<pre><code>{
+  "version": "1.2.0",
+  "semver": {
+    "major": 1,
+    "minor": 2,
+    "patch": 0
+  },
+  "author": "fabian.rodriguez",
+  "created_at": "2026-10-15T14:30:00Z",
+  "parent_version": "1.1.0",
+  "changelog": [
+    "Changed tone from neutral Spanish to Colombian expressions",
+    "Added instruction to mention local context when relevant",
+    "Fixed example that showed wrong output format"
+  ],
+  "test_results": {
+    "accuracy": 0.94,
+    "rejection_rate": 0.02,
+    "avg_latency_ms": 850
+  },
+  "rollback_available": true
+}
+</code></pre>
+
+<h3>Comando de CLI para gestionar versiones</h3>
+
+<pre><code>#!/usr/bin/env python3
+"""Prompt versioning CLI - Git-style para prompts de LLM."""
+
+import os
+import json
+import click
+import hashlib
+from datetime import datetime
+from pathlib import Path
+from dataclasses import dataclass, asdict
+from typing import Optional
+
+
+@dataclass
+class PromptVersion:
+    version: str
+    semver: dict
+    author: str
+    created_at: str
+    parent_version: Optional[str]
+    changelog: list[str]
+    test_results: dict
+    rollback_available: bool
+    prompt_hash: str  # SHA-256 del contenido
+
+    def save(self, path: Path):
+        with open(path / "metadata.json", "w") as f:
+            json.dump(asdict(self), f, indent=2)
+
+    @classmethod
+    def load(cls, path: Path) -> "PromptVersion":
+        with open(path / "metadata.json") as f:
+            return cls(**json.load(f))
+
+
+class PromptVersioningSystem:
+    PROMPTS_DIR = Path("prompts")
+    CURRENT_LINK = "production/current"
+
+    def __init__(self, base_path: Optional[Path] = None):
+        self.base_path = Path(base_path) if base_path else self.PROMPTS_DIR
+        self._ensure_structure()
+
+    def _ensure_structure(self):
+        self.base_path.mkdir(parents=True, exist_ok=True)
+        config = self.base_path / ".promptversion"
+        if not config.exists():
+            config.write_text(json.dumps({
+                "schema_version": "1.0",
+                "initialized_at": datetime.utcnow().isoformat()
+            }))
+
+    def _calculate_hash(self, version_path: Path) -> str:
+        content = ""
+        for f in version_path.glob("*.txt"):
+            content += f.read_text()
+        for f in version_path.glob("examples/*"):
+            content += f.read_text()
+        return hashlib.sha256(content.encode()).hexdigest()[:12]
+
+    def _get_next_version(self, parent: Optional[str], increment: str) -> str:
+        versions = []
+        for d in self.base_path.iterdir():
+            if d.is_dir() and d.name.startswith("v"):
+                versions.append(d.name[1:])
+        versions.sort(key=lambda x: [int(p) for p in x.split(".")])
+        
+        if not versions:
+            return "1.0.0"
+        
+        major, minor, patch = map(int, versions[-1].split("."))
+        if increment == "major":
+            return f"{major+1}.0.0"
+        elif increment == "minor":
+            return f"{major}.{minor+1}.0"
+        else:
+            return f"{major}.{minor}.{patch+1}"
+
+    def init(self):
+        """Inicializar repositorio de prompts."""
+        click.echo(f"Initialized prompt versioning at {self.base_path}")
+        click.echo("Run 'promptv new' to create your first version")
+
+    def new_version(
+        self,
+        increment: str = "minor",
+        author: str = "anonymous",
+        changelog: list[str] = None,
+        parent: Optional[str] = None
+    ) -> str:
+        """Crear nueva versión de prompt."""
+        changelog = changelog or []
+        
+        # Detectar versión padre
+        if not parent:
+            versions = [d.name[1:] for d in self.base_path.iterdir() 
+                       if d.is_dir() and d.name.startswith("v")]
+            if versions:
+                versions.sort(key=lambda x: [int(p) for p in x.split(".")])
+                parent = versions[-1]
+        
+        version = self._get_next_version(parent, increment)
+        version_path = self.base_path / f"v{version}"
+        
+        if version_path.exists():
+            raise click.ClickException(f"Version {version} already exists")
+        
+        version_path.mkdir(parents=True)
+        (version_path / "system.txt").write_text("# System prompt\n")
+        (version_path / "user-guidelines.txt").write_text("# User guidelines\n")
+        (version_path / "examples").mkdir()
+        
+        prompt_hash = self._calculate_hash(version_path)
+        
+        pv = PromptVersion(
+            version=version,
+            semver={"major": int(version.split(".")[0]),
+                   "minor": int(version.split(".")[1]),
+                   "patch": int(version.split(".")[2])},
+            author=author,
+            created_at=datetime.utcnow().isoformat(),
+            parent_version=parent,
+            changelog=changelog,
+            test_results={},
+            rollback_available=bool(parent),
+            prompt_hash=prompt_hash
+        )
+        pv.save(version_path)
+        
+        click.echo(f"Created version {version}")
+        return version
+
+    def diff(self, v1: str, v2: str):
+        """Mostrar diff entre dos versiones."""
+        p1 = self.base_path / f"v{v1}"
+        p2 = self.base_path / f"v{v2}"
+        
+        click.echo(f"\n=== Diff v{v1} → v{v2} ===\n")
+        
+        for txt_file in ["system.txt", "user-guidelines.txt"]:
+            f1 = p1 / txt_file if p1.exists() else None
+            f2 = p2 / txt_file if p2.exists() else None
+            
+            if f1 and f2:
+                c1, c2 = f1.read_text(), f2.read_text()
+                if c1 != c2:
+                    click.echo(f"\n--- {txt_file} ---")
+                    for i, (l1, l2) in enumerate(zip(c1.splitlines(), c2.splitlines())):
+                        if l1 != l2:
+                            click.echo(f"- {l1}")
+                            click.echo(f"+ {l2}")
+                    if len(c1.splitlines()) != len(c2.splitlines()):
+                        click.echo(f"Lines changed: {len(c1.splitlines())} → {len(c2.splitlines())}")
+
+    def deploy(self, version: str, environment: str = "production") -> bool:
+        """Deploy una versión a un ambiente."""
+        version_path = self.base_path / f"v{version}"
+        if not version_path.exists():
+            raise click.ClickException(f"Version {version} does not exist")
+        
+        env_path = self.base_path / environment
+        env_path.mkdir(exist_ok=True)
+        current_link = env_path / "current"
+        
+        # Verificar que pasa tests antes de deploy
+        pv = PromptVersion.load(version_path)
+        if not pv.test_results:
+            click.echo(f"⚠️  Warning: Version {version} has no test results")
+        
+        # Crear symlink o copiar
+        if current_link.is_symlink() or current_link.exists():
+            current_link.unlink()
+        current_link.symlink_to(version_path.resolve())
+        
+        click.echo(f"✓ Deployed v{version} to {environment}")
+        return True
+
+    def rollback(self, environment: str = "production") -> Optional[str]:
+        """Rollback al última versión en un ambiente."""
+        env_path = self.base_path / environment
+        current_link = env_path / "current"
+        
+        if not current_link.is_symlink():
+            raise click.ClickException("No deployment found")
+        
+        current = current_link.resolve().name  # v1.2.0
+        parent_version = PromptVersion.load(current_link.resolve()).parent_version
+        
+        if not parent_version:
+            raise click.ClickException("No parent version to rollback to")
+        
+        self.deploy(parent_version, environment)
+        click.echo(f"↩️  Rolled back {environment}: {current} → {parent_version}")
+        return parent_version
+
+    def status(self):
+        """Mostrar estado actual del repositorio."""
+        click.echo("\n=== Prompt Versioning Status ===\n")
+        
+        versions = []
+        for d in self.base_path.iterdir():
+            if d.is_dir() and d.name.startswith("v"):
+                versions.append((d.name[1:], PromptVersion.load(d)))
+        versions.sort(key=lambda x: [int(p) for p in x[0].split(".")])
+        
+        for v, pv in versions:
+            marker = ""
+            try:
+                env_path = self.base_path / "production" / "current"
+                if env_path.is_symlink() and env_path.resolve().name == f"v{v}":
+                    marker = " ← PRODUCTION"
+            except:
+                pass
+            
+            test_status = "✓" if pv.test_results.get("accuracy", 0) > 0.9 else "○"
+            click.echo(f"  v{v} ({pv.author}) - {test_status} {pv.changelog[0] if pv.changelog else 'no description'}{marker}")
+        
+        click.echo()
+
+
+@click.group()
+def cli():
+    """Git-style prompt versioning system."""
+    pass
+
+
+@cli.command()
+def init():
+    """Initialize a new prompt repository."""
+    pvs = PromptVersioningSystem()
+    pvs.init()
+
+
+@cli.command()
+@click.option("--increment", type=click.Choice(["major", "minor", "patch"]), default="minor")
+@click.option("--author", default="anonymous")
+@click.option("--changelog", multiple=True)
+@click.option("--parent")
+def new(increment, author, changelog, parent):
+    """Create a new prompt version."""
+    pvs = PromptVersioningSystem()
+    v = pvs.new_version(increment, author, list(changelog), parent)
+    click.echo(f"Created version {v}")
+
+
+@cli.command()
+@click.argument("v1")
+@click.argument("v2")
+def diff(v1, v2):
+    """Diff between two versions."""
+    pvs = PromptVersioningSystem()
+    pvs.diff(v1, v2)
+
+
+@cli.command()
+@click.argument("version")
+@click.option("--env", default="production")
+def deploy(version, env):
+    """Deploy a version to environment."""
+    pvs = PromptVersioningSystem()
+    pvs.deploy(version, env)
+
+
+@cli.command()
+@click.option("--env", default="production")
+def rollback(env):
+    """Rollback to previous version."""
+    pvs = PromptVersioningSystem()
+    pvs.rollback(env)
+
+
+@cli.command()
+def status():
+    """Show repository status."""
+    pvs = PromptVersioningSystem()
+    pvs.status()
+
+
+if __name__ == "__main__":
+    cli()
+</code></pre>
+
+<h2>El flujo: cómo funciona en la práctica</h2>
+
+<h3>Día a día del developer</h3>
+
+<pre><code># Inicializar repo si no existe
+$ promptv init
+
+# Crear nueva versión con cambios
+$ promptv new --increment minor --author "fabian" \
+    --changelog "Changed tone to Colombian Spanish" \
+    --changelog "Added safety guidelines for PII"
+
+# Ver qué cambió vs versión actual
+$ promptv diff 1.2.0 1.3.0
+
+# Deploy a producción después de approval
+$ promptv deploy 1.3.0 --env production
+
+# Si algo falla, rollback instantáneo
+$ promptv rollback --env production
+</code></pre>
+
+<h3>Integración con CI/CD</h3>
+
+<pre><code># .github/workflows/prompts.yml
+name: Prompt Deployment
+
+on:
+  push:
+    paths:
+      - 'prompts/**'
+    branches: [main]
+
+jobs:
+  test-prompts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        
+      - name: Run prompt tests
+        run: |
+          for version in prompts/v*/; do
+            version_name=$(basename $version)
+            python -m prompt_testing \
+              --prompts-dir "$version" \
+              --test-suite tests/prompts/ \
+              --threshold 0.90
+          done
+      
+      - name: Deploy to staging
+        if: github.ref == 'refs/heads/main'
+        run: promptv deploy $VERSION --env staging
+      
+      - name: Require approval for production
+        if: github.event_name == 'release'
+        run: promptv deploy $VERSION --env production
+</code></pre>
+
+<h2>Los 3 errores que el 80% comete</h2>
+
+<h3>Error 1: No versionar prompts y no saber qué está en production</h3>
+
+<p>El más común. El prompt vive en:</p>
+
+<ul>
+<li>Un archivo .txt en el servidor de producción</li>
+<li>Una variable de ambiente que alguien cambió directamente</li>
+<li>El código hardcodeado en un commit de hace 6 meses</li>
+<li>Los screenshots de Slack de alguien</li>
+</ul>
+
+<p>Cuando algo sale mal, no hay forma de saber qué cambió ni cuándo.</p>
+
+<p><strong>Fix:</strong> Trata todo prompt como código. Usa el sistema de archivos que mostré arriba. Cada cambio = una versión nueva. Cada versión = un commit. Sin excepciones.</p>
+
+<pre><code># El fix: una línea de bash te dice exactamente qué está en producción
+$ cat prompts/production/current/system.txt | head -20
+
+# Y el historial está en git
+$ git log --oneline prompts/production/
+a3f2b1c deploy v1.3.0 to production
+b7c4d9e update tone instructions
+e8f1a2b initial prompt structure
+</code></pre>
+
+<h3>Error 2: No tener rollback cuando el prompt falla</h3>
+
+<p>Mañana cambias el prompt para mejorar los resultados con casos edge. En producción, los resultados empeoran. ¿Qué haces?</p>
+
+<ul>
+<li>Opción A: Buscar el último prompt que funcionaba (si lo guardaste)</li>
+<li>Opción B: Editar manualmente el prompt actual hasta que funcione (mientras los usuarios ven el problema)</li>
+<li>Opción C: Revert en 3 segundos porque tienes version history</li>
+</ul>
+
+<p>El 80% hace A o B. El 20% hace C.</p>
+
+<p><strong>Fix:</strong> Implementa rollback atómico. El symlink approach lo hace trivial:</p>
+
+<pre><code># Si el prompt nuevo falla, un comando y estás de vuelta
+$ promptv rollback --env production
+↩️  Rolled back production: v1.3.0 → v1.2.0
+
+# Verificación instantánea
+$ promptv status | grep PRODUCTION
+  v1.2.0 (maria.gomez) - ✓ Fixed edge case in Colombian expressions ← PRODUCTION
+</code></pre>
+
+<h3>Error 3: No testear prompts antes de deploy</h3>
+
+<p>El equivalente a hacer deploy de código sin tests unitarios. ¿Suena absurdo? Sucede todos los días con prompts.</p>
+
+<p>El problema: no hay forma objetiva de saber si el prompt nuevo es "mejor" que el actual. Así que se toma la decisión subjetivamente, basado en 2-3 ejemplos cherry-picked, y se despliega para ver qué pasa.</p>
+
+<p><strong>Fix:</strong> Tests automatizados con golden datasets y métricas objectives.</p>
+
+<pre><code>"""
+prompt_testing.py - Test suite para prompts de LLM
+"""
+
+import json
+from dataclasses import dataclass
+from typing import Optional
+from promptv import PromptVersioningSystem
+
+
+@dataclass
+class TestCase:
+    input_text: str
+    expected_output_contains: list[str]
+    expected_output_excludes: list[str]
+    expected_category: Optional[str] = None
+
+
+@dataclass
+class TestResult:
+    test_name: str
+    passed: bool
+    latency_ms: float
+    output: str
+    error: Optional[str] = None
+
+
+class PromptTester:
+    def __init__(self, test_suite: list[TestCase], threshold: float = 0.90):
+        self.test_suite = test_suite
+        self.threshold = threshold
+        self.results: list[TestResult] = []
+
+    def run(self, version_path: str, provider) -> dict:
+        """Ejecutar tests contra una versión específica."""
+        from pathlib import Path
+        
+        pv = PromptVersioningSystem()
+        version = pv.load_version(Path(version_path))
+        
+        system_prompt = (Path(version_path) / "system.txt").read_text()
+        
+        passed = 0
+        for tc in self.test_suite:
+            result = self._run_single_test(tc, system_prompt, provider)
+            self.results.append(result)
+            if result.passed:
+                passed += 1
+        
+        accuracy = passed / len(self.test_suite)
+        
+        return {
+            "version": version.version,
+            "accuracy": accuracy,
+            "passed": passed,
+            "total": len(self.test_suite),
+            "results": self.results,
+            "deploy_ready": accuracy >= self.threshold
+        }
+
+    def _run_single_test(self, tc: TestCase, system_prompt: str, provider) -> TestResult:
+        import time
+        start = time.time()
+        
+        try:
+            response = provider.generate(
+                prompt=tc.input_text,
+                system_prompt=system_prompt
+            )
+            
+            output = response.content
+            latency_ms = (time.time() - start) * 1000
+            
+            # Validaciones
+            checks = []
+            for expected in tc.expected_output_contains:
+                checks.append(expected.lower() in output.lower())
+            
+            for excluded in tc.expected_output_excludes:
+                checks.append(excluded.lower() not in output.lower())
+            
+            passed = all(checks)
+            
+            return TestResult(
+                test_name=f"test_{tc.input_text[:30]}",
+                passed=passed,
+                latency_ms=latency_ms,
+                output=output
+            )
+        except Exception as e:
+            return TestResult(
+                test_name=f"test_{tc.input_text[:30]}",
+                passed=False,
+                latency_ms=0,
+                output="",
+                error=str(e)
+            )
+
+
+# Ejemplo de test suite
+TEST_SUITE = [
+    TestCase(
+        input_text="¿Cómo están?",
+        expected_output_contains=["buenas", "qué tal"],
+        expected_output_excludes=["Hello"],
+        expected_category="greeting"
+    ),
+    TestCase(
+        input_text="Cuénteme de Bogotá",
+        expected_output_contains=["Bogotá", "Colombia"],
+        expected_output_excludes=[],
+        expected_category="location"
+    ),
+    TestCase(
+        input_text="DIAN电话号码是多少",
+        expected_output_contains=["no tengo", "no dispongo"],
+        expected_output_excludes=["555"],
+        expected_category="sensitive"
+    ),
+]
+
+
+if __name__ == "__main__":
+    import sys
+    from openai import OpenAI
+    
+    tester = PromptTester(TEST_SUITE, threshold=0.90)
+    results = tester.run(
+        version_path="prompts/v1.3.0",
+        provider=OpenAIProvider()
+    )
+    
+    print(json.dumps(results, indent=2))
+    
+    if not results["deploy_ready"]:
+        print(f"\n❌ Not ready for deploy. Accuracy: {results['accuracy']:.1%}")
+        sys.exit(1)
+    else:
+        print(f"\n✓ Ready for deploy. Accuracy: {results['accuracy']:.1%}")
+</code></pre>
+
+<h2>Resumen y cierre</h2>
+
+<p>La diferencia entre el 80% y el 20% no es tecnología. Es proceso. El 80% trata los prompts como configuración descartable. El 20% los trata como código de producción.</p>
+
+<p>Los patterns que mostró hoy — versioning con semver, diffs entre versiones, rollback atómico, tests automatizados — son lo mínimo que cualquier equipo necesita cuando pone LLMs en production. No es opcional. Es la diferencia entre controlar tus prompts o que tus prompts te controlen a ti.</p>
+
+<p>En Medellín(decíamos que "el que no conoce su pasado, no controla su futuro". Aplícalo a tus prompts: si no sabes qué versión está en producción y qué cambió desde la última versión que funcionaba, tienes un problema que va a escalar hasta que alguien decida resolverlo. Mejor ahora que cuando el daño esté hecho.</p>
+
+<p>Eso es todo por hoy. Mañana seguimos con optimization de prompts — cómo medir, iterar, y mejorar sistemáticamente. Nos vemos.</p>
+</article>
 
   <script>
     document.getElementById('themeToggle').addEventListener('click', function() {
