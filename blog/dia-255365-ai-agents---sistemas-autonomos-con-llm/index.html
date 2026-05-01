@@ -118,58 +118,335 @@ nav {
   </header>
 
   <article class="article-body">
-    <h1>AI Agents - Sistemas Autonomos con LLM</h1>
-<p>Hagale pues, parcero. Llegamos al Dia 255 y hoy hablamos de AI Agents: sistemas autonomos impulsados por LLMs que pueden tomar acciones y completar tareas complejas. Dejala el cafe.</p>
+<h1>Memory y State Management para LLMs</h1>
+<p>Hagale pues, parcero. Hoy es el Día 255 y vamos a hablar de algo que el 75% de los desarrolladores implementa mal: **Memory y State Management para LLMs**. Sí, leyó bien — la mayoría de los sistemas que usted usa todos los días tienen problemas de memoria que causan context errors, information leaks y costos que se disparan sin explicación. Deje el café y pongamos orden en esto.</p>
+
 <hr>
-<h2>🎯 AI Agents</h2>
-<p>Un AI Agent es un sistema donde un LLM no solo genera texto, sino que puede:</p>
-<ul>
-<li><strong>Observar</strong>: Percibir el entorno y obtener informacion</li>
-<li><strong>Planificar</strong>: Dividir tareas complejas en pasos</li>
-<li><strong>Actuar</strong>: Ejecutar acciones en el mundo real</li>
-<li><strong>Iterar</strong>: Evaluar resultados y ajustar el proximo paso</li>
-</ul>
+
+<h2>🎯 ¿Por Qué Importa la Memoria en LLMs?</h2>
+<p>Un LLM por sí solo es **stateless** — no recuerda nada entre requests. Cada vez que manda un mensaje, el modelo empieza desde cero. La memoria es lo que transforma un chatbot tonto en un asistente que realmente entiende su contexto.</p>
+
+<p>La fórmula del contexto es simple:</p>
+
+<p>$$\text{Contexto Total} = \text{Historial de Conversación} + \text{Información del Usuario} + \text{Memoria Persistente}$$</p>
+
+<p>Cuando esta fórmula se rompe, empiezan los problemas: el modelo repite información, olvida preferencias, o peor — mezcla datos de un usuario con otro.</p>
+
 <hr>
-<h2>📐 Estructura De Un Agent</h2>
-<pre><code class="language-python">class AIAgent:
-    def __init__(self, llm, tools):
+
+<h2>📐 Tipos de Memory para LLMs</h2>
+
+<h3>1. Conversation Memory (Short-term)</h3>
+<p>Almacena los mensajes recientes de la conversación actual. Es como la RAM de un computador — volátil, limitada, pero esencial para el trabajo inmediato.</p>
+
+<h3>2. Summary Memory (Compressed)</h3>
+<p>Comprime la historia de conversación en un resumen. Reduce tokens pero pierde detalles. Ideal para conversaciones largas donde no necesita cada palabra.</p>
+
+<p>La matemática del resumen:</p>
+
+<p>$$\text{Tokens del Resumen} = \alpha \times \text{Tokens Originales}$$</p>
+
+<p>donde $\alpha \in [0.1, 0.3]$ es el ratio de compresión típico.</p>
+
+<h3>3. Vector Memory (Long-term)</h3>
+<p>Usa embeddings para guardar información semánticamente. Permite búsqueda de relevante histórico. Es como un disco duro — puede guardar mucho y buscar rápido.</p>
+
+<h3>4. Hybrid Memory (Lo que debería usar)</h3>
+<p>Combina los tres tipos. Conversation memory para lo inmediato, summary para lo reciente, y vector store para el conocimiento persistente.</p>
+
+<hr>
+
+<h2>💻 Implementación Completa con LangChain</h2>
+
+<pre><code class="language-python">"""
+Conversation Memory con Summary + Vector Store
+Implementación híbrida para producción
+"""
+from langchain.memory import ConversationSummaryMemory, VectorStoreRetrieverMemory
+from langchain.chat_models import ChatOpenAI
+from langchain.embeddings import OpenAIEmbeddings
+from langchain.vectorstores import Chroma
+from langchain.chains import ConversationChain
+from datetime import datetime, timedelta
+import hashlib
+
+class HybridMemoryManager:
+    """
+    Gestor de memoria híbrida que combina:
+    - ConversationBufferMemory: mensajes recientes
+    - ConversationSummaryMemory: resúmenes comprimidos
+    - VectorStoreMemory: conocimiento persistido y buscable
+    """
+
+    def __init__(self, llm, session_id: str, max_tokens: int = 3000):
+        self.session_id = session_id
         self.llm = llm
-        self.tools = tools
-        self.memory = []
+        self.max_tokens = max_tokens
+        
+        # 1. Conversation Buffer - mantiene últimos mensajes
+        self.conversation_buffer = ConversationBufferMemory(
+            return_messages=True
+        )
+        
+        # 2. Summary Memory - comprime historia
+        self.summary_memory = ConversationSummaryMemory(
+            llm=llm,
+            buffer="",
+            max_token_limit=1000
+        )
+        
+        # 3. Vector Store - persistencia semántica
+        self.embeddings = OpenAIEmbeddings()
+        self.vectorstore = Chroma(
+            persist_directory=f"./memory_store/{session_id}",
+            embedding_function=self.embeddings
+        )
+        self.vector_memory = VectorStoreRetrieverMemory(
+            retriever=self.vectorstore.as_retriever(search_kwargs={"k": 3}),
+            memory_key="persistent_context"
+        )
+
+    def add_interaction(self, user_input: str, agent_output: str):
+        """Agrega una interacción a todos los stores de memoria"""
+        # Conversation buffer
+        self.conversation_buffer.save_context(
+            {"input": user_input},
+            {"output": agent_output}
+        )
+        
+        # Vector store para búsqueda semántica
+        combined_text = f"Usuario: {user_input}\nAsistente: {agent_output}"
+        self.vectorstore.add_texts(
+            texts=[combined_text],
+            metadatas=[{
+                "session_id": self.session_id,
+                "timestamp": datetime.now().isoformat(),
+                "type": "interaction"
+            }]
+        )
+        
+        # Actualizar summary si se acerca al límite
+        self._update_summary_if_needed()
+
+    def _update_summary_if_needed(self):
+        """Actualiza el resumen si los mensajes superan el umbral"""
+        # LangChain maneja esto internamente, pero aquí controlamos manualmente
+        current_tokens = self.estimate_buffer_tokens()
+        if current_tokens > self.max_tokens * 0.7:
+            # Forzar compresión
+            self.summary_memory.predict_new_summary(
+                self.conversation_buffer.chat_memory.messages,
+                self.summary_memory.buffer
+            )
+
+    def estimate_buffer_tokens(self) -> int:
+        """Estima tokens en el conversation buffer"""
+        messages = self.conversation_buffer.chat_memory.messages
+        # Aproximación burda: 4 caracteres por token
+        total_chars = sum(len(str(m.content)) for m in messages)
+        return total_chars // 4
+
+    def get_context_for_prompt(self) -> str:
+        """
+        Combina toda la memoria relevante para el prompt.
+        Este es el método crítico que la mayoría implementa mal.
+        """
+        context_parts = []
+        
+        # 1. Vector memory - busca lo más relevante
+        relevant_history = self.vector_memory.load_memory_variables(
+            {"input": ""}
+        ).get("persistent_context", "")
+        
+        if relevant_history:
+            context_parts.append(f"=== Contexto Persistente ===\n{relevant_history}")
+        
+        # 2. Summary memory - lo que necesitas recordar
+        summary = self.summary_memory.load_memory_variables({}).get("history", "")
+        if summary:
+            context_parts.append(f"=== Resumen de Conversación ===\n{summary}")
+        
+        # 3. Recent buffer - lo más reciente
+        recent = self.conversation_buffer.load_memory_variables({}).get("history", "")
+        if recent:
+            context_parts.append(f"=== Conversación Reciente ===\n{recent}")
+        
+        return "\n\n".join(context_parts)
+
+    def clear_session(self):
+        """Limpia la memoria de sesión - CRÍTICO para seguridad"""
+        self.conversation_buffer.clear()
+        self.summary_memory.clear()
+        # El vector store NO se borra completamente
+        # Solo marcamos como inactiva la sesión
+        self.vectorstore.persist()
+
+    def cleanup_old_sessions(self, days: int = 30):
+        """Estrategia de cleanup para memoria ilimitada"""
+        cutoff = datetime.now() - timedelta(days=days)
+        # En producción: eliminar vectores con metadata.timestamp < cutoff
+        pass
+
+# --- PATRÓN DE USO CORRECTO ---
+class SessionManager:
+    """
+    Gestor de sesiones con boundaries apropiados.
+    Este patrón previene information leaks entre usuarios.
+    """
     
-    def run(self, task):
-        # 1. Observar
-        observation = self perceive(task)
+    def __init__(self):
+        self.active_sessions = {}  # session_id -> HybridMemoryManager
+        self.session_ttl = {}      # session_id -> última actividad
+    
+    def get_or_create_session(self, session_id: str) -> HybridMemoryManager:
+        """Obtiene o crea sesión con boundary apropiado"""
         
-        # 2. Planificar
-        plan = self.plan(observation)
+        # 1. Verificar que session_id es válido y no manipulado
+        if not self._is_valid_session_id(session_id):
+            raise ValueError("Session ID inválido")
         
-        # 3. Actuar
-        result = self.act(plan)
+        # 2. Crear boundary si no existe
+        if session_id not in self.active_sessions:
+            self.active_sessions[session_id] = HybridMemoryManager(
+                llm=ChatOpenAI(temperature=0),
+                session_id=session_id
+            )
         
-        # 4. Iterar hasta completar
-        return result</code></pre>
-<hr>
-<h2>🚀 Components Clave</h2>
-<pre><code class="language-python"># Tools: abilities del agente
-tools = [
-    "web_search",      # Buscar informacion
-    "code_executor",   # Ejecutar codigo
-    "file_reader",     # Leer archivos
-    "web_browser"      # Navegar internet
-]
+        # 3. Actualizar TTL
+        self.session_ttl[session_id] = datetime.now()
+        
+        return self.active_sessions[session_id]
+    
+    def _is_valid_session_id(self, session_id: str) -> bool:
+        """Valida que el session_id no haya sido manipulado"""
+        # Verificar longitud mínima
+        if len(session_id) < 16:
+            return False
+        # Verificar que no contenga path traversal
+        if ".." in session_id or "/" in session_id:
+            return False
+        return True
+    
+    def cleanup_inactive_sessions(self, timeout_minutes: int = 30):
+        """Libera memoria de sesiones inactivas"""
+        now = datetime.now()
+        inactive = [
+            sid for sid, last_active in self.session_ttl.items()
+            if (now - last_active).total_seconds() > timeout_minutes * 60
+        ]
+        
+        for sid in inactive:
+            if sid in self.active_sessions:
+                self.active_sessions[sid].clear_session()
+                del self.active_sessions[sid]
+            del self.session_timeline[sid]
 
-# Cada tool tiene un schema que el LLM usa para invocarla</code></pre>
-<hr>
-<h2>⚠️ Errores Comunes</h2>
-<h3>Error 1: Agent Sin Feedback Loop</h3>
-<p><strong>El problema</strong>: El agent actua sin evaluar resultados.</p>
-<p><strong>La solucion</strong>: Siempre implementar iteracion y evaluacion.</p>
-<hr>
-<p><em>Eso es todo! Nos vemos manana en el Dia 256.</em></p>
-  </article>
+# ============================================
+# USO DEL SISTEMA DE MEMORIA
+# ============================================
 
-  <script>
+def chatbot_with_memory(user_id: str, user_message: str):
+    """
+    Ejemplo de uso correcto del sistema de memoria.
+    Muestra cómo integrar memory con conversation.
+    """
+    # 1. Obtener sesión con boundary apropiado
+    session_manager = SessionManager()
+    session = session_manager.get_or_create_session(f"user_{user_id}")
+    
+    # 2. Construir prompt con memoria
+    context = session.get_context_for_prompt()
+    full_prompt = f"""Contexto de la conversación:
+{context}
+
+Conversación actual:
+Usuario: {user_message}
+Asistente:"""
+    
+    # 3. Generar respuesta
+    response = ChatOpenAI(temperature=0.7)(full_prompt)
+    
+    # 4. Guardar en memoria
+    session.add_interaction(user_message, response)
+    
+    return response
+</code></pre>
+
+<hr>
+
+<h2>⚠️ Los 3 Errores que Causan Context Errors</h2>
+
+<h3>Error 1: No Implementar Session Boundaries — Information Leak</h3>
+<p><strong>El problema</strong>: Sin boundaries apropiados, la memoria de un usuario puede filtrarse a otro. Esto no es solo un bug — es una vulnerabilidad de seguridad que viola GDPR y otras regulaciones.</p>
+
+<p>$$\text{Riesgo de Leak} = \frac{\text{Memoria Shared}}{\text{Total Memoria}} \times \text{Número de Usuarios}$$</p>
+
+<p><strong>La solución</strong>: Implementar Session Manager con validación estricta de session IDs:</p>
+
+<pre><code class="language-python"># NUNCA hacer esto:
+memory = GlobalMemory()  # ❌ Memoria compartida global
+
+# SIEMPRE hacer esto:
+session = SessionManager().get_or_create_session(session_id)  # ✅ Boundary por usuario</code></pre>
+
+<hr>
+
+<h3>Error 2: Almacenar Demasiado en Memoria — Cost Spikes</h3>
+<p><strong>El problema</strong>: Cada token en el contexto cuesta dinero. Si no hay límites, el costo crece exponencialmente con cada conversación.</p>
+
+<p>El costo por request sigue:</p>
+
+<p>$$\text{Costo} = \frac{\text{Tokens de Contexto}}{\text{Tokens Totales}} \times \text{Costo por 1K tokens}$$</p>
+
+<p>Para una conversación de 100 mensajes sin límites, puede estar enviando 50,000+ tokens por request. A $0.03/1K tokens, eso es $1.50 por mensaje — ¡20x más caro que lo necesario!</p>
+
+<p><strong>La solución</strong>: Limitar y comprimir activamente:</p>
+
+<pre><code class="language-python">MAX_TOKENS_PER_SESSION = 3000  # Límite estricto
+COMPRESSION_RATIO = 0.2       # Reducir a 20%
+
+# Comprimir cuando se acerque al límite
+if current_tokens > MAX_TOKENS_PER_SESSION * 0.8:
+    memory.compress(ratio=COMPRESSION_RATIO)</code></pre>
+
+<hr>
+
+<h3>Error 3: Sin Estrategia de Cleanup — Memoria Ilimitada</h3>
+<p><strong>El problema</strong>: Sin limpieza, la memoria crece indefinidamente hasta agotar disco y RAM. En producción esto causa crashes.</p>
+
+<p>La memoria crece así:</p>
+
+<p>$$\text{Memoria Total} = \sum_{i=1}^{n} \text{Tamaño de Sesión}_i$$</p>
+
+<p>Con 1,000 usuarios activos, 10MB por sesión = 10GB de RAM.</p>
+
+<p><strong>La solución</strong>: TTL + limpieza automática:</p>
+
+<pre><code class="language-python"># Cleanup automático cada hora
+@schedule.interval(hours=1)
+def cleanup_old_sessions():
+    session_manager.cleanup_inactive_sessions(timeout_minutes=30)
+    
+# Limitar lifetime máximo de cualquier sesión
+MAX_SESSION_LIFETIME_DAYS = 90</code></pre>
+
+<hr>
+
+<h2>📊 Resumen y Próximos Pasos</h2>
+
+<p>La memoria para LLMs no es opcional — es lo que separa un chatbot tonto de un verdadero asistente. Los puntos clave:</p>
+
+<ul>
+<li><strong>Usa memoria híbrida</strong>: Buffer + Summary + Vector Store</li>
+<li><strong>Implementa boundaries</strong>: Cada usuario tiene su memoria aislada</li>
+<li><strong>Controla costos</strong>: Limita tokens y comprime activamente</li>
+<li><strong>Limpia automáticamente</strong>: TTL +scheduled cleanup</li>
+</ul>
+
+<p>Mañana en el Día 256 vamos a ver **Prompt Injection y Security** — otro tema que el 90% ignora y que puede comprometer todos sus sistemas. No se lo pierda.</p>
+
+<p><em>Eso es todo por hoy, parcero. Hasta mañana.</em></p>
+</article>
     document.getElementById('themeToggle').addEventListener('click', function() {
       const html = document.documentElement;
       const isDark = html.getAttribute('data-theme') === 'dark';
