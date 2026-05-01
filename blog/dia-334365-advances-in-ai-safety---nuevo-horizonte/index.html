@@ -118,39 +118,361 @@ nav {
   </header>
 
   <article class="article-body">
-    <h1>Advances in AI Safety - Nuevo Horizonte</h1>
-<p>Hagale pues, parcero. Hoy es el Dia 334 y hablamos de Advances in AI Safety, el nuevo horizonte. Cafe.</p>
-<hr>
-<h2>🎯 El Estado De AI Safety</h2>
-<p>AI Safety esta evolucionando rapidamente. Nuevas tecnicas prometen modelos mas seguros y alineados.</p>
-<h3>Avances recientes:</h3>
-<ul>
-<li><strong>Better evaluation</strong>: Benchmarks mas sofisticados</li>
-<li><strong>Interpretability progress</strong>: Entendiendo modelos internamente</li>
-<li><strong>Constitutional AI</strong>: Principios escritos para alignment</li>
-<li><strong>RLHF improvements</strong>: Tecnicas mas eficientes</li>
-</ul>
-<hr>
-<h2>📐 Evaluacion Moderna</h2>
-<pre><code class="language-python"># Ejemplo de evaluation suite
-evaluation_results = {
-    "helpfulness": run_benchmarks(model, helpfulness_tests),
-    "harmlessness": adversarial_testing(model),
-    "honesty": fact_verification(model),
-    "robustness": perturbation_tests(model)
-}
+<h2>🎯 Intro Colombiana</h2>
+<p>Qué tal, mi gente del territorio. Aquí Fabian con el Día 334 de #365DaysOfAI. Hoy nos metemos en aguas más profundas: <strong>LLM Observability Advanced</strong>. Esto es lo que el 85% ignora en producción, y el 15% que lo usa correctamente puede debuggear en minutos lo que a los demás les toma días. Hablamos de distributed tracing con OpenTelemetry, correlación de logs con traces, y cómo usar todo esto para optimizar performance. Vamos por ese café y pasemos la página.</p>
 
-# Modelos modernos deben pasar todos
-for metric, score in evaluation_results.items():
-    assert score > threshold, f"Failed {metric}: {score}"</code></pre>
 <hr>
-<h2>🚀 El Future</h2>
-<p>La convergencia de interpretability, better RL, y constitutional approaches nos acerca a AI confiable.</p>
+<h2>🔬 Por Qué LLM Observability Es Crítico</h2>
+
+<p>En sistemas tradicionales de software, tienes logs, metrics, y traces como los tres pilares de observabilidad. Con LLMs, introduces una nueva dimensión: <strong>el modelo es un黑盒 con estado latente</strong>. No puedes simplemente agregar un logger y esperar entender qué pasó.</p>
+
+<h3>El Problema Fundamental</h3>
+<p>Una sola request a un LLM-powered system puede involucrar:</p>
+<ul>
+<li>Múltiples embeddings (vector search)</li>
+<li>Múltiples llamadas a APIs externas (tools)</li>
+<li>Múltiples turns de conversación con context</li>
+<li>Retrieval de múltiples chunks</li>
+<li>Parsing y post-processing de la respuesta</li>
+</ul>
+
+<p>Cuando algo sale mal — latencia alta, respuestas质量的下降, o crashes — sin tracing distribuidos, estás ciega.</p>
+
+<h3>La Math de Distributed Tracing</h3>
+<p>Un trace representa el flujo completo de una request a través de múltiples servicios. Cada <em>span</em> mide una unidad de trabajo:</p>
+
+<p style="text-align:center"><code>trace_id = SHA256(operation_id + timestamp + inputs_hash)</code></p>
+
+<p>La latencia total es la suma de los spans seriales más el minimum spanning tree de los paralelos:</p>
+
+<p style="text-align:center"><code>latency_total = max(span_serial) + max(tree(span_parallel))</code></p>
+
+<p>Con OpenTelemetry, cada span tiene:</p>
+<ul>
+<li><code>trace_id</code>: Identificador único del trace completo</li>
+<li><code>span_id</code>: Identificador único de este span</li>
+<li><code>parent_id</code>: Span padre (None si root)</li>
+<li><code>start_time</code>, <code>end_time</code>: Timestamps</li>
+<li><code>attributes</code>: Key-value pairs metadata</li>
+<li><code>events</code>: Timestamped annotations</li>
+</ul>
+
 <hr>
-<h2>⚠️ Open Problems</h2>
-<p>Aun no sabemos como asegurar que modelos muy avanzados permanezcan bajo control. Mas investigacion necesaria.</p>
+<h2>⚠️ Los 3 Errores del 85%</h2>
+
+<h3>Error 1: No Tener Distributed Tracing</h3>
+<p>El desarrollador typique hace esto:</p>
+<pre><code class="language-python"># ❌ MAL: Sin tracing, debugging es考古学
+def rag_query(question: str):
+    # ¿Cuánto tarda? ¿Qué embedding tardó más? ¿Cuál chunk?
+    # Si esto falla en producción, vas a hacer git blame por 3 días
+    docs = retrieve_docs(question)
+    embedding_time = time.time()
+
+    context = build_context(docs)
+    embedding_time = time.time() - embedding_time
+
+    response = llm(context + question)
+    return response</code></pre>
+
+<p>El problema: cuando tu RAG pipeline tiene 7 steps y falla en producción, no sabes cuál step falló. ¿Fue el embedding? ¿El retrieval? ¿El LLM call? ¿El parsing?</p>
+
+<h4>Fix — OpenTelemetry Tracing desde Cero:</h4>
+<pre><code class="language-python"># ✅ BIEN: Tracing completo con OpenTelemetry
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.semconv.resource import ResourceAttributes
+from opentelemetry.trace import Status, StatusCode
+
+# 1. Setup del provider (once at app startup)
+resource = Resource.create({
+    ResourceAttributes.SERVICE_NAME: "rag-service",
+    ResourceAttributes.SERVICE_VERSION: "1.0.0",
+})
+
+provider = TracerProvider(resource=resource)
+processor = BatchSpanProcessor(ConsoleSpanExporter())  # Usa OTLP en prod
+provider.add_span_processor(processor)
+trace.set_tracer_provider(provider)
+
+tracer = trace.get_tracer(__name__)
+
+# 2. Instrument each operation as spans
+def rag_query(question: str):
+    with tracer.start_as_current_span("rag_query") as root_span:
+        root_span.set_attribute("question", question)
+        root_span.set_attribute("question.length", len(question))
+
+        # Span: Embedding
+        with tracer.start_as_current_span("embed_question") as embed_span:
+            embed_start = time.time()
+            query_embedding = embed_model.encode(question)
+            embed_span.set_attribute("embedding.dimensions", len(query_embedding))
+            embed_span.set_attribute("embedding.ms", (time.time() - embed_start) * 1000)
+
+        # Span: Retrieval
+        with tracer.start_as_current_span("retrieve_docs") as ret_span:
+            ret_start = time.time()
+            docs = vector_store.similarity_search(question, k=5)
+            ret_span.set_attribute("retrieved.count", len(docs))
+            ret_span.set_attribute("retrieval.ms", (time.time() - ret_start) * 1000)
+
+        # Span: Context Building
+        with tracer.start_as_current_span("build_context") as ctx_span:
+            context = "\n".join([doc.page_content for doc in docs])
+            ctx_span.set_attribute("context.length", len(context))
+
+        # Span: LLM Call
+        with tracer.start_as_current_span("llm_call") as llm_span:
+            llm_start = time.time()
+            response = llm.invoke(context + "\n\nQuestion: " + question)
+            llm_span.set_attribute("llm.model", "gpt-4-turbo")
+            llm_span.set_attribute("llm.ms", (time.time() - llm_start) * 1000)
+            llm_span.set_attribute("llm.input_tokens", response.usage_metadata["input_tokens"])
+            llm_span.set_attribute("llm.output_tokens", response.usage_metadata["output_tokens"])
+
+        root_span.set_status(Status(StatusCode.OK))
+        return response</code></pre>
+
 <hr>
-<p><em>Eso es todo!Gracias por acompañarme en estos 334 dias. Nos vemos en el Dia 335!</em></p
+
+<h3>Error 2: No Correlacionar Logs con Traces</h3>
+<p>Tener traces pero no correlacionarlos con logs es como tener上下文中，但没有连接。Los logs sin trace context son difíciles de filtrar:</p>
+<pre><code class="language-python"># ❌ MAL: Logs sin correlación
+def some_deep_function(data):
+    logger.info("Processing data")  # ¿Qué request? ¿Qué trace?
+    # ...
+    logger.error("Failed")  # ¿Cuál trace falló?</code></pre>
+
+<h4>Fix — Inyectar trace context en logs:</h4>
+<pre><code class="language-python"># ✅ BIEN: Logs con trace context correlacionado
+from opentelemetry import trace
+
+# Setup logging con trace context
+class TraceContextFilter(logging.Filter):
+    def filter(self, record):
+        span = trace.get_current_span()
+        if span and span.get_span_context().is_valid:
+            ctx = span.get_span_context()
+            record.trace_id = format(ctx.trace_id, '032x')
+            record.span_id = format(ctx.span_id, '016x')
+        else:
+            record.trace_id = "no-trace"
+            record.span_id = "no-span"
+        return True
+
+# En tu logging config
+handler = logging.StreamHandler()
+handler.addFilter(TraceContextFilter())
+formatter = logging.Formatter(
+    '%(asctime)s | %(levelname)s | trace_id=%(trace_id)s span_id=%(span_id)s | %(message)s'
+)
+handler.setFormatter(formatter)
+logger.addHandler(handler)
+logger.setLevel(logging.INFO)
+
+# Ahora cada log tiene trace y span IDs
+def some_deep_function(data):
+    # Automatically includes trace_id and span_id
+    logger.info("Processing data")  # trace_id=abc123 span_id=def456 | Processing data
+    try:
+        result = transform(data)
+        logger.info(f"Transformed {len(result)} items")
+    except Exception as e:
+        logger.error(f"Failed to transform: {e}")  # Mismo trace_id para correlar</code></pre>
+
+<p>También puedes usar <code>opentelemetry-instrumentation-logging</code> para hacerlo automáticamente:</p>
+
+<pre><code class="language-python"># Instrumentación automática de logging
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor, ConsoleSpanExporter
+
+# También puedes correlacionar usando структурированные logs (JSON)
+import structlog
+
+structlog.configure(
+    processors=[
+        structlog.contextvars.merge_contextvars,
+        structlog.processors.add_log_level,
+        structlog.processors.TimeStamper(fmt="iso"),
+        # Captura trace context automáticamente
+        structlog.processors.CallsiteParameterAdder([
+            structlog.processors.CallsiteParameter.FILENAME,
+            structlog.processors.CallsiteParameter.FUNC_NAME,
+        ]),
+        structlog.processors.JSONRenderer()
+    ]
+)</code></pre>
+
+<hr>
+
+<h3>Error 3: No Usar Traces para Optimización</h3>
+<p>El 85% solo usa traces para debugging cuando algo falla. El 15% las usa para <strong>optimizar</strong> antes de que fallen:</p>
+
+<pre><code class="language-python"># ❌ MAL: Traces solo para debugging post-mortem
+# Nunca mides: ¿dónde está el bottleneck real?
+
+# El developer asume: "el LLM es lento"
+# Realidad (del trace):
+# embedding: 12ms
+# retrieval: 145ms  <-- EL BOTTLENECK REAL (network a vector DB)
+# context building: 3ms
+# llm_call: 800ms
+# parsing: 2ms
+
+# Estás optimizando lo wrong!</code></pre>
+
+<h4>Fix — Análisis de Traces para Optimización:</h4>
+<pre><code class="language-python"># ✅ BIEN: Usa traces para identificar bottlenecks y optimizar
+from opentelemetry.sdk.trace.export import ConsoleSpanExporter
+from opentelemetry.sdk.trace import ReadableSpan
+import pandas as pd
+
+# 1. Recolecta spans y análisis
+def analyze_traces(spans: list[ReadableSpan]):
+    """Analiza traces para optimización"""
+
+    df = pd.DataFrame([{
+        'name': s.name,
+        'duration_ms': (s.end_time - s.start_time) / 1e6,
+        'trace_id': format(s.trace_id, '032x'),
+        'attributes': dict(s.attributes),
+    } for s in spans])
+
+    # 2. Aggregated por operation type
+    print("=== LATENCY BY OPERATION ===")
+    print(df.groupby('name')['duration_ms'].agg(['mean', 'max', 'std', 'count']))
+
+    # 3. P50, P95, P99 latencies
+    print("\n=== PERCENTILES (ms) ===")
+    for op in df['name'].unique():
+        op_durations = df[df['name'] == op]['duration_ms'].sort_values()
+        p50 = op_durations.iloc[int(len(op_durations) * 0.50)]
+        p95 = op_durations.iloc[int(len(op_durations) * 0.95)]
+        p99 = op_durations.iloc[int(len(op_durations) * 0.99)]
+        print(f"{op}: P50={p50:.1f}, P95={p95:.1f}, P99={p99:.1f}")
+
+    # 4. Correlación: retrieval distance vs accuracy
+    if 'retrieved.count' in df['attributes'].iloc[0]:
+        retrieval_counts = [a.get('retrieved.count', 0) for a in df['attributes']]
+        print(f"\n=== RETRIEVAL STATS ===")
+        print(f"Avg retrieved: {sum(retrieval_counts)/len(retrieval_counts):.1f}")
+
+    # 5. Anomaly detection: spans > 2 std deviations
+    print("\n=== ANOMALIES (>2 std) ===")
+    for op in df['name'].unique():
+        op_df = df[df['name'] == op]
+        mean = op_df['duration_ms'].mean()
+        std = op_df['duration_ms'].std()
+        threshold = mean + 2 * std
+        anomalies = op_df[op_df['duration_ms'] > threshold]
+        if len(anomalies) > 0:
+            print(f"{op}: {len(anomalies)} anomalies > {threshold:.1f}ms")
+
+# 6. Trace también para capacity planning
+def capacity_planning(spans: list[ReadableSpan]):
+    """Usa spans para estimar capacity"""
+    df = pd.DataFrame([...])
+
+    # Throughput por minuto
+    # Error rate
+    # Resource utilization por span type
+
+    print("=== CAPACITY METRICS ===")
+    print(f"Requests/minute: {len(df['trace_id'].unique()) / 60:.1f}")
+    print(f"Avg span count per trace: {len(df) / len(df['trace_id'].unique()):.1f}")</code></pre>
+
+<hr>
+<h2>🔗 Tracing Cross-Service Calls</h2>
+<p>En arquitecturas microservicio, propagate el trace context entre servicios:</p>
+
+<pre><code class="language-python"># ✅ TRACE PROPAGATION ENTRE SERVICIOS
+from opentelemetry import trace
+from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
+from opentelemetry.context import Context
+
+propagator = TraceContextTextMapPropagator()
+
+# Servicio A: Extrae context Y lo inyecta en headers
+def call_downstream_service(endpoint: str, payload: dict):
+    # Get current span context
+    ctx = trace.get_current_span().get_span_context()
+
+    # Crear carrier con trace context
+    carrier = {}
+    propagator.inject(carrier, ctx=ctx)
+
+    # Llamar downstream con headers
+    headers = {
+        "traceparent": carrier["traceparent"],  # W3C trace context
+        "tracestate": carrier.get("tracestate", ""),
+    }
+
+    response = requests.post(endpoint, json=payload, headers=headers)
+    return response
+
+# Servicio B: Extrae trace context Y continua el trace
+def handle_downstream_request(request):
+    # Extraer context de headers entrantes
+    carrier = {
+        "traceparent": request.headers["traceparent"],
+        "tracestate": request.headers.get("tracestate", ""),
+    }
+
+    ctx = propagator.extract(carrier)
+    
+    # Crear child span bajo el trace del caller
+    with tracer.start_as_current_span(
+        "downstream_handler",
+        context=ctx,  # Link to parent trace!
+    ) as span:
+        span.set_attribute("downstream.endpoint", request.path)
+        # Process...
+        return {"status": "ok"}</code></pre>
+
+<hr>
+<h2>📊 Herramientas de Observabilidad</h2>
+
+| Herramienta | Uso | Nivel |
+|-------------|-----|-------|
+| <strong>Jaeger</strong> | Distributed tracing UI | Production |
+| <strong>Zipkin</strong> | Tracing más simple | Dev/Staging |
+| <strong>Grafana Tempo</strong> | Traces + Metrics unificados | Production |
+| <strong>LangSmith</strong> | LLM-specific tracing | Development |
+| <strong>Weights & Biases</strong> | Experiment tracking + traces | ML experiments |
+| <strong>Phoenix (Arize)</strong> | LLM evaluation + tracing | Production |
+
+<pre><code class="language-python"># Ejemplo: LangSmith integration (gratuito tier)
+from langchain.callbacks import CallbackManager
+from langchain_openai import OpenAI
+from langsmith import traceable
+
+# Decorador que hace tracing automático de cualquier función
+@traceable(project_name="rag-optimization")
+def your_rag_pipeline(question: str):
+    # Todo dentro es automaticamente traced a LangSmith
+    docs = retrieve(question)
+    context = build_context(docs)
+    response = llm.invoke(context)
+    return response</code></pre>
+
+<hr>
+<h2>🚀 Resumen y Cierre Colombiano</h2>
+
+<p>Pues ahí lo tienen, gente del territorio. La clave del Día 334:</p>
+
+<ul>
+<li><strong>El 85% no tiene distributed tracing</strong> — cuando algo falla en producción, son días de debugging ciego.</li>
+<li><strong>El 15% que sí lo tiene</strong> puede identificar exactamente cuál span está fallando en minutos.</li>
+<li><strong>Sin correlación de logs y traces</strong>, los logs son inútiles para debugging moderno.</li>
+<li><strong>Traces no son solo para debugging</strong> — son para optimización proactiva y capacity planning.</li>
+<li><strong>OpenTelemetry es el estándar</strong> — aprenderlo una vez y lo usas en todos los servicios.</li>
+</ul>
+
+<p>La próxima vez que tu pipeline LLM tenga latencia extraño, en vez de hacer println debugging, pregúntate: ¿tengo el trace context para ver exactamente dónde está el bottleneck? Si la respuesta es no, ya sabes qué hacer.</p>
+
+<p>Eso es todo por hoy. Día 334 completado. Mañana seguimos con más del viaje. ¡Abrazo a la banda!</p>
   </article>
 
   <script>
