@@ -119,437 +119,258 @@ nav {
 
   <article class="article-body">
 <h2>Intro</h2>
-<p>¿Cuánto gastaste en LLM el mes pasado? Si la respuesta es "no sé", no te preocupes — el 90% de los equipos tampoco lo sabe hasta que llega la factura de AWS o de OpenAI y les da un infarto. Yo lo vi pasar en una fintech colombiana que pagaba $12,000 dólares mensuales en GPT-4 sin saber exactamente qué operaciones los estaban quemando. Después de un análisis serio, descubrimos que el 60% del gasto venía de prompts de debugging que podían resolverse con un modelo 10 veces más barato. Ese es el poder de entender tus costos.</p>
+<p>Mañana vas a analizar imágenes médicas para un proyecto de diagnóstico assistido. Necesitas hacer preguntas como "¿hay signos de neumonía en esta radiografía?" o "¿qué región muestra anomalías?". Un humano puede hacerlo, pero un modelo tradicional de visión por computador no responde preguntas en lenguaje natural sobre imágenes. Ahí es donde entra Visual Question Answering (VQA) — la habilidad de responder preguntas sobre el contenido de una imagen.</p>
 
-<p>Hoy vamos a construir un framework de análisis de costos de LLM desde cero, con código funcional en Python que puedes usar para auditar cada peso que se va en tokens. No basta con saber cuánto gastas — necesitas saber por qué, dónde, y si el retorno justifica la inversión.</p>
+<p>VQA es un problema multimodal fundamental que combina visión por computador y procesamiento de lenguaje natural. No es solo clasificación de imágenes — es comprensión visual profunda combinada con razonamiento lingüístico. Hoy vamos a entender cómo funciona, qué arquitecturas lo resuelven, y cómo implementar un sistema VQA básico.</p>
 
-<h2>La matemática detrás del costo de un LLM</h2>
+<h2>Qué es Visual Question Answering</h2>
 
-<p>Cada vez que mandas unprompt a un LLM, te cobran por tokens de entrada (input) y tokens de salida (output). El precio se mide en dólares por millón de tokens, y varía brutalmente entre proveedores y modelos:</p>
-
-<pre><code>COSTES_POR_MILLON_TOKENS = {
-    # OpenAI
-    "gpt-4o": {"input": 5.00, "output": 15.00},
-    "gpt-4o-mini": {"input": 0.15, "output": 0.60},
-    "gpt-4-turbo": {"input": 10.00, "output": 30.00},
-    "gpt-3.5-turbo": {"input": 0.50, "output": 1.50},
-
-    # Anthropic
-    "claude-3-5-sonnet": {"input": 3.00, "output": 15.00},
-    "claude-3-5-haiku": {"input": 0.80, "output": 4.00},
-
-    # Google
-    "gemini-1.5-pro": {"input": 1.25, "output": 5.00},
-    "gemini-1.5-flash": {"input": 0.075, "output": 0.30},
-
-    # Modelos abiertos (locales)
-    "llama-3-70b": {"input": 0.00, "output": 0.00},  # tú provees la infra
-}
-</code></pre>
-
-<p>La fórmula del costo por request es sencilla:</p>
-
-<p><strong> costo_request = (tokens_input / 1,000,000) × precio_input + (tokens_output / 1,000,000) × precio_output </strong></p>
-
-<p>Para una request típica con 1000 tokens de input y 500 de output en GPT-4o:</p>
-
-<pre><code>costo = (1000 / 1_000_000) × 5.00 + (500 / 1_000_000) × 15.00
-costo = 0.001 × 5.00 + 0.0005 × 15.00
-costo = 0.005 + 0.0075 = $0.0125 por request
-</code></pre>
-
-<p>Si tu aplicación hace 100,000 requests diarias, eso son $1,250 dólares al día, o $37,500 mensuales. Y eso es solo un modelo. Con múltiples modelos, caches fallidos, y retries automáticos, los números se disparan sin que nadie se dé cuenta.</p>
-
-<h2>Framework de tracking de costos</h2>
-
-<p>Vamos a implementar un sistema de tracking que categoriza cada operación por tipo, modelo, y usuario. Esto es el fundamento de cualquier optimización.</p>
-
-<pre><code>from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Optional
-from enum import Enum
-import json
-
-
-class OperationType(Enum):
-    INFERENCE = "inference"
-    EMBEDDING = "embedding"
-    FINE_TUNING = "fine_tuning"
-    CLASSIFICATION = "classification"
-    EXTRACTION = "extraction"
-    GENERATION = "generation"
-
-
-@dataclass
-class LLMCall:
-    timestamp: datetime
-    operation_type: OperationType
-    model: str
-    tokens_input: int
-    tokens_output: int
-    cost_usd: float
-    user_id: Optional[str] = None
-    session_id: Optional[str] = None
-    cache_hit: bool = False
-    quality_score: Optional[float] = None  # 0-1, evaluado post-hoc
-    metadata: dict = field(default_factory=dict)
-
-    def to_dict(self):
-        return {
-            "timestamp": self.timestamp.isoformat(),
-            "operation_type": self.operation_type.value,
-            "model": self.model,
-            "tokens_input": self.tokens_input,
-            "tokens_output": self.tokens_output,
-            "cost_usd": self.cost_usd,
-            "user_id": self.user_id,
-            "session_id": self.session_id,
-            "cache_hit": self.cache_hit,
-            "quality_score": self.quality_score,
-            "metadata": self.metadata,
-        }
-
-
-class CostTracker:
-    def __init__(self, provider_costs: dict):
-        self.provider_costs = provider_costs
-        self.calls: list[LLMCall] = []
-
-    def calculate_cost(self, model: str, tokens_input: int, tokens_output: int) -> float:
-        if model not in self.provider_costs:
-            raise ValueError(f"Modelo desconocido: {model}")
-
-        costs = self.provider_costs[model]
-        cost = (
-            (tokens_input / 1_000_000) * costs["input"]
-            + (tokens_output / 1_000_000) * costs["output"]
-        )
-        return round(cost, 6)
-
-    def log_call(
-        self,
-        operation_type: OperationType,
-        model: str,
-        tokens_input: int,
-        tokens_output: int,
-        user_id: Optional[str] = None,
-        session_id: Optional[str] = None,
-        cache_hit: bool = False,
-        metadata: dict = None,
-    ) -> LLMCall:
-        cost = self.calculate_cost(model, tokens_input, tokens_output)
-        call = LLMCall(
-            timestamp=datetime.now(),
-            operation_type=operation_type,
-            model=model,
-            tokens_input=tokens_input,
-            tokens_output=tokens_output,
-            cost_usd=cost,
-            user_id=user_id,
-            session_id=session_id,
-            cache_hit=cache_hit,
-            metadata=metadata or {},
-        )
-        self.calls.append(call)
-        return call
-
-    def get_total_cost(self, since: Optional[datetime] = None) -> float:
-        filtered = self.calls if since is None else [c for c in self.calls if c.timestamp >= since]
-        return sum(c.cost_usd for c in filtered)
-
-    def get_cost_by_model(self, since: Optional[datetime] = None) -> dict[str, float]:
-        filtered = self.calls if since is None else [c for c in self.calls if c.timestamp >= since]
-        costs = {}
-        for call in filtered:
-            costs[call.model] = costs.get(call.model, 0) + call.cost_usd
-        return costs
-
-    def get_cost_by_operation(self, since: Optional[datetime] = None) -> dict[str, float]:
-        filtered = self.calls if since is None else [c for c in self.calls if c.timestamp >= since]
-        costs = {}
-        for call in filtered:
-            op = call.operation_type.value
-            costs[op] = costs.get(op, 0) + call.cost_usd
-        return costs
-
-    def get_cost_by_user(self, since: Optional[datetime] = None) -> dict[str, float]:
-        filtered = self.calls if since is None else [c for c in self.calls if c.timestamp >= since]
-        costs = {}
-        for call in filtered:
-            if call.user_id:
-                costs[call.user_id] = costs.get(call.user_id, 0) + call.cost_usd
-        return costs
-
-    def get_top_operations(self, limit: int = 10, since: Optional[datetime] = None) -> list[dict]:
-        filtered = self.calls if since is None else [c for c in self.calls if c.timestamp >= since]
-        ops = {}
-        for call in filtered:
-            key = f"{call.model}:{call.operation_type.value}"
-            if key not in ops:
-                ops[key] = {"model": call.model, "operation": call.operation_type.value, "count": 0, "cost": 0}
-            ops[key]["count"] += 1
-            ops[key]["cost"] += call.cost_usd
-
-        return sorted(ops.values(), key=lambda x: x["cost"], reverse=True)[:limit]
-
-    def export_csv(self, filepath: str):
-        import csv
-        with open(filepath, "w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=LLMCall.__dataclass_fields__.keys())
-            writer.writeheader()
-            for call in self.calls:
-                writer.writerow(call.to_dict())
-</code></pre>
-
-<h2>Dashboard de optimización de costos</h2>
-
-<p>Ahora que tenemos tracking, vamos a construir un análisis que nos dice exactamente dónde están las oportunidades de optimización. El patrón clave es la relación costo-benefit: no queremos solo gastar menos, queremos gastar mejor.</p>
-
-<pre><code>from typing import Optional
-from datetime import datetime, timedelta
-
-
-class CostOptimizer:
-    def __init__(self, tracker: CostTracker):
-        self.tracker = tracker
-
-    def find_optimization_opportunities(self, since: Optional[datetime] = None) -> dict:
-        total_cost = self.tracker.get_total_cost(since=since)
-        cost_by_model = self.tracker.get_cost_by_model(since=since)
-        cost_by_op = self.tracker.get_cost_by_operation(since=since)
-        top_ops = self.tracker.get_top_operations(limit=20, since=since)
-
-        opportunities = {
-            "total_cost_usd": total_cost,
-            "by_model": cost_by_model,
-            "by_operation": cost_by_op,
-            "top_operations": top_ops,
-            "recommendations": [],
-        }
-
-        # Oportunidad 1: Modelos caros en tareas que podrían usar modelos más baratos
-        expensive_ops = [op for op in top_ops if cost_by_model.get(op["model"], 0) > total_cost * 0.3]
-        for op in expensive_ops:
-            if "gpt-4" in op["model"] or "claude-3-5-sonnet" in op["model"]:
-                opportunities["recommendations"].append({
-                    "type": "model_downgrade",
-                    "operation": op["operation"],
-                    "current_model": op["model"],
-                    "suggested_model": "gpt-4o-mini" if "gpt" in op["model"] else "claude-3-5-haiku",
-                    "estimated_savings_percent": 85,
-                    "reason": f"Operation '{op['operation']}'usa {op['model']} pero no requiere capacidades的高级",
-                })
-
-        # Oportunidad 2: Operations sin cache que se repiten
-        repeated_ops = {}
-        for call in self.tracker.calls:
-            if since and call.timestamp < since:
-                continue
-            key = f"{call.operation_type.value}:{call.tokens_input}:{call.tokens_output}"
-            if key not in repeated_ops:
-                repeated_ops[key] = {"count": 0, "cost": 0, "call": call}
-            repeated_ops[key]["count"] += 1
-            repeated_ops[key]["cost"] += call.cost_usd
-
-        for key, data in repeated_ops.items():
-            if data["count"] > 100 and not data["call"].cache_hit:
-                opportunities["recommendations"].append({
-                    "type": "enable_caching",
-                    "operation": data["call"].operation_type.value,
-                    "repeated_count": data["count"],
-                    "estimated_savings_percent": 70,
-                    "reason": f"{data['count']} llamadas repetidas sin cache para esta operación",
-                })
-
-        # Oportunidad 3: Operations con quality score bajo que cuestan mucho
-        low_quality_ops = [c for c in self.tracker.calls if since and c.timestamp >= since and c.quality_score is not None and c.quality_score < 0.6]
-        if low_quality_ops:
-            cost_low_quality = sum(c.cost_usd for c in low_quality_ops)
-            if cost_low_quality > total_cost * 0.2:
-                opportunities["recommendations"].append({
-                    "type": "review_low_quality",
-                    "affected_cost_usd": cost_low_quality,
-                    "affected_calls": len(low_quality_ops),
-                    "reason": "Operaciones con quality score bajo representan >20% del costo",
-                })
-
-        return opportunities
-
-    def calculate_roi(self, operation_type: OperationType, since: Optional[datetime] = None) -> dict:
-        """Calcular ROI de un tipo de operación."""
-        filtered = self.tracker.calls if since is None else [
-            c for c in self.tracker.calls if c.timestamp >= since
-        ]
-        ops = [c for c in filtered if c.operation_type == operation_type]
-
-        if not ops:
-            return {"error": "No data for this operation"}
-
-        total_cost = sum(c.cost_usd for c in ops)
-        avg_quality = sum(c.quality_score for c in ops if c.quality_score) / len(ops) if any(c.quality_score for c in ops) else None
-
-        # ROI es difícil de medir sin métricas de negocio
-        # Aquí usamos quality score como proxy
-        return {
-            "operation": operation_type.value,
-            "total_cost_usd": total_cost,
-            "call_count": len(ops),
-            "avg_cost_per_call": total_cost / len(ops),
-            "avg_quality_score": avg_quality,
-            "roi_indicator": "positive" if avg_quality and avg_quality > 0.7 else "needs_review",
-        }
-
-    def generate_report(self, since: Optional[datetime] = None) -> str:
-        opportunities = self.find_optimization_opportunities(since=since)
-        lines = [
-            "=" * 60,
-            "LLM COST OPTIMIZATION REPORT",
-            "=" * 60,
-            f"Total Cost: ${opportunities['total_cost_usd']:.4f}",
-            "",
-            "COST BY MODEL:",
-        ]
-
-        for model, cost in sorted(opportunities["by_model"].items(), key=lambda x: -x[1]):
-            lines.append(f"  {model}: ${cost:.4f} ({cost/opportunities['total_cost_usd']*100:.1f}%)")
-
-        lines.extend(["", "COST BY OPERATION:"])
-        for op, cost in sorted(opportunities["by_operation"].items(), key=lambda x: -x[1]):
-            lines.append(f"  {op}: ${cost:.4f}")
-
-        lines.extend(["", "TOP 10 OPERATIONS BY COST:"])
-        for i, op in enumerate(opportunities["top_operations"][:10], 1):
-            lines.append(f"  {i}. {op['model']} / {op['operation']}: ${op['cost']:.4f} ({op['count']} calls)")
-
-        lines.extend(["", "RECOMMENDATIONS:"])
-        for i, rec in enumerate(opportunities["recommendations"], 1):
-            lines.append(f"  {i}. [{rec['type']}] {rec.get('reason', '')}")
-            if "estimated_savings_percent" in rec:
-                lines.append(f"     Estimated savings: {rec['estimated_savings_percent']}%")
-
-        return "\n".join(lines)
-</code></pre>
-
-<h2>3 errores comunes y sus soluciones</h2>
-
-<h3>Error 1: No hacer tracking y llevarse sorpresas con la factura</h3>
-
-<p>El error más común es operación a ciegas. Sin tracking, no tienes idea de qué está consumiendo tu presupuesto. Un día llega la factura de $50,000 y no sabes si fue por un exploit, un loop infinito, o simplemente que tu producto creció orgánicamente.</p>
-
-<p><strong>Fix:</strong> Implementa el CostTracker desde el día uno. Cada llamada a cualquier LLM debe pasar por el tracker. No importa si es una prueba de concepto — si no mides desde el principio, después no tienes datos históricos para comparar.</p>
-
-<pre><code># Ejemplo de uso integrado con OpenAI
-from openai import OpenAI
-
-client = OpenAI()
-tracker = CostTracker(COSTES_POR_MILLON_TOKENS)
-
-def chat_with_tracking(prompt: str, model: str = "gpt-4o", user_id: str = None):
-    response = client.chat.completions.create(
-        model=model,
-        messages=[{"role": "user", "content": prompt}]
-    )
-
-    usage = response.usage
-    tracker.log_call(
-        operation_type=OperationType.GENERATION,
-        model=model,
-        tokens_input=usage.prompt_tokens,
-        tokens_output=usage.completion_tokens,
-        user_id=user_id,
-    )
-    return response
-</code></pre>
-
-<h3>Error 2: No hacer ROI analysis antes de optimizar</h3>
-
-<p>El segundo error es optimizar costos ciegamente. Reducir el costo no vale la pena si la calidad baja tanto que tus usuarios se van o tu precisión de negocio se degrada. Un caso real: una empresa bajó de GPT-4 a GPT-3.5-turbo para ahorrar costos, las respuestas empeoraron noticeably en casos edge, y el equipo de soporte tuvo que duplicarse. El "ahorro" salió caro.</p>
-
-<p><strong>Fix:</strong> Antes de cualquier optimización, define qué nivel de quality score aceptas para cada operación. No todas las tareas necesitan un modelo potente. Clasifica tus operaciones:</p>
+<p>VQA es el problema de responder preguntas en lenguaje natural sobre una imagen. A diferencia de tareas tradicionales de visión donde la etiqueta es fija (gato o perro), en VQA la pregunta puede ser cualquier cosa:</p>
 
 <ul>
-<li><strong>Alta stakes</strong> (decisiones de negocio, datos sensibles): GPT-4o / Claude-3-5-Sonnet, tracking de calidad obligatorio</li>
-<li><strong>Medium stakes</strong> (resúmenes, clasificaciones): GPT-4o-mini / Claude-3-5-Haiku</li>
-<li><strong>Low stakes</strong> (autocomplete, sugerencias): modelos abiertos locales o embedding-only</li>
+<li><strong>¿Cuántos objetos hay en la imagen?</strong> → respuesta: "3"</li>
+<li><strong>¿El objeto rojo es un carro o un bus?</strong> → respuesta: "carro"</li>
+<li><strong>¿Qué está haciendo la persona de la izquierda?</strong> → respuesta: "caminando"</li>
+<li><strong>¿Hay algún peligro en esta escena?</strong> → respuesta: "sí, hay fuego"</li>
 </ul>
 
-<pre><code># ROI analysis antes de migrar
-optimizer = CostOptimizer(tracker)
-
-# Analiza el ROI de classification con el modelo actual
-roi_gpt4 = optimizer.calculate_roi(OperationType.CLASSIFICATION, since=last_week)
-print(f"Classification con GPT-4: ${roi_gpt4['total_cost_usd']:.2f}, quality: {roi_gpt4['avg_quality_score']}")
-
-# Migrar a GPT-4o-mini y volver a medir
-# ... después de migrar ...
-roi_mini = optimizer.calculate_roi(OperationType.CLASSIFICATION, since=migration_week)
-print(f"Classification con GPT-4o-mini: ${roi_mini['total_cost_usd']:.2f}, quality: {roi_mini['avg_quality_score']}")
-
-# Solo aceptar migración si quality no baja más de 5%
-if roi_mini['avg_quality_score'] >= roi_gpt4['avg_quality_score'] - 0.05:
-    print("Migración aprobada")
-</code></pre>
-
-<h3>Error 3: Optimizar costo sin considerar el impacto en calidad</h3>
-
-<p>Relacionado con el anterior pero más sutil. Muchas veces el problema no es el modelo, sino cómo lo usas. Pones temperature=0.9 en generation cuando no necesitas creatividad. Haces streaming de respuestas cuando el usuario solo necesita el resultado final. Mandas el historial completo de conversación en cada request cuando solo necesitas los últimos mensajes.</p>
-
-<p><strong>Fix:</strong> Audita tus patrones de uso. Cosas que reducen costo sin afectar calidad:</p>
+<p>La dificultad radica en que el modelo debe:</p>
 
 <ul>
-<li>Truncar contexto antiguo que ya no es relevante</li>
-<li>Usar system prompts más específicos para reducir tokens de output</li>
-<li>Desactivar streaming para operaciones que no lo necesitan</li>
-<li>Implementar caching semántico para queries similares</li>
-<li>Batchear requests cuando sea posible</li>
+<li>Entender la pregunta (NLP)</li>
+<li>Entender el contenido visual (CV)</li>
+<li>Razonar sobre la relación pregunta-imagen</li>
+<li>Generar o seleccionar una respuesta válida</li>
 </ul>
 
-<pre><code># Caching semántico simple
-from collections import defaultdict
-import hashlib
+<h2>Arquitecturas VQA</h2>
 
-class SemanticCache:
-    def __init__(self, similarity_threshold: float = 0.95):
-        self.cache = {}
-        self.similarity_threshold = similarity_threshold
+<h3>Arquitectura temprana: CNN + LSTM</h3>
 
-    def _normalize(self, text: str) -> str:
-        return text.lower().strip()
+<p>Las primeras arquitecturas VQA usaban una aproximación simple:</p>
 
-    def _hash(self, text: str) -> str:
-        return hashlib.md5(self._normalize(text).encode()).hexdigest()
+<pre><code class="language-python"># Arquitectura básica CNN + LSTM para VQA
+import torch
+import torch.nn as nn
 
-    def get(self, prompt: str) -> Optional[str]:
-        key = self._hash(prompt)
-        if key in self.cache:
-            return self.cache[key]["response"]
-        return None
-
-    def set(self, prompt: str, response: str):
-        key = self._hash(prompt)
-        self.cache[key] = {"response": response}
-
-    def size(self) -> int:
-        return len(self.cache)
-
-    def clear(self):
-        self.cache = {}
+class VQACNNLSTM(nn.Module):
+    def __init__(self, vocab_size, embed_dim=300, hidden_dim=512):
+        super().__init__()
+        # Encoder de imagen: CNN pretrained (ej. ResNet)
+        self.image_encoder = torchvision.models.resnet50(pretrained=True)
+        self.image_encoder.fc = nn.Linear(2048, hidden_dim)
+        
+        # Encoder de pregunta: LSTM
+        self.question_encoder = nn.LSTM(
+            input_size=embed_dim,
+            hidden_size=hidden_dim,
+            batch_first=True
+        )
+        
+        # Combinar características y clasificar respuesta
+        self.classifier = nn.Sequential(
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+            nn.Linear(hidden_dim, vocab_size)
+        )
+    
+    def forward(self, image, question):
+        # image: (batch, 3, 224, 224)
+        # question: (batch, seq_len)
+        
+        # Extraer características de imagen
+        img_features = self.image_encoder(image)  # (batch, hidden_dim)
+        img_features = img_features.unsqueeze(1).expand(-1, question.size(1), -1)
+        
+        # Codificar pregunta
+        q_output, (q_hidden, _) = self.question_encoder(question)
+        q_features = q_hidden.squeeze(0)  # (batch, hidden_dim)
+        q_features = q_features.unsqueeze(1).expand(-1, img_features.size(1), -1)
+        
+        # Combinar y clasificar
+        combined = torch.cat([img_features, q_features], dim=-1)
+        combined = combined.mean(dim=1)  # pooling
+        output = self.classifier(combined)
+        
+        return output
 </code></pre>
+
+<h3>Arquitectura con Atención</h3>
+
+<p>Las arquitecturas modernas usan atención visual para enfocar en las regiones relevantes de la imagen:</p>
+
+<pre><code class="language-python"># Atención visual para VQA
+class VisualAttention(nn.Module):
+    def __init__(self, image_dim=2048, hidden_dim=512):
+        super().__init__()
+        self.image_attention = nn.Linear(image_dim, 1)
+        self.softmax = nn.Softmax(dim=1)
+    
+    def forward(self, image_features, question_features):
+        # image_features: (batch, num_regions, image_dim)
+        # question_features: (batch, hidden_dim)
+        
+        # Calcular atención basada en la pregunta
+        q_expanded = question_features.unsqueeze(1).expand(-1, image_features.size(1), -1)
+        attention_input = image_features * q_expanded
+        attention_scores = self.image_attention(attention_input).squeeze(-1)
+        attention_weights = self.softmax(attention_scores)
+        
+        # Aplicar atención a características de imagen
+        attended_features = torch.sum(image_features * attention_weights.unsqueeze(-1), dim=1)
+        
+        return attended_features, attention_weights
+
+
+class UpDownAttentionVQA(nn.Module):
+    """
+    Bottom-Up Top-Down Attention - similar a la usada en BUTD (Anderson et al.)
+    """
+    def __init__(self, vocab_size, embed_dim=300, hidden_dim=512, num_objects=36):
+        super().__init__()
+        self.num_objects = num_objects
+        
+        # Image feature extractor (pre-trained Faster R-CNN)
+        self.image_encoder = nn.Linear(2048, hidden_dim)
+        
+        # Question encoder
+        self.word_embedding = nn.Embedding(vocab_size, embed_dim)
+        self.question_encoder = nn.LSTM(
+            input_size=embed_dim,
+            hidden_size=hidden_dim,
+            batch_first=True,
+            bidirectional=True
+        )
+        
+        # Attention layers
+        self.image_attention = nn.Linear(hidden_dim, 1)
+        self.classifier = nn.Sequential(
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+            nn.Linear(hidden_dim, vocab_size)
+        )
+    
+    def forward(self, image_features, question, question_length):
+        # image_features: (batch, num_objects, 2048)
+        # question: (batch, max_seq_len)
+        # question_length: (batch,)
+        
+        batch_size = image_features.size(0)
+        
+        # 1. Codificar pregunta
+        embedded = self.word_embedding(question)
+        _, (q_hidden, _) = self.question_encoder(embedded)
+        q_hidden = torch.cat([q_hidden[0], q_hidden[1]], dim=1)  # bidirectional
+        
+        # 2. Atención visual
+        image_proj = self.image_encoder(image_features)  # (batch, num_objects, hidden)
+        combined = image_proj * q_hidden.unsqueeze(1).expand(-1, self.num_objects, -1)
+        attention_logits = self.image_attention(combined).squeeze(-1)
+        
+        # Mask padding regions
+        mask = torch.arange(self.num_objects, device=attention_logits.device).unsqueeze(0).expand(batch_size, -1)
+        mask = mask < torch.tensor([self.num_objects] * batch_size, device=mask.device).unsqueeze(1)
+        attention_logits.masked_fill_(~mask, float('-inf'))
+        
+        attention_weights = F.softmax(attention_logits, dim=1)
+        attended_image = torch.sum(image_features * attention_weights.unsqueeze(-1), dim=1)
+        
+        # 3. Combinar y clasificar
+        combined_features = torch.cat([q_hidden, attended_image], dim=1)
+        output = self.classifier(combined_features)
+        
+        return output
+</code></pre>
+
+<h3>VQA con Transformers (state-of-the-art)</h3>
+
+<p>Los modelos modernos usan transformers multimodales que procesan imagen y texto conjuntamente:</p>
+
+<pre><code class="language-python"># VQA con Multimodal Transformer (simplificado)
+from transformers import BertModel, BertTokenizer, VisionEncoderDecoderModel
+
+class TransformerVQA(nn.Module):
+    def __init__(self):
+        super().__init__()
+        # Encoder de imagen (ViT) y decoder de texto (BERT)
+        self.model = VisionEncoderDecoderModel.from_pretrained(
+            "nlpconnect/vit-gpt2-image-captioning"
+        )
+        # Reemplazar decoder para VQA (preguntas como input, respuestas como output)
+        
+    def forward(self, image, question):
+        # image: (batch, 3, 224, 224)
+        # question: (batch, seq_len) - tokenized question
+        
+        # Usar pregunta como prefix para el decoder
+        outputs = self.model(
+            pixel_values=image,
+            labels=question  # training mode
+        )
+        return outputs.logits
+
+
+# Alternativa: usar modelo pre-entrenado de VQA
+from transformers import pipeline
+
+# Cargar pipeline VQA pre-entrenado
+vqa_pipeline = pipeline("vqa", model="dandelin/vilt-b32-finetuned-vqa")
+
+def answer_question(image_path, question):
+    """
+    Ejemplo de uso de pipeline VQA pre-entrenado.
+    """
+    from PIL import Image
+    import requests
+    
+    image = Image.open(image_path)
+    result = vqa_pipeline(image, question)
+    
+    # Result es una lista de dicts con 'score' y 'answer'
+    return result
+
+# Uso:
+# answer = answer_question("radiografia.jpg", "¿Hay signos de neumonía?")
+# print(answer)  # [{'answer': 'sí', 'score': 0.95}, {'answer': 'no', 'score': 0.05}, ...]
+</code></pre>
+
+<h2>Datasets y evaluación</h2>
+
+<p>Los datasets principales para VQA son:</p>
+
+<ul>
+<li><strong>VQA v2.0</strong>: 1M+ preguntas sobre imágenes de COCO, con balanceo de respuestas para reducir sesgos</li>
+<li><strong>Visual Genome</strong>: 1M+ preguntas con region descriptions más detalladas</li>
+<li><strong>VQAv2.0-E</strong>: Versión equilibrada con contrafácticos</li>
+</ul>
+
+<p>La evaluación usa <strong>VQA Accuracy</strong>:</p>
+
+<p><strong> accuracy = (1 / N) * sum(min( (# humanos que dieron respuesta r) / 3, 1 )) </strong></p>
+
+<p>Es decir, si 3 o más humanos dieron la misma respuesta, cuenta como correcta. Si 1 o 2 la dieron, cuenta parcialmente.</p>
+
+<h2>Aplicaciones reales</h2>
+
+<ul>
+<li><strong>Médicina</strong>: Preguntas sobre radiografías, tomografías, imágenes de retina</li>
+<li><strong>Accesibilidad</strong>: Describir escenas para personas con discapacidad visual</li>
+<li><strong>Seguridad</strong>: Analizar cámaras de vigilancia con preguntas naturales</li>
+<li><strong>Educación</strong>: Sistemas interactivos que responden preguntas sobre diagramas, mapas, imágenes históricas</li>
+<li><strong>Retail</strong>: Analizar productos en estantes, responder preguntas sobre inventario</li>
+</ul>
+
+<hr>
 
 <h2>Resumen y cierre</h2>
 
-<p>El costo de LLM no es un problema de infraestructura — es un problema de visibilidad. Si no sabes cuánto gastas, en qué, y qué obtienes a cambio, estás volando a ciegas con la chequera abierta. El framework que construimos hoy te da:</p>
+<p>Visual Question Answering es una tarea multimodal que combina visión por computador y NLP para responder preguntas sobre imágenes. Las arquitecturas han evolucionado desde CNN+LSTM simples hasta transformers multimodales sofisticados. El campo avanza rápidamente con modelos como CLIP, GPT-4V, y Gemini que demuestran capacidades VQA impresionantemente robustas.</p>
 
-<ul>
-<li><strong>Tracking granular</strong>: cada request categorizada por tipo, modelo, usuario</li>
-<li><strong>Análisis de oportunidades</strong>: te dice exactamente dónde puedes ahorrar</li>
-<li><strong>ROI por operación</strong>: sabes si lo que pagas vale la pena</li>
-<li><strong>Caching inteligente</strong>: reduce costos sin tocar calidad</li>
-</ul>
+<p>La próxima vez que necesites que un modelo "mire" una imagen y responda preguntas específicas, ya sabes cómo funciona internamente. Y si necesitas implementar algo rápido, hay pipelines pre-entrenados que funcionan sorprendentemente bien out of the box.</p>
 
-<p>La próxima vez que llegue una factura sorpresa de tu proveedor de LLM, vas a saber exactamente por qué. Y si eres como esa fintech colombiana, vas a descubrir que el 60% de tu gasto se puede optimizar sin tocar la calidad. Eso es plata real en tu bolsillo.</p>
-
-<p>En Bogotá decíamos: "lo que no se mide, no se mejora". Con este framework, ya tienes las herramientas para medir, analizar, y mejorar. Ahora es cuestión de ejecutar.</p>
+<p>En Bogotá decíamos: "una imagen vale más que mil palabras, pero una buena pregunta vale más que mil imágenes". Con VQA, las máquinas finalmente pueden entender esa relación.</p>
   </article>
 
   <script>
