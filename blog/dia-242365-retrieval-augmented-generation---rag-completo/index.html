@@ -118,576 +118,505 @@ nav {
   </header>
 
   <article class="article-body">
-<h2>Fine-tuning: Cuando Prompt Engineering No Alcanza</h2>
+<h2>Que Es RAG</h2>
 
-<p>Hagale pues, parcero. Estamos en el D&#237;a 242 y hoy vamos a meternos en territory que el 80% usa sin entender por qu&#233; funciona: fine-tuning con LoRA y QLoRA.</p>
+<p>Hagale pues, parcero. Estamos en el D&#237;a 242 y hoy vamos a meternos en el tema que el 80% implementa incorrectamente: RAG (Retrieval Augmented Generation).</p>
 
-<p>Aqu&#237; en Medell&#237;n, cuando uno empieza con LLMs, lo primero que hace es prompt engineering. Y esta bien, eh. Pero hay un punto donde el prompt se vuelve taaan largo que el modelo ya no puede con tanto contexto, o donde el modelo simplemente no captura el estilo o la logica particular que uno necesita. Ahi es donde entra fine-tuning.</p>
+<p>Aqu&#237; en Medell&#237;n, cuando uno desplega un LLM para preguntas sobre documentos, la primera pregunta es: &#191;c&#243;mo le doy el contexto? RAG es la respuesta. Pero aqu&#237; viene el problema: el 90% hace RAG naive y se pregunta por qu&#233; el modelo responde mal.</p>
 
-<p>Pero la cosa no es simplemente "entrenar el modelo con mis datos". No parcero. Si uno hace fine-tuning full model, va a necesitar 80GB de VRAM como nada, y va a tardar dias. LoRA y QLoRA son las tecnicas que el 80% usa sin entender la math detras, y hoy vamos a cambiar eso.</p>
+<p>RAG combina retrieval (b&#250;squeda) con generation (generaci&#243;n). El flujo es:</p>
 
-<h2>La Matem&#225;tica de LoRA</h2>
+<ol>
+<li>Usuario hace pregunta</li>
+<li>Sistema busca documentos relevantes en base de conocimiento</li>
+<li>Documentos relevantes se a&#241;aden al prompt</li>
+<li>LLM genera respuesta basada en el contexto recuperado</li>
+</ol>
 
-<p>La idea central de LoRA es simple: no entrenar todos los parametros del modelo. En lugar de eso, solo entrenar un conjunto pequeno de parametros adicionales (las matrices A y B) y congelar el resto.</p>
+<h2>Arquitectura Basica de RAG</h2>
 
-<p>En un transformer, la operacion mas costosa es la atenci&#243;n:</p>
+<p>Un sistema RAG completo tiene estos componentes:</p>
 
-<p><strong>Y = Softmax(QK&#185;)V = Softmax(XWK(WQ)&#178;)V</strong></p>
-
-<p>Donde Wq, Wk, Wv son las matrices de pesos para Query, Key, Value. Estas matrices son de dimensi&#243;n d_model &#215; d_k (t&#237;picamente 4096 &#215; 4096 para un 7B).</p>
-
-<p>LoRA propone reparametrizar el update as&#237;:</p>
-
-<p><strong>W' = W + &#916;W = W + BA</strong></p>
-
-<p>Donde B &#220; R^(d&#215;r) y A &#220; R^(r&#215;k), con r << min(d, k). Para un 7B model, W es 4096&#215;4096 = 16M parametros, pero si r=8, entonces BA es solo 8&#215;4096&#215;2 = 65K parametros. Eso es 250x menos parametros!</p>
-
-<p>La memory requerida para fine-tuning es:</p>
-
-<p><strong>Memory LoRA = Model Frozen + Training State + Batch Size &#215; Sequence Length &#215; (Activation Memory)</strong></p>
-
-<pre><code class="language-python">"""
-C&#225;lculo de memoria para LoRA vs Fine-tuning completo.
-Esta math es la que el 80% ignora y luego se shockea cuando
-su GPU de 24GB no alcanza para un 7B model.
-"""
-
-def calculate_finetuning_memory(
-    model_params: int,
-    model_size_gb: float,
-    precision: str = "fp16",
-    lora_rank: int = 8,
-    lora_target_modules: list[str] = ["q_proj", "v_proj"],
-    batch_size: int = 1,
-    seq_length: int = 2048,
-    include_activations: bool = True,
-) -> dict:
-    """
-    Calcula la memoria necesaria para fine-tuning.
-    
-    Args:
-        model_params: N&#250;mero de par&#225;metros del modelo (ej: 7_000_000_000)
-        model_size_gb: Tama&#241;o del modelo en GB en disco
-        precision: fp16, bf16, fp32, int8, int4
-        lora_rank: Rank r para LoRA (t&#237;picamente 4-64)
-        lora_target_modules: Qu&#233; capas aplicar LoRA
-        batch_size: Batch size durante entrenamiento
-        seq_length: Longitud m&#225;xima de secuencia
-        include_activations: Si incluir memoria para activations
-    """
-    
-    # Tama&#241;o por par&#225;metro seg&#250;n precisi&#243;n
-    bytes_per_param = {
-        "fp32": 4,
-        "fp16": 2,
-        "bf16": 2,
-        "int8": 1,
-        "int4": 0.5,
-    }[precision]
-    
-    # Par&#225;metros totales
-    total_params = model_params
-    
-    # LoRA solo entrena las capas target
-    # T&#237;picamente q_proj y v_proj son ~0.1% de par&#225;metros
-    # Para un 7B: ~7M par&#225;metros entrenables vs 7B
-    lora_params_ratio = 0.001  # 0.1% para q_proj, v_proj
-    
-    trainable_params = int(total_params * lora_params_ratio * lora_rank * 2 / 4096) 
-    # Aproximado: r * dim * 2 para A y B
-    
-    # Memory para modelos congelados (solo guarda para inference, no gradients)
-    frozen_model_memory = model_size_gb * (bytes_per_param / 2)  # fp16 base
-    
-    # Memory para estado de entrenamiento
-    # Gradients: solo para par&#225;metros entrenables
-    gradients_memory = (trainable_params * bytes_per_param) / (1024**3)
-    
-    # Optimizer states: solo para par&#225;metros entrenables
-    # Adam requiere 2 states por par&#225;metro (momentum + variance)
-    optimizer_memory = trainable_params * bytes_per_param * 2 / (1024**3)
-    
-    # Activations (si se incluyen)
-    activations_memory = 0
-    if include_activations:
-        # activations = batch_size * seq_length * hidden_dim * layers * bytes
-        # Aproximado para 7B con hidden=4096, 32 layers
-        activations_memory = (
-            batch_size * seq_length * 4096 * 32 * bytes_per_param * 4  # factor de seguridad
-        ) / (1024**3)
-    
-    # Total
-    if lora_rank == 0:  # Fine-tuning completo
-        total_memory = (
-            frozen_model_memory +  # Todo el modelo
-            model_params * bytes_per_param +  # Gradients (todo)
-            model_params * bytes_per_param * 2  # Optimizer (todo)
-        ) / (1024**3)
-    else:  # LoRA
-        total_memory = (
-            frozen_model_memory +
-            gradients_memory +
-            optimizer_memory +
-            activations_memory
-        )
-    
-    return {
-        "frozen_model_gb": frozen_model_memory,
-        "gradients_gb": gradients_memory,
-        "optimizer_gb": optimizer_memory,
-        "activations_gb": activations_memory,
-        "total_gb": total_memory,
-        "trainable_params": trainable_params,
-        "trainable_ratio": trainable_params / total_params * 100,
-    }
-
-
-# Ejemplo para Llama 2 7B
-memory_calc = calculate_finetuning_memory(
-    model_params=6_738_415_744,  # 6.7B para Llama 2
-    model_size_gb=13.5,  # 13.5GB en fp16
-    precision="fp16",
-    lora_rank=8,
-    batch_size=4,
-    seq_length=2048,
-)
-
-print(f"LoRA con r=8, batch=4, seq=2048:")
-print(f"  Modelo congelado: {memory_calc['frozen_model_gb']:.2f} GB")
-print(f"  Gradients: {memory_calc['gradients_gb']:.4f} GB")
-print(f"  Optimizer: {memory_calc['optimizer_gb']:.4f} GB")
-print(f"  Activations: {memory_calc['activations_gb']:.2f} GB")
-print(f"  TOTAL: {memory_calc['total_gb']:.2f} GB")
-print(f"  Parametros entrenables: {memory_calc['trainable_params']:,}")
-print(f"  Ratio entrenable: {memory_calc['trainable_ratio']:.4f}%")
-
-
-# Comparacion: Full FT vs LoRA vs QLoRA
-print("\nComparacion de metodos para Llama 2 7B:")
-print("=" * 60)
-
-for method, precision, lora_r in [
-    ("Full Fine-tune", "fp16", 0),
-    ("LoRA r=8", "fp16", 8),
-    ("LoRA r=64", "fp16", 64),
-    ("QLoRA r=8 (int4)", "int4", 8),
-    ("QLoRA r=64 (int4)", "int4", 64),
-]:
-    calc = calculate_finetuning_memory(
-        model_params=6_738_415_744,
-        model_size_gb=13.5,
-        precision=precision,
-        lora_rank=lora_r,
-        batch_size=4,
-        seq_length=2048,
-    )
-    print(f"{method:20} | {calc['total_gb']:6.2f} GB | ~{int(calc['trainable_ratio']*70)} params")</code></pre>
-
-<h2>Implementando LoRA con PEFT</h2>
+<ul>
+<li><strong>Document Loader</strong>: Carga documentos de varias fuentes (PDF, HTML, Markdown, etc.)</li>
+<li><strong>Text Splitter</strong>: Divide documentos en chunks manejables</li>
+<li><strong>Embedding Model</strong>: Convierte texto en vectores</li>
+<li><strong>Vector Store</strong>: Almacena embeddings para b&#250;squeda r&#225;pida</li>
+<li><strong>Retrieval System</strong>: Encuentra documentos relevantes</li>
+<li><strong>Generation Model</strong>: Genera respuesta con contexto</li>
+</ul>
 
 <pre><code class="language-python">"""
-Fine-tuning con LoRA usando PEFT (Parameter Efficient Fine-Tuning).
+RAG Pipeline completo.
 Esta es la implementacion que el 80% deberia estar usando.
 """
 
-from peft import LoraConfig, get_peft_model, TaskType
-from transformers import AutoModelForCausalLM, AutoTokenizer, TrainingArguments
-from datasets import load_dataset
-import torch
+from typing import List, Optional
+from dataclasses import dataclass
+import os
 
-# 1. Cargar modelo base
-model_name = "meta-llama/Llama-2-7b-hf"
+@dataclass
+class Document:
+    """Representa un documento o chunk de documento."""
+    content: str
+    metadata: dict
+    embedding: Optional[List[float]] = None
 
-model = AutoModelForCausalLM.from_pretrained(
-    model_name,
-    torch_dtype=torch.float16,
-    device_map="auto",
-    load_in_8bit=True,  # Para 8-bit inference
-)
+class SimpleRAG:
+    """
+    Sistema RAG b&#225;sico con retrieval y generaci&#243;n.
+    """
+    
+    def __init__(
+        self,
+        embedding_model,
+        vector_store,
+        llm,
+        chunk_size: int = 500,
+        chunk_overlap: int = 50,
+    ):
+        self.embedding_model = embedding_model
+        self.vector_store = vector_store
+        self.llm = llm
+        self.chunk_size = chunk_size
+        self.chunk_overlap = chunk_overlap
+        
+    def load_documents(self, documents: List[str], metadatas: List[dict] = None) -> List[Document]:
+        """
+        Carga y divide documentos en chunks.
+        """
+        docs = []
+        for i, doc_content in enumerate(documents):
+            # Split simple por parrafos
+            chunks = self._split_text(doc_content)
+            
+            for j, chunk in enumerate(chunks):
+                metadata = metadatas[i].copy() if metadatas else {}
+                metadata['chunk_id'] = j
+                metadata['chunk_count'] = len(chunks)
+                
+                docs.append(Document(
+                    content=chunk,
+                    metadata=metadata
+                ))
+        
+        return docs
+    
+    def _split_text(self, text: str) -> List[str]:
+        """
+        Divide texto en chunks con solapamiento.
+        """
+        chunks = []
+        start = 0
+        
+        while start < len(text):
+            end = start + self.chunk_size
+            chunk = text[start:end]
+            
+            # Evitar cortes en medio de oraciones
+            if end < len(text):
+                last_period = chunk.rfind('.')
+                if last_period > self.chunk_size // 2:
+                    chunk = chunk[:last_period + 1]
+                    end = start + last_period + 1
+            
+            chunks.append(chunk.strip())
+            start = end - self.chunk_overlap
+        
+        return chunks
+    
+    def index_documents(self, documents: List[Document]) -> None:
+        """
+        Genera embeddings y los almacena en el vector store.
+        """
+        # Generar embeddings
+        contents = [doc.content for doc in documents]
+        embeddings = self.embedding_model.embed_batch(contents)
+        
+        # A&#241;adir al vector store
+        for doc, embedding in zip(documents, embeddings):
+            doc.embedding = embedding
+            self.vector_store.add(doc.content, embedding, doc.metadata)
+    
+    def retrieve(self, query: str, top_k: int = 5) -> List[Document]:
+        """
+        Recupera documentos relevantes para la query.
+        """
+        # Generar embedding de la query
+        query_embedding = self.embedding_model.embed(query)
+        
+        # Buscar en vector store
+        results = self.vector_store.search(query_embedding, top_k)
+        
+        return results
+    
+    def generate(
+        self,
+        query: str,
+        context_documents: List[Document],
+        system_prompt: str = None
+    ) -> str:
+        """
+        Genera respuesta usando el contexto recuperado.
+        """
+        # Construir contexto
+        context = "\n\n".join([
+            f"Documento {i+1}:\n{doc.content}"
+            for i, doc in enumerate(context_documents)
+        ])
+        
+        # Prompt
+        if system_prompt is None:
+            system_prompt = (
+                "Eres un asistente &#250;til que responde preguntas bas&#225;ndose "
+                "&#250;nicamente en el contexto proporcionado."
+            )
+        
+        full_prompt = f"""
+{system_prompt}
 
-tokenizer = AutoTokenizer.from_pretrained(model_name)
-tokenizer.pad_token = tokenizer.eos_token
+Contexto:
+{context}
 
-# 2. Configurar LoRA
-lora_config = LoraConfig(
-    r=8,  # Rank. 4-16 para tareas simples, 32-64 para tareas complejas
-    lora_alpha=16,  # Scaling factor. T&#237;picamente 2x del rank
-    target_modules=[
-        "q_proj",  # Query projection
-        "k_proj",  # Key projection  
-        "v_proj",  # Value projection
-        "o_proj",  # Output projection
-        "gate_proj",  # Gate para FFN
-        "up_proj",  # Up projection FFN
-        "down_proj",  # Down projection FFN
-    ],
-    lora_dropout=0.05,
-    bias="none",  # No entrenar biases
-    task_type=TaskType.CAUSAL_LM,
-)
+Pregunta: {query}
 
-# 3. Aplicar LoRA al modelo
-model = get_peft_model(model, lora_config)
-model.print_trainable_parameters()
-# Veras algo como: "trainable params: 8,388,608 || all params: 6,738,414,720 || trainable%: 0.1244%"
+Respuesta (basada &#250;nicamente en el contexto proporcionado):
+"""
+        
+        # Generar
+        response = self.llm.generate(full_prompt)
+        
+        return response
+    
+    def query(self, question: str, top_k: int = 5) -> dict:
+        """
+        Pipeline completo: retrieve + generate.
+        """
+        # 1. Retrieve
+        relevant_docs = self.retrieve(question, top_k)
+        
+        # 2. Generate
+        answer = self.generate(question, relevant_docs)
+        
+        return {
+            "question": question,
+            "answer": answer,
+            "retrieved_documents": relevant_docs
+        }</code></pre>
 
-# 4. Preparar dataset
-dataset = load_dataset("json", data_files="mi_dataset.jsonl")
+<h2>Retrieval: El Componente Cr&#237;tico</h2>
 
-def tokenize_function(examples):
-    # Formatear como conversacion
-    texts = [
-        f"Instruccion: {inst}\nRespuesta: {resp}"
-        for inst, resp in zip(examples["instruction"], examples["response"])
-    ]
-    return tokenizer(texts, truncation=True, max_length=512)
+<p>Aqu&#237; es donde el 90% falla. El retrieval no es solo "buscar en vector store". Hay que considerar:</p>
 
-tokenized_dataset = dataset.map(
-    tokenize_function,
-    batched=True,
-    remove_columns=dataset["train"].column_names,
-)
+<h3>Chunking Strategy</h3>
 
-# 5. Training arguments
-training_args = TrainingArguments(
-    output_dir="./lora_llama2",
-    num_train_epochs=3,
-    per_device_train_batch_size=4,
-    gradient_accumulation_steps=4,  # Effective batch = 16
-    learning_rate=1e-4,  # LR para LoRA es t&#237;picamente mayor que full FT
-    warmup_ratio=0.03,
-    lr_scheduler_type="cosine",
-    logging_steps=10,
-    save_steps=100,
-    fp16=True,
-    optim="paged_adamw_8bit",  # Optimizer con estado en 8-bit
-)
-
-# 6. Trainer
-from trl import SFTTrainer
-
-trainer = SFTTrainer(
-    model=model,
-    args=training_args,
-    train_dataset=tokenized_dataset["train"],
-    max_seq_length=512,
-)
-
-# 7. Train!
-trainer.train()
-
-# 8. Guardar solo LoRA weights (no el modelo completo)
-model.save_pretrained("./lora_weights")
-
-# 9. Inference: cargar modelo base + LoRA weights
-base_model = AutoModelForCausalLM.from_pretrained(
-    model_name,
-    torch_dtype=torch.float16,
-    device_map="auto",
-)
-model = get_peft_model_from_pretrained(base_model, "./lora_weights")
-
-# Merge y guardar para inference mas rapida (opcional)
-# model = model.merge_and_unload()
-# model.save_pretrained("./merged_model")</code></pre>
-
-<h2>QLoRA: Fine-tuning Cuantizado</h2>
-
-<p>QLoRA lleva LoRA un paso mas alla: cuantiza el modelo base a 4-bit mientras entrena. Esto permite fine-tunear un 65B model en una sola GPU de 48GB!</p>
+<p>El chunking determina qu&#233; tanto contexto recibe el modelo. Demasiado peque&#241;o = pierdes contexto. Demasiado grande = dilute relevancia y pierdes tokens.</p>
 
 <pre><code class="language-python">"""
-QLoRA: Fine-tuning con modelo cuantizado a 4-bit.
-Esto permite entrenar modelos de 65B en una sola GPU.
+Estrategias de chunking para RAG.
 """
 
-from transformers import BitsAndBytesConfig
-import torch
-
-# 1. Configuracion de cuantizacion 4-bit
-bnb_config = BitsAndBytesConfig(
-    load_in_4bit=True,
-    bnb_4bit_use_double_quant=True,  # Double quantization para mayor eficiencia
-    bnb_4bit_quant_type="nf4",  # Normal float 4 - mejor que float
-    bnb_4bit_compute_dtype=torch.bfloat16,  # Computar en bf16
-)
-
-# 2. Cargar modelo cuantizado
-model = AutoModelForCausalLM.from_pretrained(
-    "meta-llama/Llama-2-65b-hf",
-    quantization_config=bnb_config,
-    device_map="auto",
-    torch_dtype=torch.bfloat16,
-)
-
-# 3. Config LoRA (igualmente para QLoRA)
-lora_config = LoraConfig(
-    r=64,  # QLoRA puede usar ranks mayores porque usa menos memoria
-    lora_alpha=128,
-    target_modules=["q_proj", "v_proj"],
-    lora_dropout=0.1,
-    bias="none",
-    task_type=TaskType.CAUSAL_LM,
-)
-
-model = get_peft_model(model, lora_config)
-
-# 4. Entrenar con las mismas funciones que arriba
-# ...
-
-# La diferencia en memoria es massive:
-# Llama 2 65B:
-#   FP16 full fine-tune: ~520 GB VRAM (imposible)
-#   QLoRA: ~48 GB VRAM (una sola A100!)</code></pre>
-
-<h2>Layers y Rank: Que Entrenar</h2>
-
-<p>Aqu&#237; es donde el 80% se confunde. No todas las capas responden igual al fine-tuning.</p>
-
-<pre><code class="language-python">"""
-An&#225;lisis de qu&#233; capas fine-tunear para m&#225;ximo impacto.
-El estudio de LLaMA-adapters muestra que:
-- Bottom layers: m&#225;s task-agnostic, menos necesidad de fine-tunar
-- Middle layers: m&#225;s especializados
-- Top layers: m&#225;s task-specific, mayor beneficio de FT
-"""
-
-def analyze_lora_layers(model_name: str = "meta-llama/Llama-2-7b"):
+def chunk_by_fixed_size(text: str, chunk_size: int = 500, overlap: int = 50) -> list[str]:
     """
-    Muestra qu&#233; capas est&#225;n disponibles para fine-tuning
-    y cual es su impacto estimado.
+    Chunking de tama&#241;o fijo con solapamiento.
+    M&#225;s simple pero puede cortar en medio de oraciones.
     """
-    from transformers import AutoModel
-    model = AutoModel.from_pretrained(model_name, torch_dtype=torch.float16)
+    chunks = []
+    start = 0
     
-    print("Capas disponibles para LoRA:")
-    print("=" * 50)
+    while start < len(text):
+        end = start + chunk_size
+        chunks.append(text[start:end])
+        start = end - overlap
     
-    # Capas de atenci&#243;n
-    attention_layers = []
-    for name, module in model.named_modules():
-        if any(x in name for x in ["q_proj", "k_proj", "v_proj", "o_proj"]):
-            attention_layers.append(name)
-    
-    print("\nAtencion (Attention layers):")
-    for layer in attention_layers[:8]:  # Primeras 8
-        print(f"  {layer}")
-    
-    # FFN layers
-    ffn_layers = []
-    for name, module in model.named_modules():
-        if any(x in name for x in ["gate_proj", "up_proj", "down_proj"]):
-            ffn_layers.append(name)
-    
-    print(f"\nFFN (total: {len(ffn_layers)} capas):")
-    print(f"  {ffn_layers[0]}")
-    print(f"  ... ({len(ffn_layers) - 2} capas intermedias)")
-    print(f"  {ffn_layers[-1]}")
-    
-    print("\n" + "=" * 50)
-    print("Recomendaciones por tarea:")
-    print("  - Chat/Summary: q_proj, v_proj, o_proj (capas altas)")
-    print("  - Code generation: agregar gate_proj, down_proj")
-    print("  - Classification: solo embedding y layers finales")
+    return chunks
 
-
-def choose_lora_rank(task_complexity: str) -> int:
+def chunk_by_sentences(text: str, sentences_per_chunk: int = 5) -> list[str]:
     """
-    Escoger rank basado en complejidad de la tarea.
+    Chunking por oraciones completas.
+    Mejor calidad pero Tama&#241;o menos uniforme.
     """
-    ranks = {
-        "simple": 4,      # Clasificacion, extraccion simple
-        "medium": 16,     # Traduccion, summary corto
-        "complex": 32,    # Code generation, preguntas complejas
-        "very_complex": 64,  # Estilo complejo, razonamiento multi-step
-    }
-    return ranks.get(task_complexity, 16)
+    import re
+    sentences = re.split(r'[.!?]+', text)
+    sentences = [s.strip() for s in sentences if s.strip()]
+    
+    chunks = []
+    for i in range(0, len(sentences), sentences_per_chunk):
+        chunk = '. '.join(sentences[i:i + sentences_per_chunk]) + '.'
+        chunks.append(chunk)
+    
+    return chunks
 
-
-# Ejemplo de analisis de impacto
-print("Analisis de rank:")
-for task, rank in [("simple", 4), ("medium", 16), ("complex", 32), ("very_complex", 64)]:
-    params = rank * 4096 * 2  # Aproximado
-    print(f"  {task:15}: r={rank:2} -> ~{params:,} params entrenables")</code></pre>
-
-<h2>Cuando Fine-tunear vs RAG vs Prompt Engineering</h2>
-
-<p>Esta es la pregunta del mill&#243;n. Y la respuesta es: depende de lo que necesites.</p>
-
-<pre><code class="language-python">"""
-Decision tree para elegir entre:
-1. Prompt Engineering (PE)
-2. Retrieval Augmented Generation (RAG)  
-3. Fine-tuning (FT)
-4. RAG + Fine-tuning
-"""
-
-def choose_approach(
-    knowledge_is_static: bool,
-    knowledge_needs_update: bool,
-    need_style_consistency: bool,
-    need_format_consistency: bool,
-    task_complexity: str,
-) -> str:
+def chunk_by_semantic_similarity(
+    text: str,
+    embed_model,
+    max_tokens: int = 500,
+    threshold: float = 0.7
+) -> list[str]:
     """
-    Decision logic simplificado.
+    Chunking sem&#225;ntico: agrupa texto por similitud de significado.
+    M&#225;s avanzado, pero m&#225;s costoso computacionalmente.
+    """
+    sentences = re.split(r'[.!?]+', text)
+    sentences = [s.strip() for s in sentences if s.strip()]
+    
+    if not sentences:
+        return [text]
+    
+    # Generar embeddings por oraci&#243;n
+    embeddings = embed_model.embed_batch(sentences)
+    
+    chunks = []
+    current_chunk = [sentences[0]]
+    current_embeddings = [embeddings[0]]
+    
+    for i in range(1, len(sentences)):
+        # Calcular similitud con &#250;ltima oraci&#243;n del chunk
+        similarity = cosine_similarity([embeddings[i]], [current_embeddings[-1]])[0][0]
+        
+        if similarity > threshold:
+            current_chunk.append(sentences[i])
+            current_embeddings.append(embeddings[i])
+        else:
+            # Guardar chunk actual e iniciar nuevo
+            chunks.append(' '.join(current_chunk))
+            current_chunk = [sentences[i]]
+            current_embeddings = [embeddings[i]]
+    
+    # &#218;ltimo chunk
+    if current_chunk:
+        chunks.append(' '.join(current_chunk))
+    
+    return chunks</code></pre>
+
+<h3>Hybrid Search para Retrieval</h3>
+
+<p>Como hablamos ayer, combinar BM25 (lexical) con embeddings (semantic) mejora significativamente el retrieval.</p>
+
+<pre><code class="language-python">class HybridRetriever:
+    """
+    Retrieval h&#237;brido combinando BM25 y vector search.
     """
     
-    # RAG es mejor cuando:
-    # - El conocimiento cambia frecuentemente
-    # - Tienes documentos grandes que no caben en el prompt
-    if knowledge_needs_update and not knowledge_is_static:
-        return "RAG"
+    def __init__(
+        self,
+        vector_store,
+        bm25_index,
+        embed_model,
+        alpha: float = 0.5,
+    ):
+        self.vector_store = vector_store
+        self.bm25_index = bm25_index
+        self.embed_model = embed_model
+        self.alpha = alpha  # 0 = solo BM25, 1 = solo vector
     
-    # Fine-tuning es mejor cuando:
-    # - Necesitas cambiar estilo/tono de manera consistente
-    # - Necesitas que el modelo entienda patrones complejos y persistent
-    if need_style_consistency or need_format_consistency:
-        return "Fine-tuning"
+    def retrieve(self, query: str, top_k: int = 10) -> list[tuple[dict, float]]:
+        """
+        Retrieval h&#237;brido con fusi&#243;n de scores.
+        """
+        # 1. Vector search
+        query_embedding = self.embed_model.embed(query)
+        vector_results = self.vector_store.search(query_embedding, top_k * 2)
+        
+        # 2. BM25 search
+        bm25_results = self.bm25_index.search(query, top_k * 2)
+        
+        # 3. Fusion de resultados (Reciprocal Rank Fusion)
+        fused_scores = {}
+        
+        # Reciprocal Rank Fusion
+        k = 60  # Factor de fusi&#243;n
+        
+        for rank, (doc, vector_score) in enumerate(vector_results):
+            doc_id = doc['id']
+            rrf_score = 1 / (k + rank + 1)
+            fused_scores[doc_id] = fused_scores.get(doc_id, 0) + self.alpha * rrf_score
+        
+        for rank, (doc, bm25_score) in enumerate(bm25_results):
+            doc_id = doc['id']
+            rrf_score = 1 / (k + rank + 1)
+            fused_scores[doc_id] = fused_scores.get(doc_id, 0) + (1 - self.alpha) * rrf_score
+        
+        # Ordenar por score fusionado
+        sorted_results = sorted(fused_scores.items(), key=lambda x: x[1], reverse=True)
+        
+        # Devolver top_k documentos
+        final_results = []
+        for doc_id, score in sorted_results[:top_k]:
+            doc = self.vector_store.get_document(doc_id)
+            final_results.append((doc, score))
+        
+        return final_results</code></pre>
+
+<h2>MMR: Maximal Marginal Relevance</h2>
+
+<p>El 90% solo hace retrieval de los documentos m&#225;s similares. Pero eso puede dar lugar a resultados redundantes. MMR busca diversidad en los documentos recuperados.</p>
+
+<pre><code class="language-python">def mmr_retrieval(
+    query: str,
+    documents: list[dict],
+    embeddings: list[list[float]],
+    query_embedding: list[float],
+    top_k: int = 5,
+    fetch_k: int = 20,
+    lambda_mult: float = 0.5,
+) -> list[dict]:
+    """
+    Maximal Marginal Relevance retrieval.
     
-    # PE es suficiente cuando:
-    # - Tarea simple
-    # - Conocimiento est&#225;tico y pequeno
-    if task_complexity == "simple" and knowledge_is_static:
-        return "Prompt Engineering"
+    Selecciona documentos que son:
+    1. Relevantes para la query (alto similarity)
+    2. Diversos entre s&#237; (bajo similarity entre s&#237;)
     
-    # RAG + FT para casos complejos:
-    # - Necesitas conocimiento actualizado (RAG)
-    # - Pero tambi&#233;n estilo consistente (FT)
-    if knowledge_needs_update and need_style_consistency:
-        return "RAG + Fine-tuning"
+    lambda_mult controla el balance:
+    - Alto (cerca de 1): M&#225;s relevancia, menos diversidad
+    - Bajo (cerca de 0): M&#225;s diversidad, menos relevancia
+    """
+    from sklearn.metrics.pairwise import cosine_similarity
+    import numpy as np
     
-    # Default
-    return "Prompt Engineering + Few-shot examples"
+    # Calcular similitud con query
+    query_similarities = cosine_similarity([query_embedding], embeddings)[0]
+    
+    # &#205;ndices de documentos ya seleccionados
+    selected_indices = []
+    
+    for _ in range(top_k):
+        # Para cada documento no seleccionado, calcular score MMR
+        best_score = -float('inf')
+        best_idx = None
+        
+        for idx in range(len(documents)):
+            if idx in selected_indices:
+                continue
+            
+            # Similitud con query
+            query_sim = query_similarities[idx]
+            
+            # Similitud m&#225;xima con documentos ya seleccionados
+            if selected_indices:
+                doc_embeddings = [embeddings[i] for i in selected_indices]
+                doc_sims = cosine_similarity([embeddings[idx]], doc_embeddings)[0]
+                max_sim = np.max(doc_sims)
+            else:
+                max_sim = 0
+            
+            # Score MMR
+            mmr_score = lambda_mult * query_sim - (1 - lambda_mult) * max_sim
+            
+            if mmr_score > best_score:
+                best_score = mmr_score
+                best_idx = idx
+        
+        selected_indices.append(best_idx)
+    
+    # Devolver documentos seleccionados
+    return [documents[i] for i in selected_indices]</code></pre>
+
+<h2>Reranking para Mejor Calidad</h2>
+
+<p>Despu&#233;s del retrieval inicial, un reranker puede mejorar significativamente la calidad de los documentos seleccionados.</p>
+
+<pre><code class="language-python">from sentence_transformers import CrossEncoder
+
+class Reranker:
+    """
+    Reranker usando cross-encoder para mejor selecci&#243;n de documentos.
+    """
+    
+    def __init__(self, model_name: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"):
+        self.model = CrossEncoder(model_name)
+    
+    def rerank(
+        self,
+        query: str,
+        documents: list[dict],
+        top_n: int = 10,
+    ) -> list[tuple[dict, float]]:
+        """
+        Rerankea documentos usando cross-encoder.
+        
+        Cross-encoder pasa query y documento juntos por el transformer,
+        produciendo un score de relevancia m&#225;s preciso.
+        """
+        # Crear pares query-documento
+        pairs = [(query, doc['content']) for doc in documents]
+        
+        # Obtener scores de relevancia
+        scores = self.model.predict(pairs)
+        
+        # Ordenar por score
+        doc_scores = list(zip(documents, scores))
+        doc_scores.sort(key=lambda x: x[1], reverse=True)
+        
+        # Devolver top_n
+        return doc_scores[:top_n]
 
 
-# Casos de uso reales:
-use_cases = [
-    {
-        "name": "Chatbot de atenci&#243;n al cliente",
-        "knowledge_is_static": False,
-        "knowledge_needs_update": True,
-        "need_style_consistency": True,
-        "need_format_consistency": True,
-        "task_complexity": "medium",
-        "recommended": "RAG + Fine-tuning",
-    },
-    {
-        "name": "Asistente de codigo",
-        "knowledge_is_static": True,
-        "knowledge_needs_update": False,
-        "need_style_consistency": True,
-        "need_format_consistency": True,
-        "task_complexity": "complex",
-        "recommended": "Fine-tuning",
-    },
-    {
-        "name": "回答 preguntas sobre documentos PDFs",
-        "knowledge_is_static": True,
-        "knowledge_needs_update": False,
-        "need_style_consistency": False,
-        "need_format_consistency": False,
-        "task_complexity": "simple",
-        "recommended": "RAG",
-    },
-    {
-        "name": "Generador de recetas de cocina",
-        "knowledge_is_static": True,
-        "knowledge_needs_update": False,
-        "need_style_consistency": True,
-        "need_format_consistency": True,
-        "task_complexity": "medium",
-        "recommended": "Fine-tuning",
-    },
-]
-
-for uc in use_cases:
-    result = choose_approach(**{
-        k: v for k, v in uc.items() if k != "name" and k != "recommended"
-    })
-    match = "✓" if result == uc["recommended"] else "✗"
-    print(f"{match} {uc['name']}: {result}")</code></pre>
-
-<h2>Los 3 Errores Que El 80% Commete Con Fine-tuning</h2>
-
-<h3>Error #1: No Entender Qu&#233; Layers Fine-tunear</h3>
-
-<p><strong>El problema</strong>: El 80% aplica LoRA a todas las capas por igual, o solo a las wrong capas. Los estudios muestran que las capas del medio son las que m&#225;s se benefician de fine-tuning para tareas genericas, pero para tareas espec&#237;ficas las capas altas son m&#225;s importantes.</p>
-
-<p><strong>La soluci&#243;n</strong>: Empezar con target_modules=[q_proj, v_proj] y experimentar. Para tareas de code, incluir gate_proj y down_proj tambi&#233;n.</p>
-
-<pre><code class="language-python"># BAD: Tantas capas que pierdes el beneficio de LoRA
-lora_config = LoraConfig(
-    r=8,
-    target_modules=["q_proj", "k_proj", "v_proj", "o_proj", 
-                    "gate_proj", "up_proj", "down_proj"],  # Demasiado!
-)
-
-# GOOD: Solo las capas que importan para tu tarea
-lora_config = LoraConfig(
-    r=8,
-    target_modules=["q_proj", "v_proj"],  # Suficiente para mayoria de tareas
-)</code></pre>
-
-<h3>Error #2: Usar Rank Demasiado Alto o Demasiado Bajo</h3>
-
-<p><strong>El problema</strong>: Rank muy bajo (r=2) no captura suficiente complexity. Rank muy alto (r=256) desperdicia memoria y puede causar overfitting.</p>
-
-<p><strong>La soluci&#243;n</strong>: r=8 para tareas simples (classification), r=16-32 para la mayor&#237;a de tareas, r=64+ solo para tareas muy complejas como code generation o estilos muy espec&#237;ficos.</p>
-
-<pre><code class="language-python"># BAD: Rank muy bajo para tarea compleja
-lora_config = LoraConfig(r=2, ...)  # No va a aprender patrones complejos
-
-# BAD: Rank muy alto, desperdicio de memoria
-lora_config = LoraConfig(r=256, ...)  # Mas memoria, mismo performance en mayoria de casos
-
-# GOOD: r=16-32 para la mayoria de tareas
-lora_config = LoraConfig(r=16, target_modules=["q_proj", "v_proj"], ...)
-
-# GOOD: r=64 para code generation
-lora_config = LoraConfig(r=64, target_modules=["q_proj", "v_proj", "o_proj"], ...)</code></pre>
-
-<h3>Error #3: No Usar Proper Learning Rate</h3>
-
-<p><strong>El problema</strong>: LLMs necesitan learning rates MUCHISIMO menores que modelos pequenos. Un LR de 1e-3 que funciona para un modelo de 100M puede destruir un 7B. El 80% usa el mismo LR de siempre y se pregunta por que el loss explodes.</p>
-
-<p><strong>La soluci&#243;n</strong>: LR de 1e-4 a 3e-4 para LoRA, con warmup y cosine schedule. NO usar Adam est&#225;ndar; usar paged_adamw_8bit.</p>
-
-<pre><code class="language-python"># BAD: Learning rate muy alto
-training_args = TrainingArguments(
-    learning_rate=1e-3,  # VA A EXPLOTAR
-    ...
-)
-
-# GOOD: Learning rate apropiado para LoRA
-training_args = TrainingArguments(
-    learning_rate=1e-4,
-    warmup_ratio=0.03,  # 3% de pasos para warmup
-    lr_scheduler_type="cosine",
-    optim="paged_adamw_8bit",  # Mas eficiente que Adam standard
-    ...
-)
-
-# GOOD: Para QLoRA, incluso menor LR
-training_args = TrainingArguments(
-    learning_rate=2e-4,
-    ...
-)</code></pre>
+class CompleteRAG:
+    """
+    Sistema RAG completo con hybrid search y reranking.
+    """
+    
+    def __init__(
+        self,
+        embed_model,
+        vector_store,
+        bm25_index,
+        llm,
+        reranker,
+        chunk_size: int = 500,
+    ):
+        self.embed_model = embed_model
+        self.vector_store = vector_store
+        self.bm25 = bm25_index
+        self.llm = llm
+        self.reranker = reranker
+        self.chunk_size = chunk_size
+    
+    def query(self, question: str, top_k: int = 10) -> dict:
+        """
+        Pipeline completo de RAG con reranking.
+        """
+        # 1. Hybrid retrieval (obtener m&#225;s de los necesarios)
+        initial_results = self._hybrid_retrieve(question, fetch_k=top_k * 3)
+        
+        # 2. Reranking
+        reranked = self.reranker.rerank(question, initial_results, top_n=top_k)
+        
+        # 3. Generate
+        context_docs = [doc for doc, _ in reranked]
+        answer = self._generate(question, context_docs)
+        
+        return {
+            "answer": answer,
+            "sources": context_docs,
+        }
+    
+    def _hybrid_retrieve(self, query: str, fetch_k: int) -> list[dict]:
+        # Implementaci&#243;n de hybrid search...
+        pass
+    
+    def _generate(self, query: str, context_docs: list[dict]) -> str:
+        context = "\n\n".join([d['content'] for d in context_docs])
+        prompt = f"Contexto:\n{context}\n\nPregunta: {query}\n\nRespuesta:"
+        return self.llm.generate(prompt)</code></pre>
 
 <h2>Resumen y Cierre</h2>
 
 <p>Hagale pues, parcero. Lo que nos queda es esto:</p>
 
 <ul>
-<li><strong>LoRA no es magia</strong>: Es algebra lineal simple aplicada clevermente. W' = W + BA donde B y A son matrices bajas rank.</li>
-<li><strong>La math importa</strong>: Si no calculas la memoria antes, te vas a llevar surprises cuando tu GPU de 24GB no alcance ni para un 7B model.</li>
-<li><strong>Rank no es one-size-fits-all</strong>: Tarea simple = r bajo. Tarea compleja = r mayor. No uses r=256 para todo porque s&#237;.</li>
-<li><strong>LR para LLMs es 10-100x menor que para modelos pequenos</strong>: Un LR de 1e-3 que funciona para CNNs va a destruir tu LLM.</li>
-<li><strong>RAG vs FT es una false dichotomy</strong>: Puedes usar ambos. RAG para conocimiento, FT para estilo.</li>
+<li><strong>RAG b&#225;sico</strong>: Retrieval + Generation. Simple pero efectivo.</li>
+<li><strong>Chunking importa</strong>: Ni muy peque&#241;o ni muy grande. Encuentra el balance.</li>
+<li><strong>Hybrid search</strong>: Combina BM25 + embeddings para mejor retrieval.</li>
+<li><strong>MMR</strong>: Para diversidad en resultados retrieved.</li>
+<li><strong>Reranking</strong>: Cross-encoder para mejorar selecci&#243;n final.</li>
 </ul>
 
-<p>En Medell&#237;n decimos "zapata a tu medida". Para fine-tuning es igual: no todas las tareas necesitan el mismo rank, las mismas capas, o el mismo LR. Experimenta, mide, y ajusta.</p>
+<p>En Medell&#237;n decimos "no pongas todos los huevos en la misma canasta". Para RAG es igual: no conf&#237;es solo en vector search, usa hybrid. No uses solo los primeros resultados, usa MMR para diversidad.</p>
 
-<p>Ma&#241;ana en el D&#237;a 243 vamos a hablar de chunking strategies para RAG. Material interesante para los quebuilden sistemas de retrieval.</p>
+<p>Ma&#241;ana en el D&#237;a 243 vamos a hablar de chunking strategies en detalle. Material importante para optimizar tus sistemas RAG.</p>
 
 <p><em>Fabian Rodriguez<br>
 #365DaysOfAI<br>
