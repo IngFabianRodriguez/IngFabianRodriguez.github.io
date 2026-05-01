@@ -118,70 +118,107 @@ nav {
   </header>
 
   <article class="article-body">
-    <h2>La Intro que el 85% Se Salta</h2>
-    <p>Parcero,imagínate esto: llevas tres días entrenando un modelo de NLP, los loss curves se ven hermosos, y cuando lo desplegas en producción... el rendimiento cae 40%. ¿Qué pasó? Muy probable que elegiste el optimizador equivocado y no lo sabías. En producción, donde el distributed training de un transformer mediano puede costar $30K en GPUs por semana, el optimizador no es un detalle — es la diferencia entre profitability y waste.</p>
+<p>Parcero, imagínate esto: llevas tres días entrenando un modelo de NLP, los loss curves se ven hermosos, y cuando lo despliegas en producción... el rendimiento cae 40%. ¿Qué pasó? Muy probable que elegiste el optimizador equivocado y no lo sabías. Después de 12 años en esto, te cuento que el 85% de los practitioners elige optimizadores por "sentido común" o porque "siempre se usa Adam". En producción, donde el distributed training de un transformer mediano puede costar $30K en GPUs por semana, el optimizador no es un detail — es la diferencia entre profitability y waste. Hágale, hoy destapamos los tres optimizadores que el 85% usa sin entenderlos.</p>
 
-    <p>Yo lo aprendí de la manera difícil entrenando un ResNet en 8 GPUs. Empecé con Adam porque "siempre funciona" — y sí, funcionaba. Pero cuando cambié a un schedule de SGD con momentum bien tuneado, el mismo modelo convergió 12% mejor en top-1 accuracy con el mismo budget de cómputo. Esa vaina me fez rethink todo lo que asumía sobre optimizers.</p>
+## 🎯 ¿Qué Hace un Optimizador Exactamente y Por Qué el 85% Se Confunde?
 
-    <p>Hoy vamos a destripar los tres optimizadores que el 85% de los practitioner usa sin entenderlos: SGD, Adam y RMSprop. Vamos a la matemática, al código production-grade, y a los errores que te hacen perder semanas de entrenamiento.</p>
+El objetivo del entrenamiento es encontrar los pesos $\theta$ que minimizan la loss function $\mathcal{L}(\theta)$. En un espacio de parámetros de dimensión altísima (un GPT-3 pequeño ya tiene 175B parámetros), esta función de pérdida tiene una superficie con valles, mesetas y saddle points por todas partes.
 
-    <h2>¿Qué Hace un Optimizador Exactamente?</h2>
-    <p>Antes de meternos en código, necesitamos intuition precisa. El objetivo del entrenamiento es encontrar los pesos $\theta$ que minimizan la loss function $\mathcal{L}(\theta)$. En un espacio de parámetros de dimensión altísima (un GPT-3 pequeño ya tiene 175B parámetros), esta función de pérdida tiene una superficie ridge, con valles, mesetas y saddle points por todas partes.</p>
+El optimizador responde a una pregunta: **¿en qué dirección y cuánto me muevo en cada paso?** La dirección la da el gradiente negativo $-\nabla_\theta \mathcal{L}(\theta)$ — indica dónde la loss baja más rápido. La cuestión crítica es cuánto movernos: si vamos muy lento, tardamos una eternidad en converger; si vamos muy rápido, saltamos el mínimo óptimo y empezamos a oscilar.
 
-    <p>El optimizador responde a una pregunta: <em>¿en qué dirección y cuánto me muevo en cada paso?</em> La dirección la da el gradiente negativo $-\nabla_\theta \mathcal{L}(\theta)$ — indica dónde la loss baja más rápido. La cuestión crítica es cuánto movernos: si vamos muy lento, tomamos un forever en converge; si vamos muy rápido, saltamos el mínimo óptimo y empezamos a oscilar.</p>
+**Tipos de optimizadores que el 85% confunde:**
+- **SGD (Stochastic Gradient Descent)**: El abuelo. Usa el gradiente directo con un learning rate fijo o con momentum. Mejor generalization en fine-tuning.
+- **Adam (Adaptive Moment Estimation)**: El hijo pródigo. Adaptive learning rates por parámetro. Converge más rápido pero a veces generalize peor.
+- **RMSprop**: El precursor de Adam. relevant para RNNs y casos donde el ruido en second moment es útil.
 
-    <p>Además, el learning rate interactúa con la curvatura de la loss surface. En regiones planas, queremos LR alto para avanzar; en regiones steep, LR bajo para no overshoot. Aquí es donde entran las diferencias entre optimizadores.</p>
+Imaginá una pelota rodando por un valle: SGD la empuja con fuerza constante, Adam la guía con manos que se adaptan a cada dirección, y RMSprop es como Adam pero sin corregir el bias inicial.
 
-    <h2>La Matemática que el 85% No Mira</h2>
+## 📐 SGD, Adam y RMSprop — LA MATEMÁTICA QUE EL 85% NO MIRA
 
-    <h3>SGD — El Abuelo Honesto</h3>
-    <p>La Stochastic Gradient Descent es el foundation. Actualiza así:</p>
+La actualización de cualquier optimizador sigue esta forma:
 
-    <p>$$\theta_{t+1} = \theta_t - \eta \cdot \nabla_\theta \mathcal{L}(\theta_t; \mathcal{B}_t)$$</p>
+$$
+\theta_{t+1} = \theta_t - \eta \cdot \text{update}(\nabla_\theta \mathcal{L})
+$$
 
-    <p>Donde $\eta$ es el learning rate y $\mathcal{B}_t$ es el mini-batch actual. La palabra "stochastic" viene de que usamos un subconjunto de datos (no el dataset completo) para estimar el gradiente. Esta estimación ruidosa es tanto una bendición como una maldición: el ruido nos ayuda a escapar local minima subóptimas, pero también introduce variance que puede impedir convergencia precisa.</p>
+**"Descomposición símbolo por símbolo..."**
 
-    <h3>Momentum — El Acelerón Físico</h3>
-    <p>El problema del SGD vanilla es que trata cada dirección por igual, incluso cuando la superficie de pérdida tiene diferentes curvaturas en diferentes direcciones. Momentum introduce el concepto de "velocidad":</p>
+- $\theta_t$ = pesos en step $t$
+- $\eta$ = learning rate (cuánto nos movemos)
+- $\nabla_\theta \mathcal{L}$ = gradiente de la loss respecto a los pesos
+- update() = la magia que modifica el gradiente
 
-    <p>$$v_t = \gamma v_{t-1} + \eta \nabla_\theta \mathcal{L}(\theta_t)$$</p>
-    <p>$$\theta_{t+1} = \theta_t - v_t$$</p>
+### SGD con Momentum — El Acelerón Físico
 
-    <p>El término $\gamma$ (típicamente 0.9) es el momentum. Imagina una bola rodando por un valle: en la dirección del descenso, acumula velocidad y acelera; en direcciones laterales, la velocidad se cancela. En la práctica, momentum reduce oscilaciones y permite LR más altos sin divergir. El 85% de los practitioners不知道自己 está usando momentum=0.9 por defecto en la mayoría de frameworks.</p>
+$$
+v_t = \gamma v_{t-1} + \eta \nabla_\theta \mathcal{L}(\theta_t)
+$$
+$$
+\theta_{t+1} = \theta_t - v_t
+$$
 
-    <h3>Adam — El Adaptive Que Todo Lo Arregla (Hasta Que No)</h3>
-    <p>Adam (Adaptive Moment Estimation) combina dos ideas: momentum y adaptive learning rates por parámetro.维护 dos estimaciones del primer y segundo momento:</p>
+- $v_t$ = velocidad acumulada (el "momentum")
+- $\gamma$ = factor de decay (típicamente 0.9)
+- El término $\gamma v_{t-1}$ acumula historia: direcciones consistentes reciben boost
 
-    <p>$$m_t = \beta_1 m_{t-1} + (1-\beta_1) g_t \quad \text{(mean del gradiente, "momentum")}$$</p>
-    <p>$$v_t = \beta_2 v_{t-1} + (1-\beta_2) g_t^2 \quad \text{(mean del gradiente squared, "velocity")}$$</p>
+### Adam — El Adaptive Que Todo Arregla (Hasta Que No)
 
-    <p>Con bias correction (crítico en early steps):</p>
-    <p>$$\hat{m}_t = \frac{m_t}{1-\beta_1^t}, \quad \hat{v}_t = \frac{v_t}{1-\beta_2^t}$$</p>
+Adam mantiene dos estimaciones: el primer momento (momentum) y el segundo momento (velocity escalonada):
 
-    <p>Actualización final:</p>
-    <p>$$\theta_{t+1} = \theta_t - \frac{\eta}{\sqrt{\hat{v}_t} + \epsilon} \hat{m}_t$$</p>
+$$
+m_t = \beta_1 m_{t-1} + (1-\beta_1) g_t \quad \text{(mean del gradiente, "momentum")}
+$$
+$$
+v_t = \beta_2 v_{t-1} + (1-\beta_2) g_t^2 \quad \text{(mean del gradiente squared, "velocity")}
+$$
 
-    <p>El adaptive LR ($\eta / \sqrt{v_t}$) significa que parámetros con gradients grandes obtienen LR efectivos más pequeños; parámetros con gradients pequeños obtienen LR efectivos más grandes. En la práctica, Adam converge mucho más rápido que SGD en early training — pero SGD con momentum usualmente generaliza mejor al final. Esa tensión es central en deep learning moderno.</p>
+Con bias correction (crítico en early steps):
 
-    <h3>RMSprop — El Que Adam Copió</h3>
-    <p>RMSprop (Root Mean Square Propagation) fue propuesto por Tieleman y Hinton y es el precursor conceptual de Adam. La diferencia clave: usa un moving average de gradientes squared pero SIN el bias correction de Adam:</p>
+$$
+\hat{m}_t = \frac{m_t}{1-\beta_1^t}, \quad \hat{v}_t = \frac{v_t}{1-\beta_2^t}
+$$
 
-    <p>$$v_t = \gamma v_{t-1} + (1-\gamma) g_t^2$$</p>
-    <p>$$\theta_{t+1} = \theta_t - \frac{\eta}{\sqrt{v_t} + \epsilon} g_t$$</p>
+Actualización final:
 
-    <p>RMSprop fue diseñado para trabajar bien con RNNs y problemas de non-stationary distributions — de hecho, la versión original usaba un ghost batch normalization antes de que BN existiera. En producción, RMSprop sigue siendo relevante para ciertos casos (por ejemplo, training de VAEs donde el noise en la estimación del segundo momento es parte del proceso), pero para la mayoría de casos, Adam es la safer bet.</p>
+$$
+\theta_{t+1} = \theta_t - \frac{\eta}{\sqrt{\hat{v}_t} + \epsilon} \hat{m}_t
+$$
 
-    <h2>Código Production-Grade en PyTorch</h2>
-    <pre><code class="language-python">"""
+El adaptive LR ($\eta / \sqrt{v_t}$) significa que parámetros con gradients grandes obtienen LR efectivos más pequeños; parámetros con gradients pequeños obtienen LR efectivos más grandes.
+
+### RMSprop — El Que Adam Copió
+
+RMSprop usa un moving average de gradientes squared pero SIN el bias correction:
+
+$$
+v_t = \gamma v_{t-1} + (1-\gamma) g_t^2
+$$
+$$
+\theta_{t+1} = \theta_t - \frac{\eta}{\sqrt{v_t} + \epsilon} g_t
+$$
+
+RMSprop fue diseñado para trabajar bien con RNNs. En producción, sigue siendo relevante para training de VAEs donde el ruido en la estimación del segundo momento es parte del proceso.
+
+### Derivación del Adaptive LR de Adam
+
+El effective learning rate para cada parámetro $\theta_i$ es:
+
+$$
+\eta_i^{eff} = \frac{\eta}{\sqrt{v_t^i} + \epsilon}
+$$
+
+Donde $v_t^i$ es el segundo momento acumulado para ese parámetro. Si $g_t^i$ es grande → $v_t^i$ es grande → $\eta_i^{eff}$ es pequeño. Esto previene que parámetros con gradientes grandes dominen la actualización.
+
+<pre><code class="language-python">"""
 Optimizers comparison para #365DaysOfAI - Día 75
-Producción-grade: todas las opciones, logging, metricas, reproducibilidad.
+Producción-grade: todas las opciones, logging, métricas, reproducibilidad.
 """
 import logging
 import numpy as np
 import torch
 import torch.nn as nn
 from dataclasses import dataclass, field
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Literal
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LambdaLR, CosineAnnealingLR
 
@@ -207,7 +244,7 @@ class TrainingConfig:
 
 class OptimizerFactory:
     """Factory para crear optimizers con logging automático."""
-
+    
     _registry: Dict[str, type] = {}
 
     @classmethod
@@ -221,14 +258,12 @@ class OptimizerFactory:
     @classmethod
     def create(
         cls,
-        optimizer_name: str,
+        optimizer_name: Literal['sgd', 'adam', 'adamw', 'rmsprop', 'lion'],
         model: nn.Module,
         config: TrainingConfig
-    ) -> tuple[Optimizer, 'LRScheduler']:
+    ) -> tuple[Optimizer, Any]:
         """Crea optimizer + scheduler desde string name."""
         lr = config.learning_rate
-
-        # Weight decay se maneja diferente en AdamW vs Adam
         optimizer_name = optimizer_name.lower()
 
         if optimizer_name == 'sgd':
@@ -239,7 +274,6 @@ class OptimizerFactory:
                 weight_decay=config.weight_decay,
                 nesterov=config.nesterov,
             )
-            # SGD típico: cosine annealing sin warmup
             scheduler = CosineAnnealingLR(
                 optimizer,
                 T_max=config.total_steps,
@@ -250,20 +284,7 @@ class OptimizerFactory:
                 f"nesterov={config.nesterov}, weight_decay={config.weight_decay}"
             )
 
-        elif optimizer_name == 'sgd_wd':
-            # SGD con weight decay separado (L2 via AdamW-style)
-            optimizer = torch.optim.SGD(
-                model.parameters(),
-                lr=lr,
-                momentum=config.gamma,
-                weight_decay=0.0,  # WD separado
-                nesterov=config.nesterov,
-            )
-            scheduler = CosineAnnealingLR(optimizer, T_max=config.total_steps)
-            logger.info(f"SGD-WD created: lr={lr}, momentum={config.gamma}")
-
         elif optimizer_name == 'adam':
-            # Adam estándar (con L2 regularization, no AdamW)
             optimizer = torch.optim.Adam(
                 model.parameters(),
                 lr=lr,
@@ -278,7 +299,6 @@ class OptimizerFactory:
             )
 
         elif optimizer_name == 'adamw':
-            # AdamW: weight decay correcto (decoupling de L2 regularization)
             optimizer = torch.optim.AdamW(
                 model.parameters(),
                 lr=lr,
@@ -301,22 +321,6 @@ class OptimizerFactory:
             scheduler = cls._create_warmup_scheduler(optimizer, config)
             logger.info(f"RMSprop created: lr={lr}, alpha={config.gamma}")
 
-        elif optimizer_name == 'adamw_lion':
-            # Lion: optimizer más nuevo (Google, 2023) — LR típicamente 10x menor
-            try:
-                from torch_optimizer import Lion
-                optimizer = Lion(
-                    model.parameters(),
-                    lr=lr * 0.1,  # Lion típicamente necesita lr ~10x menor
-                    betas=(config.beta1, config.beta2),
-                    weight_decay=config.weight_decay,
-                )
-                scheduler = cls._create_warmup_scheduler(optimizer, config)
-                logger.info(f"Lion created: lr={lr * 0.1}, weight_decay={config.weight_decay}")
-            except ImportError:
-                logger.warning("torch_optimizer no instalado, cayendo a AdamW")
-                optimizer, scheduler = cls.create('adamw', model, config)
-
         else:
             available = list(cls._registry.keys())
             raise ValueError(
@@ -331,12 +335,10 @@ class OptimizerFactory:
         optimizer: Optimizer,
         config: TrainingConfig
     ) -> LambdaLR:
-        """Crea scheduler con linear warmup + constante o cosine."""
+        """Crea scheduler con linear warmup + cosine decay."""
         def lr_lambda(step: int) -> float:
             if step < config.warmup_steps:
-                # Linear warmup
                 return float(step) / float(max(1, config.warmup_steps))
-            # After warmup: cosine decay
             progress = float(step - config.warmup_steps) / float(
                 max(1, config.total_steps - config.warmup_steps)
             )
@@ -345,20 +347,8 @@ class OptimizerFactory:
         return LambdaLR(optimizer, lr_lambda)
 
 
-def compute_grad_norm(model: nn.Module) -> float:
-    """Computa gradient norm global — métrica de entrenamiento crítica."""
-    total_norm = 0.0
-    for p in model.parameters():
-        if p.grad is not None:
-            param_norm = p.grad.detach().data.norm(2)
-            total_norm += param_norm.item() ** 2
-    total_norm = total_norm ** 0.5
-    return total_norm
-
-
 # ─── Ejemplo de uso ───────────────────────────────────────────────────────────
 if __name__ == '__main__':
-    # Dummy model para demo
     model = nn.Sequential(
         nn.Linear(784, 256),
         nn.ReLU(),
@@ -373,7 +363,6 @@ if __name__ == '__main__':
         total_steps=10_000,
     )
 
-    # Probar cada optimizer
     for opt_name in ['sgd', 'adam', 'adamw', 'rmsprop']:
         optimizer, scheduler = OptimizerFactory.create(opt_name, model, config)
         print(f"\n{opt_name.upper()}: {type(optimizer)}")
@@ -381,45 +370,163 @@ if __name__ == '__main__':
         print(f"  Initial LR: {optimizer.param_groups[0]['lr']}")
 </code></pre>
 
-    <h2>Errores Comunes Que el 85% Commite</h2>
+## 🚨 Errores Comunes (y Cómo No Cagarla)
 
-    <p><strong>Error 1: Usar Adam con LR fijo y sin warmup</strong></p>
-    <p>El 85% hace <code>optimizer = Adam(model.parameters(), lr=1e-3)</code> y se pregunta por qué el loss al inicio es errático. El problema: en los primeros steps, los moment estimates de Adam están biased hacia cero (porque $m_1 = (1-\beta_1)g_1$, no $m_1 = g_1$). Sin warmup, los primeros updates son inconsistentes y pueden causar gradient explosion en early steps.</p>
-    <p><strong>Fix:</strong> Siempre usa warmup. Si no quieres implementar warmup manualmente, usa el scheduler de arriba o al menos haz 100-200 steps con LR muy bajo ($10^{-7}$) antes de subir a tu LR objetivo.</p>
+**Error 1: Usar Adam con LR fijo y sin warmup**
 
-    <p><strong>Error 2: Confundir L2 regularization con weight decay</strong></p>
-    <p>En SGD, weight decay y L2 regularization son matemáticamente equivalentes. En Adam, NO. <code>torch.optim.Adam(weight_decay=X)</code> implementa L2 regularization (añade $\lambda w$ al gradiente, afectando el segundo momento $v_t$). <code>torch.optim.AdamW</code> implementa true weight decay (decouples el decaimiento de los parámetros de la loss objective). En arquitecturas con embedding layers, esto puede significar diferencias de 2-3% en generalization.</p>
-    <p><strong>Fix:</strong> Usa AdamW siempre que puedas. Si necesitas L2 regularization explícita (por ejemplo, en certain regularization schemes), usa Adam con el término de L2 manualmente.</p>
+**El problema**: El 85% hace `optimizer = Adam(model.parameters(), lr=1e-3)` y se pregunta por qué el loss al inicio es errático. En los primeros steps, los moment estimates de Adam están biased hacia cero porque $m_1 = (1-\beta_1)g_1$, no $m_1 = g_1$. Sin warmup, los primeros updates son inconsistentes.
 
-    <p><strong>Error 3: No entender cuándo SGD generaliza mejor que Adam</strong></p>
-    <p>Adam converge más rápido en early training y típicamente encuentra soluciones de igual o mejor loss que SGD. Pero en muchos benchmarks (ImageNet, fine-tuning de language models), SGD con momentum y cosine annealing generaliza mejor al final. La razón: Adam hace que la loss surface sea más isotrópica (igual curvatura en todas direcciones), lo que facilita encontrar mínimos sharp; SGD favorece mínimos flat que generalizan mejor. El 85% entrena con Adam hasta el final y no sabe que está dejando performance table.</p>
-    <p><strong>Fix:</strong> Para fine-tuning de modelos pre-entrenados, considera un schedule: Adam por ~10-20% de los steps para converger rápido, luego switch a SGD con momentum para el remainder del training. O simplemente usa AdamW con weight decay alto (0.1) y cosine annealing — un middle ground razonable.</p>
+❌
+```python
+# Sin warmup — los primeros 100 steps son erráticos
+optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+for step in range(100_000):
+    loss = compute_loss(model, batch)
+    loss.backward()
+    optimizer.step()  # Primeros steps con biased moments
+```
 
-    <p><strong>Error 4: Ignorar el learning rate del bias y los embeddings</strong></p>
-    <p>Cuando aplicas el mismo LR a todos los parámetros, estás tratando de la misma manera a los weights de una attention layer (que pesan millones) y a los bias de una linear layer (que pesan 1 por capa). Los embeddings típicamente necesitan LR más bajo para no destroy los pre-trained features. El 85% ignora esto completamente.</p>
-    <p><strong>Fix:</strong> Usa parameter groups con diferentes LR:</p>
-    <pre><code class="language-python">optimizer = torch.optim.AdamW([
+**Por qué falla**: Sin bias correction, los gradientes pequeños se amplifican porque $\hat{m}_t = m_t / (1-\beta_1^t)$ y $\beta_1^t \approx 0$ en early steps.
+
+$$
+\hat{m}_t \approx m_t \cdot (1 + \beta_1 + \beta_1^2 + ...) \quad \text{(sin correction)}
+$$
+
+✓
+```python
+# Con warmup correcto — los primeros steps son suaves
+config = TrainingConfig(warmup_steps=2000, total_steps=100_000)
+optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
+scheduler = OptimizerFactory._create_warmup_scheduler(optimizer, config)
+
+for step in range(100_000):
+    # Warmup: los primeros 2000 steps suben gradualmente
+    # Después: cosine annealing
+    lr = scheduler.get_last_lr()[0]
+    optimizer.step()
+    scheduler.step()
+```
+
+---
+
+**Error 2: Confundir L2 regularization con weight decay**
+
+**El problema**: En SGD, weight decay y L2 regularization son matemáticamente equivalentes. En Adam, NO. `torch.optim.Adam(weight_decay=X)` implementa L2 regularization (añade $\lambda w$ al gradiente). `torch.optim.AdamW` implementa true weight decay (decoupled).
+
+❌
+```python
+# Adam con weight_decay implementa L2, no weight decay verdadero
+# Esto afecta los second moments v_t, haciendo que la regularización
+# tenga efectos impredecibles
+optimizer = torch.optim.Adam(
+    model.parameters(),
+    lr=1e-3,
+    weight_decay=0.1  # NO es verdadero weight decay en Adam
+)
+```
+
+**Por qué falla**: L2 regularization modifica el gradiente: $g_t = \nabla \mathcal{L} + \lambda w$. Esto cambia la magnitud efectiva del gradiente que entra en el cálculo de $v_t$. En AdamW, el weight decay se aplica DESPUÉS del cálculo de momentos:
+
+$$
+\theta_{t+1} = \theta_t - \eta \cdot (\frac{\hat{m}_t}{\sqrt{\hat{v}_t} + \epsilon} + \lambda \theta_t)
+$$
+
+✓
+```python
+# AdamW con verdadero weight decay — el default para LLMs
+optimizer = torch.optim.AdamW(
+    model.parameters(),
+    lr=3e-4,
+    weight_decay=0.1  # True weight decay, decoupled de la loss
+)
+```
+
+---
+
+**Error 3: No saber cuándo SGD generaliza mejor que Adam**
+
+**El problema**: Adam converge más rápido en early training. Pero en ImageNet y fine-tuning de language models, SGD con momentum y cosine annealing típicamente generaliza mejor al final. La razón: Adam hace que la loss surface sea más isotrópica, facilitando encontrar mínimos sharp; SGD favorece mínimos flat que generalizan mejor.
+
+❌
+```python
+# Usar Adam hasta el final para fine-tuning
+optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
+for epoch in range(100):
+    train(model)  # Adam todo el camino — puede dejar performance on the table
+```
+
+**Por qué falla**: Minúsculas agudas vs. mínimos locales. Adam encuentra mínimos sharp más fácilmente, que tienen peor generalization.
+
+$$
+\text{min sharp}: \mathcal{L}(\theta + \epsilon) \gg \mathcal{L}(\theta) \quad \text{(sensible a perturbaciones)}
+$$
+$$
+\text{min flat}: \mathcal{L}(\theta + \epsilon) \approx \mathcal{L}(\theta) \quad \text{(robusto)}
+$$
+
+✓
+```python
+# Switch strategy: Adam rápido al inicio, SGD preciso al final
+optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.01)
+
+# 20% de steps con Adam para convergencia rápida
+switch_at = int(0.2 * total_steps)
+for step in range(total_steps):
+    if step == switch_at:
+        # Switch a SGD para los últimos 80%
+        optimizer = torch.optim.SGD(
+            model.parameters(),
+            lr=1e-4,
+            momentum=0.9,
+            nesterov=True,
+            weight_decay=0.01
+        )
+```
+
+---
+
+**Error 4: Ignorar parameter groups con diferentes LR**
+
+**El problema**: Cuando aplicas el mismo LR a todos los parámetros, estás tratando igual a los weights de una attention layer (millones de parámetros) y a los bias (1 por capa). Los embeddings típicamente necesitan LR más bajo para no destroy pre-trained features.
+
+❌
+```python
+# Un solo LR para todo — subóptimo
+optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
+```
+
+**Por qué falla**: Un LR alto para embeddings destruye conocimiento pre-entrenado. Un LR bajo para la cabeza de clasificación es demasiado lento.
+
+✓
+```python
+# Parameter groups con LR diferenciados — quick win que el 85% ignora
+optimizer = torch.optim.AdamW([
     {'params': model.backbone.parameters(), 'lr': 1e-4, 'weight_decay': 0.01},
     {'params': model.head.parameters(), 'lr': 1e-3, 'weight_decay': 0.0},
     {'params': model.embeddings.parameters(), 'lr': 5e-5, 'weight_decay': 0.1},
-], betas=(0.9, 0.999))</code></pre>
+], betas=(0.9, 0.999))
+```
 
-    <h2>Resumen del Día</h2>
-    <ul>
-      <li><strong>SGD</strong>: El foundation. LR alto + momentum. Mejor generalization en fine-tuning y vision tasks. Requiere tuneado de LR y schedule.</li>
-      <li><strong>Momentum</strong>: El acelerón que acumula velocidad en la dirección del descenso. Reduce oscilaciones, permite LR más altos. $\gamma=0.9$ es el default.</li>
-      <li><strong>Adam</strong>: Adaptive LR por parámetro. Converge más rápido en early training. Sesgo hacia mínimos sharp — a veces peor generalization que SGD.</li>
-      <li><strong>AdamW</strong>: Adam con true weight decay. El default para LLMs y transformers. Siempre úsalo en vez de Adam vanilla.</li>
-      <li><strong>RMSprop</strong>: El precursor de Adam. Todavía relevante para RNNs y casos donde el ruido en second moment estimate es útil.</li>
-      <li><strong>Warmup</strong>: Siempre para Adam/AdamW. Sin warmup, los primeros steps son erráticos.</li>
-      <li><strong>Bias correction en Adam</strong>: Necesario en los primeros steps cuando $\beta_2^t$ está lejos de 1. Sin esto, los effective LR son inconsistentes.</li>
-      <li><strong>Parameter groups</strong>: LR diferente para backbone, head y embeddings. Es una quick win que el 85% ignora.</li>
-    </ul>
+---
+## 🎯 Resumen Ejecutivo
 
-    <h2>El Cierre</h2>
-    <p>Parcero, si te llevas algo de hoy es esto: el optimizador no es un detail de configuración — es una decisión arquitectónica que afecta directamente cuánto vas a pagar en GPUs y qué tan bien va a generalizar tu modelo. AdamW con warmup y weight decay correcto es un safe default para casi cualquier cosa con transformers. Pero cuando necesites squeezing that last 1-2% de accuracy en producción, vas a querer entender cosine annealing con SGD y momentum, y vas a querer saber cuándo hacer el switch.</p>
-    <p>Esa vaina de "el optimizador correcto" depende del problema específico, del budget de cómputo, y de si estás entrenando from scratch o fine-tuning. Hágale que la próxima vez que inicies un entrenamiento, no merely copies el optimizer del último tutorial — pregúntate por qué elegiste ese y no otro. Esa pregunta te va a salvar semanas de re-training.</p>
-    <p>De una, mañana seguimos con <em>Momentum y Learning Rate Scheduling</em> — que es donde la mayoría del optimization gain realmente está. ¡Nos vemos!</p>
+**Optimizers** no es "elegir el que siempre funciona". Es resolver:
+
+$$
+\theta^* = \arg\min_\theta \mathcal{L}(\theta) \quad \text{sujeto a: budget de cómputo y generalization}
+$$
+
+Mediante: **SGD con momentum para generalization máxima, AdamW para convergencia rápida en early training**.
+
+Con todas las implicaciones que eso conlleva:
+- **AdamW + warmup + cosine** es el safe default para transformers — pero deja performance on the table en fine-tuning
+- **SGD + Nesterov + cosine annealing** generaliza mejor al final pero converge más lento al inicio
+- **Parameter groups** con LR diferenciados son una quick win que el 85% ignora
+- **Weight decay vs L2** no son lo mismo en Adam — usa AdamW
+
+Parcero, la próxima vez que inicies un entrenamiento, no merely copies el optimizer del último tutorial. Preguntate por qué elegiste ese y no otro. Esa pregunta te va a salvar semanas de re-training y miles de dólares en GPUs. Mañana seguimos con Momentum y Learning Rate Scheduling — que es donde la mayoría del optimization gain realmente está. ¡Nos vemos!
+
+<a href="/blog/dia-76365-momentum-y-learning-rate-scheduling---el-aceleron-que-e/">→ Día 76: Momentum y Learning Rate Scheduling</a>
   </article>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
@@ -431,8 +538,8 @@ if __name__ == '__main__':
         delimiters: [
           { left: '$$', right: '$$', display: true },
           { left: '$',  right: '$',  display: false },
-          { left: '\\[', right: '\\]', display: true },
-          { left: '\\(', right: '\\)', display: false },
+          { left: '\[', right: '\]', display: true },
+          { left: '\(', right: '\)', display: false },
         ],
         throwOnError: false,
       });
