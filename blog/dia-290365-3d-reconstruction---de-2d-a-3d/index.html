@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="LLM Prompt Optimization - Qué el 85% hace mal y qué el 15% hace bien para mejorar respuestas | #365DaysOfAI por Fabian Rodriguez">
-  <title>LLM Prompt Optimization - Qué el 85% Hace Mal | #365DaysOfAI</title>
+  <meta name="description" content="3D Reconstruction - De 2D a 3D con AI | #365DaysOfAI por Fabian Rodriguez">
+  <title>3D Reconstruction - De 2D a 3D con AI | #365DaysOfAI</title>
   
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
@@ -110,778 +110,480 @@ nav {
 
   <header class="article-hero">
     <div class="day-badge">Dia 290 / 365 &nbsp;·&nbsp; #365DaysOfAI</div>
-    <h1 class="article-title">LLM Prompt Optimization — Qué el 85% Hace Mal y Qué el 15% Hace Bien Para Mejorar Respuestas</h1>
+    <h1 class="article-title">3D Reconstruction — De 2D a 3D con AI</h1>
     <div class="article-meta">
       <time class="article-date">17 de octubre de 2026</time>
-      <div class="tags"><span class="tag">prompt-optimization</span><span class="tag">a-b-testing</span><span class="tag">llmops</span><span class="tag">metrics</span></div>
+      <div class="tags"><span class="tag">3d-reconstruction</span><span class="tag">nerf</span><span class="tag">gaussian-splatting</span><span class="tag">computer-vision</span></div>
     </div>
   </header>
 
   <article class="article-body">
 <h2>Intro</h2>
-<p>El equipo reporta que el prompt "no funciona bien". Pides ejemplos. Te muestran 3 inputs donde la respuesta no fue buena. Cambias el prompt basado en esos 3 ejemplos. ¿Resultado? Funciona mejor para esos 3 casos, pero en producción empieza a fallar para 15 casos que antes funcionaban. Eso le pasa al 85% de los equipos que optimizan prompts.</p>
+<p>Tienes una foto de un objeto. Necesitas un modelo 3D. Hace 5 años, esto requería escaneo con lidars costosos o software de modelado manual que tomaba horas. Hoy, con neural radiance fields (NeRF) y gaussian splatting, puedes generar mallas 3D de calidad desde docenas de fotos en minutos.</p>
 
-<p>El 15% que no tiene este problema hace algo diferente: optimiza sistemáticamente con datos, no con intuición. Mide antes de cambiar. Testea A/B en producción. Guarda métricas. Hoy te muestro cómo implementar un prompt optimization framework real, no el "voy a cambiar cosas y a ver qué pasa" que la mayoría hace.</p>
+<p>Hoy te explico cómo funcionan estas técnicas, qué herramientas puedes usar hoy, y cómo integrar 3D reconstruction en tu workflow de computer vision.</p>
 
-<h2>Por qué la mayoria optimiza mal</h2>
+<h2>El problema: de píxeles a geometría</h2>
 
-<p>El problema fundamental: no hay ground truth con prompts. No hay una respuesta "correcta". Así que la gente optimiza con:</p>
+<p>Una imagen 2D pierde información. Es una proyección 2D de un mundo 3D. Para reconstruir la geometría original necesitas resolver:</p>
 
 <ul>
-<li><strong>Intuición:</strong> "Creo que agregando más contexto funcionará mejor"</li>
-<li><strong>Cherry-picking:</strong> 2-3 ejemplos que alguien seleccionó a mano</li>
-<li><strong>Anécdotas:</strong> "El cliente dijo que funcionaba mejor"</li>
+<li><strong>Profundidad:</strong> qué tan lejos está cada punto</li>
+<li><strong>Forma:</strong> la superficie real del objeto</li>
+<li><strong>Textura:</strong> colores y patrones de la superficie</li>
+<li><strong>Oclusión:</strong> partes ocultas en algunas vistas pero visibles en otras</li>
 </ul>
 
-<p>Esto es como ajustar un modelo de machine learning con un solo ejemplo. La matemática no cierra. Si cambiaste el prompt y no mediste el impacto en 1000+ запросов antes y después, no sabes si mejoraste o empeoraste. Solo sabes que seleccionaste algunos ejemplos que ahora funcionan mejor y no te importa los demás.</p>
+<p>Los métodos tradicionales usaban múltiples vistas y triangulación (como nuestros ojos). Los métodos modernos con NeRF y gaussian splatting aprenden una representación continua del espacio 3D directamente de las imágenes.</p>
 
-<p>La optimización real de prompts sigue el mismo proceso que cualquier otra optimización de producto: hypotheses, experiments, data, iteration. Nada de "se siente bien". Todo de "tenemos un 12% de mejora en la métrica X con significance estadística".</p>
+<h2>Neural Radiance Fields (NeRF)</h2>
 
-<h2>El framework: Prompt Optimization System</h2>
+<p>NeRF, introducido en 2020, fue un breakthrough. La idea central:</p>
 
-<h3>Arquitectura general</h3>
+<ul>
+<li>Representar una escena como una función continua 5D: posición (x,y,z) + dirección (θ,φ)</li>
+<li>La red neural aprende a predecir color y densidad para cada punto en el espacio</li>
+<li>Para renderizar, se hace ray marching a través del volumen</li>
+</ul>
 
-<pre><code>"""
-Prompt Optimization Framework
-Sistema de A/B testing y optimización sistemática de prompts
-"""
+<pre><code class="language-python">import torch
+import torch.nn as nn
 
+class NeRFModel(nn.Module):
+    """
+    NeRF: Neural Radiance Field model.
+    
+    Input: 5D coordinate (x, y, z, θ, φ)
+    Output: RGB color + density (σ)
+    """
+    
+    def __init__(self, hidden_dim=256):
+        super().__init__()
+        
+        # Input encoding (positional encoding)
+        self.L = 10  # Frequencies for positional encoding
+        
+        # MLP network
+        self.network = nn.Sequential(
+            nn.Linear(3 + 3 * 2 * self.L, hidden_dim),  # xyz + encoded directions
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim + 1),  # output: density + features
+        )
+        
+    def positional_encoding(self, x, L):
+        """Apply positional encoding to input."""
+        encoded = [x]
+        for l in range(L):
+            encoded.append(torch.sin((2 ** l) * x))
+            encoded.append(torch.cos((2 ** l) * x))
+        return torch.cat(encoded, dim=-1)
+    
+    def forward(self, x, d):
+        """
+        Args:
+            x: (N, 3) positions in 3D space
+            d: (N, 3) ray directions (viewing angles)
+        Returns:
+            rgb: (N, 3) color values
+            sigma: (N, 1) density values
+        """
+        # Encode inputs
+        x_encoded = self.positional_encoding(x, self.L)
+        d_encoded = self.positional_encoding(d, 4)  # Fewer frequencies for direction
+        
+        # Concatenate and pass through network
+        h = self.network(torch.cat([x_encoded, d_encoded], dim=-1))
+        
+        sigma = h[:, 0:1]  # Density
+        rgb = h[:, 1:]     # Color
+        
+        return rgb, sigma
+
+
+def render_rays(model, rays_o, rays_d, near=0., far=1., num_samples=64):
+    """
+    Volumetric rendering along rays.
+    
+    Args:
+        model: NeRF model
+        rays_o: (N, 3) ray origins (camera positions)
+        rays_d: (N, 3) ray directions
+        near, far: bounds for sampling
+        num_samples: number of points to sample along each ray
+    """
+    device = rays_o.device
+    
+    # Generate sample points along each ray
+    t = torch.linspace(near, far, num_samples, device=device)
+    t = t.expand(len(rays_o), num_samples)  # (N, num_samples)
+    
+    # Add noise for stochastic sampling
+    t = t + torch.rand_like(t) * (far - near) / num_samples
+    
+    # Compute 3D positions
+    points = rays_o.unsqueeze(1) + rays_d.unsqueeze(1) * t.unsqueeze(-1)
+    # points: (N, num_samples, 3)
+    
+    # Flatten for batch processing
+    points_flat = points.reshape(-1, 3)
+    dirs_flat = rays_d.unsqueeze(1).expand(-1, num_samples, -1).reshape(-1, 3)
+    
+    # Query NeRF
+    rgb_flat, sigma_flat = model(points_flat, dirs_flat)
+    rgb_flat = rgb_flat.reshape(-1, num_samples, 3)
+    sigma_flat = sigma_flat.reshape(-1, num_samples)
+    
+    # Volumetric rendering
+    delta = t[:, 1:] - t[:, :-1]
+    delta = torch.cat([delta, torch.ones_like(delta[:, :1]) * 1e10], dim=-1)
+    
+    density = 1. - torch.exp(-sigma_flat * delta)
+    
+    # Compute weights for each sample
+    weights = density * torch.cumprod(
+        torch.cat([torch.ones_like(density[:, :1]), 1. - density[:, :-1]], dim=-1),
+        dim=-1
+    )
+    
+    # Render RGB and depth
+    rgb = (weights.unsqueeze(-1) * rgb_flat).sum(dim=1)
+    depth = (weights * t).sum(dim=1)
+    
+    return rgb, depth
+</code></pre>
+
+<h2>Gaussian Splatting</h2>
+
+<p>NeRF tiene un problema: es lento. Renderizar una imagen requiere hundreds of neural network evaluations por píxel. Gaussian Splatting resuelve esto con un enfoque diferente:</p>
+
+<ul>
+<li>La escena se representa como un conjunto de 3D Gaussians (elipsoides)</li>
+<li>Cada Gaussian tiene: posición, covarianza, color, opacidad</li>
+<li>El rendering es diferenciable y extremadamente rápido (rasterization)</li>
+</ul>
+
+<pre><code class="language-python">import torch
+import torch.nn as nn
+from typing import List, Tuple
+
+class Gaussian3D:
+    """
+    A 3D Gaussian primitive for gaussian splatting.
+    
+    Attributes:
+        mean: (3,) center position
+        cov: (3, 3) covariance matrix (symmetric positive definite)
+        color: (3,) RGB color
+        opacity: (1,) alpha value
+    """
+    
+    def __init__(self, mean: torch.Tensor, cov: torch.Tensor, 
+                 color: torch.Tensor, opacity: float):
+        self.mean = mean  # (3,)
+        self.cov = cov    # (3, 3)
+        self.color = color  # (3,)
+        self.opacity = opacity  # scalar
+        
+    @property
+    def inv_cov(self):
+        """Inverse covariance for faster computation."""
+        return torch.inverse(self.cov)
+
+
+class GaussianSplattingRenderer:
+    """
+    Differentiable Gaussian Splatting renderer.
+    """
+    
+    def __init__(self, image_height: int, image_width: int, focal: float):
+        self.H = image_height
+        self.W = image_width
+        self.focal = focal
+    
+    def project_gaussian(self, gaussian: Gaussian3D, 
+                        camera_matrix: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, float]:
+        """
+        Project 3D Gaussian to 2D image plane.
+        
+        Args:
+            gaussian: 3D Gaussian to project
+            camera_matrix: (3, 4) camera extrinsic matrix [R|t]
+            
+        Returns:
+            center_2d: (2,) 2D center in image coordinates
+            cov_2d: (2, 2) 2D covariance
+            depth: float depth value
+        """
+        # Transform center to camera coordinates
+        center_cam = camera_matrix @ torch.cat([gaussian.mean, torch.ones(1)])
+        depth = center_cam[2].item()
+        
+        # Project to 2D image plane
+        center_2d = center_cam[:2] / center_cam[2] * self.focal
+        center_2d[1] = self.H - center_2d[1]  # Flip y for image coordinates
+        
+        # Transform covariance to camera frame then to 2D
+        R = camera_matrix[:3, :3]
+        cov_cam = R @ gaussian.cov @ R.T
+        
+        # Jacobian of perspective projection
+        J = torch.tensor([
+            [self.focal / depth, 0],
+            [0, -self.focal / depth]
+        ], device=cov_cam.device)
+        
+        # 2D covariance
+        cov_2d = J @ cov_cam[:2, :2] @ J.T
+        
+        return center_2d, cov_2d, depth
+    
+    def compute_alpha(self, gaussian: Gaussian3D, point_2d: torch.Tensor,
+                      cov_2d: torch.Tensor) -> float:
+        """
+        Compute alpha value for a 2D point under this Gaussian.
+        
+        Uses the Mahalanobis distance: exp(-0.5 * d^T * Σ^-1 * d)
+        """
+        diff = point_2d - gaussian.mean[:2]
+        inv_cov_2d = torch.inverse(cov_2d)
+        mahal_sq = diff @ inv_cov_2d @ diff
+        
+        alpha = gaussian.opacity * torch.exp(-0.5 * mahal_sq)
+        return alpha.item()
+    
+    def rasterize(self, gaussians: List[Gaussian3D], 
+                  camera_matrix: torch.Tensor) -> torch.Tensor:
+        """
+        Rasterize all Gaussians to an image.
+        
+        Args:
+            gaussians: List of 3D Gaussians
+            camera_matrix: (3, 4) camera extrinsic
+            
+        Returns:
+            image: (3, H, W) rendered RGB image
+        """
+        image = torch.zeros(3, self.H, self.W, device=camera_matrix.device)
+        depth_buffer = torch.full((self.H, self.W), float('inf'), device=camera_matrix.device)
+        
+        for gaussian in gaussians:
+            center_2d, cov_2d, depth = self.project_gaussian(gaussian, camera_matrix)
+            
+            if depth < 0 or depth > depth_buffer[0, 0]:  # Behind camera or occluded
+                continue
+            
+            # Compute bounding box in 2D (3 sigma rule)
+            sigma_max = max(torch.linalg.eigvalsh(cov_2d)) ** 0.5
+            bbox_size = int(3 * sigma_max) + 1
+            
+            x_min = max(0, int(center_2d[0]) - bbox_size)
+            x_max = min(self.W, int(center_2d[0]) + bbox_size + 1)
+            y_min = max(0, int(center_2d[1]) - bbox_size)
+            y_max = min(self.H, int(center_2d[1]) + bbox_size + 1)
+            
+            for y in range(y_min, y_max):
+                for x in range(x_min, x_max):
+                    point = torch.tensor([x, y], dtype=torch.float32)
+                    alpha = self.compute_alpha(gaussian, point, cov_2d)
+                    
+                    if alpha > 0.01 and depth < depth_buffer[y, x]:
+                        depth_buffer[y, x] = depth
+                        image[:, y, x] = (1 - alpha) * image[:, y, x] + alpha * gaussian.color
+        
+        return image
+</code></pre>
+
+<h2>Herramientas disponibles en 2026</h2>
+
+<h3>COLMAP + OpenCV</h3>
+
+<p>El pipeline clásico. COLMAP hace Structure from Motion (SfM) para estimar poses de cámara y reconstruir puntos 3D dispersos. Luego puedes usarMulti-View Stereo (MVS) para generar mallas densas.</p>
+
+<pre><code class="language-python"># Pipeline típico con COLMAP
+import subprocess
 import os
-import json
-import hashlib
-import time
-from dataclasses import dataclass, field
-from typing import Optional, Callable, Generator
-from datetime import datetime
-from collections import defaultdict
-import random
 
-
-@dataclass
-class PromptVariant:
-    """Una variante del prompt con metadata."""
-    id: str
-    name: str
-    system_prompt: str
-    user_template: str
-    weight: float = 1.0  # Para weighted routing
-    enabled: bool = True
-    created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
-    metadata: dict = field(default_factory=dict)
-
-
-@dataclass
-class PromptMetrics:
-    """Métricas acumuladas para una variante."""
-    variant_id: str
-    total_requests: int = 0
-    successful_requests: int = 0
-    failed_requests: int = 0
-    total_latency_ms: float = 0.0
-    token_usage: dict = field(default_factory=lambda: {"input": 0, "output": 0})
-    
-    # Métricas de calidad (labels humanos o LLM judge)
-    quality_scores: list = field(default_factory=list)
-    compliance_scores: list = field(default_factory=list)
-    
-    # Feedback directo
-    thumbs_up: int = 0
-    thumbs_down: int = 0
-    
-    # Categorías específicas del dominio
-    category_results: dict = field(default_factory=lambda: defaultdict(lambda: {"correct": 0, "total": 0}))
-
-    def accuracy(self) -> float:
-        if not self.quality_scores:
-            return 0.0
-        return sum(self.quality_scores) / len(self.quality_scores)
-
-    def avg_latency(self) -> float:
-        if self.total_requests == 0:
-            return 0.0
-        return self.total_latency_ms / self.total_requests
-
-
-class PromptOptimizer:
+def reconstruct_3d_from_images(image_dir, output_dir):
     """
-    Framework para optimización sistemática de prompts.
+    Reconstruct 3D model from a collection of images.
     
-    El flujo:
-    1. Registrar variantes del prompt
-    2. Routing A/B entre variantes
-    3. Recolectar métricas automáticamente
-    4. Statistical significance testing
-    5. Promote mejor variante a production
+    Pipeline:
+    1. Feature extraction
+    2. Feature matching
+    3. Sparse reconstruction (SfM)
+    4. Dense reconstruction (MVS)
     """
-
-    def __init__(self, experiment_name: str, primary_metric: str = "accuracy"):
-        self.experiment_name = experiment_name
-        self.primary_metric = primary_metric
-        self.variants: dict[str, PromptVariant] = {}
-        self.metrics: dict[str, PromptMetrics] = {}
-        self.active_variant: Optional[str] = None
-        self.control_variant: Optional[str] = None
-
-    def register_variant(self, variant: PromptVariant) -> str:
-        """Registrar una nueva variante del prompt."""
-        self.variants[variant.id] = variant
-        self.metrics[variant.id] = PromptMetrics(variant_id=variant.id)
-        return variant.id
-
-    def set_control(self, variant_id: str):
-        """Definir cuál variante es el control (baseline)."""
-        if variant_id not in self.variants:
-            raise ValueError(f"Variant {variant_id} not found")
-        self.control_variant = variant_id
-
-    def set_active(self, variant_id: str):
-        """Definir cuál variante está activa para producción."""
-        if variant_id not in self.variants:
-            raise ValueError(f"Variant {variant_id} not found")
-        self.active_variant = variant_id
-
-    def select_variant(self, user_id: Optional[str] = None, deterministic: bool = True) -> PromptVariant:
-        """
-        Seleccionar qué variante usar para un request.
-        
-        Si deterministic=True, usa user_id para consistency
-        (mismo usuario siempre ve la misma variante).
-        """
-        enabled_variants = [v for v in self.variants.values() if v.enabled]
-        if not enabled_variants:
-            raise ValueError("No enabled variants")
-        
-        if deterministic and user_id:
-            # Hash para consistency
-            h = int(hashlib.md5(f"{self.experiment_name}:{user_id}".encode()).hexdigest(), 16)
-            idx = h % sum(v.weight for v in enabled_variants)
-            cumulative = 0
-            for variant in enabled_variants:
-                cumulative += variant.weight
-                if idx < cumulative:
-                    return variant
-        else:
-            # Random weighted
-            total_weight = sum(v.weight for v in enabled_variants)
-            r = random.uniform(0, total_weight)
-            cumulative = 0
-            for variant in enabled_variants:
-                cumulative += variant.weight
-                if r < cumulative:
-                    return variant
-        
-        return enabled_variants[0]
-
-    def record_request(
-        self,
-        variant_id: str,
-        latency_ms: float,
-        success: bool,
-        quality_score: Optional[float] = None,
-        compliance_score: Optional[float] = None,
-        tokens_used: dict = None,
-        thumbs: Optional[int] = None,
-        category: Optional[str] = None,
-        correct: Optional[bool] = None
-    ):
-        """Registrar el resultado de un request."""
-        m = self.metrics[variant_id]
-        m.total_requests += 1
-        
-        if success:
-            m.successful_requests += 1
-        else:
-            m.failed_requests += 1
-        
-        m.total_latency_ms += latency_ms
-        
-        if tokens_used:
-            m.token_usage["input"] += tokens_used.get("input", 0)
-            m.token_usage["output"] += tokens_used.get("output", 0)
-        
-        if quality_score is not None:
-            m.quality_scores.append(quality_score)
-        
-        if compliance_score is not None:
-            m.compliance_scores.append(compliance_score)
-        
-        if thumbs is not None:
-            if thumbs > 0:
-                m.thumbs_up += 1
-            else:
-                m.thumbs_down += 1
-        
-        if category and correct is not None:
-            m.category_results[category]["total"] += 1
-            if correct:
-                m.category_results[category]["correct"] += 1
-
-    def get_leaderboard(self) -> list[dict]:
-        """Obtener ranking de variantes por métrica principal."""
-        results = []
-        for vid, m in self.metrics.items():
-            variant = self.variants[vid]
-            results.append({
-                "id": vid,
-                "name": variant.name,
-                "requests": m.total_requests,
-                self.primary_metric: getattr(m, self.primary_metric)(),
-                "accuracy": m.accuracy(),
-                "avg_latency_ms": m.avg_latency(),
-                "success_rate": m.successful_requests / max(m.total_requests, 1),
-                "thumbs_ratio": m.thumbs_up / max(m.thumbs_up + m.thumbs_down, 1),
-                "enabled": variant.enabled
-            })
-        
-        return sorted(results, key=lambda x: x[self.primary_metric], reverse=True)
-
-    def statistical_significance(self, variant_a: str, variant_b: str) -> dict:
-        """
-        Calcular statistical significance entre dos variantes.
-        Usa chi-squared para rates, t-test para scores continuos.
-        """
-        import math
-        
-        m_a = self.metrics[variant_a]
-        m_b = self.metrics[variant_b]
-        
-        n_a = len(m_a.quality_scores)
-        n_b = len(m_b.quality_scores)
-        
-        if n_a < 30 or n_b < 30:
-            return {"significant": False, "reason": "Insufficient samples"}
-        
-        mean_a = sum(m_a.quality_scores) / n_a
-        mean_b = sum(m_b.quality_scores) / n_b
-        
-        # Pooled variance
-        var_a = sum((x - mean_a) ** 2 for x in m_a.quality_scores) / (n_a - 1)
-        var_b = sum((x - mean_b) ** 2 for x in m_b.quality_scores) / (n_b - 1)
-        
-        pooled_se = math.sqrt(var_a / n_a + var_b / n_b)
-        if pooled_se == 0:
-            return {"significant": False, "reason": "No variance"}
-        
-        t_stat = (mean_a - mean_b) / pooled_se
-        df = min(n_a - 1, n_b - 1)
-        
-        # Simplified significance check
-        # (en producción usar scipy.stats.t.sf)
-        effect_size = (mean_a - mean_b) / math.sqrt((var_a + var_b) / 2)
-        
-        return {
-            "variant_a": variant_a,
-            "variant_b": variant_b,
-            "mean_a": mean_a,
-            "mean_b": mean_b,
-            "t_statistic": t_stat,
-            "effect_size": effect_size,
-            "significant": abs(effect_size) > 0.3 and min(n_a, n_b) >= 100,
-            "confidence": "high" if min(n_a, n_b) >= 200 else "medium" if min(n_a, n_b) >= 100 else "low",
-            "samples_a": n_a,
-            "samples_b": n_b
-        }
-
-    def should_promote(self, variant_id: str, min_improvement: float = 0.05) -> dict:
-        """Determinar si una variante debe ser promoted a production."""
-        if not self.control_variant:
-            return {"should_promote": False, "reason": "No control defined"}
-        
-        ctrl = self.metrics[self.control_variant]
-        cand = self.metrics[variant_id]
-        
-        ctrl_accuracy = ctrl.accuracy()
-        cand_accuracy = cand.accuracy()
-        
-        improvement = (cand_accuracy - ctrl_accuracy) / max(ctrl_accuracy, 0.01)
-        
-        sig_result = self.statistical_significance(self.control_variant, variant_id)
-        
-        return {
-            "should_promote": (
-                improvement >= min_improvement and
-                sig_result.get("significant", False) and
-                cand.total_requests >= 100
-            ),
-            "improvement_pct": improvement * 100,
-            "variant_requests": cand.total_requests,
-            "control_requests": ctrl.total_requests,
-            "statistical_significance": sig_result,
-            "reason": "All conditions met" if (
-                improvement >= min_improvement and
-                sig_result.get("significant", False) and
-                cand.total_requests >= 100
-            ) else f"Condition not met: improvement={improvement:.1%}, significant={sig_result.get('significant')}, requests={cand.total_requests}"
-        }
+    
+    # 1. Feature extraction
+    subprocess.run([
+        'colmap', 'feature_extractor',
+        '--database_path', f'{output_dir}/database.db',
+        '--image_path', image_dir,
+        '--SiftExtraction.use_gpu', '1'
+    ])
+    
+    # 2. Feature matching
+    subprocess.run([
+        'colmap', 'exhaustive_matcher',
+        '--database_path', f'{output_dir}/database.db',
+        '--SiftMatching.use_gpu', '1'
+    ])
+    
+    # Create sparse reconstruction directory
+    sparse_dir = f'{output_dir}/sparse'
+    os.makedirs(sparse_dir, exist_ok=True)
+    
+    # 3. Sparse reconstruction
+    subprocess.run([
+        'colmap', 'mapper',
+        '--database_path', f'{output_dir}/database.db',
+        '--image_path', image_dir,
+        '--output_path', sparse_dir
+    ])
+    
+    # 4. Dense reconstruction
+    dense_dir = f'{output_dir}/dense'
+    os.makedirs(dense_dir, exist_ok=True)
+    
+    subprocess.run([
+        'colmap', 'image_undistorter',
+        '--image_path', image_dir,
+        '--input_path', f'{sparse_dir}/0',
+        '--output_path', dense_dir
+    ])
+    
+    subprocess.run([
+        'colmap', 'patch_match_stereo',
+        '--workspace_path', dense_dir,
+        '--workspace_format', 'COLMAP',
+        '--PatchMatchStereo.geom_consistency', 'true'
+    ])
+    
+    subprocess.run([
+        'colmap', 'stereo_fusion',
+        '--workspace_path', dense_dir,
+        '--workspace_format', 'COLMAP',
+        '--output_path', f'{dense_dir}/fused.ply'
+    ])
+    
+    return f'{dense_dir}/fused.ply'
 </code></pre>
 
-<h3>Integración con tu aplicación</h3>
+<h3>Nerfstudio</h3>
 
-<pre><code>"""
-Ejemplo de uso del PromptOptimizer en una aplicación real
-"""
+<p>Framework moderno que implementa múltiples métodos (NeRF, Gaussian Splatting, etc.) con interfaces fáciles de usar. Excelente para experimentation y prototipado.</p>
 
-from dataclasses import dataclass
+<pre><code class="language-python"># Usando Nerfstudio para entrenar NeRF
+# En terminal:
+# ns-train nerfacto --data /path/to/your/images
 
+# Pipeline programático
+from nerfstudio.utils.eval_utils import eval_load_checkpoint
+from nerfstudio.pipelines.base_pipeline import VanillaPipeline
+from pathlib import Path
 
-@dataclass
-class LLMResponse:
-    content: str
-    latency_ms: float
-    tokens_used: dict
-
-
-class PromptOptimizer集成:
-    """Ejemplo de cómo integrar el optimizer en tu flujo de LLM calls."""
+def render_nerfCheckpoint(checkpoint_path, camera_path, output_image):
+    """
+    Render an image from a trained NeRF model given camera poses.
+    """
+    # Cargar pipeline desde checkpoint
+    pipeline = eval_load_checkpoint(checkpoint_path)
     
-    def __init__(self):
-        self.optimizer = PromptOptimizer(
-            experiment_name="customer-support-prompts",
-            primary_metric="accuracy"
-        )
-        self._setup_variants()
+    # Obtener camera pose desde archivo (formato COLMAP o similar)
+    camera_pose = load_camera_pose(camera_path)
     
-    def _setup_variants(self):
-        """Definir las variantes a testar."""
-        
-        # Control: el prompt actual
-        self.optimizer.register_variant(PromptVariant(
-            id="ctrl-v1",
-            name="Control v1 (baseline)",
-            system_prompt="""Eres un asistente de soporte al cliente de TechStore.
-Responde de manera helpful y concisa.
-Si no sabes algo, dice que no sabes.""",
-            user_template="{user_input}",
-            weight=1.0
-        ))
-        
-        # Variante B: más estructura en la respuesta
-        self.optimizer.register_variant(PromptVariant(
-            id="b-v2-structured",
-            name="B v2 (more structured)",
-            system_prompt="""Eres un asistente de soporte al cliente de TechStore.
-Responde siguiendo este formato:
-1. Saludo breve
-2. Explicación clara
-3. Próximos pasos si aplica
+    # Renderizar
+    with torch.no_grad():
+        image = pipeline.model.render(camera_pose)
+    
+    save_image(image, output_image)
 
-Si no sabes algo, dice que no sabes.""",
-            user_template="{user_input}",
-            weight=1.0
-        ))
-        
-        # Variante C: tono más casual colombiano
-        self.optimizer.register_variant(PromptVariant(
-            id="c-v3-colombian",
-            name="C v3 (Colombian casual tone)",
-            system_prompt="""Eres un asistente de soporte al cliente de TechStore.
-Hablas con un tono friendly y cercano, como un amigo que te ayuda.
-Usa expresiones colombianas naturales cuando sea appropriate.
-Si no sabes algo, di la verdad.""",
-            user_template="{user_input}",
-            weight=1.0
-        ))
-        
-        # Configurar
-        self.optimizer.set_control("ctrl-v1")
-        self.optimizer.set_active("ctrl-v1")
-    
-    def generate_with_tracking(
-        self,
-        user_input: str,
-        user_id: str,
-        llm_call_fn: Callable
-    ) -> tuple[str, PromptVariant]:
-        """Hacer un LLM call con tracking automático de métricas."""
-        
-        # Seleccionar variante
-        variant = self.optimizer.select_variant(user_id=user_id, deterministic=True)
-        
-        # Hacer el call
-        start = time.time()
-        try:
-            response = llm_call_fn(
-                prompt=variant.user_template.format(user_input=user_input),
-                system_prompt=variant.system_prompt
-            )
-            success = True
-            latency_ms = (time.time() - start) * 1000
-            
-            # Aquí iría tu lógica de evaluación automática o LLM-as-judge
-            quality_score = self._auto_evaluate(response.content, user_input)
-            
-        except Exception as e:
-            response = LLMResponse(content=str(e), latency_ms=0, tokens_used={})
-            success = False
-            latency_ms = 0
-            quality_score = None
-        
-        # Registrar métricas
-        self.optimizer.record_request(
-            variant_id=variant.id,
-            latency_ms=latency_ms,
-            success=success,
-            quality_score=quality_score,
-            tokens_used=response.tokens_used if hasattr(response, 'tokens_used') else {}
-        )
-        
-        return response.content, variant
-    
-    def _auto_evaluate(self, response: str, user_input: str) -> float:
-        """
-        Evaluación automática simple.
-        En producción, usa LLM-as-judge o labels humanos.
-        """
-        score = 0.5  # Default
-        
-        # Checks básicos
-        if len(response) > 50:
-            score += 0.1
-        if len(response) < 1000:
-            score += 0.1
-        if any(word in response.lower() for word in ["gracias", "cómo", "puedo"]):
-            score += 0.1
-        
-        return min(score, 1.0)
-    
-    def run_experiment_report(self):
-        """Generar reporte del experimento actual."""
-        leaderboard = self.optimizer.get_leaderboard()
-        
-        print(f"\n=== Prompt Experiment: {self.optimizer.experiment_name} ===\n")
-        
-        for rank, result in enumerate(leaderboard, 1):
-            marker = " ← ACTIVE" if result["id"] == self.optimizer.active_variant else ""
-            print(f"{rank}. {result['name']}{marker}")
-            print(f"   Requests: {result['requests']}")
-            print(f"   Accuracy: {result['accuracy']:.1%}")
-            print(f"   Avg Latency: {result['avg_latency_ms']:.0f}ms")
-            print(f"   Success Rate: {result['success_rate']:.1%}")
-            print()
-        
-        # Análisis entre control y mejor performer
-        if len(leaderboard) >= 2:
-            best = leaderboard[0]
-            if best["id"] != self.optimizer.control_variant:
-                sig = self.optimizer.should_promote(best["id"])
-                print(f"Recommendation for {best['name']}:")
-                print(f"  Should promote: {sig['should_promote']}")
-                print(f"  Reason: {sig['reason']}")
+# O usar Gaussian Splatting
+# ns-train gsplat --data /path/to/your/images
 </code></pre>
 
-<h2>Métricas: qué medir y por qué</h2>
+<h3>Luma AI / Polycam</h3>
 
-<h3>Métricas de calidad</h3>
-
-<p>No puedes optimizar lo que no mides. Para prompts de LLM, las métricas relevantes son:</p>
+<p>Apps móviles que hacen 3D reconstruction directamente en el teléfono. Útiles para:</p>
 
 <ul>
-<li><strong>Task Accuracy:</strong> ¿La respuesta cumple correctly el task?</li>
-<li><strong>Latency:</strong> ¿Cuánto tiempo tarda en responder?</li>
-<li><strong>Token Usage:</strong> ¿Cuántos tokens consume?</li>
-<li><strong>Compliance:</strong> ¿Sigue las instrucciones del prompt?</li>
-<li><strong>User Feedback:</strong> Thumbs up/down, ratings</li>
+<li>Captura quick de objetos pequeños</li>
+<li>Documentación de espacios</li>
+<li>Prototyping sin equipo especializado</li>
 </ul>
 
-<pre><code># Ejemplo de cómo trackear métricas por categoría
+<h2>Aplicaciones en producción</h2>
 
-CATEGORIES = {
-    "greeting": ["hola", "buenas", "cómo estás"],
-    "refund": ["devolver", "reembolso", "plazo"],
-    "technical": ["error", "no funciona", "problema"],
-    "billing": ["cobro", "factura", "pago"],
-}
+<h3>E-commerce y producto</h3>
 
-def categorize_and_score(response: str, expected: str) -> tuple[str, bool]:
-    """Categorizar input y evaluar si la respuesta es correcta."""
-    
-    category = "general"
-    for cat, keywords in CATEGORIES.items():
-        if any(kw in expected.lower() for kw in keywords):
-            category = cat
-            break
-    
-    # Simulated correctness check
-    # En realidad usarías LLM-as-judge o regex patterns
-    correct = len(response) > 20 and any(c.isupper() for c in response)
-    
-    return category, correct
-
-# Registrar con categoría
-optimizer.record_request(
-    variant_id=variant.id,
-    latency_ms=latency_ms,
-    success=True,
-    quality_score=quality,
-    category=category,
-    correct=correct
-)
-
-# Ver performance por categoría
-for vid, metrics in optimizer.metrics.items():
-    print(f"\n{vid} - Performance por categoría:")
-    for cat, results in metrics.category_results.items():
-        acc = results["correct"] / max(results["total"], 1)
-        print(f"  {cat}: {acc:.1%} ({results['correct']}/{results['total']})")
-</code></pre>
-
-<h2>El flujo de optimización iterativa</h2>
-
-<pre><code>"""
-Pipeline de optimización iterativa
-"""
-
-class PromptOptimizationPipeline:
-    """
-    Ejecuta el ciclo completo de optimización:
-    1. Hipótesis → 2. Crear variante → 3. A/B test → 4. Analizar → 5. Iterar
-    """
-    
-    def __init__(self, optimizer: PromptOptimizer):
-        self.optimizer = optimizer
-        self.experiment_history = []
-    
-    def create_hypothesis_variant(
-        self,
-        hypothesis: str,
-        base_variant_id: str,
-        change_description: str
-    ) -> str:
-        """
-        Crear una nueva variante basada en una hipótesis.
-        
-        Ejemplo:
-          hypothesis="El prompt necesita más contexto"
-          change="Agregar ejemplos de few-shot"
-        """
-        base = self.optimizer.variants[base_variant_id]
-        
-        new_system = base.system_prompt + "\n\n" + change_description
-        
-        new_variant = PromptVariant(
-            id=self._generate_id(hypothesis),
-            name=f"Hypothesis: {hypothesis[:50]}",
-            system_prompt=new_system,
-            user_template=base.user_template,
-            weight=1.0,
-            metadata={"hypothesis": hypothesis, "change": change_description}
-        )
-        
-        return self.optimizer.register_variant(new_variant)
-    
-    def run_experiment(
-        self,
-        variant_ids: list[str],
-        min_duration_hours: int = 24,
-        min_requests_per_variant: int = 100
-    ) -> dict:
-        """Ejecutar un experimento y retornar resultados."""
-        
-        start_time = time.time()
-        
-        while True:
-            # Check si tenemos suficientes datos
-            all_have_min = all(
-                self.optimizer.metrics[vid].total_requests >= min_requests_per_variant
-                for vid in variant_ids
-            )
-            
-            elapsed_hours = (time.time() - start_time) / 3600
-            
-            if all_have_min and elapsed_hours >= min_duration_hours:
-                break
-            
-            # Log progreso
-            print(f"Waiting... {elapsed_hours:.1f}h elapsed, min requests: {min_requests_per_variant}")
-            time.sleep(300)  # Check cada 5 minutos
-        
-        # Análisis final
-        results = self._analyze_experiment(variant_ids)
-        self.experiment_history.append(results)
-        
-        return results
-    
-    def _analyze_experiment(self, variant_ids: list[str]) -> dict:
-        """Analizar resultados del experimento."""
-        
-        control = self.optimizer.control_variant
-        best_variant = None
-        best_accuracy = 0
-        
-        for vid in variant_ids:
-            m = self.optimizer.metrics[vid]
-            acc = m.accuracy()
-            
-            if acc > best_accuracy:
-                best_accuracy = acc
-                best_variant = vid
-            
-            # Statistical significance vs control
-            if vid != control and control in variant_ids:
-                sig = self.optimizer.statistical_significance(control, vid)
-                print(f"{vid} vs {control}: effect_size={sig['effect_size']:.3f}, significant={sig['significant']}")
-        
-        return {
-            "variants_tested": variant_ids,
-            "best_variant": best_variant,
-            "best_accuracy": best_accuracy,
-            "recommendation": self.optimizer.should_promote(best_variant) if best_variant else None
-        }
-    
-    def _generate_id(self, hypothesis: str) -> str:
-        import uuid
-        return f"hyp-{hashlib.md5(hypothesis.encode()).hexdigest()[:8]}"
-</code></pre>
-
-<h2>Los 3 errores que el 85% comete</h2>
-
-<h3>Error 1: No testear prompts sistemáticamente</h3>
-
-<p>El más común. Alguien dice "el prompt no está funcionando bien" y inmediatamente empiezan a hacer cambios sin datos. No hay baseline, no hay control, no hay forma de saber si el cambio fue una mejora o no.</p>
-
-<p>La conversación va más o menos así:</p>
+<p>La aplicación más inmediata. Un modelo 3D del producto permite:</p>
 
 <ul>
-<li>"¿Cómo sabemos si el nuevo prompt es mejor?"</li>
-<li>"Pues... se siente mejor cuando lo pruebo"</li>
-<li>"¿Pero medimos algo?"</li>
-<li>"No, pero confiamos en elfeeling"</li>
+<li><strong>Visualización 360°:</strong> el usuario rota el producto</li>
+<li><strong>AR try-on:</strong> размещение продукта en el entorno del usuario</li>
+<li><strong>Generación de vistas:</strong> renderizar el producto desde ángulos que no fotografió</li>
 </ul>
 
-<p><strong>Fix:</strong> A/B testing riguroso. Divide tu tráfico, mide cada variante, no hagas cambios en producción sin datos.</p>
-
-<pre><code># El fix: antes de cambiar cualquier prompt, define tu experimento
-optimizer = PromptOptimizer("payment-prompt-test")
-
-optimizer.register_variant(PromptVariant(
-    id="control",
-    name="Current prompt",
-    system_prompt="Provide customer support responses.",
-    user_template="{input}"
-))
-
-optimizer.register_variant(PromptVariant(
-    id="treatment",
-    name="New prompt with examples",
-    system_prompt="Provide customer support responses. Example: Q: 'Where's my order?' A: 'I can help you track your order...'",
-    user_template="{input}"
-))
-
-# Solo hacer el cambio si hay mejora estadísticamente significativa
-result = optimizer.should_promote("treatment", min_improvement=0.05)
-if result["should_promote"]:
-    optimizer.set_active("treatment")
-</code></pre>
-
-<h3>Error 2: Cambiar el prompt basado en un solo ejemplo</h3>
-
-<p>Muestra 3 ejemplos al equipo. En uno, la respuesta no fue buena. Inmediatamente deciden cambiar el prompt para resolver ese caso específico. El resultado: el prompt ahora sí funciona para esos 3 ejemplos, pero falla para 20 que antes funcionaban.</p>
-
-<p>Esto esoverfitting alExampleset. Si optimizas para 3 casos, estás sacrificando los demás.</p>
-
-<p><strong>Fix:</strong> Evaluar en datos grandes antes de decidir. Si no tienes 100+ ejemplos de test, no tienes enough data paraoptimizar. Recolecta más primero.</p>
-
-<pre><code># Evaluar en dataset grande antes de decidir
-TEST_DATASET = load_json("test_cases.json")  # 100+ casos
-
-def evaluate_variant(variant_id: str, test_cases: list) -> dict:
-    """Evaluar variante en todo el dataset, no cherry-picked examples."""
+<pre><code class="language-python">def create_product_3d_model(image_list: List[str], product_id: str) -> dict:
+    """
+    Pipeline para crear modelo 3D de producto desde fotos.
     
-    results = []
-    for case in test_cases:
-        response = call_llm(
-            prompt=case["input"],
-            system_prompt=variants[variant_id].system_prompt
-        )
-        
-        # Evaluación automática (o LLM-as-judge)
-        score = evaluate(response, case["expected"])
-        results.append({"input": case["input"], "score": score})
+    Returns:
+        Dict con paths a mesh, textures, y preview images
+    """
+    # 1. Limpiar y alinear imágenes
+    cleaned_images = preprocess_images(image_list)
+    
+    # 2. Reconstrucción densa con COLMAP
+    ply_path = run_colmap_pipeline(cleaned_images)
+    
+    # 3. Mesh reconstruction desde point cloud
+    mesh_path = poisson_surface_reconstruction(ply_path)
+    
+    # 4. Texturing
+    textured_mesh = texture_mesh(mesh_path, cleaned_images)
+    
+    # 5. Generar previews desde ángulos estándar
+    preview_angles = [0, 45, 90, 135, 180, 225, 270, 315]
+    previews = render_views(textured_mesh, preview_angles)
     
     return {
-        "variant_id": variant_id,
-        "avg_score": mean([r["score"] for r in results]),
-        "p10_score": percentile([r["score"] for r in results], 10),  # No sacrifiques los percentiles bajos
-        "p50_score": percentile([r["score"] for r in results], 50),
-        "p90_score": percentile([r["score"] for r in results], 90),
-        "total_tested": len(results)
+        'product_id': product_id,
+        'mesh_obj': f'{product_id}_mesh.obj',
+        'mesh_glb': f'{product_id}_mesh.glb',  # Formato para web
+        'texture': f'{product_id}_texture.png',
+        'previews': previews
     }
-
-# Si el promedio mejora pero el p10 empeora, NO haces el cambio
-ctrl_results = evaluate_variant("control", TEST_DATASET)
-treat_results = evaluate_variant("treatment", TEST_DATASET)
-
-print(f"Control: avg={ctrl_results['avg_score']:.2f}, p10={ctrl_results['p10_score']:.2f}")
-print(f"Treatment: avg={treat_results['avg_score']:.2f}, p10={treat_results['p10_score']:.2f}")
-
-if treat_results['p10_score'] < ctrl_results['p10_score'] - 0.05:
-    print("❌ NO PROMOVE: el tratamiento empeora los casos difíciles")
 </code></pre>
 
-<h3>Error 3: No tener métricas de prompt quality</h3>
+<h3>Archivos y preservación</h3>
 
-<p>¿Cómo sabes que tu prompt mejoró? Si no tienes métricas concretas, no lo sabes. Solo tienes feelings.</p>
-
-<p>El 85% no tiene respuesta a "¿cómo está performando el prompt hoy?" porque nunca estableció qué medir.</p>
-
-<p><strong>Fix:</strong> Define métricas antes de optimizar. Mínimo:</p>
+<p>Museos y archivos están usando 3D reconstruction para:</p>
 
 <ul>
-<li>Task completion rate</li>
-<li>Error rate (cumplimiento de formato)</li>
-<li>Latencia promedio</li>
-<li>Token usage</li>
-<li>User satisfaction (si tienes feedback)</li>
+<li>Digitalizar artefactos históricos</li>
+<li>Crear visitas virtuales de alta calidad</li>
+<li>Permitir estudio sin manipulación del objeto original</li>
 </ul>
 
-<pre><code># Dashboard de métricas en tiempo real
-class PromptMetricsDashboard:
-    """Simple dashboard para trackear métricas de prompts."""
-    
-    def __init__(self, optimizer: PromptOptimizer):
-        self.optimizer = optimizer
-    
-    def render(self) -> str:
-        leaderboard = self.optimizer.get_leaderboard()
-        
-        output = ["```"]
-        output.append(f"Prompt Optimization Dashboard: {self.optimizer.experiment_name}")
-        output.append("=" * 60)
-        
-        for entry in leaderboard:
-            variant = self.optimizer.variants[entry["id"]]
-            marker = "← ACTIVE" if entry["id"] == self.optimizer.active_variant else ""
-            
-            output.append(f"\n{entry['name']} {marker}")
-            output.append(f"  Requests:     {entry['requests']:,}")
-            output.append(f"  Accuracy:      {entry['accuracy']:.1%}")
-            output.append(f"  Avg Latency:   {entry['avg_latency_ms']:.0f}ms")
-            output.append(f"  Success Rate:  {entry['success_rate']:.1%}")
-            output.append(f"  Thumbs Up:     {entry['thumbs_ratio']:.1%}")
-            
-            # Mostrar performance por categoría
-            m = self.optimizer.metrics[entry["id"]]
-            if m.category_results:
-                output.append("  Categories:")
-                for cat, res in sorted(m.category_results.items()):
-                    acc = res["correct"] / max(res["total"], 1)
-                    output.append(f"    {cat}: {acc:.1%} ({res['correct']}/{res['total']})")
-        
-        output.append("\n```")
-        return "\n".join(output)
-</code></pre>
+<h2>Limitaciones y cómo manejarlas</h2>
 
-<h2>Resumen y cierre</h2>
+<ul>
+<li><strong>Reflections y specular surfaces:</strong> NeRF asume que los materiales son Lambertian (difusos). Superficies especulares causan artifacts. Fix: usar más vistas y técnicas de去除 specularity.</li>
+<li><strong>Lighting:</strong> Las sombras y reflections capturadas son parte de la representación. Cambiar el lighting después requiere técnicas adicionales como Scene relighting.</li>
+<li><strong>Oclusiones:</strong> Partes ocultas no pueden reconstruirse. Fix: tomar fotos desde múltiples ángulos, asegurando que cada parte visible en al menos 5-10 imágenes.</li>
+<li><strong>Textures repetitivas:</strong> Patrones como ladrillos o hierba pueden causar drifts. Fix: usar priors geométricos o限制了 el tipo de superficies.</li>
+</ul>
 
-<p>La diferencia entre el 85% y el 15% es metodología, no intuición. El 85% cambia prompts basándose en feelings, cherry-picked examples, y anéctodas. El 15% cambia prompts basándose en datos, experimentos controlados, y significance estadística.</p>
+<hr>
 
-<p>El framework que mostré hoy — PromptOptimizer con A/B testing, métricas por categoría, y promotion basada en datos — te da el proceso que el 15% usa. No es optional. Si estás desplegando prompts a producción sin esto, estás operando a ciegas.</p>
+<p>Eso es todo por hoy. 3D reconstruction es una tecnología que estámadurando rápidamente y se está volviendo accesible. Con las herramientas actuales puedes crear modelos de calidad decente con solo tu teléfono. Experimenta con diferentes objetos y condiciones de luz para entender las limitaciones.</p>
 
-<p>La optimización de prompts no es un arte. Es una disciplina de ingeniería. Treat it como tal.</p>
-
-<p>En Bogotá decimos "lo que no se mide, no se mejora". Aplícalo a tus prompts: si no tienes métricas, no tienes forma de saber si estás haciendo progress o si estás make things worse. Empieza a medir hoy.</p>
-
-<p>Eso es todo por hoy. Mañana seguimos con más. Nos vemos.</p>
+<p>Mañana seguimos con más. Nos vemos.</p>
 </article>
 
   <script>
