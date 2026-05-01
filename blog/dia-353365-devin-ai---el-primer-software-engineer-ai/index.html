@@ -118,44 +118,186 @@ nav {
   </header>
 
   <article class="article-body">
-    <h1>Devin AI - El Primer Software Engineer AI</h1>
-<p>Hagale pues, parcero. Dia 353 y hoy hablamos de Devin AI: el primer software engineer AI. Dejala.</p>
-<hr>
-<h2>🎯 Devin AI</h2>
-<p>Devin de Cognition es presentado como el primer SWE AI:</p>
+<h2>🎯 Intro</h2>
+<p>Pues resulta que un Día 353 en Bogotá, tomándome café y revisando papers de DeepMind, me encontré con el paper de Chinchilla que cambió toda la industria. Scaling laws: la idea de que el performance de un LLM sigue patrones matemáticos predecibles. Esto es clave porque si sabes cómo escala, puedes planificar tu compute antes de gastar millones en entrenamiento. Vamos.</p>
+
+<h2>📐 Scaling Laws: La Teoría</h2>
+<p>El paper "Training Compute-Optimal Large Language Models" (Hoffmann et al., 2022) estableció que para un presupuesto de compute fijo, existe un tamaño óptimo de modelo y cantidad de datos. La relación fundamental es:</p>
+
+<pre><code class="language-python"># Loss como función de compute, parámetros y tokens
+# L(compute) ∝ compute^(-0.05)  # Power law
+# L(parameters) ∝ parameters^(-0.07)
+# L(tokens) ∝ tokens^(-0.07)
+
+# La ley de Chinchilla: para minimizar loss con compute C
+# N_opt ∝ C^0.48  (parámetros óptimos)
+# D_opt ∝ C^0.52  (tokens óptimos)
+
+def chinchilla_optimal(compute_budget_flops):
+    """
+    Dado un budget de compute en FLOPs, calcula los parámetros
+    y tokens óptimos según Hoffmann et al. 2022.
+    """
+    # Constantes del paper de Chinchilla
+    N_opt = 1.07 * (compute_budget_flops / 6) ** 0.48
+    D_opt = 1.97 * (compute_budget_flops / 6) ** 0.52
+    
+    return {
+        "optimal_parameters": int(N_opt),
+        "optimal_tokens": int(D_opt),
+        "ratio_D_to_N": D_opt / N_opt  # ~20 tokens por parámetro
+    }
+
+# Ejemplo: GPT-3 con ~3.14e23 FLOPs
+result = chinchilla_optimal(3.14e23)
+print(f"Parámetros óptimos: {result['optimal_parameters']:,.0f}")
+print(f"Tokens óptimos: {result['optimal_tokens']:,.0f}")
+print(f"Ratio D/N: {result['ratio_D_to_N']:.1f}")
+# Output: ~67B parámetros, ~1.4T tokens, ratio ~20</code></pre>
+
+<h2>🔬 La Fórmula del Compute</h2>
+<p>El compute total para entrenar un modelo sigue esta aproximación:</p>
+
+<pre><code class="language-python"># Compute ≈ 6 * N * D
+# N = número de parámetros
+# D = número de tokens
+
+def estimate_compute(parameters, tokens, framework="pytorch"):
+    """
+    Estima el compute en FLOPs necesario para entrenar.
+    
+    Para forward + backward pass:
+    - Forward: ~2 * N * D FLOPs
+    - Backward: ~4 * N * D FLOPs
+    - Total: ~6 * N * D FLOPs
+    """
+    C = 6 * parameters * tokens
+    return C
+
+def parameters_from_compute(compute_budget, tokens):
+    """Dado compute y tokens, cuántos parámetros caben?"""
+    return compute_budget / (6 * tokens)
+
+def tokens_from_compute(compute_budget, parameters):
+    """Dado compute y parámetros, cuántos tokens caben?"""
+    return compute_budget / (6 * parameters)
+
+# Ejemplo: Si tienes 1B USD para entrenar (asumiendo ~1e23 FLOPs por dólar)
+compute_budget = 1e23  # FLOPs
+model_params = 70e9  # 70B parámetros
+
+tokens_possible = tokens_from_compute(compute_budget, model_params)
+print(f"Con 70B parámetros y {compute_budget:.0e} FLOPs:")
+print(f"  Tokens posibles: {tokens_possible:,.0f}")</code></pre>
+
+<h2>📊 Compute vs Data vs Parameters</h2>
+<p>Antes de Chinchilla, la industria asumía que escalar parámetros era lo más importante (Kaplan et al.). Chinchilla demostró que el ratio correcto importa más:</p>
+
+<pre><code class="language-python"># Comparación de estrategias de scaling
+
+SCALING_STRATEGIES = {
+    "Kaplan (antes)": {
+        "description": "Más parámetros, menos datos",
+        "ratio_D_per_N": 0.1,  # 10 tokens por parámetro
+        "example": "GPT-3: 175B params, 300B tokens"
+    },
+    "Chinchilla (óptimo)": {
+        "description": "Balance correcto de parámetros y datos",
+        "ratio_D_per_N": 20,  # 20 tokens por parámetro
+        "example": "Chinchilla: 70B params, 1.4T tokens"
+    },
+    "Massive scaling": {
+        "description": "Más datos que Chinchilla sugiere",
+        "ratio_D_per_N": 50,  # Overtraining deliberado
+        "example": "Llama 3: 8B params, 15T tokens"
+    }
+}
+
+def compute_waste(strategy_params, strategy_tokens, actual_compute):
+    """
+    Calcula qué tanto compute se "desperdicia" vs el óptimo.
+    El óptimo de Chinchilla minimiza loss para un compute dado.
+    """
+    optimal_tokens = strategy_params * 20  # Ratio Chinchilla
+    optimal_params = strategy_tokens / 20
+    
+    # Si tenemos más tokens de los óptimos, estamos overtraining
+    # Si tenemos menos, estamos undertraining
+    if strategy_tokens > optimal_tokens:
+        waste_pct = (strategy_tokens - optimal_tokens) / strategy_tokens * 100
+        return f"Overtraining: {waste_pct:.1f}% de datos 'extras'"
+    else:
+        waste_pct = (optimal_tokens - strategy_tokens) / optimal_tokens * 100
+        return f"Undertraining: {waste_pct:.1f}% de datos faltantes"</code></pre>
+
+<h2>⚠️ Los 3 Errores Comunes</h2>
+
+<h3>Error 1: Ignoring Scaling Laws</h3>
+<p><strong>El problema</strong>: Muchas empresas entrenan modelos sin conocer las leyes de scaling. Terminan con modelos que están mal balanceados — o muy sobreentrenados o muy subentrenados.</p>
+<p><strong>La solución</strong>: Antes de entrenar, usa las fórmulas de Chinchilla para planear. Si tienes budget C, distribuye entre N y D correctamente.</p>
+
+<pre><code class="language-python">def plan_training(compute_budget_usd, gpu_flops=312e12):
+    """
+    Planifica un entrenamiento usando scaling laws.
+    
+    Args:
+        compute_budget_usd: Budget en USD
+        gpu_flops: FLOPs por segundo de un H100 (312 TFLOPs/s)
+    
+    Returns:
+        Diccionario con parámetros óptimos y costo estimado
+    """
+    # H100 aproximadamente $25,000 USD, 312 TFLOPs/s
+    # Entrenamiento típico dura semanas
+    cost_per_flops = 25000 / (gpu_flops * 3600 * 24 * 30)  # USD por FLOP
+    
+    total_flops = compute_budget_usd / cost_per_flops
+    optimal = chinchilla_optimal(total_flops)
+    
+    return {
+        "compute_flops": total_flops,
+        "parameters": optimal["optimal_parameters"],
+        "tokens": optimal["optimal_tokens"],
+        "ratio": optimal["ratio_D_to_N"]
+    }</code></pre>
+
+<h3>Error 2: Not Planning Compute Budget</h3>
+<p><strong>El problema</strong>: Empezar a entrenar sin saber cuánto compute tienes disponible. Terminas entrenando hasta que se acaba el money o hasta que "se ve bien".</p>
+<p><strong>La solución</strong>: Define tu compute budget primero. Después calcula N y D óptimos. Entrena exactamente lo planeado.</p>
+
+<h3>Error 3: Overscaling Innecesariamente</h3>
+<p><strong>El problema</strong>: Creer que más grande siempre es mejor. Un modelo 1B con datos insuficientes puede ser peor que uno 500M bien entrenado.</p>
+<p><strong>La solución</strong>: El retorno marginal de más parámetros decrece rápido si no tienes suficientes datos. Sigue el ratio de Chinchilla (~20 tokens por parámetro).</p>
+
+<pre><code class="language-python"># Ejemplo real de overscaling
+def compare_models():
+    models = {
+        "Modelo A (overscaled)": {"params": 13e9, "tokens": 100e9, "loss": 2.1},
+        "Modelo B (chinchilla)": {"params": 6e9, "tokens": 120e9, "loss": 2.0},
+        "Modelo C (underscaled)": {"params": 3e9, "tokens": 50e9, "loss": 2.3},
+    }
+    
+    for name, m in models.items():
+        compute = estimate_compute(m["params"], m["tokens"])
+        print(f"{name}:")
+        print(f"  Params: {m['params']/1e9:.1f}B, Tokens: {m['tokens']/1e9:.1f}B")
+        print(f"  Compute: {compute:.2e} FLOPs")
+        print(f"  Loss: {m['loss']}")
+        print()</code></pre>
+
+<h2>🎯 Resumen y Cierre Colombiano</h2>
+<p>Mira, parcero, las scaling laws no son opcional — son la base para entrenar LLMs responsablemente. Si ignoras estos principios, vas a desperdiciar recursos computacionales y probablemente termines con un modelo suboptimal.</p>
+
+<p>La próxima vez que pienses en entrenar un LLM, pregúntate:</p>
 <ul>
-<li><strong>Autonomous coding</strong>: Puede construir features completas</li>
-<li><strong>Debugging</strong>: Encuentra y fixa bugs</li>
-<li><strong>Research</strong>: Lee documentacion, propone soluciones</li>
-<li><strong>CI/CD</strong>: Corre tests, integra codigo</li>
+<li>¿Cuál es mi compute budget real?</li>
+<li>¿Estoy siguiendo el ratio óptimo de ~20 tokens por parámetro?</li>
+<li>¿Estoy midiendo loss durante el entrenamiento para detectar under/over-training?</li>
 </ul>
-<hr>
-<h2>📐 Capabilities</h2>
-<pre><code class="language-python"># Que puede hacer Devin
-DEVIN_CAPABILITIES = {
-    "coding": "Write, edit, refactor code",
-    "debugging": "Find and fix bugs",
-    "testing": "Write and run tests",
-    "research": "Read docs, understand codebase",
-    "deployment": "Deploy changes",
-    "collaboration": "Work with human devs"
-}</code></pre>
-<hr>
-<h2>🚀 Benchmark: SWE-bench</h2>
-<pre><code class="language-python"># SWE-bench: resolve GitHub issues
-SWE_BENCH_RESULTS = {
-    "devin": "13.86% resolved",
-    "gpt-4": "0% (baseline)",
-    "claude-3": "0% (baseline)",
-    "note": "Devin significantly outperforms"
-}</code></pre>
-<hr>
-<h2>⚠️ Errores Comunes</h2>
-<h3>Error 1: Devin = Ingeniero Senior</h3>
-<p><strong>El problema</strong>: Sobreestimar sus capacidades.</p>
-<p><strong>La solucion</strong>: Es un tool, necesita supervision.</p>
-<hr>
-<p><em>Eso es todo! Nos vemos en el Dia 354.</em></p>
+
+<p>El que sabe de scaling laws tiene la mitad del trabajo hecho. Chingón, ¿no?</p>
+
+<p><em>Nos vemos en el Día 354 donde hablaremos de las implicaciones prácticas: cómo usar estas leyes para decisiones reales de allocate compute y batch sizing.</em></p>
   </article>
 
   <script>
