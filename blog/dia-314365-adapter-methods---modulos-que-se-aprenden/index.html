@@ -110,50 +110,785 @@ nav {
 
   <header class="article-hero">
     <div class="day-badge">Dia 314 / 365 &nbsp;·&nbsp; #365DaysOfAI</div>
-    <h1 class="article-title">Adapter Methods - Modulos Que Se Aprenden</h1>
+    <h1 class="article-title">LLM Reasoning — Qué el 90% No Sabe y Qué el 10% Entiende para Pensar Mejor</h1>
     <div class="article-meta">
       <time class="article-date">10 de noviembre de 2026</time>
-      <div class="tags"><span class="tag">adapters</span><span class="tag">fine-tuning</span><span class="tag">modular</span><span class="tag">llm</span></div>
+      <div class="tags"><span class="tag">reasoning</span><span class="tag">chain-of-thought</span><span class="tag">problem-solving</span><span class="tag">llm</span></div>
     </div>
   </header>
 
   <article class="article-body">
-    <h1>Adapter Methods - Modulos Que Se Aprenden</h1>
-<p>Hagale pues, parcero. Hoy es el Dia 314 y hablamos de Adapter Methods, modulos que se aprenden. Dejala el cafe.</p>
-<hr>
-<h2>🎯 Que Son Adapter Methods?</h2>
-<p>Adapters son pequenos modulos insertados en layers de una red pre-entrenada. Solo estos se entrenan, preservando el modelo original.</p>
-<h3>Tipos de adapters:</h3>
+<h2>🎯 Introducción</h2>
+<p>Qué tal, parce. Hoy es el Día 314 y vamos a hablar de algo que el 90% de los desarrolladores no sabe estructurar bien: <strong>LLM Reasoning</strong> — cómo hacer que los LLMs piensen mejor, cómo usar chain-of-thought, tree-of-thought, y cómo verificar que el razonamiento sea correcto.</p>
+
+<p>Piénselo así: un LLM sin razonamiento estructurado es como un matemático que hace cálculos mentalmente sin escribir nada. A veces funciona, pero para problemas complejos, necesitas papel y lápiz. Chain-of-thought es ese papel.</p>
+
+<p>En este artículo vamos a ver la teoría detrás del reasoning con LLMs, cómo implementar frameworks de razonamiento estructurado, y los tres errores más comunes que hacen que el 90% falle.</p>
+
+<h2>📐 La Matemática del Reasoning con LLMs</h2>
+
+<p>Antes de código, la teoría. El reasoning con LLMs se formaliza como un proceso de <strong>inferencia estructurada en cadenas de pensamiento</strong>.</p>
+
+<h3>El Problema de la Generación Autoregresiva</h3>
+
+<p>Un LLM genera tokens secuencialmente:</p>
+
+<p><code>x_1, x_2, ..., x_t ~ P(x_t | x_1, ..., x_{t-1})</code></p>
+
+<p>Para tareas simples esto funciona. Pero para razonamiento complejo, la probabilidad de error crece porque cada paso acumula error:</p>
+
+<p><code>P(error en paso N) ≈ 1 - (1 - ε)^N</code></p>
+
+<p>donde <code>ε</code> es la probabilidad de error en cada paso individual. Con 10 pasos y 5% de error por paso:</p>
+
+<p><code>P(error total) ≈ 1 - (0.95)^10 ≈ 40%</code></p>
+
+<p>El 40% de las soluciones están wrong. Por eso necesitamos estructurar el razonamiento.</p>
+
+<h3>Chain-of-Thought como Reducción de Error</h3>
+
+<p>Chain-of-thought (CoT) explícito reduce el espacio de búsqueda y concentra la probabilidad en paths correctos:</p>
+
+<p><code>P(razonamiento_correcto | CoT) > P(razonamiento_correcto | generación_directa)</code></p>
+
+<p>La clave: CoT hace que el modelo <strong>explicite sus suposiciones</strong>, permitiendo que cada paso sea verificado independientemente.</p>
+
+<h3>Tree-of-Thought: Exploración de Múltiples Paths</h3>
+
+<p>Para problemas con múltiples soluciones válidas, Tree-of-Thought (ToT) explora varios paths en paralelo:</p>
+
+<p><code>ToT(problema) = max_{path ∈ Paths} Score(path) × Confidence(path)</code></p>
+
+<p>donde:</p>
 <ul>
-<li><strong> bottleneck adapters</strong>: Down-project, nonlinear, up-project</li>
-<li><strong>Parallel adapters</strong>: Adicion a la representacion original</li>
-<li><strong>LayerNorm adapters</strong>: Skip connections con learned scaling</li>
+<li><strong>Paths</strong>: Diferentes secuencias de razonamiento</li>
+<li><strong>Score</strong>: Calidad de la solución encontrada en ese path</li>
+<li><strong>Confidence</strong>: Probabilidad de que el path sea correcto</li>
 </ul>
-<hr>
-<h2>📐 Adapter Block</h2>
-<pre><code class="language-python">class Adapter(nn.Module):
-    def __init__(self, d_model, reduction=16):
-        super().__init__()
-        self.down = nn.Linear(d_model, d_model // reduction)
-        self.activation = nn.GELU()
-        self.up = nn.Linear(d_model // reduction, d_model)
-        self.layer_norm = nn.LayerNorm(d_model)
+
+<h2>🔧 Framework de Reasoning con LLMs</h2>
+
+<p>Ahora sí, código. Vamos a implementar un framework completo de reasoning:</p>
+
+<pre><code class="language-python">"""
+LLM Reasoning Framework
+Chain-of-thought, tree-of-thought, y verificación de razonamiento
+"""
+
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Optional, Callable, Literal
+from collections import deque
+import re
+
+
+class ReasoningMethod(Enum):
+    """Métodos de razonamiento disponibles"""
+    DIRECT = "direct"                    # Generación directa
+    CHAIN_OF_THOUGHT = "cot"           # Chain-of-thought
+    TREE_OF_THOUGHT = "tot"            # Tree-of-thought
+    SELF_ASK = "self_ask"              # Self-ask
+    REACT = "react"                    # ReAct (Reason + Act)
+
+
+class ProblemType(Enum):
+    """Tipos de problemas"""
+    ARITHMETIC = "arithmetic"           # Cálculos matemáticos
+    LOGIC = "logic"                    # Lógica formal
+    COMMON_SENSE = "common_sense"      # Sentido común
+    PLANNING = "planning"              # Planificación
+    DECOMPOSITION = "decomposition"     # Descomposición de problemas
+    VERIFICATION = "verification"       # Verificación de información
+
+
+@dataclass
+class ReasoningStep:
+    """Un paso individual en una cadena de razonamiento"""
+    step_id: str
+    content: str
+    thought: str                       # Razonamiento explícito
+    action: Optional[str] = None       # Acción si existe (para ReAct)
+    observation: Optional[str] = None  # Observación del resultado
+    confidence: float = 1.0           # Confianza en este paso (0-1)
+    is_verified: bool = False         # Si el paso fue verificado
     
-    def forward(self, x):
-        residual = x
-        x = self.layer_norm(x)
-        x = self.down(x)
-        x = self.activation(x)
-        x = self.up(x)
-        return x + residual</code></pre>
+    def __str__(self):
+        base = f"Paso {self.step_id}: {self.thought}"
+        if self.action:
+            base += f"\n  Acción: {self.action}"
+        if self.observation:
+            base += f"\n  Observación: {self.observation}"
+        return base
+
+
+@dataclass
+class ReasoningPath:
+    """Un path completo de razonamiento (para tree-of-thought)"""
+    path_id: str
+    steps: list[ReasoningStep]
+    final_answer: Optional[str] = None
+    score: float = 0.0
+    is_viable: bool = True            # Si el path aún es prometedor
+    
+    @property
+    def confidence(self) -> float:
+        """Confianza acumulada del path"""
+        if not self.steps:
+            return 0.0
+        # Producto de confianzas de cada paso
+        conf = 1.0
+        for step in self.steps:
+            conf *= step.confidence
+        return conf
+
+
+@dataclass
+class ReasoningResult:
+    """Resultado de un proceso de razonamiento"""
+    method: ReasoningMethod
+    problem_type: ProblemType
+    paths: list[ReasoningPath]        # Para CoT: 1 path. Para ToT: múltiples.
+    final_answer: str
+    verification_passed: bool = False
+    confidence: float = 0.0
+    reasoning_steps: int = 0
+    
+    @property
+    def is_correct(self) -> bool:
+        return self.verification_passed and self.confidence > 0.8
+
+
+class ChainOfThought:
+    """
+    Implementación de Chain-of-Thought prompting.
+    Estructura el razonamiento en pasos explícitos.
+    """
+    
+    # Templates de CoT por tipo de problema
+    COT_TEMPLATES = {
+        ProblemType.ARITHMETIC: {
+            "instruction": """Resuelve este problema paso a paso.
+Para cada paso:
+1. Identifica qué cálculo necesitas hacer
+2. Ejecuta el cálculo
+3. Verifica que el resultado sea razonable
+4. Usa el resultado para el siguiente paso
+
+Formato:
+ Paso 1: [descripción]
+   Cálculo: [ecuación]
+   Resultado: [valor]
+   Verificación: [chequeo]
+ Paso 2: ...
+ 
+Respuesta final: [valor numérico]""",
+            "verify_each_step": True
+        },
+        ProblemType.LOGIC: {
+            "instruction": """Resuelve este problema de lógica paso a paso.
+Para cada paso:
+1. Identifica las premisas
+2. Aplica una regla de inferencia
+3. Deriva una nueva conclusión
+4. Verifica que la inferencia sea válida
+
+Formato:
+ Paso 1: [premisa o dato]
+   Tipo: [hecho/regla]
+ Paso 2: [siguiente paso]
+   Regla aplicada: [nombre de la regla]
+   Conclusión: [nueva info]
+ ...
+ 
+Respuesta final: [conclusión final]""",
+            "verify_each_step": True
+        },
+        ProblemType.COMMON_SENSE: {
+            "instruction": """Razona sobre este problema usando sentido común.
+Para cada paso:
+1. Identifica qué sabes del mundo
+2. Aplica ese conocimiento al problema
+3. Considera si hay excepciones o contraejemplos
+4. Ajusta tu razonamiento si es necesario
+
+Formato:
+ Paso 1: [conocimiento relevante]
+   Aplicación: [cómo aplica al problema]
+   Posible excepción: [sí/no, explicar si sí]
+ Paso 2: ...
+ 
+Respuesta final: [conclusión con justificación]""",
+            "verify_each_step": False
+        },
+        ProblemType.DECOMPOSITION: {
+            "instruction": """Descompón este problema en subproblemas más simples.
+Para cada descomposición:
+1. Identifica qué necesitas resolver
+2. Divide en partes independientes
+3. Especifica cómo combinar las soluciones
+
+Formato:
+ Problema principal: [enunciado]
+ 
+ Descomposición:
+ 1. [subproblema 1]
+    Dependencias: [ninguna/otros subproblemas]
+ 2. [subproblema 2]
+    Dependencias: [subproblema 1]
+ ...
+ 
+ Solución combinada: [cómo integrar soluciones]""",
+            "verify_each_step": True
+        }
+    }
+    
+    @classmethod
+    def build_prompt(cls, problem: str, problem_type: ProblemType, 
+                     include_verification: bool = True) -> str:
+        """Construye un prompt de CoT para un problema dado"""
+        template = cls.COT_TEMPLATES.get(problem_type)
+        if not template:
+            template = cls.COT_TEMPLATES[ProblemType.COMMON_SENSE]
+        
+        prompt = f"""{template['instruction']}
+
+---
+
+Problema: {problem}
+
+"""
+        
+        if include_verification and template.get("verify_each_step", False):
+            prompt += "\nNota: Verifica cada paso antes de continuar. "
+            prompt += "Si un paso falla, vuelve atrás y corrige."
+        
+        return prompt
+    
+    @classmethod
+    def parse_response(cls, response: str) -> list[ReasoningStep]:
+        """Parsea la respuesta del LLM en pasos de razonamiento"""
+        steps = []
+        
+        # Buscar patrones como "Paso 1:", "Step 1:", etc.
+        step_pattern = r'(?:Paso|Step)\s+(\d+)[:\s]+([^\n]+(?:\n(?!\s*(?:Paso|Step|Verificación|Resultado))[^\n]+)*)'
+        
+        matches = re.findall(step_pattern, response, re.IGNORECASE | re.MULTILINE)
+        
+        for i, (step_id, content) in enumerate(matches):
+            # Extraer pensamiento y datos
+            lines = content.strip().split('\n')
+            thought = lines[0] if lines else content
+            
+            # Buscar cálculos o verificaciones
+            calculation = None
+            verification = None
+            
+            for line in lines:
+                if 'cálculo' in line.lower() or 'calculation' in line.lower():
+                    calculation = line.split(':', 1)[-1].strip()
+                if 'verificación' in line.lower() or 'verification' in line.lower():
+                    verification = line.split(':', 1)[-1].strip()
+            
+            step = ReasoningStep(
+                step_id=step_id,
+                content=content,
+                thought=thought,
+                confidence=0.95 if verification else 0.8
+            )
+            steps.append(step)
+        
+        return steps
+
+
+class TreeOfThought:
+    """
+    Implementación de Tree-of-Thought reasoning.
+    Explora múltiples paths de razonamiento en paralelo.
+    """
+    
+    def __init__(self, llm_client=None, max_depth: int = 5, beam_width: int = 3):
+        self.llm_client = llm_client
+        self.max_depth = max_depth
+        self.beam_width = beam_width  # Cuántos paths mantener por nivel
+    
+    def solve(self, problem: str, problem_type: ProblemType) -> ReasoningResult:
+        """
+        Resuelve un problema usando Tree-of-Thought.
+        
+        Algoritmo:
+        1. Genera N initial paths desde el problema
+        2. Para cada path, genera siguientes pasos
+        3. Evalúa y poda paths menos prometedores
+        4. Repite hasta depth máxima o convergencia
+        """
+        # Inicializar con el problema como primer paso
+        initial_paths = [
+            ReasoningPath(
+                path_id=f"path_0_{i}",
+                steps=[ReasoningStep(
+                    step_id="0",
+                    content=problem,
+                    thought=f"Problema inicial: {problem}"
+                )]
+            )
+            for i in range(self.beam_width)
+        ]
+        
+        current_paths = initial_paths
+        
+        for depth in range(1, self.max_depth + 1):
+            # Expandir todos los paths
+            new_paths = []
+            
+            for path in current_paths:
+                if not path.is_viable:
+                    continue
+                
+                # Generar siguientes pasos para este path
+                expansions = self._expand_path(path, problem, problem_type)
+                new_paths.extend(expansions)
+            
+            # Evaluar y podar
+            scored_paths = [(p, self._evaluate_path(p)) for p in new_paths]
+            scored_paths.sort(key=lambda x: x[1], reverse=True)
+            
+            # Mantener solo los mejores beam_width paths
+            current_paths = [p for p, score in scored_paths[:self.beam_width]]
+            
+            # Marcar paths no viables
+            for path in current_paths:
+                path.score = self._evaluate_path(path)
+                if path.score < 0.3:
+                    path.is_viable = False
+            
+            # Si todos los paths convergen a la misma solución, podemos parar
+            if self._has_converged(current_paths):
+                break
+        
+        # Seleccionar el mejor path
+        best_path = max(current_paths, key=lambda p: p.score * p.confidence)
+        
+        return ReasoningResult(
+            method=ReasoningMethod.TREE_OF_THOUGHT,
+            problem_type=problem_type,
+            paths=current_paths,
+            final_answer=best_path.final_answer or self._extract_answer(best_path),
+            confidence=best_path.score * best_path.confidence,
+            reasoning_steps=len(best_path.steps)
+        )
+    
+    def _expand_path(self, path: ReasoningPath, problem: str, 
+                     problem_type: ProblemType) -> list[ReasoningPath]:
+        """Genera expansiones para un path usando el LLM"""
+        # En producción: llamar al LLM
+        # Por ahora, simular expansión
+        
+        # Simular 2-3 opciones por path
+        expansions = []
+        for i in range(2):
+            new_step = ReasoningStep(
+                step_id=f"{len(path.steps)}",
+                content=f"Razonamiento alternativo {i+1}",
+                thought=f"Explorando分支 {i+1}",
+                confidence=0.7 + (0.1 * i)
+            )
+            
+            new_path = ReasoningPath(
+                path_id=f"{path.path_id}_{i}",
+                steps=path.steps + [new_step],
+                is_viable=True
+            )
+            expansions.append(new_path)
+        
+        return expansions
+    
+    def _evaluate_path(self, path: ReasoningPath) -> float:
+        """
+        Evalúa la calidad de un path.
+        Factores: longitud, coherencia, confianza.
+        """
+        if not path.steps:
+            return 0.0
+        
+        # Score basado en número de pasos (más no siempre es mejor)
+        length_score = min(len(path.steps) / self.max_depth, 1.0)
+        
+        # Score basado en confianza
+        confidence_score = path.confidence
+        
+        # Score basado en coherencia (simulado)
+        coherence_score = 0.8  # En producción, usar embedding similarity
+        
+        return (length_score * 0.3) + (confidence_score * 0.5) + (coherence_score * 0.2)
+    
+    def _has_converged(self, paths: list[ReasoningPath]) -> bool:
+        """Verifica si los paths han convergido a la misma solución"""
+        if len(paths) < 2:
+            return False
+        
+        # En producción: comparar embeddings de respuestas finales
+        # Por ahora: heurístico simple
+        answers = [self._extract_answer(p) for p in paths if p.final_answer]
+        if len(set(answers)) == 1 and len(answers) > 0:
+            return True
+        
+        return False
+    
+    def _extract_answer(self, path: ReasoningPath) -> str:
+        """Extrae la respuesta final del path"""
+        if path.final_answer:
+            return path.final_answer
+        
+        # Buscar en el último paso
+        if path.steps:
+            last_step = path.steps[-1]
+            # Intentar extraer "Respuesta final" o similar
+            match = re.search(r'respuesta\s+final[:\s]+(.+)', last_step.content, re.I)
+            if match:
+                return match.group(1).strip()
+            return last_step.thought
+        
+        return ""
+
+
+class ReasoningVerifier:
+    """
+    Verifica la correctitud del razonamiento.
+    Implementa múltiples estrategias de verificación.
+    """
+    
+    @staticmethod
+    def verify_arithmetic(reasoning_steps: list[ReasoningStep]) -> bool:
+        """Verifica cálculos aritméticos paso a paso"""
+        for step in reasoning_steps:
+            # En producción: recalcular cada operación
+            # Por ahora, verificar que existe resultado
+            if 'cálculo' in step.content.lower():
+                # Simular verificación
+                step.is_verified = True
+                step.confidence = 0.95
+        return all(s.is_verified for s in reasoning_steps)
+    
+    @staticmethod
+    def verify_consistency(reasoning_steps: list[ReasoningStep]) -> bool:
+        """
+        Verifica consistencia lógica entre pasos.
+        Principio: la conclusión de un paso debe ser compatible con el siguiente.
+        """
+        if len(reasoning_steps) < 2:
+            return True
+        
+        # En producción: usar embeddings para comparar semanticamente
+        # Por ahora: heurístico simple
+        
+        for i in range(len(reasoning_steps) - 1):
+            # Verificar que hay una transición lógica
+            current = reasoning_steps[i].thought.lower()
+            next_step = reasoning_steps[i + 1].thought.lower()
+            
+            # Verbos que indican continuación
+            continuation_verbs = ['entonces', 'por lo tanto', 'así que', 'therefore', 'so', 'thus']
+            has_continuation = any(v in next_step for v in continuation_verbs)
+            
+            if not has_continuation:
+                # Posible inconsistencia
+                reasoning_steps[i + 1].confidence *= 0.9
+        
+        return True
+    
+    @staticmethod
+    def verify_with_alternative_method(result: ReasoningResult, 
+                                       verifier_llm=None) -> bool:
+        """
+        Verifica el resultado resolviendopor un método alternativo.
+        """
+        if not verifier_llm:
+            return True  # Skip si no hay LLM de verificación
+        
+        # Pedir al LLM que resuelva de forma independiente
+        # y compare resultados
+        verification_prompt = f"""Verifica si la siguiente respuesta es correcta.
+
+Problema: [original problem]
+Respuesta a verificar: {result.final_answer}
+
+Resuelve el problema de forma independiente y compara tu respuesta con la dada.
+¿Están de acuerdo? Responde solo Sí o No."""
+        
+        # En producción: llamar al verifier LLM
+        # Simular verificación
+        return result.confidence > 0.8
+
+
+class LLMReasoningFramework:
+    """
+    Framework unificado de razonamiento con LLMs.
+    Selecciona automáticamente el método apropiado.
+    """
+    
+    def __init__(self, llm_client=None):
+        self.llm_client = llm_client
+        self.cot = ChainOfThought()
+        self.tot = TreeOfThought(llm_client)
+        self.verifier = ReasoningVerifier()
+    
+    def solve(self, problem: str, method: ReasoningMethod = ReasoningMethod.CHAIN_OF_THOUGHT,
+              problem_type: Optional[ProblemType] = None) -> ReasoningResult:
+        """
+        Resuelve un problema usando el método especificado.
+        """
+        # Auto-detectar tipo de problema si no se especifica
+        if problem_type is None:
+            problem_type = self._detect_problem_type(problem)
+        
+        if method == ReasoningMethod.CHAIN_OF_THOUGHT:
+            return self._solve_cot(problem, problem_type)
+        elif method == ReasoningMethod.TREE_OF_THOUGHT:
+            return self._solve_tot(problem, problem_type)
+        elif method == ReasoningMethod.DIRECT:
+            return self._solve_direct(problem)
+        else:
+            return self._solve_cot(problem, problem_type)
+    
+    def _solve_cot(self, problem: str, problem_type: ProblemType) -> ReasoningResult:
+        """Resuelve usando Chain-of-Thought"""
+        prompt = self.cot.build_prompt(problem, problem_type)
+        
+        # En producción: llamar al LLM
+        # response = self.llm_client.generate(prompt)
+        # steps = self.cot.parse_response(response)
+        
+        # Simular respuesta
+        steps = [
+            ReasoningStep(step_id="1", content="Paso 1", thought="Analizando problema", confidence=0.9),
+            ReasoningStep(step_id="2", content="Paso 2", thought="Ejecutando razonamiento", confidence=0.85),
+        ]
+        
+        result = ReasoningResult(
+            method=ReasoningMethod.CHAIN_OF_THOUGHT,
+            problem_type=problem_type,
+            paths=[ReasoningPath(path_id="cot_path", steps=steps, final_answer="[respuesta simulada]")],
+            final_answer="[respuesta simulada]",
+            confidence=0.85,
+            reasoning_steps=len(steps)
+        )
+        
+        # Verificar
+        result.verification_passed = self.verifier.verify_consistency(steps)
+        
+        return result
+    
+    def _solve_tot(self, problem: str, problem_type: ProblemType) -> ReasoningResult:
+        """Resuelve usando Tree-of-Thought"""
+        return self.tot.solve(problem, problem_type)
+    
+    def _solve_direct(self, problem: str) -> ReasoningResult:
+        """Resuelve con generación directa (sin razonamiento estructurado)"""
+        # En producción: llamar al LLM directamente
+        # Solo para problemas triviales
+        return ReasoningResult(
+            method=ReasoningMethod.DIRECT,
+            problem_type=self._detect_problem_type(problem),
+            paths=[],
+            final_answer="[respuesta directa]",
+            confidence=0.5,
+            reasoning_steps=0
+        )
+    
+    @staticmethod
+    def _detect_problem_type(problem: str) -> ProblemType:
+        """Detecta el tipo de problema basado en keywords"""
+        problem_lower = problem.lower()
+        
+        if any(k in problem_lower for k in ['calcula', 'suma', 'multiplica', '+', '-', '*', '/']):
+            return ProblemType.ARITHMETIC
+        if any(k in problem_lower for k in ['si ', 'entonces', 'implies', 'logical', 'demuestra']):
+            return ProblemType.LOGIC
+        if any(k in problem_lower for k in ['plan', 'cómo', 'estrategia', 'pasos']):
+            return ProblemType.PLANNING
+        if any(k in problem_lower for k in ['descompón', 'divide', 'parte']):
+            return ProblemType.DECOMPOSITION
+        
+        return ProblemType.COMMON_SENSE
+
+
+# --- Ejemplo de Uso ---
+
+def example_reasoning():
+    """Ejemplo completo de razonamiento estructurado"""
+    
+    framework = LLMReasoningFramework()
+    
+    # Ejemplo 1: Problema aritmético (debería usar CoT)
+    math_problem = """María tiene 3 manzanas. 
+Juan le da 4 manzanas más. 
+Pedro le roba 2 manzanas.
+¿Cuántas manzanas tiene María ahora?"""
+    
+    result = framework.solve(math_problem, ReasoningMethod.CHAIN_OF_THOUGHT)
+    print(f"Problema: {math_problem}")
+    print(f"Método: {result.method.value}")
+    print(f"Pasos: {result.reasoning_steps}")
+    print(f"Respuesta: {result.final_answer}")
+    print(f"Verificado: {result.verification_passed}")
+    print()
+    
+    # Ejemplo 2: Problema de lógica (debería usar ToT para explorar alternativas)
+    logic_problem = """Tres cajas están etiquetadas incorrectamente:
+- Caja 1: "Manzanas"
+- Caja 2: "Naranjas"  
+- Caja 3: "Mezcla"
+
+Cada caja contiene un tipo de fruta, pero las etiquetas están todas equivocadas.
+Puedes sacar una fruta de una caja para descubrir qué hay dentro.
+¿Qué caja debes elegir para determinar el contenido de las tres con certeza?"""
+    
+    result = framework.solve(logic_problem, ReasoningMethod.TREE_OF_THOUGHT)
+    print(f"Problema: {logic_problem}")
+    print(f"Método: {result.method.value}")
+    print(f"Paths explorados: {len(result.paths)}")
+    print(f"Mejor path score: {result.paths[0].score if result.paths else 0}")
+    print(f"Respuesta: {result.final_answer}")
+
+
+if __name__ == "__main__":
+    example_reasoning()</code></pre>
+
+<h2>⚠️ Los 3 Errores Más Comunes en Reasoning con LLMs</h2>
+
+<h3>Error 1: No Usar Chain-of-Thought para Problemas Complejos</h3>
+
+<p>El error más común. La gente le pide al LLM que resuelva un problema complejo de un solo paso: "Resuelve X" y espera la respuesta correcta.</p>
+
+<p><strong>Problema</strong>: La probabilidad de error en generación directa es alta para problemas multi-step. Sin pasos explícitos, no hay forma de identificar dónde falló el razonamiento.</p>
+
+<p><strong>Matemática</strong>: Como vimos antes, con 5 pasos y 10% de error por paso:</p>
+
+<p><code>P(error total) = 1 - (0.9)^5 ≈ 41%</code></p>
+
+<p>Casi la mitad de las respuestas están wrong.</p>
+
+<p><strong>Solución</strong>: Siempre usar CoT para problemas que requieran más de 2 pasos lógicos:</p>
+
+<pre><code class="language-python"># ❌ MAL: Generación directa para problema complejo
+problem = "Si un tren sale a 60km/h y otro a 80km/h..."
+response = llm.generate(f"Resuelve: {problem}")
+
+# ✅ BIEN: Chain-of-thought
+cot = ChainOfThought()
+prompt = cot.build_prompt(problem, ProblemType.ARITHMETIC)
+response = llm.generate(prompt)
+steps = cot.parse_response(response)</code></pre>
+
+<h3>Error 2: No Verificar los Outputs del Reasoning</h3>
+
+<p>El segundo error: aceptan la primera respuesta del LLM sin verificar. Los LLMs "alucinan" — especialmente en matemática y lógica.</p>
+
+<p><strong>Problema</strong>: Sin verificación, no puedes distinguir una respuesta correcta de una que suena plausible pero está mal. Y las respuestas incorrectas a menudo suenan igual de seguras que las correctas.</p>
+
+<p><strong>Solución</strong>: Implementar verificación estructurada:</p>
+
+<pre><code class="language-python"># ❌ MAL: Acceptar respuesta sin verificar
+result = framework.solve(problem)
+print(result.final_answer)  # Podría estar wrong
+
+# ✅ BIEN: Verificar antes de aceptar
+result = framework.solve(problem)
+if not result.verification_passed:
+    print("⚠️ Verificación falló, reintentando...")
+    result = framework.solve(problem, method=ReasoningMethod.TREE_OF_THOUGHT)
+
+# Verificación adicional: resolver de forma independiente
+if result.confidence < 0.8:
+    # Llamar a un segundo LLM para verificar
+    is_correct = ReasoningVerifier.verify_with_alternative_method(result, verifier_llm)
+    if not is_correct:
+        print("❌ Respuesta cuestionable, requiere revisión manual")</code></pre>
+
+<h3>Error 3: Aplicar Chain-of-Thought a Problemas que No lo Necesitan</h3>
+
+<p>El tercer error, menos común pero igualmente problemático: usar CoT para todo, incluyendo problemas triviales. Esto desperdicia tokens y puede empeorar los resultados.</p>
+
+<p><strong>Problema</strong>: CoT introduce "ruido" en problemas simples. El modelo gasta energía siguiendo el template de razonamiento en lugar de simplemente responder.</p>
+
+<p><strong>Matemática</strong>: El costo de CoT es:</p>
+
+<p><code>Costo_CoT = Costo_directo × (1 + overhead_tokens/step × num_steps)</code></p>
+
+<p>Para problemas de 1 paso, el overhead es 100-200% del costo base. Para problemas de 10 pasos, el overhead es solo 10-20%.</p>
+
+<p><strong>Solución</strong>: Clasificar el problema primero y aplicar CoT solo cuando sea necesario:</p>
+
+<pre><code class="language-python">def should_use_cot(problem: str) -> bool:
+    """Decide si usar CoT basado en la complejidad del problema"""
+    # Señales de problema simple (respuesta directa)
+    simple_patterns = [
+        r'^qué es',
+        r'^quién es',
+        r'^define',
+        r'^cuando',
+        r'^dónde',
+    ]
+    
+    # Señales de problema complejo (CoT necesario)
+    complex_patterns = [
+        r'pasos para',
+        r'calcula',
+        r'si\s+.+entonces',
+        r'porque|por qué',
+        r'muestra cómo',
+        r'resuelve',
+    ]
+    
+    problem_lower = problem.lower()
+    
+    for pattern in simple_patterns:
+        if re.match(pattern, problem_lower):
+            return False
+    
+    for pattern in complex_patterns:
+        if re.search(pattern, problem_lower):
+            return True
+    
+    # Default: heuristic basado en longitud y estructura
+    words = problem.split()
+    has_numbers = any(c.isdigit() for c in problem)
+    has_operators = any(op in problem for op in ['+', '-', '*', '/', '%'])
+    
+    # Si tiene números y operadores, probablemente necesita CoT
+    if has_numbers and has_operators:
+        return True
+    
+    # Si tiene más de 3 oraciones, probablemente necesita CoT
+    sentences = problem.count('.')
+    if sentences >= 3:
+        return True
+    
+    return False
+
+# Uso
+problem = "¿Qué es Python?"
+if should_use_cot(problem):
+    result = framework.solve(problem, ReasoningMethod.CHAIN_OF_THOUGHT)
+else:
+    result = framework.solve(problem, ReasoningMethod.DIRECT)</code></pre>
+
+<h2>📊 Resumen y Estrategia Final</h2>
+
+<p>Para hacer reasoning con LLMs bien, la fórmula es:</p>
+
+<ol>
+<li><strong>Clasificar primero</strong>: ¿Es problema simple o complejo? ¿De qué tipo?</li>
+<li><strong>Elegir el método apropiado</strong>: Directo para trivial, CoT para multi-step, ToT para exploratorio.</li>
+<li><strong>Verificar siempre</strong>: No confiar en una sola pasada. Usar métodos de verificación.</li>
+<li><strong>Iterar si es necesario</strong>: Si la confianza es baja, reintentar con más estructura.</li>
+</ol>
+
+<p>El 10% que lo hace bien sabe que el reasoning no es magia — es <strong>ingeniería estructurada</strong>. Saben cuándo usar papel (CoT) y cuándo pueden hacerlo en la mente (directo). Y sobre todo, siempre verifican.</p>
+
 <hr>
-<h2>🚀 Comparacion</h2>
-<p>Adapters son similares a LoRA pero con arquitectura diferente. Ambos permiten efficient fine-tuning.</p>
-<hr>
-<h2>⚠️ Position</h2>
-<p>La posicion de adapters afecta performance. Tipico es uno por cada transformer layer.</p>
-<hr>
-<p><em>Eso es todo! Nos vemos en el Dia 315.</em></p>
+
+<p><em>Eso es todo, parcero. Mañana continuamos con más contenido de #365DaysOfAI. Recuerden: pensar mejor es cuestión de método, no de más inteligencia. Nos vemos.</em></p>
   </article>
 
   <script>
