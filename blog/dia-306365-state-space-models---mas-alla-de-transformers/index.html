@@ -118,45 +118,506 @@ nav {
   </header>
 
   <article class="article-body">
-    <h1>State Space Models - Mas Alla De Transformers</h1>
-<p>Hagale pues, parcero. Hoy es el Dia 306 y hablamos de State Space Models, la alternativa a transformers que esta revolucionando. Dejala el cafe.</p>
+<h1>LLM Text Matching — El 80% Lo Hace Mal y el 20% Lo Hace Bien</h1>
+<p>Hagale pues, parcero. Aquí en Colombia tenemos muchas formas de decir lo mismo: "¡Hágale!", "¡Hagámosle!", "¡Vamos pa'!", "¡Dale!". Si un modelo no entiende que todas significan lo mismo, está perdido. Eso es exactamente el problema del text matching: el 80% de las implementaciones usan técnicas que no capturan la semántica real. Hoy Día 306 vamos a cambiar eso — con matemáticas, código y el estilo paisa que no pela.</p>
 <hr>
-<h2>🎯 Que Son State Space Models?</h2>
-<p>SSMs como Mamba son una nueva arquitectura que modela secuencias de manera eficiente con estado interno. Compiten con transformers en largas secuencias.</p>
-<h3>Ventajas:</h3>
+<h2>🎯 Por Que Text Matching Es Crucial?</h2>
+<p>Text matching es el corazón de muchas aplicaciones:</p>
 <ul>
-<li><strong>Eficiencia lineal</strong>: O(n) en lugar de O(n²)</li>
-<li><strong>Long contexts</strong>: Maneja secuencias muy largas</li>
-<li><strong>Fast inference</strong>: Sin attention bottleneck</li>
+<li><strong>Buscadores semánticos</strong>: "bolso de mano" debe encontrar "bolsa de viaje"</li>
+<li><strong> deduplicación</strong>: Detectar textos duplicados aunque usen palabras distintas</li>
+<li><strong>Respuesta a preguntas</strong>: Matchear preguntas de usuarios con respuestas en la base de conocimiento</li>
+<li><strong>PLagiarism detection</strong>: Encontrar textos similares aunque estén parafraseados</li>
 </ul>
+<p>El problema: el 80% usa coincidencia léxica (keywords) cuando debería usar similitud semántica.</p>
 <hr>
-<h2>📐 SSM Basico</h2>
-<pre><code class="language-python">import torch
-import torch.nn as nn
+<h2>📐 La Matemática Del Text Matching</h2>
+<h3>Métricas de Similitud</h3>
+<p>Dados dos vectores de embedding $\mathbf{a}$ y $\mathbf{b}$, hay varias formas de medir similitud:</p>
+<p><strong>Cosine Similarity</strong>:</p>
+<p>$$\text{cos}(\mathbf{a}, \mathbf{b}) = \frac{\mathbf{a} \cdot \mathbf{b}}{|\mathbf{a}| \cdot |\mathbf{b}|} = \frac{\sum_{i=1}^{n} a_i b_i}{\sqrt{\sum_{i=1}^{n} a_i^2} \cdot \sqrt{\sum_{i=1}^{n} b_i^2}}$$</p>
+<p><strong>Dot Product</strong> (cuando los vectores ya están normalizados):</p>
+<p>$$\text{dot}(\mathbf{a}, \mathbf{b}) = \mathbf{a} \cdot \mathbf{b}$$</p>
+<p><strong>Euclidean Distance</strong>:</p>
+<p>$$d(\mathbf{a}, \mathbf{b}) = |\mathbf{a} - \mathbf{b}| = \sqrt{\sum_{i=1}^{n} (a_i - b_i)^2}$$</p>
+<p>Para embeddings de LLMs, cosine similarity es generalmente la mejor opción porque es invariante a la escala.</p>
+<h3>Matriz de Similitud</h3>
+<p>Para matching entre query y múltiples candidates, construimos una matriz:</p>
+<p>$$S_{ij} = \text{sim}(\mathbf{q}_i, \mathbf{c}_j)$$</p>
+<hr>
+<h2>🔬 Approach 1: Embeddings-Based Matching</h2>
+<p>La aproximación clásica: usar sentence embeddings y medir similitud coseno.</p>
+<pre><code class="language-python">from sentence_transformers import SentenceTransformer
+import numpy as np
+from sklearn.metrics.pairwise import cosine_similarity
 
-class SSMBlock(nn.Module):
-    def __init__(self, d_model):
-        super().__init__()
-        self.A = nn.Parameter(torch.randn(d_model, d_model))
-        self.B = nn.Parameter(torch.randn(d_model, d_model))
-        self.C = nn.Parameter(torch.randn(d_model, d_model))
-        self.D = nn.Parameter(torch.zeros(d_model))
+class EmbeddingMatcher:
+    """
+    Text matching basado en sentence embeddings.
+    Usa sentence-transformers para generar embeddings densos.
+    """
     
-    def forward(self, x):
-        # Discretizacion
-        dt = torch.sigmoid(self.D)
-        # SSM update
-        h = torch.tanh(x @ self.A + x @ self.B)
-        y = h @ self.C
-        return y + x * dt</code></pre>
+    def __init__(self, model_name: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"):
+        self.model = SentenceTransformer(model_name)
+    
+    def encode(self, texts: list[str]) -> np.ndarray:
+        """Genera embeddings para una lista de textos."""
+        return self.model.encode(texts, convert_to_tensor=True).cpu().numpy()
+    
+    def compute_similarity(self, query: str, candidates: list[str]) -> list[dict]:
+        """
+        Calcula similitud entre query y candidates.
+        Retorna lista ordenada por similitud.
+        """
+        # Encode
+        query_emb = self.encode([query])
+        candidate_emb = self.encode(candidates)
+        
+        # Cosine similarity
+        similarities = cosine_similarity(query_emb, candidate_emb)[0]
+        
+        # Ordenar por similitud
+        results = sorted(
+            zip(candidates, similarities),
+            key=lambda x: x[1],
+            reverse=True
+        )
+        
+        return [
+            {"text": text, "similarity": float(sim)} 
+            for text, sim in results
+        ]
+    
+    def compute_similarity_matrix(self, texts_a: list[str], texts_b: list[str]) -> np.ndarray:
+        """
+        Computa matriz de similitud entre dos listas de textos.
+        Útil para retrieval y deduplicación.
+        """
+        emb_a = self.encode(texts_a)
+        emb_b = self.encode(texts_b)
+        return cosine_similarity(emb_a, emb_b)
+
+# Ejemplo
+matcher = EmbeddingMatcher()
+
+query = "¿Cómo hago para devolver un producto?"
+candidates = [
+    "Proceso de devolución de artículos",
+    "Quiero cambiar mi pedido",
+    "El clima hoy en Bogotá",
+    "Política de reembolso y cambios",
+    "Cómo cancelar una orden"
+]
+
+results = matcher.compute_similarity(query, candidates)
+print(f"Query: {query}\n")
+for r in results:
+    print(f"Similitud: {r['similarity']:.3f} | {r['text']}")</code></pre>
 <hr>
-<h2>🚀 Mamba</h2>
-<p>Mamba es un SSM selectivo que aprende que ignorar. Logra calidad de transformer con eficiencia lineal.</p>
+<h2>🔬 Approach 2: LLM-Based Matching (Cross-Encoder)</h2>
+<p>Para mayor precisión, cross-encoders consideran la interacción entre query y documento jointly.</p>
+<pre><code class="language-python">from transformers import AutoTokenizer, AutoModelForSequenceClassification
+import torch
+import torch.nn.functional as F
+
+class CrossEncoderMatcher:
+    """
+    Text matching usando Cross-Encoder.
+    Considera query y documento jointly para mayor precisión.
+    """
+    
+    def __init__(self, model_name: str = "cross-encoder/ms-marco-MiniLM-L-12-v2"):
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        self.model = AutoModelForSequenceClassification.from_pretrained(model_name)
+        self.model.eval()
+    
+    def predict(self, query: str, documents: list[str]) -> list[dict]:
+        """
+        Predice scores de relevancia entre query y documentos.
+        """
+        # Preparar pares [query, doc]
+        pairs = [[query, doc] for doc in documents]
+        
+        # Tokenizar
+        inputs = self.tokenizer(
+            pairs,
+            padding=True,
+            truncation=True,
+            max_length=512,
+            return_tensors="pt"
+        )
+        
+        # Predicción
+        with torch.no_grad():
+            outputs = self.model(**inputs)
+            scores = outputs.logits.squeeze(-1)
+            probs = torch.sigmoid(scores)
+        
+        # Ordenar por score
+        results = sorted(
+            zip(documents, probs.numpy(), scores.numpy()),
+            key=lambda x: x[1],
+            reverse=True
+        )
+        
+        return [
+            {
+                "text": doc,
+                "relevance_score": float(prob),
+                "raw_score": float(score)
+            }
+            for doc, prob, score in results
+        ]
+
+class LLMPoweredMatcher:
+    """
+    Combinación de embeddings + LLM para text matching.
+    1. Retrieval inicial con embeddings (rápido)
+    2. Re-ranking con cross-encoder (preciso)
+    3. Verificación opcional con LLM
+    """
+    
+    def __init__(self):
+        self.embedding_matcher = EmbeddingMatcher()
+        self.cross_encoder = CrossEncoderMatcher()
+    
+    def match(self, query: str, candidates: list[str], top_k: int = 5, use_llm_verification: bool = False) -> list[dict]:
+        """
+        Pipeline completo de matching.
+        """
+        # Paso 1: Retrieval rápido con embeddings
+        initial_results = self.embedding_matcher.compute_similarity(query, candidates)
+        top_candidates = [r["text"] for r in initial_results[:top_k * 2]]
+        
+        # Paso 2: Re-ranking con cross-encoder
+        reranked = self.cross_encoder.predict(query, top_candidates)
+        
+        # Paso 3: Verificación opcional con LLM
+        if use_llm_verification:
+            reranked = self._llm_verify(query, reranked)
+        
+        return reranked[:top_k]
+    
+    def _llm_verify(self, query: str, results: list[dict]) -> list[dict]:
+        """
+        Usa LLM para verificar si el matching tiene sentido.
+        """
+        from transformers import pipeline
+        
+        verifier = pipeline(
+            "text-generation",
+            model="google/flan-t5-small",
+            max_length=100
+        )
+        
+        verified = []
+        for r in results:
+            prompt = f"Is '{r['text']}' relevant to '{query}'? Answer yes or no."
+            answer = verifier(prompt)[0]["generated_text"].lower()
+            
+            if "yes" in answer or "relevant" in answer:
+                r["llm_verified"] = True
+                verified.append(r)
+            else:
+                r["llm_verified"] = False
+        
+        return verified
+
+# Ejemplo completo
+matcher = LLMPoweredMatcher()
+query = "cómo reclamar un reembolso"
+documents = [
+    "Para devolver un producto, visite nuestra tienda con el recibo",
+    "Reembolso en 5-7 días hábiles",
+    "El presidente anunció nuevas medidas económicas",
+    "Pasos para procesar una devolución",
+    "Cambios y devoluciones tienen costo de envío",
+    "Mi pedido llegó dañado qué hago"
+]
+
+results = matcher.match(query, documents, top_k=3)
+print(f"Query: {query}\n")
+for r in results:
+    print(f"Score: {r['relevance_score']:.3f} | {r['text']}")</code></pre>
 <hr>
-<h2>⚠️ Estado Del Arte</h2>
-<p>SSMs estan evolucionando rapidamente. Jamba,amba, y otros hybrids muestran promise.</p>
+<h2>🔄 Re-Ranking Strategies</h2>
+<p>El re-ranking es crucial porque los embeddings tienen limitaciones. Aquí las estrategias principales:</p>
+<pre><code class="language-python">import numpy as np
+from typing import Callable
+
+class Reranker:
+    """
+    Framework para diferentes estrategias de re-ranking.
+    """
+    
+    @staticmethod
+    def reciprocal_rank(candidate_scores: list[float], k: int = 60) -> float:
+        """
+        Reciprocal Rank Fusion (RRF).
+        Combina múltiples rankings en uno solo.
+        
+        Formula: RRF(score) = Σ 1/(k + rank_i)
+        """
+        return sum(1.0 / (k + rank) for rank, _ in enumerate(candidate_scores, 1))
+    
+    @staticmethod
+    def weighted_rrf(
+        candidate_scores: list[tuple[str, float]], 
+        weights: list[float],
+        k: int = 60
+    ) -> float:
+        """
+        RRF ponderado — combina scores de múltiples retrievers.
+        """
+        return sum(
+            w * (1.0 / (k + rank)) 
+            for w, (_, score) in zip(weights, candidate_scores)
+        )
+    
+    @staticmethod
+    def score_normalization(scores: list[float], method: str = "min-max") -> list[float]:
+        """
+        Normaliza scores a [0, 1].
+        """
+        if method == "min-max":
+            min_s, max_s = min(scores), max(scores)
+            if max_s == min_s:
+                return [0.5] * len(scores)
+            return [(s - min_s) / (max_s - min_s) for s in scores]
+        elif method == "z-score":
+            mean = np.mean(scores)
+            std = np.std(scores)
+            if std == 0:
+                return [0.0] * len(scores)
+            return [(s - mean) / std for s in scores]
+        elif method == "sigmoid":
+            return [1.0 / (1.0 + np.exp(-s)) for s in scores]
+        
+        return scores
+
+class HybridReranker:
+    """
+    Combina múltiples estrategias de retrieval con ponderación.
+    """
+    
+    def __init__(self):
+        self.embedding_matcher = EmbeddingMatcher()
+        self.cross_encoder = CrossEncoderMatcher()
+    
+    def hybrid_search(
+        self, 
+        query: str, 
+        candidates: list[str],
+        weights: dict = {"embedding": 0.3, "cross_encoder": 0.7}
+    ) -> list[dict]:
+        """
+        Búsqueda híbrida: combina embedding + cross-encoder.
+        """
+        # Embedding scores
+        emb_results = self.embedding_matcher.compute_similarity(query, candidates)
+        emb_scores = {r["text"]: r["similarity"] for r in emb_results}
+        
+        # Cross-encoder scores
+        ce_results = self.cross_encoder.predict(query, candidates)
+        ce_scores = {r["text"]: r["relevance_score"] for r in ce_results}
+        
+        # Normalizar scores
+        emb_vals = list(emb_scores.values())
+        ce_vals = list(ce_scores.values())
+        
+        emb_norm = Reranker.score_normalization(emb_vals, "min-max")
+        ce_norm = Reranker.score_normalization(ce_vals, "min-max")
+        
+        emb_scores_norm = dict(zip(emb_scores.keys(), emb_norm))
+        ce_scores_norm = dict(zip(ce_scores.keys(), ce_norm))
+        
+        # Combinar con pesos
+        combined_scores = {}
+        for text in emb_scores:
+            combined = (
+                weights["embedding"] * emb_scores_norm.get(text, 0) +
+                weights["cross_encoder"] * ce_scores_norm.get(text, 0)
+            )
+            combined_scores[text] = combined
+        
+        # Ordenar
+        results = sorted(
+            combined_scores.items(),
+            key=lambda x: x[1],
+            reverse=True
+        )
+        
+        return [
+            {"text": text, "combined_score": float(score)}
+            for text, score in results
+        ]
+
+# Ejemplo
+reranker = HybridReranker()
+results = reranker.hybrid_search(
+    query="cómo hacer un pedido",
+    candidates=[
+        "Proceso para realizar una compra",
+        "El clima",
+        "Pasos de checkout",
+        "Devoluciones",
+        "Crear cuenta nueva"
+    ],
+    weights={"embedding": 0.4, "cross_encoder": 0.6}
+)
+print("Hybrid Search Results:")
+for r in results:
+    print(f"  {r['combined_score']:.3f} | {r['text']}")</code></pre>
 <hr>
-<p><em>Eso es todo! Nos vemos en el Dia 307.</em></p>
+<h2>📊 Métricas de Evaluación</h2>
+<p>No basta con decir "funciona bien". Hay que medirlo:</p>
+<ul>
+<li><strong>MRR (Mean Reciprocal Rank)</strong>: Posición del primer resultado relevante</li>
+<li><strong>NDCG (Normalized Discounted Cumulative Gain)</strong>: Calidad del ranking completo</li>
+<li><strong>Recall@K</strong>: ¿Cuántos relevantes encontré en los top K?</li>
+<li><strong>Precision@K</strong>: De los top K, cuántos son relevantes</li>
+<li><strong>MAP (Mean Average Precision)</strong>: Precisión promedia en todos los relevantes</li>
+</ul>
+<pre><code class="language-python">from sklearn.metrics import ndcg_score
+import numpy as np
+
+def evaluate_matching(
+    query_results: list[list[tuple[str, bool]]],  # [(text, relevant), ...] por query
+    k_values: list[int] = [1, 3, 5, 10]
+) -> dict:
+    """
+    Evalúa sistema de matching con múltiples métricas.
+    
+    Args:
+        query_results: Lista de resultados por query
+                       Cada resultado es lista de (text, relevant)
+        k_values: Valores de K para Precision@K y Recall@K
+    """
+    metrics = {
+        "mrr": [],
+        "ndcg": [],
+        "precision_at_k": {k: [] for k in k_values},
+        "recall_at_k": {k: [] for k in k_values},
+    }
+    
+    for results in query_results:
+        # Calcular relevancias
+        relevances = [1 if rel else 0 for _, rel in results]
+        scores = list(range(len(results), 0, -1))  # Scores decrecientes por posición
+        
+        # MRR
+        first_relevant = next((i+1 for i, (_, rel) in enumerate(results) if rel), None)
+        if first_relevant:
+            metrics["mrr"].append(1.0 / first_relevant)
+        else:
+            metrics["mrr"].append(0.0)
+        
+        # NDCG
+        if len(results) > 1:
+            ndcg = ndcg_score([relevances], [scores], k=len(results))
+            metrics["ndcg"].append(ndcg)
+        
+        # Precision@K y Recall@K
+        relevant_count = sum(relevances)
+        for k in k_values:
+            top_k_rel = sum(relevances[:k])
+            precision = top_k_rel / k if k > 0 else 0
+            recall = top_k_rel / relevant_count if relevant_count > 0 else 0
+            
+            metrics["precision_at_k"][k].append(precision)
+            metrics["recall_at_k"][k].append(recall)
+    
+    # Promediar
+    final_metrics = {
+        "MRR": np.mean(metrics["mrr"]),
+        "NDCG": np.mean(metrics["ndcg"]) if metrics["ndcg"] else 0,
+    }
+    
+    for k in k_values:
+        final_metrics[f"Precision@{k}"] = np.mean(metrics["precision_at_k"][k])
+        final_metrics[f"Recall@{k}"] = np.mean(metrics["recall_at_k"][k])
+    
+    return final_metrics
+
+# Ejemplo
+sample_results = [
+    [("doc1", True), ("doc2", True), ("doc3", False), ("doc4", True), ("doc5", False)],
+    [("doc6", False), ("doc7", True), ("doc8", True), ("doc9", True), ("doc10", False)],
+]
+
+metrics = evaluate_matching(sample_results)
+print("=" * 50)
+print("EVALUACIÓN DE TEXT MATCHING")
+print("=" * 50)
+for metric, value in metrics.items():
+    print(f"{metric}: {value:.3f}")</code></pre>
+<hr>
+<h2>⚠️ Los 3 Errores Más Comunes</h2>
+<h3>❌ Error 1: Usar Matching Léxico Cuando Semantic Es Mejor</h3>
+<p><strong>El problema</strong>: Buscar por palabras exactas. "Solicitar reembolso" no encuentra "pedir devolución" aunque significan lo mismo.</p>
+<p><strong>La solución</strong>: Usa embeddings semánticos. Palabras distintas, significado similar = alta similitud.</p>
+<pre><code class="language-python"># MAL: TF-IDF o BM25 (matching léxico)
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+
+def lexical_match(query, documents):
+    vectorizer = TfidfVectorizer()
+    tfidf = vectorizer.fit_transform([query] + documents)
+    return cosine_similarity(tfidf[0:1], tfidf[1:])[0]
+
+# "solicitar reembolso" vs "pedir devolución" = 0 (léxicamente diferentes)
+
+# BIEN: Embeddings semánticos
+def semantic_match(query, documents):
+    matcher = EmbeddingMatcher()
+    return matcher.compute_similarity(query, documents)
+
+# "solicitar reembolso" vs "pedir devolución" = ~0.85 (semánticamente similares)</code></pre>
+<h3>❌ Error 2: No Usar Re-Ranking</h3>
+<p><strong>El problema</strong>: Los embeddings capturan generalidad pero pierden precisión en detalles. Un buen embedding retrieval tiene recall alto pero precisión media.</p>
+<p><strong>La solución</strong>: Pipeline de dos etapas — retrieval rápido con embeddings + re-ranking fino con cross-encoder o LLM.</p>
+<pre><code class="language-python"># MAL: Solo embeddings
+results = matcher.embedding_matcher.compute_similarity(query, candidates)
+
+# BIEN: Hybrid con re-ranking
+results = matcher.hybrid_search(
+    query, 
+    candidates,
+    weights={"embedding": 0.3, "cross_encoder": 0.7}
+)
+# El re-ranking refina los top-k del embedding matcher</code></pre>
+<h3>❌ Error 3: No Evaluar Con Métricas Apropiadas</h3>
+<p><strong>El problema</strong>: "El modelo funciona bien" no es una métrica. Accuracy en matching es casi inútil si no mides ranking.</p>
+<p><strong>La solución</strong>: Usa MRR, NDCG, Precision@K para ranking. Accuracy solo si es clasificación directa.</p>
+<pre><code class="language-python"># MAL: Solo accuracy
+from sklearn.metrics import accuracy_score
+accuracy_score(labels, predictions)  # Inadecuado para ranking
+
+# BIEN: Métricas de ranking
+metrics = evaluate_matching(query_results)
+print(f"MRR: {metrics['MRR']:.3f}")  # Mean Reciprocal Rank
+print(f"NDCG: {metrics['NDCG']:.3f}")  # Normalized DCG
+print(f"Precision@5: {metrics['Precision@5']:.3f}")  # Precisión en top-5</code></pre>
+<hr>
+<h2>📈 Resumen y Cierre</h2>
+<p>Hoy aprendimos que el text matching va mucho más allá de buscar palabras. Recapitulemos:</p>
+<ul>
+<li><strong>Embeddings</strong>: Rápidos, buenos para retrieval en escala</li>
+<li><strong>Cross-encoders</strong>: Más precisos, consideran query+document jointly</li>
+<li><strong>Re-ranking</strong>: Combina lo mejor de ambos mundos</li>
+<li><strong>Métricas</strong>: MRR, NDCG, Precision@K para ranking; no accuracy</li>
+</ul>
+<p><strong>Los 3 errores a evitar</strong>:</p>
+<ol>
+<li>No uses matching léxico cuando puedes usar semántico</li>
+<li>Siempre incluye re-ranking en tu pipeline</li>
+<li>Mide con métricas de ranking, no de clasificación</li>
+</ol>
+<p>El 80% lo hace mal, parcero — pero tú ahora estás en el 20% que lo hace bien. Y lo mejor es que estos principios aplican desde chatbots hasta sistemas de búsqueda enterprise.</p>
+<p>Algo que siempre olvido: los embeddings no son iguales para todos los dominios. Un embedding entrenado en Wikipedia puede no funcionar bien para texto médico o legal. Siempre haz fine-tuning o usa embeddings específicos del dominio cuando puedas.</p>
+<p>Mañana en el Día 307 hablamos de Flash Attention — la técnica que hace que todo sea más rápido. Va a estar interessante.</p>
+<hr>
+<p><em>¿Has tenido problemas con text matching en tus proyectos? ¿Prefieres embeddings o cross-encoders? Cuéntame en los comentarios. #365DaysOfAI #NLP #TextMatching</em></p>
   </article>
 
   <script>
