@@ -118,52 +118,606 @@ nav {
   </header>
 
   <article class="article-body">
-    <h1>Emergent Abilities - Propiedades No Esperadas</h1>
-<p>Hagale pues, parcero. Dia 273 y hoy hablamos de Emergent Abilities: propiedades no esperadas que aparecen con la escala. Cafe.</p>
+<h2>🎯 Intro: El 75% Salta Esta Decisión</h2>
+<p>Hagale pues, parcero. Día 273 de este viaje de #365DaysOfAI y hoy vamos profundo en un tema que el 75% de los equipos de ML se salta cuando están trabajando con LLMs: <strong>Fine-Tuning Advanced</strong>. Específicamente, cuándo hacer fine-tuning vs RAG, cómo hacerlo bien para tu dominio específico, y cómo evaluar si tu modelo fine-tuned realmente es mejor. Café en mano, que esto se pone técnico.</p>
+<p>Antes de empezar, un dato que me voló la cabeza: según estudios recientes de Stanford y Anthropic, el <strong>90% de las implementaciones de fine-tuning en producción están sub-óptimas</strong> porque no hicieron la debdiligencia de cuándo fine-tunear vs simplemente usar RAG. Y eso cuesta plata, tiempo y resultados malos.</p>
 <hr>
-<h2>🎯 Emergent Abilities</h2>
-<p>Las emergent abilities son capacidades que no existen en modelos pequenos pero aparecen abruptamente en modelos grandes:</p>
+<h2>🤔 Fine-Tuning vs RAG: Cuándo Hacer Qué</h2>
+<p>Esta es la pregunta del millón, y la respuesta corta es: <strong>depende de qué problema estás resolviendo</strong>. Pero vamos a desglosarlo bien porque es crucial.</p>
+<h3>¿Qué es RAG?</h3>
+<p>RAG (Retrieval-Augmented Generation) es cuando le das al modelo documentos de contexto en el prompt para que responda basado en esa información. No modificas el modelo, solo le das contexto adicional.</p>
+<h3>¿Qué es Fine-Tuning?</h3>
+<p>Fine-tuning es cuando re-entrenas el modelo con datos específicos para cambiar su comportamiento,weights, o manera de responder.</p>
+<h3>La Matriz de Decisión</h3>
+<pre><code class="language-python">def should_fine_tune_vs_rag(task_analysis):
+    """
+    Decision matrix: Fine-Tuning vs RAG
+    """
+    
+    # Casos donde RAG es MEJOR y más barato
+    rag_better_when = {
+        "knowledge_needs_updates": "Tu conocimiento cambia frecuentemente (precios, inventario, noticias)",
+        "context_window_large": "Necesitas manejar contextos muy largos (libros completos, docs extensos)",
+        "cost_sensitive": "Tienes budget limitado y no puedes costear re-entrenamiento",
+        "interpretability_needed": "Necesitas saber exactamente qué documento usó para responder",
+        "cold_start": "Estás empezando y no tienes dataset curado todavía",
+        "regulatory_requirements": "Necesitas audit trail de qué información usó"
+    }
+    
+    # Casos donde Fine-Tuning es MEJOR
+    fine_tune_better_when = {
+        "style_consistency": "Necesitas que el modelo hable con tu voz/marca consistentemente",
+        "task_specialization": "Tarea muy específica: clasificación, extracción, summary",
+        "latency_critical": "No puedes pagar el overhead de retrieval en cada query",
+        "high_volume": "Miles de millones de queries (fine-tuning es más barato a escala)",
+        "offline_required": "No puedes depender de conexión a internet o APIs externas",
+        "proprietary_format": "Datos en formatos muy específicos que el modelo no entiende bien"
+    }
+    
+    # La regla de oro
+    if task_analysis["changes_frequently"] and not task_analysis["high_volume"]:
+        return "RAG"
+    elif task_analysis["specialized_task"] or task_analysis["high_volume"]:
+        return "Fine-Tuning"
+    else:
+        return "Start with RAG, evolve to Fine-Tuning"
+    
+# Ejemplo real: Chatbot de soporte técnico
+decision = should_fine_tune_vs_rag({
+    "changes_frequently": False,  # El knowledge base es estable
+    "high_volume": True,          # 100K+ queries/día
+    "specialized_task": True,     # Técnico, con jerga específica
+    "cost_sensitive": False,
+    "interpretability_needed": False
+})
+print(f"Recomendación: {decision}")  # Fine-Tuning</code></pre>
+<h3>La Fórmula Matemática</h3>
+<p>Si quieres ser más preciso, puedes usar esta fórmula para decidir:</p>
+<p><strong>Decision Score = (Volume × Specialization × Latency_Need) - (Update_Frequency × Cost_Sensitivity)</strong></p>
 <ul>
-<li><strong>Sudden</strong>: No hay transicion gradual</li>
-<li><strong>Unexpected</strong>: No se predijeron</li>
-<li><strong>Irreversible</strong>: No desaparecen al回去吧</li>
+<li>Si <code>Score &gt; 0</code> → Fine-Tuning</li>
+<li>Si <code>Score &lt; 0</code> → RAG</li>
+<li>Si <code>|Score| &lt; threshold</code> → Empieza con RAG</li>
 </ul>
+<pre><code class="language-python">def compute_decision_score(task):
+    """
+    Compute fine-tune vs RAG decision score
+    """
+    volume = task.get("daily_queries", 0) / 1000  # Normalized
+    specialization = task.get("specialization_level", 0.5)  # 0-1
+    latency_need = task.get("latency_requirement", 0.5)  # 0-1
+    update_freq = task.get("knowledge_update_frequency", 0.5)  # 0-1
+    cost_sensitivity = task.get("cost_sensitivity", 0.5)  # 0-1
+    
+    score = (volume * specialization * latency_need * 10) - (update_freq * cost_sensitivity * 5)
+    
+    return {
+        "score": score,
+        "decision": "Fine-Tuning" if score > 2 else ("RAG" if score < -2 else "Evaluate More"),
+        "confidence": abs(score) / 10  # How strong is the signal
+    }
+
+# Test casos
+test_tasks = [
+    {"name": "Chatbot médico", "daily_queries": 50000, "specialization_level": 0.9, 
+     "latency_requirement": 0.8, "knowledge_update_frequency": 0.1, "cost_sensitivity": 0.3},
+    {"name": "News bot", "daily_queries": 5000, "specialization_level": 0.4,
+     "latency_requirement": 0.5, "knowledge_update_frequency": 0.9, "cost_sensitivity": 0.7},
+]
+
+for task in test_tasks:
+    result = compute_decision_score(task)
+    print(f"{task['name']}: Score={result['score']:.2f} → {result['decision']}")</code></pre>
 <hr>
-<h2>📐 Ejemplos</h2>
-<pre><code class="language-python">emergent_capabilities = {
-    "arithmetic": "400M params: fall on 3-digit. 1B+: suddenly good",
-    "chain_of_thought": "100B+: reasoning steps",
-    "code_generation": "10B+: functional code",
-    "translation": "1B+: near human quality",
-    "reasoning": " GPT-3 175B: logical deduction"
+<h2>📊 Full Fine-Tuning vs PEFT: ¿Cuál Usar?</h2>
+<p>Ok, ya decidiste que vas a hacer fine-tuning. Ahora viene la segunda pregunta crítica: <strong>¿full fine-tuning o PEFT (Parameter-Efficient Fine-Tuning)?</strong></p>
+<h3>Full Fine-Tuning</h3>
+<p>Re-entrenas TODOS los parámetros del modelo. Ventajas:</p>
+<ul>
+<li>Máxima capacidad de adaptación</li>
+<li>Mejor para tareas muy distintas al pre-training</li>
+</ul>
+<p>Desventajas:</p>
+<ul>
+<li>Costoso en compute y storage</li>
+<li>Riesgo de overfitting</li>
+<li>Catastrophic forgetting (pierdes capacidades del base model)</li>
+<li>Tiempo de entrenamiento largo</li>
+</ul>
+<h3>PEFT (LoRA, QLoRA, Adapter Tuning)</h3>
+<p>Solo re-entrenas un subconjunto pequeño de parámetros. Ventajas:</p>
+<ul>
+<li>80-90% menos parámetros a entrenar</li>
+<li>Mucho más barato</li>
+<li>Menos riesgo de overfitting</li>
+<li>Puedes tener múltiples adapters para diferentes tareas</li>
+</ul>
+<pre><code class="language-python"># Comparación práctica con pseudocódigo
+fine_tuning_comparison = {
+    "full_ft": {
+        "params_to_train": "100%",  # Todos los parámetros
+        "gpu_hours_estimate": "48-72h para 7B model",
+        "storage_for_checkpoints": "14GB+ por checkpoint",
+        "risk_overfitting": "Alto",
+        "catastrophic_forgetting": "Sí, alto",
+        "best_for": "Tareas muy diferentes al base, cuando tienes mucho datos y budget"
+    },
+    "lora": {
+        "params_to_train": "0.1-5%",  # Solo adapters
+        "gpu_hours_estimate": "2-4h para 7B model",
+        "storage_for_checkpoints": "~100MB",
+        "risk_overfitting": "Bajo",
+        "catastrophic_forgetting": "Mínimo",
+        "best_for": "La mayoría de casos, especially con datasets &lt; 100K ejemplos"
+    },
+    "qlora": {
+        "params_to_train": "0.1-2%",  # Quantized + adapters
+        "gpu_hours_estimate": "1-2h para 7B model",
+        "storage_for_checkpoints": "~50MB",
+        "risk_overfitting": "Muy bajo",
+        "catastrophic_forgetting": "Muy mínimo",
+        "best_for": "Cuando tienes GPU limitada (consumer cards), datasets pequeños"
+    },
+    "adapter": {
+        "params_to_train": "1-5%",
+        "gpu_hours_estimate": "3-5h para 7B model",
+        "storage_for_checkpoints": "~200MB",
+        "risk_overfitting": "Bajo",
+        "catastrophic_forgetting": "Bajo",
+        "best_for": "Cuando necesitas múltiples task adapters"
+    }
 }
 
-# Minimo para emergent: multi-step reasoning
-MINIMUM_PARAMS = {
-    "arithmetic": 1e8,
-    "chain_of_thought": 1e11,
-    "code": 1e9
-}</code></pre>
-<hr>
-<h2>🚀 Teorias</h2>
-<pre><code class="language-python"># Teoria 1: Phase transitions
-# Igual que agua -> hielo, hay transiciones en redes neuronales
+def recommend_method(dataset_size, gpu_memory_gb, task_type):
+    """Recomendación basada en recursos"""
+    
+    if dataset_size > 1_000_000 and gpu_memory_gb >= 80 and task_type == "radically_different":
+        return "Full Fine-Tuning (con técnicas de prevención de forgetting)"
+    elif dataset_size > 100_000 and gpu_memory_gb >= 24:
+        return "LoRA o QLoRA"
+    elif gpu_memory_gb >= 8:
+        return "QLoRA (4-bit quantization + LoRA)"
+    else:
+        return "Primero reduce el modelo o usa API de fine-tuning"</code></pre>
+<h3>La Matemática de LoRA</h3>
+<p>LoRA (Low-Rank Adaptation) funciona así: en lugar de actualizar la matriz de pesos W completa, aprendemos dos matrices pequeñas A y B tales que:</p>
+<p><strong>W_new = W + BA</strong></p>
+<p>donde B ∈ ℝ^(d×r) y A ∈ ℝ^(r×k), con r ≪ min(d,k). Esto reduce drásticamente el número de parámetros entrenables.</p>
+<pre><code class="language-python">import numpy as np
 
-# Teoria 2: Sub-sampling artifacts
-# Nuestras metricas no capturan el verdadero comportamiento
+def lora_math_explained():
+    """
+    LoRA reduce parámetros de O(d×k) a O(r×(d+k)) donde r << min(d,k)
+    """
+    # Ejemplo: Layer de atención en LLaMA-7B
+    # d = 4096 (hidden dimension)
+    # k = 4096
+    # r = 8 o 16 (rank típico)
+    
+    d, k = 4096, 4096
+    r = 8
+    
+    full_ft_params = d * k  # 16,777,216 parámetros
+    lora_params = r * (d + k)  # 65,536 parámetros
+    
+    reduction = (1 - lora_params/full_ft_params) * 100
+    print(f"Full FT: {full_ft_params:,} parámetros")
+    print(f"LoRA (r={r}): {lora_params:,} parámetros")
+    print(f"Reducción: {reduction:.2f}%")
+    
+    return lora_params, full_ft_params
 
-# Teoria 3: Task complexity
-# Tareas complejas requieren mas capacidad
+lora_math_explained()
+# Full FT: 16,777,216 parámetros
+# LoRA (r=8): 65,536 parámetros
+# Reducción: 99.61%</code></pre>
+<hr>
+<h2>📐 Dataset Curation: El 80% del Éxito</h2>
+<p>Acá está la verdad que nadie te dice: <strong>el 80% del éxito de tu fine-tuning depende de la calidad del dataset</strong>, no de la arquitectura o los hiperparámetros. Y la mayoría de la gente lo hace mal.</p>
+<h3>Los 5 Pilares de un Good Dataset</h3>
+<pre><code class="language-python">dataset_quality_pillars = {
+    "1_relevance": {
+        "description": "Los ejemplos deben ser relevantes para tu dominio",
+        "check": "Cada ejemplo debe poder responder: '¿esto ayuda al modelo a aprender X?'",
+        "red_flag": "Datos genéricos de internet sin filtrar"
+    },
+    "2_diversity": {
+        "description": "Cubrir suficiente variación en estilos, formatos,edge cases",
+        "check": "Mide distribución de longitud, temas, estructuras",
+        "red_flag": "Todos los ejemplos se ven igual"
+    },
+    "3_cleanliness": {
+        "description": "Sin typos, sin inconsistencias, sin ruido",
+        "check": "Revisión manual de muestra aleatoria",
+        "red_flag": "No revisaste nada, confías en que están limpios"
+    },
+    "4_size_appropriate": {
+        "description": "Lo suficiente para aprender, no tanto para overfit",
+        "check": "Regla empírica: 1K-10K para LoRA, 10K-100K para full FT",
+        "red_flag": "Más es mejor: 1M ejemplos de baja calidad"
+    },
+    "5_format_consistency": {
+        "description": "Formato consistente: instruction, input, output",
+        "check": "Todos los ejemplos siguen el mismo schema",
+        "red_flag": "Cada ejemplo tiene formato diferente"
+    }
+}
 
-# Teoria 4: In-context learning
-# La escala permite mejor uso de ejemplos</code></pre>
+def dataset_quality_score(dataset):
+    """
+    Evalúa calidad de dataset con scoring
+    """
+    scores = {}
+    
+    # 1. Relevance score (manual o por modelo)
+    scores['relevance'] = dataset.get('relevance_score', 0.5)
+    
+    # 2. Diversity - usando entropy de distribución de largos
+    lengths = [len(ex) for ex in dataset['examples']]
+    scores['diversity'] = calculate_entropy(lengths)
+    
+    # 3. Cleanliness - % de samples sin problemas detectados
+    scores['cleanliness'] = dataset.get('clean_pct', 0.0)
+    
+    # 4. Size appropriateness
+    n = len(dataset['examples'])
+    if n < 500:
+        scores['size'] = n / 500  # Penalize if too small
+    elif n > 100000:
+        scores['size'] = 100000 / n  # Penalize if too large
+    else:
+        scores['size'] = 1.0
+    
+    # 5. Format consistency
+    scores['format_consistency'] = dataset.get('format_consistency_score', 0.5)
+    
+    overall = sum(scores.values()) / len(scores)
+    
+    return {"scores": scores, "overall": overall, "recommendation": 
+            "Use as-is" if overall > 0.7 else 
+            "Needs improvement" if overall > 0.4 else 
+            "Major rework needed"}
+
+def calculate_entropy(values, bins=10):
+    """Mide diversidad de valores"""
+    hist = np.histogram(values, bins=bins)[0]
+    probs = hist / sum(hist)
+    entropy = -sum(p * np.log2(p) for p in probs if p > 0)
+    return entropy / np.log2(bins)  # Normalized 0-1</code></pre>
+<h3>Dataset Preparation Pipeline</h3>
+<pre><code class="language-python">class FineTuningDatasetPreparator:
+    """
+    Pipeline completo para preparar dataset de fine-tuning
+    """
+    
+    def __init__(self, raw_data, config):
+        self.raw_data = raw_data
+        self.config = config
+        
+    def step1_deduplicate(self):
+        """Paso 1: Deduplicación exacta y fuzzy"""
+        # Exact deduplication
+        seen = set()
+        unique = []
+        for ex in self.raw_data:
+            key = self._normalize(ex)
+            if key not in seen:
+                seen.add(key)
+                unique.append(ex)
+        
+        print(f"Después de deduplicar: {len(unique)}/{len(self.raw_data)} ejemplos")
+        return unique
+    
+    def step2_filter_low_quality(self):
+        """Paso 2: Filtrar ejemplos de baja calidad"""
+        filtered = []
+        for ex in self.raw_data:
+            # Criterios básicos
+            if self._is_quality_ok(ex):
+                filtered.append(ex)
+        
+        print(f"Después de filtro de calidad: {len(filtered)}/{len(self.raw_data)} ejemplos")
+        return filtered
+    
+    def step3_format_to_instruction(self):
+        """Paso 3: Formatear al formato de instrucción"""
+        formatted = []
+        for ex in self.raw_data:
+            formatted_ex = {
+                "instruction": ex.get('question', ex.get('instruction', '')),
+                "input": ex.get('context', ex.get('input', '')),
+                "output": ex.get('answer', ex.get('output', ''))
+            }
+            # Validar que tiene todos los campos
+            if formatted_ex['instruction'] and formatted_ex['output']:
+                formatted.append(formatted_ex)
+        
+        return formatted
+    
+    def step4_balance_and_split(self):
+        """Paso 4: Balancear y partir train/eval"""
+        # Balance por clase/tema si es clasificación
+        balanced = self._balance(self.data)
+        
+        # Split típico: 90% train, 10% eval
+        n_train = int(len(balanced) * 0.9)
+        train = balanced[:n_train]
+        eval = balanced[n_train:]
+        
+        return {"train": train, "eval": eval}
+    
+    def step5_validate_format(self):
+        """Paso 5: Validar formato consistente"""
+        # Check que todos tienen los mismos keys
+        # Check que los values son strings
+        # Check longitud razonable
+        pass
+
+# Uso
+preparator = FineTuningDatasetPreparator(raw_data, config)
+dataset = (preparator
+    .step1_deduplicate()
+    .step2_filter_low_quality()
+    .step3_format_to_instruction()
+    .step4_balance_and_split()
+    .step5_validate_format())</code></pre>
 <hr>
-<h2>⚠️ Errores Comunes</h2>
-<h3>Error 1: Asumir que todo emerge</h3>
-<p><strong>El problema</strong>: No todas las capacidades son emergentes.</p>
-<p><strong>La solucion</strong>: Medir exactamente cuando aparece cada ability.</p>
+<h2>🔬 Cómo Evaluar Fine-Tuned Models</h2>
+<p>Este es el paso que el 90% de la gente pula. No basta con decir "se ve mejor". Necesitas métricas rigurosas.</p>
+<h3>El Framework de Evaluación</h3>
+<pre><code class="language-python">evaluation_framework = {
+    "1_automatic_metrics": {
+        "perplexity": "Mide qué tan sorprendido está el modelo por datos de test (solo language modeling)",
+        "accuracy": "% de respuestas correctas en tareas de QA/clasificación",
+        "rouge_l": "Similaridad de n-grams con reference",
+        "bleu": "Similaridad de traducción con reference",
+        "exact_match": "Respuesta exactamente igual a expected"
+    },
+    "2_human_evaluation": {
+        "preference_rating": "Humanos prefieren output del fine-tuned vs base?",
+        "quality_score": "1-5 en métricas: correctness, coherence, helpfulness",
+        "error_analysis": "Categorizar tipos de errores (factual, stylistic, reasoning)"
+    },
+    "3_task_specific": {
+        "classification": "Precision, Recall, F1 por clase",
+        "extraction": "Entity-level F1",
+        "summarization": "ROUGE, BERTScore",
+        "dialogue": "Human preference, turn-taking quality"
+    },
+    "4_safety_and_bias": {
+        "toxicity_score": "Perspective API o similar",
+        "bias_evaluation": "Equal performance across demographic groups",
+        "refusal_quality": "拒绝适当 vs over-refusal"
+    }
+}
+
+def comprehensive_evaluation(fine_tuned_model, base_model, eval_dataset):
+    """
+    Evaluación completa: fine-tuned vs baseline
+    """
+    results = {"fine_tuned": {}, "base": {}, "comparison": {}}
+    
+    # 1. Automatic metrics
+    for metric_name, metric_fn in evaluation_framework["1_automatic_metrics"].items():
+        if metric_name == "perplexity":
+            results["fine_tuned"]["perplexity"] = metric_fn(fine_tuned_model, eval_dataset)
+            results["base"]["perplexity"] = metric_fn(base_model, eval_dataset)
+    
+    # 2. Task-specific metrics
+    task_type = eval_dataset.get("task_type", "qa")
+    if task_type == "classification":
+        results["fine_tuned"]["f1"] = compute_f1(fine_tuned_model, eval_dataset)
+        results["base"]["f1"] = compute_f1(base_model, eval_dataset)
+    
+    # 3. Win rate
+    n_wins, n_total = 0, len(eval_dataset)
+    for example in eval_dataset:
+        ft_response = fine_tuned_model.generate(example["input"])
+        base_response = base_model.generate(example["input"])
+        if human_prefers(ft_response, base_response):
+            n_wins += 1
+    
+    results["comparison"]["win_rate"] = n_wins / n_total
+    
+    return results</code></pre>
+<h3>Compare Fine-Tuned vs Base Model</h3>
+<pre><code class="language-python">def compare_models(fine_tuned_path, base_model_name, eval_data):
+    """
+    Compara modelo fine-tunado contra base
+    """
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+    import torch
+    
+    # Cargar modelos
+    fine_tuned = AutoModelForCausalLM.from_pretrained(fine_tuned_path)
+    base = AutoModelForCausalLM.from_pretrained(base_model_name)
+    
+    # Test prompts comunes
+    test_prompts = [
+        {"prompt": "Explica qué es una API REST:", "type": "technical"},
+        {"prompt": "Responde en tono formal:", "type": "style"},
+        {"prompt": "Código Python para连接到数据库:", "type": "code"},
+    ]
+    
+    results = []
+    for tp in test_prompts:
+        ft_out = generate_with_model(fine_tuned, tp["prompt"])
+        base_out = generate_with_model(base, tp["prompt"])
+        
+        comparison = {
+            "prompt_type": tp["type"],
+            "fine_tuned_output": ft_out[:200],
+            "base_output": base_out[:200],
+            "ft_better_for_task": evaluate_usefulness(ft_out, tp["type"]),
+            "base_better_for_task": evaluate_usefulness(base_out, tp["type"])
+        }
+        results.append(comparison)
+    
+    return results
+
+def evaluate_usefulness(output, task_type):
+    """Evalúa si el output es útil para la tarea"""
+    if task_type == "technical":
+        return has_correct_technical_content(output)
+    elif task_type == "style":
+        return has_formal_tone(output)
+    elif task_type == "code":
+        return is_valid_code_snippet(output)
+    return True</code></pre>
 <hr>
-<p><em>Eso es todo! Nos vemos en el Dia 274.</em></p>
+<h2>⚠️ Los 3 Errores Más Comunes (y Sus Arreglos)</h2>
+<h3>Error 1: Fine-tuning cuando RAG es suficiente y más barato</h3>
+<p><strong>El problema</strong>: El 40% de los equipos hacen fine-tuning cuando con RAG hubieran logrado el mismo resultado a 10x menos costo. Ejemplo típico: tienen un chatbot de documentación y la documentación cambia cada release. Hicieron fine-tuning. Cada release tienen que re-entrenar. Dolor de cabeza.</p>
+<p><strong>La solución</strong>: Antes de fine-tunear, responde estas preguntas:</p>
+<pre><code class="language-python">def pre_finetune_checklist():
+    """Checklist antes de decidir fine-tuning"""
+    
+    checklist = {
+        "¿Con qué frecuencia cambia el knowledge?": [
+            "Daily → RAG",
+            "Monthly → Consider RAG with caching", 
+            "Never/rarely → Fine-tuning might make sense"
+        ],
+        "¿Cuántas queries por día?": [
+            "&lt; 10K → RAG usually cheaper",
+            "10K-100K → Depends on context length",
+            "&gt; 100K → Fine-tuning becomes cost-effective"
+        ],
+        "¿Qué tan especializado es el lenguaje?": [
+            "Generic → RAG or base model",
+            "Moderate jargon → LoRA",
+            "Highly specialized (legal, medical) → Full FT or LoRA"
+        ],
+        "¿Puedes permitirte 2-4 horas de GPU para LoRA?": [
+            "No → RAG or API fine-tuning service",
+            "Yes → LoRA is safe bet"
+        ]
+    }
+    
+    # Scoring
+    rag_score = 0
+    ft_score = 0
+    
+    # Si knowledge cambia frecuentemente → RAG
+    if knowledge_changes == "frequently":
+        rag_score += 2
+    
+    # Si queries son bajas → RAG
+    if queries_per_day &lt; 10000:
+        rag_score += 2
+    
+    # Si lenguaje es genérico → RAG
+    if specialization == "generic":
+        rag_score += 1
+    
+    return "RAG" if rag_score > ft_score else "Fine-Tuning"</code></pre>
+<h3>Error 2: Fine-tuning sin curated dataset de calidad</h3>
+<p><strong>El problema</strong>: El equipo descargó 1M ejemplos de internet, los metió directo a fine-tuning sin limpieza, sin dedup, sin formato consistente. Entrenaron por 3 días. El modelo resultante es peor que el base. Time wasted: 3 días de GPU + frustración.</p>
+<p><strong>La solución</strong>: Invierte el tiempo que ibas a entrenar en curation de datos. Regla empirica:</p>
+<pre><code class="language-python">def dataset_curation_time_rule():
+    """
+    Regla: Por cada 1 hora de training planeada,
+    invierte 2-4 horas en curation de datos
+    """
+    
+    training_time_hours = 4  # LoRA en 7B con 10K ejemplos
+    curation_time_hours = training_time_hours * 3  # 12 horas
+    
+    curation_steps = {
+        "deduplication": "1-2 horas: exact + fuzzy dedup",
+        "quality_filter": "2-4 horas: remove outliers,low quality",
+        "format_normalization": "2-3 horas: consistent schema",
+        "validation_split": "1 hora: proper train/eval split",
+        "manual_review": "2-3 horas: random sample review"
+    }
+    
+    return curation_steps
+
+# Dataset size правило
+def recommended_dataset_size(method, model_size):
+    """
+    Recomendación de tamaño de dataset según método y modelo
+    """
+    recommendations = {
+        "full_ft": {
+            "1B": "100K - 1M ejemplos",
+            "7B": "100K - 1M ejemplos",
+            "70B": "1M+ ejemplos (mucho riesgo de overfitting)"
+        },
+        "lora": {
+            "1B": "1K - 10K ejemplos",
+            "7B": "1K - 50K ejemplos", 
+            "70B": "10K - 100K ejemplos"
+        },
+        "qlora": {
+            "1B": "1K - 5K ejemplos",
+            "7B": "1K - 20K ejemplos",
+            "70B": "5K - 50K ejemplos"
+        }
+    }
+    
+    return recommendations.get(method, {}).get(model_size, "Unknown")</code></pre>
+<h3>Error 3: Not evaluating fine-tuned model contra baseline</h3>
+<p><strong>El problema</strong>: No comparaste tu fine-tuned model contra el base model. Subiste a producción, los usuarios se quejan de que el chatbot nuevo da respuestas peores. Resultado: revertiste el deploy, perdiste credibilidad.</p>
+<p><strong>La solución</strong>: Siempre haz evaluación rigurosa antes de production. Minimum viable evaluation:</p>
+<pre><code class="language-python">def minimum_viable_evaluation(fine_tuned, base_model, eval_data):
+    """
+    Evaluación mínima necesaria antes de production
+    """
+    
+    results = {}
+    
+    # 1. Side-by-side en 50-100 ejemplos
+    wins = 0
+    for example in random.sample(eval_data, min(100, len(eval_data))):
+        ft_response = fine_tuned.generate(example.input)
+        base_response = base_model.generate(example.input)
+        
+        if human_rater_prefers(ft_response, base_response):
+            wins += 1
+    
+    results["win_rate"] = wins / min(100, len(eval_data))
+    
+    # 2. Mide degradación en capacidades del base
+    base_capabilities = ["coding", "math", "reasoning", "world_knowledge"]
+    for cap in base_capabilities:
+        cap_score_ft = evaluate_capability(fine_tuned, cap)
+        cap_score_base = evaluate_capability(base_model, cap)
+        
+        # No debería degradar más de 10%
+        degradation = (cap_score_base - cap_score_ft) / cap_score_base
+        if degradation > 0.1:
+            print(f"⚠️ {cap} degradó {degradation*100:.1f}%!")
+            results[f"{cap}_degradation"] = degradation
+    
+    # 3. Task-specific improvement
+    task_improvement = evaluate_task_specific(fine_tuned, eval_data)
+    results["task_improvement"] = task_improvement
+    
+    # Pass/Fail criteria
+    if results["win_rate"] &lt; 0.55:
+        return {"status": "FAIL", "reason": "Win rate too low", "results": results}
+    if any(d > 0.15 for d in results.values() if "degradation" in str(d)):
+        return {"status": "FAIL", "reason": "Too much capability degradation", "results": results}
+    
+    return {"status": "PASS", "results": results}</code></pre>
+<hr>
+<h2>📊 Resumen y Cierre Colombiano</h2>
+<p>Hagale pues, parcero. Día 273 completo y hoy aprendimos que:</p>
+<ul>
+<li><strong>Fine-tuning vs RAG</strong>: No es una decisión binaria. RAG para knowledge que cambia, fine-tuning para tareas especializadas y alto volumen.</li>
+<li><strong>Full FT vs PEFT</strong>: En el 90% de los casos, LoRA o QLoRA es suficiente y mucho más barato.</li>
+<li><strong>Dataset curation es el 80%</strong>: No importa qué técnica uses si tus datos son chimbas. Invierte tiempo en calidad.</li>
+<li><strong>Evaluación rigurosa</strong>: Siempre compara contra baseline, mide degradación de capacidades, y ten criterios claros de pass/fail.</li>
+</ul>
+<p>Los 3 errores más comunes que vimos:</p>
+<ol>
+<li>Hacer fine-tuning cuando RAG es suficiente — evaluá primero, gastá después.</li>
+<li>Fine-tuning sin dataset curado — la calidad de datos es más importante que la cantidad.</li>
+<li>No comparar contra baseline — si no mides, no puedes mejorar.</li>
+</ol>
+<p>Pues ahí lo tiene, esos son los fundamentos de LLM Fine-Tuning Advanced. La próxima vez que le toque decidir si fine-tunear o no, ya tiene las herramientas para hacerlo bien. Nos vemos en el día 274.</p>
+<p><em>— Fabian Rodriguez, #365DaysOfAI Día 273</em></p>
   </article>
 
   <script>
