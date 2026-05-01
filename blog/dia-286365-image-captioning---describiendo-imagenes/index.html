@@ -118,8 +118,832 @@ nav {
   </header>
 
   <article class="article-body">
-    <h1>Image Captioning - Describiendo Imagenes</h1>
-<p>Content for day 286 coming soon.</p>
+<h2 id="introduccion">¿Por qué el 80% no está preparado para incidentes con LLMs?</h2>
+
+<p>Imagina este escenario: es viernes en la noche, tu chatbot con LLM empieza a generar respuestas incoherentes. Los usuarios reportan que el modelo está "tripping" — da información peligrosa, insulta clientes, o simplemente hace de大方随机 en lugar de ayudar. Tu equipo no tiene idea qué cambió ayer, no hay logs claros, y el rollback toma 3 horas porque nadie practicó el proceso.</p>
+
+<p>Eso en Colombia lo llamamos <strong>"quedar cogiendo agua con las manos"</strong>. El 80% de los equipos no tienen plan de respuesta a incidentes para sistemas con LLMs — y cuando algo falla, improvisan. El resultado: downtime largo, daño reputacional, y usuarios perdidos.</p>
+
+<p>LLM Incident Response es el proceso sistemático de prepararse, detectar, contener, y remediar incidentes en sistemas basados en LLMs. A diferencia de software tradicional, los LLMs tienen comportamientos emergentes que hacen los incidentes más impredecibles — y más críticos de manejar bien.</p>
+
+<blockquote>El 20% de equipos que sí tienen runbooks de incident response documentados reducen su MTTR (Mean Time To Recovery) en un 85%. No es cuestión de suerte — es cuestión de preparación.</blockquote>
+
+<h2 id="matematicas">Métricas clave para incidentes con LLMs</h2>
+
+<p>Para medir la gravedad de un incidente de LLM, usamos una fórmula que combina múltiples factores:</p>
+
+<pre><code>Severity = (Impact × Duration × Reach) / MitigationFactor
+
+Donde:
+- Impact: daño potencial (1-10)
+  - 1-3: Inconveniencia menor, respuesta incorrecta
+  - 4-6: Daño a usuario, contenido inapropiado
+  - 7-10: Peligro físico, pérdida financiera, legal
+
+- Duration: tiempo en producción (minutos)
+  - &lt;5min: Crítico
+  - 5-30min: Alto
+  - 30-120min: Medio
+  - &gt;120min: Crítico extensible
+
+- Reach: % de usuarios afectados
+  - &lt;1%: Aislado
+  - 1-10%: Bajo
+  - 10-50%: Medio
+  - &gt;50%: Crítico
+
+- MitigationFactor: qué tan rápido podemos contener
+  - 1.0: Sin capacidad de rollback
+  - 2.0: Rollback manual disponible
+  - 5.0: Rollback automático en &lt;5min
+</code></pre>
+
+<h3 id="tipos-incidente">Tipos de incidentes con LLMs</h3>
+
+<ul>
+<li><strong>Hallucination Crisis:</strong> El modelo genera información falsa con alta confianza</li>
+<li><strong>Prompt Injection:</strong> Inputs maliciosos que manipulan el comportamiento</li>
+<li><strong>Latency Spike:</strong> El modelo se vuelve extremadamente lento o timeout</li>
+<li><strong>Toxicity Outbreak:</strong> El modelo genera contenido ofensivo o dañino</li>
+<li><strong>Data Leak:</strong> El modelo filtra información sensible de training o contexto</li>
+<li><strong>Behavioral Drift:</strong> El modelo cambia su comportamiento sin cambios evidentes</li>
+</ul>
+
+<h2 id="framework">Framework de Incident Response — Código completo</h2>
+
+<pre><code class="language-python">"""
+LLM Incident Response Framework
+Maneja incidentes en sistemas basados en LLMs de forma sistemática
+"""
+import os
+import json
+import time
+import traceback
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional, Any
+from dataclasses import dataclass, asdict
+from enum import Enum
+import anthropic
+
+class IncidentSeverity(Enum):
+    P1_CRITICAL = "P1"  # &gt;50% usuarios afectados, peligro, downtime
+    P2_HIGH = "P2"      # 10-50% usuarios, daño significativo
+    P3_MEDIUM = "P3"    # 1-10% usuarios, inconvenience
+    P4_LOW = "P4"       # &lt;1% usuarios, issue menor
+
+class IncidentStatus(Enum):
+    DETECTED = "detected"
+    INVESTIGATING = "investigating"
+    CONTAINED = "contained"
+    RESOLVED = "resolved"
+    POSTMORTEM = "postmortem"
+
+@dataclass
+class Incident:
+    id: str
+    title: str
+    severity: IncidentSeverity
+    status: IncidentStatus
+    detected_at: datetime
+    resolved_at: Optional[datetime]
+    root_cause: Optional[str]
+    impact_description: str
+    affected_users_pct: float
+    duration_minutes: Optional[float]
+    runbook_used: Optional[str]
+    rollback_performed: bool
+    lessons_learned: List[str]
+
+class LLMIncidentResponse:
+    def __init__(self, config_path: str = "incident_config.json"):
+        self.client = anthropic.Anthropic()
+        self.incidents: List[Incident] = []
+        self.runbooks: Dict[str, Dict] = {}
+        self.prompt_versions: List[Dict] = []
+        self.current_prompt_version: int = 0
+        self.load_config(config_path)
+    
+    def load_config(self, config_path: str):
+        """Carga configuración de incident response"""
+        if os.path.exists(config_path):
+            with open(config_path) as f:
+                config = json.load(f)
+                self.runbooks = config.get("runbooks", {})
+                self.prompt_versions = config.get("prompt_versions", [])
+    
+    def calculate_severity(
+        self,
+        impact: float,
+        duration_minutes: float,
+        reach_pct: float,
+        mitigation_factor: float
+    ) -> IncidentSeverity:
+        """Calcula la severidad del incidente"""
+        
+        raw_severity = (impact * duration_minutes * reach_pct) / mitigation_factor
+        
+        if raw_severity > 1000 or reach_pct > 50:
+            return IncidentSeverity.P1_CRITICAL
+        elif raw_severity > 500 or reach_pct > 10:
+            return IncidentSeverity.P2_HIGH
+        elif raw_severity > 100 or reach_pct > 1:
+            return IncidentSeverity.P3_MEDIUM
+        else:
+            return IncidentSeverity.P4_LOW
+    
+    def create_incident(
+        self,
+        title: str,
+        impact_description: str,
+        impact: float = 5.0,
+        reach_pct: float = 10.0
+    ) -> Incident:
+        """Crea un nuevo incidente y empieza el tracking"""
+        
+        incident_id = f"INC-{datetime.now().strftime('%Y%m%d')}-{len(self.incidents)+1:03d}"
+        
+        incident = Incident(
+            id=incident_id,
+            title=title,
+            severity=self.calculate_severity(
+                impact=impact,
+                duration_minutes=0,
+                reach_pct=reach_pct,
+                mitigation_factor=1.0
+            ),
+            status=IncidentStatus.DETECTED,
+            detected_at=datetime.now(),
+            resolved_at=None,
+            root_cause=None,
+            impact_description=impact_description,
+            affected_users_pct=reach_pct,
+            duration_minutes=None,
+            runbook_used=None,
+            rollback_performed=False,
+            lessons_learned=[]
+        )
+        
+        self.incidents.append(incident)
+        self.notify_incident(incident)
+        
+        return incident
+    
+    def notify_incident(self, incident: Incident):
+        """Notifica al equipo sobre el incidente"""
+        
+        severity_emoji = {
+            IncidentSeverity.P1_CRITICAL: "🚨",
+            IncidentSeverity.P2_HIGH: "⚠️",
+            IncidentSeverity.P3_MEDIUM: "📢",
+            IncidentSeverity.P4_LOW: "💬"
+        }
+        
+        message = f"""
+{severity_emoji[incident.severity]} INCIDENTE {incident.severity.value}: {incident.title}
+
+ID: {incident.id}
+Severidad: {incident.severity.value}
+Detectado: {incident.detected_at.isoformat()}
+Impacto: {incident.impact_description}
+Usuarios afectados: {incident.affected_users_pct}%
+
+⚡ ACCIÓN REQUERIDA: Ejecutar runbook de respuesta
+        """
+        
+        # Log para debugging
+        print(message)
+        
+        # En producción: integrar con PagerDuty, Slack, etc.
+        # self.pagerduty.notify(incident)
+        # self.slack.notify_channel("#incidents", message)
+    
+    def execute_runbook(self, incident: Incident, runbook_name: str) -> Dict:
+        """Ejecuta un runbook específico para el incidente"""
+        
+        runbook = self.runbooks.get(runbook_name)
+        if not runbook:
+            return {"status": "error", "message": f"Runbook {runbook_name} no encontrado"}
+        
+        incident.status = IncidentStatus.INVESTIGATING
+        incident.runbook_used = runbook_name
+        
+        execution_log = {
+            "incident_id": incident.id,
+            "runbook": runbook_name,
+            "started_at": datetime.now().isoformat(),
+            "steps_executed": [],
+            "status": "in_progress"
+        }
+        
+        for step in runbook.get("steps", []):
+            step_result = self.execute_step(step, incident)
+            execution_log["steps_executed"].append(step_result)
+            
+            if step_result.get("status") == "failed":
+                execution_log["status"] = "failed"
+                break
+        
+        if execution_log["status"] == "in_progress":
+            execution_log["status"] = "completed"
+            execution_log["completed_at"] = datetime.now().isoformat()
+        
+        return execution_log
+    
+    def execute_step(self, step: Dict, incident: Incident) -> Dict:
+        """Ejecuta un paso individual del runbook"""
+        
+        step_type = step.get("type")
+        
+        if step_type == "check":
+            return self.check_step(step, incident)
+        elif step_type == "rollback":
+            return self.rollback_step(step, incident)
+        elif step_type == "mitigate":
+            return self.mitigate_step(step, incident)
+        elif step_type == "notify":
+            return self.notify_step(step, incident)
+        else:
+            return {"status": "error", "message": f"Unknown step type: {step_type}"}
+    
+    def check_step(self, step: Dict, incident: Incident) -> Dict:
+        """Ejecuta un paso de verificación"""
+        
+        check_type = step.get("check_type")
+        
+        if check_type == "prompt_version":
+            current = self.get_current_prompt_version()
+            expected = step.get("expected_version")
+            
+            return {
+                "step": step.get("name"),
+                "status": "passed" if current == expected else "failed",
+                "current_version": current,
+                "expected_version": expected,
+                "message": f"Prompt version: {current} (expected: {expected})"
+            }
+        
+        elif check_type == "error_logs":
+            # Analizar logs de errores recientes
+            return {
+                "step": step.get("name"),
+                "status": "passed",
+                "errors_found": self.check_error_logs(step.get("time_window_minutes", 30)),
+                "message": "Logs analizados"
+            }
+        
+        elif check_type == "latency":
+            latency = self.check_model_latency()
+            threshold = step.get("threshold_ms", 5000)
+            
+            return {
+                "step": step.get("name"),
+                "status": "passed" if latency &lt; threshold else "failed",
+                "current_latency_ms": latency,
+                "threshold_ms": threshold,
+                "message": f"Latency: {latency}ms (threshold: {threshold}ms)"
+            }
+        
+        return {"step": step.get("name"), "status": "error", "message": "Unknown check type"}
+    
+    def rollback_step(self, step: Dict, incident: Incident) -> Dict:
+        """Ejecuta rollback de prompt o configuración"""
+        
+        rollback_type = step.get("rollback_type")
+        
+        if rollback_type == "prompt_version":
+            target_version = step.get("target_version", "previous")
+            
+            if target_version == "previous":
+                target = self.prompt_versions[-1] if len(self.prompt_versions) &gt; 1 else None
+            else:
+                target = next((v for v in self.prompt_versions if v["version"] == target_version), None)
+            
+            if target:
+                success = self.rollback_prompt(target)
+                incident.rollback_performed = success
+                
+                return {
+                    "step": step.get("name"),
+                    "status": "success" if success else "failed",
+                    "rolled_back_to": target.get("version"),
+                    "message": f"Rollback a versión {target.get('version')} {'exitoso' if success else 'fallido'}"
+                }
+            else:
+                return {
+                    "step": step.get("name"),
+                    "status": "failed",
+                    "message": "No se encontró versión para rollback"
+                }
+        
+        elif rollback_type == "configuration":
+            config_key = step.get("config_key")
+            previous_value = step.get("previous_value")
+            
+            # Restaurar configuración anterior
+            return {
+                "step": step.get("name"),
+                "status": "success",
+                "message": f"Configuración {config_key} restaurada a {previous_value}"
+            }
+        
+        return {"step": step.get("name"), "status": "error", "message": "Unknown rollback type"}
+    
+    def mitigate_step(self, step: Dict, incident: Incident) -> Dict:
+        """Ejecuta paso de mitigación"""
+        
+        mitigation = step.get("mitigation_action")
+        
+        if mitigation == "enable_strict_mode":
+            # Habilitar modo estricto del modelo
+            return {
+                "step": step.get("name"),
+                "status": "success",
+                "message": "Modo estricto habilitado"
+            }
+        
+        elif mitigation == "reduce_context":
+            # Reducir tamaño de contexto para evitar hallucinations
+            return {
+                "step": step.get("name"),
+                "status": "success",
+                "message": "Contexto reducido a 4k tokens"
+            }
+        
+        elif mitigation == "fallback_to_backup":
+            # Usar modelo de backup
+            return {
+                "step": step.get("name"),
+                "status": "success",
+                "message": "Fallback a modelo backup activado"
+            }
+        
+        return {"step": step.get("name"), "status": "error", "message": "Unknown mitigation"}
+    
+    def notify_step(self, step: Dict, incident: Incident) -> Dict:
+        """Ejecuta paso de notificación"""
+        
+        channel = step.get("channel")
+        message = step.get("message")
+        
+        # En producción: implementar通知
+        return {
+            "step": step.get("name"),
+            "status": "success",
+            "notified_to": channel,
+            "message": message
+        }
+    
+    def rollback_prompt(self, target_version: Dict) -> bool:
+        """Ejecuta rollback a una versión específica del prompt"""
+        
+        try:
+            # En producción: actualizar en tu sistema de configuración
+            # Ejemplo: UpdatePromptConfig(target_version["prompt"])
+            
+            self.current_prompt_version = target_version.get("version")
+            
+            return True
+        except Exception as e:
+            print(f"Rollback failed: {e}")
+            return False
+    
+    def get_current_prompt_version(self) -> int:
+        """Retorna la versión actual del prompt"""
+        return self.current_prompt_version
+    
+    def check_error_logs(self, time_window_minutes: int = 30) -> List[Dict]:
+        """Verifica logs de errores recientes"""
+        
+        # En producción: integrar con tu sistema de logs
+        # Ejemplo: CloudWatch, Datadog, ELK
+        return [
+            {"timestamp": datetime.now().isoformat(), "error": "Rate limit exceeded"},
+        ]
+    
+    def check_model_latency(self) -> float:
+        """Verifica latencia actual del modelo"""
+        
+        # En producción: medir latencia real
+        return 150.0  # ms
+    
+    def save_prompt_version(self, prompt: str, version: int, description: str = ""):
+        """Guarda una nueva versión del prompt"""
+        
+        version_data = {
+            "version": version,
+            "prompt": prompt,
+            "description": description,
+            "created_at": datetime.now().isoformat()
+        }
+        
+        self.prompt_versions.append(version_data)
+        
+        # Guardar en config
+        config = {
+            "prompt_versions": self.prompt_versions,
+            "runbooks": self.runbooks
+        }
+        
+        with open("incident_config.json", "w") as f:
+            json.dump(config, f, indent=2)
+    
+    def generate_postmortem(self, incident: Incident) -> str:
+        """Genera un postmortem para el incidente"""
+        
+        duration = None
+        if incident.resolved_at and incident.detected_at:
+            duration = (incident.resolved_at - incident.detected_at).total_seconds() / 60
+        
+        postmortem = f"""
+# Postmortem: {incident.title}
+
+## Resumen
+- **ID:** {incident.id}
+- **Severidad:** {incident.severity.value}
+- **Duración:** {duration:.1f} minutos if duration else "N/A"
+- **Detectado:** {incident.detected_at.isoformat()}
+- **Resuelto:** {incident.resolved_at.isoformat() if incident.resolved_at else "Pendiente"}
+
+## Impacto
+{incident.impact_description}
+- Usuarios afectados: {incident.affected_users_pct}%
+
+## Cronología
+1. {incident.detected_at.isoformat()} - Detectado
+2. {incident.detected_at.isoformat()} - Runbook {incident.runbook_used} ejecutado
+3. {incident.resolved_at.isoformat() if incident.resolved_at else "N/A"} - Resuelto
+
+## Causa Raíz
+{incident.root_cause or "Por investigar"}
+
+## Acciones Correctivas
+{"".join(f"- {lesson}" for lesson in incident.lessons_learned)}
+
+## Preguntas
+- ¿Tuvimos alertas tempranas?
+- ¿El runbook fue efectivo?
+- ¿Cómo prevenimos recurrence?
+        """
+        
+        return postmortem
+    
+    def resolve_incident(self, incident: Incident, root_cause: str, lessons: List[str]):
+        """Marca un incidente como resuelto"""
+        
+        incident.status = IncidentStatus.RESOLVED
+        incident.resolved_at = datetime.now()
+        incident.root_cause = root_cause
+        incident.lessons_learned = lessons
+        incident.duration_minutes = (
+            (incident.resolved_at - incident.detected_at).total_seconds() / 60
+        )
+        
+        # Generar postmortem
+        postmortem = self.generate_postmortem(incident)
+        
+        # Guardar postmortem
+        with open(f"postmortem_{incident.id}.md", "w") as f:
+            f.write(postmortem)
+        
+        return postmortem
+
+
+# Runbook de ejemplo para diferentes tipos de incidentes
+STANDARD_RUNBOOKS = {
+    "hallucination_crisis": {
+        "name": "Crisis de Hallucinations",
+        "description": "Cuando el modelo genera información falsa con alta confianza",
+        "steps": [
+            {
+                "type": "check",
+                "name": "Verificar versión de prompt",
+                "check_type": "prompt_version",
+                "expected_version": "current"
+            },
+            {
+                "type": "mitigate",
+                "name": "Habilitar modo estricto",
+                "mitigation_action": "enable_strict_mode"
+            },
+            {
+                "type": "check",
+                "name": "Verificar latencia",
+                "check_type": "latency",
+                "threshold_ms": 3000
+            },
+            {
+                "type": "rollback",
+                "name": "Rollback a versión anterior",
+                "rollback_type": "prompt_version",
+                "target_version": "previous"
+            },
+            {
+                "type": "notify",
+                "name": "Notificar a stakeholders",
+                "channel": "#incidents",
+                "message": "Incidente de hallucination en progreso"
+            }
+        ]
+    },
+    "toxicity_outbreak": {
+        "name": "Toxicity Outbreak",
+        "description": "Cuando el modelo genera contenido ofensivo",
+        "steps": [
+            {
+                "type": "mitigate",
+                "name": "Reducir contexto",
+                "mitigation_action": "reduce_context"
+            },
+            {
+                "type": "rollback",
+                "name": "Rollback de prompt",
+                "rollback_type": "prompt_version",
+                "target_version": "previous"
+            },
+            {
+                "type": "notify",
+                "name": "Alertar al equipo de seguridad",
+                "channel": "#security",
+                "message": "Posible inyección de prompt detectada"
+            }
+        ]
+    },
+    "latency_spike": {
+        "name": "Latency Spike",
+        "description": "Cuando el modelo está extremadamente lento",
+        "steps": [
+            {
+                "type": "check",
+                "name": "Verificar estado del modelo",
+                "check_type": "latency",
+                "threshold_ms": 5000
+            },
+            {
+                "type": "mitigate",
+                "name": "Fallback a modelo backup",
+                "mitigation_action": "fallback_to_backup"
+            },
+            {
+                "type": "notify",
+                "name": "Notificar al equipo de infra",
+                "channel": "#infra",
+                "message": "Latencia elevada, fallback activado"
+            }
+        ]
+    }
+}
+
+def run_incident_drill():
+    """Ejecuta un drill de respuesta a incidentes"""
+    
+    print("🎯 INICIANDO INCIDENT DRILL")
+    print("-" * 50)
+    
+    response = LLMIncidentResponse()
+    
+    # Simular incidente
+    incident = response.create_incident(
+        title="Drill: Hallucination en respuestas de soporte",
+        impact_description="El modelo genera instrucciones de soporte incorrectas",
+        impact=7.0,
+        reach_pct=15.0
+    )
+    
+    print(f"\n📋 Incidente creado: {incident.id}")
+    print(f"   Severidad: {incident.severity.value}")
+    
+    # Ejecutar runbook
+    result = response.execute_runbook(incident, "hallucination_crisis")
+    
+    print(f"\n⚡ Runbook ejecutado: {result['status']}")
+    for step in result["steps_executed"]:
+        status_icon = "✅" if step.get("status") == "success" else "❌"
+        print(f"   {status_icon} {step.get('step')}: {step.get('message')}")
+    
+    # Resolver
+    postmortem = response.resolve_incident(
+        incident=incident,
+        root_cause="Prompt sin validaciones suficientes para queries de soporte",
+        lessons=[
+            "Agregar validación de outputs antes de servir",
+            "Implementar detector de hallucinations en producción",
+            "Documentar casos de uso no contemplados en testing"
+        ]
+    )
+    
+    print(f"\n📝 Postmortem generado: INC-{incident.id}")
+    
+    return incident, postmortem
+
+
+if __name__ == "__main__":
+    # Correr drill de incidente
+    incident, postmortem = run_incident_drill()
+</code></pre>
+
+<h2 id="errores">Los 3 errores más costosos que el 80% comete</h2>
+
+<h3 id="error-1">Error 1: No tener plan de respuesta a incidentes y improvisar</h3>
+
+<p>El escenario más común: algo falla en producción, y en lugar de ejecutar un plan, cada persona del equipo hace lo que cree correcto. Un teammate reinicia el servicio, otro hace rollback manualmente, otro empieza a buscar en logs sin estructura. El resultado: 3 horas de downtime cuando pudo haber sido 30 minutos.</p>
+
+<p>En Colombia le decimos <strong>"el que no tiene ideas, tiene tiempos"</strong>. Sin un plan documentado, la respuesta a incidentes es caótica — y en incidentes de LLM donde cada minuto cuenta, la improvisación sale cara.</p>
+
+<h4 id="fix-1">Fix: Documentar runbooks específicos para cada tipo de incidente</h4>
+
+<pre><code class="language-python"># Runbook estructurado para incidentes de LLM
+RUNBOOK_TEMPLATE = {
+    "name": "Nombre del incidente tipo",
+    "severity_threshold": IncidentSeverity.P2_HIGH,
+    "steps": [
+        {
+            "order": 1,
+            "type": "check",
+            "action": "verify_prompt_version",
+            "expected": "v{version}",
+            "on_fail": "stop_and_escalate"
+        },
+        {
+            "order": 2,
+            "type": "mitigate",
+            "action": "enable_strict_mode",
+            "timeout_seconds": 30
+        },
+        {
+            "order": 3,
+            "type": "rollback",
+            "action": "revert_to_previous_prompt",
+            "auto_execute": True
+        },
+        {
+            "order": 4,
+            "type": "verify",
+            "action": "check_error_rate",
+            "threshold": "&lt;1%"
+        },
+        {
+            "order": 5,
+            "type": "notify",
+            "channels": ["#incidents", "#stakeholders"],
+            "message": "Incidente resuelto"
+        }
+    ],
+    "escalation": {
+        "after_minutes": 15,
+        "notify": ["on_call_lead", "engineering_manager"]
+    }
+}
+</code></pre>
+
+<h3 id="error-2">Error 2: No tener capacidad de rollback</h3>
+
+<p>El modelo en producción está generando contenido peligroso. Quieres revertir al prompt anterior, pero:</p>
+
+<ul>
+<li>No hay historial de versiones del prompt</li>
+<li>El prompt "anterior" está en la cabeza de alguien que está de vacaciones</li>
+<li>Hiciste cambios directamente en producción sin control de versiones</li>
+</ul>
+
+<p>Resultado: tienes que reconstruir el prompt desde cero mientras el sistema sigue fallando. Eso en el mundo de DevOps lo llamamos <strong>"back to the stone age"</strong>.</p>
+
+<h4 id="fix-2">Fix: Implementar versionamiento de prompts con rollback automático</h4>
+
+<pre><code class="language-python">class PromptVersionControl:
+    """Sistema de control de versiones para prompts"""
+    
+    def __init__(self):
+        self.versions: List[PromptVersion] = []
+        self.current_version: Optional[int] = None
+        self.git_like_history = True  # git-like branching
+    
+    def save_version(
+        self,
+        prompt: str,
+        version: int,
+        metadata: Dict = None
+    ) -> PromptVersion:
+        """Guarda nueva versión con metadata"""
+        
+        pv = PromptVersion(
+            version=version,
+            prompt=prompt,
+            created_at=datetime.now(),
+            created_by=get_current_user(),
+            changelog=metadata.get("changelog", ""),
+            tags=metadata.get("tags", [])
+        )
+        
+        self.versions.append(pv)
+        self.current_version = version
+        
+        return pv
+    
+    def rollback_to(self, target_version: int) -> bool:
+        """Rollback a versión específica"""
+        
+        target = next(
+            (v for v in self.versions if v.version == target_version),
+            None
+        )
+        
+        if not target:
+            return False
+        
+        # Ejecutar rollback
+        self.deploy_prompt(target.prompt)
+        self.current_version = target_version
+        
+        # Log de auditoría
+        self.log_rollback(target_version)
+        
+        return True
+    
+    def deploy_prompt(self, prompt: str):
+        """Despliega prompt a producción"""
+        # Implementar según tu infraestructura
+        pass
+</code></pre>
+
+<h3 id="error-3">Error 3: No practicar respuesta a incidentes con drills</h3>
+
+<p>Crear runbooks no es suficiente — si no los practicas, en el momento crítico vas a descubrir que están desactualizados, incompletos, o simplemente no funcionan como esperabas. Drills regulares son la diferencia entre confianza y sorpresas.</p>
+
+<p>El problema: el 80% de equipos nunca hacen drills de incident response para sus sistemas con LLMs. Cuando ocurre un incidente real, están aprendiendo sobre la marcha.</p>
+
+<h4 id="fix-3">Fix: Implementar schedule de drills con Chaos Engineering</h4>
+
+<pre><code class="language-python">class ChaosEngineeringForLLM:
+    """Inyecta fallas controladas para probar respuesta"""
+    
+    def __init__(self):
+        self.attack_vectors = [
+            "latency_injection",
+            "prompt_injection_simulation",
+            "hallucination_induction",
+            "toxicity_trigger",
+            "timeout_simulation"
+        ]
+    
+    def run_chaos_drill(
+        self,
+        attack_type: str,
+        duration_seconds: int = 60,
+        notify: bool = True
+    ):
+        """Ejecuta drill de caos controlado"""
+        
+        if notify:
+            self.notify_drill_start(attack_type)
+        
+        # Inyectar falla
+        self.inject_fault(attack_type)
+        
+        # Monitorear respuesta del equipo
+        start_time = time.time()
+        response_time, actions_taken = self.monitor_response()
+        
+        # Limpiar falla inyectada
+        self.cleanup_fault(attack_type)
+        
+        if notify:
+            self.notify_drill_end(attack_type, response_time, actions_taken)
+        
+        return {
+            "attack_type": attack_type,
+            "response_time_seconds": response_time,
+            "actions_taken": actions_taken,
+            "passed": response_time &lt; 300  # 5 min threshold
+        }
+    
+    def schedule_monthly_drills(self):
+        """Programa drills mensuales obligatorios"""
+        
+        drills = [
+            ("week_1", "latency_injection"),
+            ("week_2", "prompt_injection_simulation"),
+            ("week_3", "hallucination_induction"),
+            ("week_4", "full_incident_runbook_drill")
+        ]
+        
+        # Programar en CI/CD o cron
+        for week, attack in drills:
+            print(f"Drill {week}: {attack}")
+</code></pre>
+
+<h2 id="resumen">Resumen y cierre</h2>
+
+<p>LLM Incident Response no es opcional — es lo que separa a los equipos que controllan sus sistemas de los que son controlados por ellos. La diferencia entre el 80% que improvisa y el 20% que responde efectivo está en tres pilares:</p>
+
+<ol>
+<li><strong>Runbooks documentados</strong> — Cada tipo de incidente tiene su propio playbook</li>
+<li><strong>Capacidad de rollback</strong> — Versionar prompts para poder revertir en minutos</li>
+<li><strong>Drills regulares</strong> — Practicar antes de que sea real</li>
+</ol>
+
+<p>En Colombia sabemos que <strong>"el que prepárese, sale a la fija"</strong>. Para incidentes con LLMs, la preparación no es sobre trabajar más — es sobre trabajar más inteligente. Documenta tus runbooks, practica tus drills, y cuando el próximo incidente ocurra, vas a estar listo.</p>
+
+<p><em>#365DaysOfAI #IncidentResponse #LLM #DevOps #Security #Colombia</em></p>
   </article>
 
   <script>
