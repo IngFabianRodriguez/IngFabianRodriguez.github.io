@@ -118,141 +118,261 @@ nav {
   </header>
 
   <article class="article-body">
-    <h2>La Intro que el 85% Se Salta</h2>
-    <p>Parcero, ¿sabes qué tienen en común el batch gradient descent, el mini-batch gradient descent y el stochastic gradient descent? Son tres versiones del mismo algoritmo y la mayoría de practitioners no sabe cuándo usar cada una. Muchos começam con "batch gradient descent" porque "suena más completo" y después se preguntan por qué su modelo tarda 3 días en entrenar. Otros van al extremo opuesto y usan batch_size=1 (SGD puro) y se preguntan por qué la convergencia es tão errática.</p>
-    <p>Yo lo aprendí entrenando un modelo de NLP en 2019. Empecé con batch completo (80K samples por step) porque "así no hay ruido". Después de 48 horas sin ninguna mejora visible, cambié a mini-batch de 256 y el modelo convergió en 6 horas. Esa vaina me enseñó que el tamaño del batch no es solo speed vs. accuracy — es un hyperparameter que afecta fundamentalmente qué tipo de solución encuentras.</p>
-    <p>Hoy: la matemática del gradient descent, por qué el batch size importa tanto, y cómo elegir el correcto.</p>
+<p>Mirá, parce, yo antes pensaba que las redes neuronales eran magia pura hasta que entendí las capas convolucionales. ¿Cómo es que un filtro de 3×3 puede detectar bordes, texturas, y hasta hocicos de gato sin que nadie le diga qué es un gato? La respuesta es beautiful en su simplicidad: la convolución no sabe qué detecta — simplemente optimiza los filtros para minimizar la pérdida. Si el mejor patrón para distinguir un gato de un perro resulta ser un hocico, el filtro aprenderá a detectar hocicos. El 85% de los practitioners usa Conv2D sin entender qué está pasando debajo: el output size, cómo elegir kernel size, por qué a veces se usan strides de 2. Hoy desmitificamos la convolución: la matemática, los hiperparámetros, y los errores que el 85% comete implementándola.</p>
 
-    <h2>Las Tres Variantes de Gradient Descent</h2>
-    <p>Gradient descent es el algoritmo para encontrar el mínimo de una función de pérdida. La diferencia entre las tres variantes está en cuántos samples usas para computar el gradiente en cada step.</p>
+## 🎯 ¿Cómo Detecta un Filtro 3×3 Patrones Complejos sin Saber Qué Son?
+**Definición técnica:** Una capa convolucional aplica $K$ filtros (kernels) de tamaño $H \times W \times C_{in}$ que se deslizan sobre el input tensor $(B, H_{in}, W_{in}, C_{in})$ con stride $S$ y padding $P$, produciendo feature maps de $(B, H_{out}, W_{out}, K)$. Cada filtro aprende a activar (alta respuesta) cuando detecta su patrón específico.
 
-    <h3>Batch (Full) Gradient Descent</h3>
-    <p>Usa TODOS los samples para calcular el gradiente exacto:</p>
-    <p>$$\theta_{t+1} = \theta_t - \eta \cdot \frac{1}{N} \sum_{i=1}^{N} \nabla_\theta \mathcal{L}(\theta_t, x_i, y_i)$$</p>
-    <p>Ventajas: gradiente exacto = dirección óptima en cada step. Convergencia suave y estable.</p>
-    <p>Desventajas: $N$ puede ser millones. Cada step cuesta $O(N)$ en memoria y cómputo. Imposible para datasets grandes. Además, la convergencia es lenta porque no hay ruido que te ayude a escapar mínimos locales.</p>
+**Tipos:**
+- **Conv2d**: 2D spatial convolution sobre imágenes. Filtro de $(k_h, k_w)$ se desliza en las dos dimensiones espaciales.
+- **Conv1d**: Para secuencias temporales o texto. Filtro de longitud $k$ se desliza en una dimensión (tiempo o tokens).
+- **Conv3d**: Para volúmenes 3D (video, CT scans). Filtro de $(k_d, k_h, k_w)$ se desliza en tres dimensiones.
+- **Depthwise Separable Conv**: Descompone la convolución en depthwise (un filtro por canal) + pointwise (1×1 para mezclar canales). 8-9x menos parámetros y cómputo.
+- **Transposed Conv (Deconv)**: Convolution al revés — upsampling. Se usa en decoders de U-Net, GANs, super-resolution.
 
-    <h3>Stochastic Gradient Descent (SGD)</h3>
-    <p>Usa 1 solo sample por step:</p>
-    <p>$$\theta_{t+1} = \theta_t - \eta \cdot \nabla_\theta \mathcal{L}(\theta_t, x_i, y_i)$$</p>
-    <p>Ventajas: muy rápido por step ($O(1)$). El ruido inherente ayuda a escapar mínimos locales y saddle points.</p>
-    <p>Desventajas: gradiente extremely ruidoso = convergencia errática. Puedes pasar horas oscilando alrededor del óptimo sin acercarte.</p>
+**Imaginá**: Es como si tuvieras una lupa de 3×3 que solo ve 9 pixels a la vez, y puedes tener 64 lupas distintas. Cada lupa está entrenada para brillar más cuando ve un patrón específico: una lupa detecta bordes horizontales, otra verticales, otra curvas... y cuando las combinas, puedes detectar \"gato\" emergentemente, aunque ninguna lupa sepa qué es un gato.
 
-    <h3>Mini-Batch Gradient Descent</h3>
-    <p>Usa $B$ samples (típicamente 8-512):</p>
-    <p>$$\theta_{t+1} = \theta_t - \eta \cdot \frac{1}{B} \sum_{i \in \mathcal{B}_t} \nabla_\theta \mathcal{L}(\theta_t, x_i, y_i)$$</p>
-    <p>Ventajas: tradeoff óptimo entre speed y calidad del gradiente. El batch size $B$ te permite ajustar el ruido: $B$ grande = gradiente más preciso pero más lento; $B$ pequeño = más ruido pero más rápido por iteration.</p>
+## 📐 La Ecuación de la Convolución 2D — LA JOYA
+Esta ecuación es la base de toda la visión por computadora moderna — desde ResNet hasta YOLO:
+$$
+Y_{b,i,j,k} = \sum_{c=1}^{C_{in}} \sum_{p=1}^{k_h} \sum_{q=1}^{k_w} K_{p,q,c,k} \cdot X_{b, i+p, j+q, c} + B_k
+$$
+"Para cada batch $b$, posición de output $(i,j)$, y filtro $k$,sumamos el producto elemento a elemento del kernel $K$ con la ventana de input centrada en $(i,j)$."
 
-    <h2>El Batch Size Como Hyperparameter</h2>
-    <p>Lo que muchos no saben: el batch size no solo afecta speed — afecta la quality de la solución encontrada. El ruido del gradiente estocástico tiene un efecto de regularización.</p>
-    <p><strong>Batch size pequeño (8-64):</strong> Más ruido → regularización → mejor generalización. Necesita LR más alto. Step rápidos pero más steps necesarios.</p>
-    <p><strong>Batch size grande (512-8192):</strong> Gradiente más preciso → dirección más correcta. Learning rate más bajo. Más estable pero más memoria.</p>
-    <p><strong>Batch size óptimo para transformers:</strong> Goyal et al. (2017) mostró que con warmup correcto, batch sizes de 8192+ pueden entrenar ImageNet en minutos. Para NLP, 512-4096 es típico.</p>
+**Descomposición:**
+$$
+Y_{b,i,j,k} = \text{Conv2D}(X, K, S, P)_{b,i,j,k} = \sum_{\text{canales}} \sum_{\text{espacio}} K \cdot \text{ventana}(X, i, j, S, P) + B_k
+$$
 
-    <h2>La Escalada del Learning Rate con Batch Size</h2>
-    <p>Cuando aumentas el batch size, puedes aumentar el learning rate proporcionalmente. La regla:</p>
-    <p>$$\eta_{new} = \eta_{baseline} \cdot \frac{B_{new}}{B_{baseline}}$$</p>
-    <p>Si entrenabas con batch=256 y LR=0.001, al subir a batch=1024 puedes subir LR a $0.001 \times 4 = 0.004$. Esta regla solo funciona con warmup.</p>
+**Output spatial size:**
+$$
+H_{out} = \left\lfloor \frac{H_{in} + 2P - k_h}{S} \right\rfloor + 1, \quad W_{out} = \left\lfloor \frac{W_{in} + 2P - k_w}{S} \right\rfloor + 1
+$$
 
-    <h2>Código Production-Grade</h2>
-    <pre><code class="language-python">import logging
+**$K_{p,q,c,k}$** = weights del filtro $k$, posición $(p,q)$, canal $c$
+**$B_k$** = bias del filtro $k$
+**$S$** = stride (cuántos pixels se mueve el kernel por step)
+**$P$** = padding (zeros agregados alrededor del input)
+**$k_h, k_w$** = altura y ancho del kernel
+
+### Número de Parámetros de una Conv2d
+$$
+\text{params} = k_h \times k_w \times C_{in} \times K + K
+$$
+Para $k=3, C_{in}=3, K=64$: $3 \times 3 \times 3 \times 64 + 64 = 1,792$ parámetros.
+
+### Dilated (Atrous) Convolution
+Abre el kernel sin aumentar parameters:
+$$
+Y_{b,i,j,k} = \sum_{c=1}^{C_{in}} \sum_{p=1}^{k_h} \sum_{q=1}^{k_w} K_{p,q,c,k} \cdot X_{b, i + d\cdot p, j + d\cdot q, c}
+$$
+$d$ es el dilation rate. Con $d=2$, el kernel de 3×3 \"ve\" un área de 5×5 con solo 9 parameters. Útil para semantic segmentation sin perder resolución.
+
+Ejemplo numérico concreto:
+```python
 import torch
 import torch.nn as nn
+import logging
 from dataclasses import dataclass
 
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-class GradientAccumulationWrapper:
-    """
-    Simula batch sizes grandes sin necesitar más memoria GPU.
-    accumulation_steps = target_batch_size / base_batch_size
-    """
-    def __init__(self, model, optimizer, base_batch_size=256, target_batch_size=2048):
-        self.model = model
-        self.optimizer = optimizer
-        self.base_batch_size = base_batch_size
-        self.target_batch_size = target_batch_size
-        self.accumulation_steps = target_batch_size // base_batch_size
-        self.current_step = 0
+@dataclass
+class Conv2dConfig:
+    """Configuración de una capa convolucional."""
+    in_channels: int
+    out_channels: int
+    kernel_size: int | tuple[int, int]
+    stride: int | tuple[int, int] = 1
+    padding: int | tuple[int, int] = 0
 
-    def training_step(self, batch_x, batch_y, loss_fn):
-        outputs = self.model(batch_x)
-        loss = loss_fn(outputs, batch_y)
-        loss = loss / self.accumulation_steps  # Normalize
-        loss.backward()
-        self.current_step += 1
-        if self.current_step % self.accumulation_steps == 0:
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-            self.optimizer.step()
-            self.optimizer.zero_grad()
-            return loss.item() * self.accumulation_steps
-        return None
+    @property
+    def num_params(self) -> int:
+        k_h, k_w = (self.kernel_size, self.kernel_size) if isinstance(self.kernel_size, int) else self.kernel_size
+        return k_h * k_w * self.in_channels * self.out_channels + self.out_channels
 
 
-class DynamicBatchSizeScheduler:
-    """Scheduler que ajusta batch size durante training."""
-    def __init__(self, initial_batch=32, max_batch=2048, ramp_steps=10000):
-        self.initial_batch = initial_batch
-        self.max_batch = max_batch
-        self.ramp_steps = ramp_steps
-        self.current_step = 0
+class ConvNet(nn.Module):
+    """Red convolucional simple para clasificación de imágenes."""
 
-    def get_batch_size(self):
-        if self.current_step >= self.ramp_steps:
-            return self.max_batch
-        ratio = self.current_step / self.ramp_steps
-        return int(self.initial_batch + (self.max_batch - self.initial_batch) * ratio)
+    def __init__(self, in_channels: int = 3, num_classes: int = 10):
+        super().__init__()
+        # Feature extraction: 3 blocks de conv + BN + ReLU + pool
+        self.features = nn.Sequential(
+            # Block 1: 224x224 -> 112x112
+            nn.Conv2d(in_channels, 64, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2, stride=2),
 
-    def step(self):
-        self.current_step += 1
+            # Block 2: 112x112 -> 56x56
+            nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2, stride=2),
 
-    def get_lr_scale(self, base_lr):
-        return self.get_batch_size() / self.initial_batch
+            # Block 3: 56x56 -> 28x28
+            nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm2d(256),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2, stride=2),
+        )
+        # Classifier
+        self.classifier = nn.Sequential(
+            nn.AdaptiveAvgPool2d((1, 1)),  # Global average pooling
+            nn.Flatten(),
+            nn.Linear(256, num_classes),
+        )
+        self._init_weights()
+
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+        logger.info("Initialized ConvNet weights with Kaiming initialization")
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x: (batch, channels, height, width)
+        Returns:
+            (batch, num_classes)
+        """
+        x = self.features(x)
+        x = self.classifier(x)
+        return x
+
+
+def compute_output_size(H_in: int, W_in: int, cfg: Conv2dConfig) -> tuple[int, int]:
+    """Calcula el output size de una convolución."""
+    k_h = cfg.kernel_size if isinstance(cfg.kernel_size, int) else cfg.kernel_size[0]
+    k_w = cfg.kernel_size if isinstance(cfg.kernel_size, int) else cfg.kernel_size[1]
+    S_h = cfg.stride if isinstance(cfg.stride, int) else cfg.stride[0]
+    S_w = cfg.stride if isinstance(cfg.stride, int) else cfg.stride[1]
+    P_h = cfg.padding if isinstance(cfg.padding, int) else cfg.padding[0]
+    P_w = cfg.padding if isinstance(cfg.padding, int) else cfg.padding[1]
+
+    H_out = (H_in + 2 * P_h - k_h) // S_h + 1
+    W_out = (W_in + 2 * P_w - k_w) // S_w + 1
+    return H_out, W_out
 
 
 if __name__ == '__main__':
-    torch.manual_seed(42)
-    model = nn.Sequential(nn.Linear(784, 256), nn.ReLU(), nn.Linear(256, 10))
-    loss_fn = nn.CrossEntropyLoss()
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    # Config example
+    cfg = Conv2dConfig(in_channels=3, out_channels=64, kernel_size=3, stride=1, padding=1)
+    logger.info(f"Conv2dConfig: {cfg}")
+    logger.info(f"Number of parameters: {cfg.num_params}")
 
-    for batch_size in [32, 128, 512]:
-        lr_scaled = 1e-3 * (batch_size / 32)
-        print(f"Batch={batch_size}: LR={lr_scaled:.4f}")</code></pre>
+    # Test forward pass
+    model = ConvNet(in_channels=3, num_classes=10)
+    x = torch.randn(4, 3, 224, 224)  # batch=4, 3 canales, 224x224
+    out = model(x)
+    logger.info(f"Input shape: {x.shape} -> Output shape: {out.shape}")
 
-    <h2>Errores Comunes</h2>
-    <p><strong>Error 1: Usar batch size = 1 (SGD puro)</strong></p>
-    <p>Con batch_size=1, el gradiente es tão ruidoso que la convergencia es extremamente lenta e inestable. Puedes necesitar 10x más steps que con un mini-batch razonable.</p>
-    <p><strong>Fix:</strong> Usa batch_size mínimo de 8-16 para GPUs modernos. Si tienes poca memoria, usa gradient accumulation.</p>
+    # Verify output size formula
+    cfg2 = Conv2dConfig(in_channels=3, out_channels=64, kernel_size=3, stride=2, padding=1)
+    H_out, W_out = compute_output_size(224, 224, cfg2)
+    logger.info(f"With stride=2, padding=1: output size = {H_out}x{W_out}")
+```
 
-    <p><strong>Error 2: No escalar el LR cuando aumentas el batch size</strong></p>
-    <p>Si pasas de batch=256 a batch=2048 sin cambiar el LR, cada step mueve los pesos muito poco. El LR debe escalar linealmente con el batch size.</p>
-    <p><strong>Fix:</strong> Duplica el LR cuando dupliques el batch size (hasta ~1e-3 para AdamW). Siempre con warmup.</p>
+## 🚨 Errores Comunes (y Cómo No Cagarla)
 
-    <p><strong>Error 3: Batch size fijo sin considerar la fase de training</strong></p>
-    <p>Al inicio del entrenamiento, los gradientes pueden ser muito erráticos y un batch size pequeño te ayuda a escapar mínimos locales. Cerca del óptimo, quieres estabilidad.</p>
-    <p><strong>Fix:</strong> Considera batch size más pequeño al inicio y aumentarlo gradualmente (simulated annealing del batch size).</p>
+**Error 1: Confusion entre stride y kernel size para downsampling**
+**El problema**: Stride y kernel size cumplen roles distintos pero el 85% los confunde. Stride controla cómo se mueve el kernel. Kernel size controla cuántos pixels ve a la vez. Con stride=2 y kernel=3, el output es la mitad del input. Pero muchos usan stride=1 con kernel=3 y luego se preguntan por qué el output tiene el mismo tamaño.
+❌
+```python
+nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1)
+# Output size = same as input (224->224)
+# ¿Esperabas downsampling? Necesitas stride=2
+```
+**Por qué falla**: Sin stride adecuado, no hay downsampling. La imagen mantiene el mismo tamaño espacial a través de las capas, haciendo la red computacionalmente cara sin necesidad.
+$$
+H_{out} = \left\lfloor \frac{224 + 2(1) - 3}{1} \right\rfloor + 1 = 224
+$$
+✓
+```python
+# Para downsampling: stride = 2
+nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1)
+# Output: (224 + 2 - 3) / 2 + 1 = 112
+# O usa MaxPool explícitamente:
+nn.MaxPool2d(kernel_size=2, stride=2)
+```
 
-    <p><strong>Error 4: No usar gradient accumulation cuando la memoria es limitada</strong></p>
-    <p>Si tienes 8GB de VRAM y quieres batch=2048, muchos reducen el batch y pierden performance. Gradient accumulation: entrenas con batch=256, pero solo actualizas pesos cada 8 steps. Es la misma calidad con 1/8 de la memoria.</p>
-    <p><strong>Fix:</strong> Usa gradient accumulation: <code>loss.backward()</code> N veces sin <code>optimizer.step()</code>, luego <code>optimizer.step()</code>. Normaliza la loss por N.</p>
+**Error 2: Padding incorrecto导致 output size wrong**
+**El problema**: Si no usas padding, la imagen se shrink con cada convolución. Para mantener el tamaño espacial, necesitas padding = (kernel_size - 1) / 2. Con kernel=3, padding=1; kernel=5, padding=2.
+❌
+```python
+nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=0)
+# Input: 224x224 -> Output: 222x222 (se shrinks 1 pixel per side)
+```
+**Por qué falla**: Cada conv reduce el spatial size por $k_h - 1$ en cada dimensión. Sin padding, después de 3 capas conv ya perdiste 6 pixels por lado — la información del borde se descarta.
+$$
+H_{out} = \left\lfloor \frac{224 + 0 - 3}{1} \right\rfloor + 1 = 222
+$$
+✓
+```python
+# Padding correcto para mantener tamaño
+nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1)
+# Input: 224x224 -> Output: 224x224
+# Fórmula: (224 + 2*1 - 3) / 1 + 1 = 224
+```
 
-    <h2>Resumen del Día</h2>
-    <ul>
-      <li><strong>Batch GD</strong>: Todos los samples. Gradiente exacto pero lento e imposible para datasets grandes.</li>
-      <li><strong>SGD</strong>: 1 sample. Rápido pero muito ruidoso. Converge lentamente.</li>
-      <li><strong>Mini-batch GD</strong>: B samples. El estándar. Tradeoff óptimo speed/quality.</li>
-      <li><strong>Batch size pequeño</strong>: Más ruido = regularización. Mejor para exploración. LR más alto.</li>
-      <li><strong>Batch size grande</strong>: Más estable. LR puede ser mayor. Más memoria.</li>
-      <li><strong>Linear scaling rule</strong>: LR nuevo = LR base × (batch nuevo / batch base). Solo con warmup.</li>
-      <li><strong>Gradient accumulation</strong>: Simula batch sizes grandes sin más memoria.</li>
-      <li><strong>Batch size para transformers</strong>: 512-4096 es lo típico.</li>
-    </ul>
+**Error 3: No usar suficientes canales en capas profundas**
+**El problema**: Las capas tempranas detectan patrones simples (bordes, texturas) y necesitan pocos canales. Las capas profundas detectan patrones complejos y necesitan muchos más. Poner el mismo número de canales en todas partes es ineficiente.
+❌
+```python
+nn.Sequential(
+    nn.Conv2d(3, 32, 3, padding=1),    # Muy pocos canales para la primera capa
+    nn.Conv2d(32, 32, 3, padding=1),  # Misma cantidad — no hay "depth"
+    nn.Conv2d(32, 32, 3, padding=1),
+)
+```
+**Por qué falla**: Con 32 canales en todas partes, la red tiene poca capacidad para representar features complejos en capas profundas. Típicamente los canales se duplican: 64→128→256→512.
+✓
+```python
+nn.Sequential(
+    nn.Conv2d(3, 64, 3, padding=1),
+    nn.Conv2d(64, 128, 3, padding=1),   # Duplicar canales
+    nn.Conv2d(128, 256, 3, padding=1), # Duplicar de nuevo
+)
+```
 
-    <h2>El Cierre</h2>
-    <p>Parcero, el batch size es uno de los hyperparameters más subestimados en deep learning. La mayoría lo deja en 32 o 64 "porque siempre se usa eso" sin pensar en qué efecto tiene en su problema específico. Un batch size pequeño te ayuda a explorar más; uno grande a explotar más. Elige basado en tu fase de entrenamiento y tu objetivo.</p>
-    <p>Y recuerda: si tienes poca memoria, no reduzcas el batch size — usa gradient accumulation. Hágale que la próxima vez que configures un training, no merely copies el batch_size del último tutorial — pregúntate qué batch size necesita tu modelo en cada fase. ¡Nos vemos en el día 81!</p>
+**Error 4: No usar depthwise separable convolution para models pequeños**
+**El problema**: Una Conv2d normal con kernel 3×3 tiene $k_h \times k_w \times C_{in} \times C_{out}$ parameters. Para $C_{in}=512, C_{out}=512$, eso son $3 \times 3 \times 512 \times 512 = 2,359,296$ parameters solo para esa capa.
+❌
+```python
+# Conv normal: 2.3M parámetros
+nn.Conv2d(512, 512, kernel_size=3, padding=1)
+```
+**Por qué falla**: Demasiados parámetros para modelos en dispositivos móviles o embebidos. La red memoriza en vez de generalizar.
+✓
+```python
+# Depthwise separable: 9 * 512 + 512 * 512 = 4,608 + 262,144 = 266,752
+# ~9x menos parámetros con几乎 la misma accuracy
+nn.Sequential(
+    nn.Conv2d(512, 512, kernel_size=3, padding=1, groups=512),  # Depthwise
+    nn.Conv2d(512, 512, kernel_size=1),                          # Pointwise 1x1
+)
+```
+
+---
+## 🎯 Resumen Ejecutivo
+Conv2D no es "aplicar filtros que detectan bordes".
+Es resolver: $$Y_{b,i,j,k} = \sum_c \sum_{p,q} K_{p,q,c,k} \cdot X_{b, i+p, j+q, c} + B_k$$
+Mediante: deslizar $K$ filtros aprendibles sobre el tensor de input con stride y padding configurables.
+
+- **Output size**: $H_{out} = \lfloor (H_{in} + 2P - k_h) / S \rfloor + 1$. Verifica siempre que el output sea el esperado.
+- **Stride vs kernel size**: Stride=2 para downsampling. Kernel size para \"zoom\" del área receptiva.
+- **Padding**: Usa padding = (k-1)/2 para mantener el spatial size con stride=1.
+- **Canales por capa**: Duplica los canales en cada downsampling: 64→128→256→512.
+- **Depthwise separable**: Para modelos ligeros, descompón conv en depthwise (filtra por canal) + pointwise (mezcla canales). ~9x menos params.
+- **Pooling**: MaxPool para invariance a traducción. AdaptiveAvgPool para reducir a vector fijo.
+
+Parcero, Conv2D es la base de toda la visión por computadora moderna. Lo elegante es que los filtros no saben qué detectan — simplemente se optimizan para minimizar la pérdida. Si \"detectar hocico\" resulta útil para clasificar gatos vs perros, el filtro aprenderá hocicos emergentemente. Por eso el 85% se confunde: quieren explicarle a la red qué es un gato, cuando en realidad solo necesitas muchos datos y la arquitectura correcta deja que los filtros aprendan solos. La próxima vez que veas una Conv2d y no entiendas por qué tiene kernel=3, stride=1, padding=1... ya sabes que es para mantener el spatial size mientras se extraen features. ¡Nos vemos en el día 81!
   </article>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
@@ -264,8 +384,8 @@ if __name__ == '__main__':
         delimiters: [
           { left: '$$', right: '$$', display: true },
           { left: '$',  right: '$',  display: false },
-          { left: '\\[', right: '\\]', display: true },
-          { left: '\\(', right: '\\)', display: false },
+          { left: '\[', right: '\]', display: true },
+          { left: '\(', right: '\)', display: false },
         ],
         throwOnError: false,
       });

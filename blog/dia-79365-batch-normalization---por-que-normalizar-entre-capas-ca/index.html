@@ -118,220 +118,229 @@ nav {
   </header>
 
   <article class="article-body">
-    <h2>La Intro que el 85% Se Salta</h2>
-    <p>Parcero, ¿sabes qué pasó cuando una empresa fintech me contrató para revisar su modelo de detección de fraude? Tenían un modelo con 97% de accuracy. Brillante, ¿no? Cuando excavé un poco más, descubrí que su dataset tenía 97% de transacciones legítimas y 3% de fraude. Su "modelo brillante" predecía "legítimo" para TODO. Accuracy de 97% pero detectaba cero fraudes. Ese modelo valía exactamente $0.</p>
-    <p>Ahí aprendí que accuracy es una métrica mentirosa cuando hay desbalance de clases. Y que precision, recall, y F1-score son las métricas reales que necesitas conocer. El 85% mira accuracy y se declara ganador, pero cuando el negocio tiene costos asimétricos (un fraude cuesta $500, un false positive cuesta $5), la historia es completamente diferente.</p>
-    <p>Hoy: todas las métricas que el 85% malinterpreta y cómo implementarlas correctamente.</p>
+<p>A que no sabías, parce, que el paper de Batch Normalization de 2015 fue uno de los cambios más bruscos que ha tenido el deep learning? Antes de BatchNorm, entrenar redes de más de 10 capas era una pesadilla — había que usar trucos como initialization cuidadosa, non-saturating activations (ReLU), y normalización por layer. El 85% de los practitioners ni siquiera sabe por qué funcionaban esos trucos. Después de BatchNorm, puedo entrenar una red de 100 capas en horas sin especiales cuidados. El secreto está en resolver el internal covariate shift: cuando las capas van actualizando sus pesos, la distribución de las activaciones de cada capa va cambiando. Esto hace que las capas siguientes tengan que adaptarse a una distribución que no para de moverse — como si te cambian el tamaño del guayo mientras estás jugando. BatchNorm congela la distribución de cada capa y listo. Eso permite learning rates más altos y convergencia más rápida. Vamos a destapar la matemática completa, los errores que el 85% comete con BatchNorm, y cómo implementarlo bien en PyTorch.</p>
 
-    <h2>La Matriz de Confusión: Tu Punto de Partida</h2>
-    <p>Antes de hablar de métricas, necesitamos la matriz de confusión. Para un problema binario (fraude sí/no, spam sí/no):</p>
-    <p>$$\begin{pmatrix} \text{TN} & \text{FP} \\ \text{FN} & \text{TP} \end{pmatrix}$$</p>
-    <p>Donde:</p>
-    <ul>
-      <li><strong>TN (True Negative)</strong>: Predijimos negativo y era negativo — bien</li>
-      <li><strong>FP (False Positive)</strong>: Predijimos positivo pero era negativo — alarma falsa</li>
-      <li><strong>FN (False Negative)</strong>: Predijimos negativo pero era positivo — missed</li>
-      <li><strong>TP (True Positive)</strong>: Predijimos positivo y era positivo — bien</li>
-    </ul>
-    <p>Para multiclase, la matriz se expande a $C \times C$ donde $C$ es el número de clases.</p>
+## 🎯 ¿Por Qué Normalizar Entre Capas y No Solo al Inicio?
+**Definición técnica:** Batch Normalization normaliza las activaciones de una capa para cada mini-batch, aprendiendo dos parámetros entrenables ($\gamma$ y $\beta$) que permiten desnormalizar si la normalización perjudica. Aplica la normalización antes de la activación: $\text{BN}(x) = \gamma \odot \frac{x - \mu_B}{\sqrt{\sigma_B^2 + \epsilon}} + \beta$.
 
-    <h2>Accuracy: La Métrica Mentirosa</h2>
-    <p>$$\text{Accuracy} = \frac{\text{TP} + \text{TN}}{\text{TP} + \text{TN} + \text{FP} + \text{FN}}$$</p>
-    <p>Accuracy es la proporción de predicciones correctas. Su problema: es terrible cuando las clases están desbalanceadas. Si tienes 97% negativo y 3% positivo, un modelo que predice TODO negativo tiene 97% accuracy pero cero utilidad práctica.</p>
-    <p><strong>Cuándo es útil:</strong> Clases balanceadas, o cuando el costo de FP y FN es simétrico.</p>
+**Tipos:**
+- **BatchNorm1d**: Para capas lineales (Linear) con vectores de tamaño (batch, features).维护 running statistics.
+- **BatchNorm2d**: Para capas convolucionales con tensores (batch, channels, H, W). Normaliza por canal.
+- **LayerNorm**: Normaliza por muestra, no por batch. $\gamma$ y $\beta$ por feature. No usa estadísticas del batch.
+- **InstanceNorm**: Normaliza por canal y spatial location independently. Común en style transfer.
+- **GroupNorm**: Divide canales en grupos. Independencia del batch size — batch-free.
 
-    <h2>Precision: ¿Cuántas de mis predicciones positivas son correctas?</h2>
-    <p>$$\text{Precision} = \frac{\text{TP}}{\text{TP} + \text{FP}}$$</p>
-    <p>Precision responde: "de todas las veces que dije positivo, ¿cuántas realmente lo eran?" Alta precision = bajo false positive rate. En detección de spam: si tienes precision 90%, de cada 10 emails que marcaste como spam, 9 realmente eran spam y 1 era legítimo (terrible para el usuario).</p>
-    <p><strong>Cuándo maximizar precision:</strong> Cuando los FP son Costly (e.g., spam detection donde marcar un email importante como spam es muy malo, o en sistemas médicos donde un falso positivo causa estrés y procedimientos innecesarios).</p>
+**Imaginá**: Es como si en un equipo de fútbol, en lugar de que cada jugador entrene con cualquier tipo de balón (grande, pequeño, pesado), todos usaran exactamente el mismo balón estándar. Así el portero sabe exactamente cómo va a rebotar el balón y puede entrenarse correctamente, sin importar qué balón usó el defensa en el entrenamiento anterior.
 
-    <h2>Recall: ¿Cuántos de los positivos reales encontré?</h2>
-    <p>$$\text{Recall} = \frac{\text{TP}}{\text{TP} + \text{FN}}$$</p>
-    <p>Recall responde: "de todos los positivos que existían, ¿cuántos encontré?" Alta recall = bajo false negative rate. En detección de cáncer: si tienes recall 95%, detectaste el 95% de los cánceres reales. El 5% que te perdiste son personas con cáncer que no fueron detectadas — eso es un costo enorme.</p>
-    <p><strong>Cuándo maximizar recall:</strong> Cuando los FN son Costly (e.g., detección de enfermedades, detección de fraude, seguridad — perder un caso positivo es peor que investigar un falso positivo).</p>
+## 📐 La Ecuación del Batch Normalization — LA JOYA
+Esta ecuación es la razón por la que hoy puedes entrenar redes de 100 capas sin que se te caiga el gradiente:
+$$
+\hat{x}_i = \frac{x_i - \mu_B}{\sqrt{\sigma_B^2 + \epsilon}}, \quad y_i = \gamma \hat{x}_i + \beta
+$$
+"Durante training, $\mu_B = \frac{1}{m}\sum x_i$ y $\sigma_B^2 = \frac{1}{m}\sum(x_i - \mu_B)^2$ se calculan sobre el mini-batch actual. Durante inference, se usan los running statistics acumulados durante training."
 
-    <h2>F1-Score: El Balance Entre Precision y Recall</h2>
-    <p>$$\text{F1} = 2 \cdot \frac{\text{Precision} \cdot \text{Recall}}{\text{Precision} + \text{Recall}}$$</p>
-    <p>F1 es la media armónica de precision y recall. ¿Por qué media armónica y no media aritmética? Porque la media armónica penaliza más los casos donde una de las dos métricas es baja. Si precision=1.0 y recall=0.0, la media aritmética sería 0.5 pero F1 sería 0.0 — refleja mejor que el modelo es inútil.</p>
-    <p><strong>Cuándo usar F1:</strong> Cuando quieres balance entre precision y recall y las clases pueden estar desbalanceadas. F1 es la métrica default cuando no sabes qué optimizar.</p>
+**$\mu_B$** = media del batch actual
+**$\sigma_B^2$** = varianza del batch actual
+**$\gamma$** = parámetro de escala aprendido (inicializado en 1)
+**$\beta$** = parámetro de sesgo aprendido (inicializado en 0)
+**$\epsilon$** = constante pequeña ($10^{-5}$) para evitar división por cero
 
-    <h2>El Support y el Classification Report</h2>
-    <pre><code class="language-python">from sklearn.metrics import classification_report, confusion_matrix
-import pandas as pd
+### Derivación de por qué funciona: Internal Covariate Shift
+El problema original que BatchNorm resuelve:
+$$
+\mu^{(l-1)} \rightarrow \theta^{(l-1)} \rightarrow \mu^{(l)} \rightarrow \theta^{(l)} \rightarrow \ldots
+$$
+Cada actualización de pesos cambia la distribución de activaciones que la capa siguiente recibe. Esto fuerza a cada capa a adaptarse continuamente a una distribución cambiante — ineficiente y lento.
 
-y_true = [1, 0, 1, 1, 0, 0, 1, 0, 0, 1]
-y_pred = [1, 0, 1, 0, 0, 1, 1, 0, 1, 1]
+BatchNorm fija la distribución:
+$$
+\mu_B^{(l)} \approx \text{constante}, \quad \sigma_B^{(l)} \approx \text{constante}
+$$
+La red puede ahora concentrar su energía en aprender, no en compensar distribuciones cambiantes.
 
-# Reporte completo
-print(classification_report(y_true, y_pred, target_names=['Negativo', 'Positivo']))
+### Inferencia: Running Statistics
+Durante training se mantienen promedios exponenciales:
+$$
+\mu_{\text{running}} = (1 - \text{momentum}) \cdot \mu_{\text{running}} + \text{momentum} \cdot \mu_B
+$$
+$$
+\sigma^2_{\text{running}} = (1 - \text{momentum}) \cdot \sigma^2_{\text{running}} + \text{momentum} \cdot \sigma^2_B
+$$
+Durante inference:
+$$
+y = \frac{\gamma}{\sqrt{\sigma^2_{\text{running}} + \epsilon}} \cdot x + \left(\beta - \frac{\gamma \mu_{\text{running}}}{\sqrt{\sigma^2_{\text{running}} + \epsilon}}\right)
+$$
 
-# Output:
-#               precision    recall  f1-score   support
-#     Negativo       0.75      0.60      0.67         5
-#     Positivo       0.67      0.80      0.73         5
-#     accuracy                           0.70        10
-#    macro avg       0.71      0.70      0.69        10
-# weighted avg       0.71      0.70      0.69        10
-
-# Matriz de confusión
-cm = confusion_matrix(y_true, y_pred)
-print("Confusion Matrix:")
-print(cm)
-# [[TN FP]
-#  [FN TP]]</code></pre>
-
-    <h2>Código Production-Grade</h2>
-    <pre><code class="language-python">import logging
-import numpy as np
+Ejemplo numérico concreto:
+```python
 import torch
-from dataclasses import dataclass
-from typing import Literal
-from sklearn.metrics import (
-    accuracy_score, precision_score, recall_score, f1_score,
-    confusion_matrix, classification_report,
-    roc_auc_score, precision_recall_curve, average_precision_score
-)
+import torch.nn as nn
+import logging
 
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class MetricsResult:
-    accuracy: float
-    precision: float
-    recall: float
-    f1: float
-    tn: int; fp: int; fn: int; tp: int
-    support_pos: int; support_neg: int
-    roc_auc: float | None = None
-    pr_auc: float | None = None
+class BatchNormedMLP(nn.Module):
+    """MLP con BatchNorm entre capas lineales y activaciones."""
+
+    def __init__(self, input_dim: int, hidden_dims: list[int], output_dim: int):
+        super().__init__()
+        layers = []
+        prev_dim = input_dim
+        for i, h_dim in enumerate(hidden_dims):
+            layers.extend([
+                nn.Linear(prev_dim, h_dim),
+                nn.BatchNorm1d(h_dim),   # Normaliza ANTES de la activación
+                nn.ReLU(),
+            ])
+            prev_dim = h_dim
+        layers.append(nn.Linear(prev_dim, output_dim))
+        self.net = nn.Sequential(*layers)
+        logger.info(f"Built BatchNormedMLP: {hidden_dims}")
+
+    def forward(self, x: torch.Tensor, training: bool | None = None) -> torch.Tensor:
+        """
+        Args:
+            x: (batch, input_dim)
+            training: override para mode. Si None, usa self.training.
+        Returns:
+            (batch, output_dim)
+        """
+        if training is None:
+            training = self.training
+        return self.net(x)
 
 
-class BinaryClassificationMetrics:
-    """Métricas completas para clasificación binaria con logging."""
+def demonstrate_bn_stats():
+    """Muestra cómo BatchNorm mantiene running statistics."""
+    bn = nn.BatchNorm1d(4, momentum=0.1)
+    bn.train()
 
-    def __init__(self, threshold: float = 0.5):
-        self.threshold = threshold
+    # Simular 3 mini-batches
+    batches = [
+        torch.tensor([[1., 2., 3., 4.]]),
+        torch.tensor([[10., 20., 30., 40.]]),
+        torch.tensor([[5., 10., 15., 20.]]),
+    ]
 
-    def compute(
-        self,
-        y_true: np.ndarray,
-        y_prob: np.ndarray | None = None,
-        y_pred: np.ndarray | None = None,
-    ) -> MetricsResult:
-        # Si tenemos probabilidades, threshold
-        if y_prob is not None:
-            y_pred = (y_prob >= self.threshold).astype(int)
-        elif y_pred is None:
-            raise ValueError("Provide either y_prob or y_pred")
+    for i, x in enumerate(batches):
+        out = bn(x)
+        logger.info(f"Batch {i}: input mean={x.mean():.2f}, output mean={out.mean():.4f}")
 
-        # Métricas base
-        acc = accuracy_score(y_true, y_pred)
-        prec = precision_score(y_true, y_pred, zero_division=0)
-        rec = recall_score(y_true, y_pred, zero_division=0)
-        f1 = f1_score(y_true, y_pred, zero_division=0)
-
-        # Matriz de confusión
-        tn, fp, fn, tp = confusion_matrix(y_true, y_pred, labels=[0, 1]).ravel()
-
-        result = MetricsResult(
-            accuracy=acc, precision=prec, recall=rec, f1=f1,
-            tn=tn, fp=fp, fn=fn, tp=tp,
-            support_pos=int(np.sum(y_true == 1)),
-            support_neg=int(np.sum(y_true == 0)),
-        )
-
-        # AUC solo si tenemos probabilidades
-        if y_prob is not None:
-            try:
-                result.roc_auc = roc_auc_score(y_true, y_prob)
-                result.pr_auc = average_precision_score(y_true, y_prob)
-            except ValueError:
-                pass
-
-        return result
-
-    def log_report(self, result: MetricsResult, prefix: str = ""):
-        p = f"{prefix}: " if prefix else ""
-        logger.info(f"{p}Accuracy={result.accuracy:.3f} | "
-                   f"P={result.precision:.3f} R={result.recall:.3f} F1={result.f1:.3f}")
-        logger.info(f"{p}Confusion: TN={result.tn} FP={result.fp} FN={result.fn} TP={result.tp}")
-        if result.roc_auc is not None:
-            logger.info(f"{p}ROC-AUC={result.roc_auc:.3f} | PR-AUC={result.pr_auc:.3f}")
-
-    def find_optimal_threshold(
-        self,
-        y_true: np.ndarray,
-        y_prob: np.ndarray,
-        metric: Literal['f1', 'recall', 'precision'] = 'f1',
-    ) -> float:
-        """Encuentra el threshold que maximiza una métrica."""
-        thresholds = np.linspace(0.01, 0.99, 99)
-        best_score, best_th = -1, 0.5
-
-        for th in thresholds:
-            y_p = (y_prob >= th).astype(int)
-            if metric == 'f1':
-                score = f1_score(y_true, y_p, zero_division=0)
-            elif metric == 'recall':
-                score = recall_score(y_true, y_p, zero_division=0)
-            else:
-                score = precision_score(y_true, y_p, zero_division=0)
-
-            if score > best_score:
-                best_score, best_th = score, th
-
-        self.threshold = best_th
-        logger.info(f"Optimal threshold={best_th:.3f} for {metric}={best_score:.3f}")
-        return best_th
+    # Cambiar a eval mode — usa running stats
+    bn.eval()
+    x_test = torch.tensor([[7., 14., 21., 28.]])
+    out_eval = bn(x_test)
+    logger.info(f"Eval mode: output mean={out_eval.mean():.4f}")
+    logger.info(f"Running stats: μ={bn.running_mean}, σ²={bn.running_var}")
 
 
 if __name__ == '__main__':
-    np.random.seed(42)
-    y_true = np.array([1]*50 + [0]*950)  # 5% positive class
-    y_prob = np.random.rand(1000) * (y_true * 0.8 + 0.2)  # noisy probabilities
+    demonstrate_bn_stats()
 
-    metrics = BinaryClassificationMetrics(threshold=0.5)
-    result = metrics.compute(y_true, y_prob)
-    metrics.log_report(result, "Imbalanced dataset")
+    # Verificar shapes
+    model = BatchNormedMLP(784, [256, 128, 64], 10)
+    x = torch.randn(32, 784)
+    out = model(x)
+    logger.info(f"Output shape: {out.shape}")  # (32, 10)
+```
 
-    optimal_th = metrics.find_optimal_threshold(y_true, y_prob, 'f1')
-    result_opt = metrics.compute(y_true, y_prob)
-    metrics.log_report(result_opt, "With optimal threshold")</code></pre>
+## 🚨 Errores Comunes (y Cómo No Cagarla)
 
-    <h2>Errores Comunes</h2>
-    <p><strong>Error 1: Solo mirar accuracy en datasets desbalanceados</strong></p>
-    <p>Este es el error que costing empresas millones. En un dataset con 95% negativos, un modelo que predice todo negativo tiene 95% accuracy pero es completamente inútil. El 85% ve "95% accuracy" y celebra.</p>
-    <p><strong>Fix:</strong> SIEMPRE mira la matriz de confusión primero. Luego precision, recall, y F1 por clase. Si las clases están desbalanceadas, accuracy no te dice nada útil.</p>
+**Error 1: BatchNorm en inferencia SIN model.eval()**
+**El problema**: En modo training, BatchNorm usa estadísticas del batch actual. En inferencia, si dejas `model.train()`, cada forward pass calcula media/varianza del batch de inferencia — predicciones inconsistentes para el mismo input.
+❌
+```python
+model.train()  # Modo training
+for batch_x, batch_y in test_loader:
+    output = model(batch_x)  # ¡Usa batch statistics, no running stats!
+```
+**Por qué falla**: Sin `model.eval()`, `BatchNorm` calcula $\mu_B, \sigma_B$ sobre cada mini-batch de inferencia en lugar de usar los `running_mean` y `running_var` acumulados durante training. Las predicciones varían según el batch.
+$$
+y_{\text{inference}} = \gamma \frac{x - \mu_B}{\sqrt{\sigma_B^2 + \epsilon}} + \beta \quad \text{(incorrecto)}
+$$
+✓
+```python
+model.eval()  # CRÍTICO: usa running statistics
+with torch.no_grad():
+    for batch_x, batch_y in test_loader:
+        output = model(batch_x)  # Consistente, usa running stats
+```
 
-    <p><strong>Error 2: Mezclar precision/recall de diferentes clases</strong></p>
-    <p>En problemas multiclase, sklearn te da precision/recall por clase y dos promedios: macro y weighted. "Macro avg" promedia las métricas de cada clase por igual (1/num_classes cada una). "Weighted avg" pesa por el support (número de samples de cada clase). Si tus clases están desbalanceadas, la métrica que te importa es weighted avg, no macro avg.</p>
-    <p><strong>Fix:</strong> Para problemas desbalanceados, mira siempre weighted avg y la métrica de la clase minoritaria específicamente.</p>
+**Error 2: BatchNorm con batch size de 1**
+**El problema**: BatchNorm necesita suficiente samples para estimar media y varianza decentemente. Con batch_size=1, la varianza es esencialmente cero (un solo sample no tiene varianza), y la normalización div / sqrt(0 + eps) explota.
+❌
+```python
+# Dataset de 1 sample por batch
+for batch_x, batch_y in DataLoader(dataset, batch_size=1):
+    output = model(batch_x)  # La normalización explota: σ² ≈ 0
+    loss = criterion(output, batch_y)
+    loss.backward()
+```
+**Por qué falla**: Con un solo sample, $\sigma_B^2 = 0$. La normalización $x - \mu_B / \sqrt{0 + \epsilon}$ amplifica el valor original por $1/\sqrt{\epsilon} \approx 3162$. Las activaciones explotan o se vuelven NaN.
+$$
+\sigma_B^2 = \frac{1}{1}\sum_{i=1}^{1}(x_i - \mu_B)^2 = 0
+$$
+✓
+```python
+# Batch size mínimo de 32 para BatchNorm
+for batch_x, batch_y in DataLoader(dataset, batch_size=32):
+    output = model(batch_x)
+    loss = criterion(output, batch_y)
+    loss.backward()
+# Si memoria limitada: usa LayerNorm o GroupNorm que no dependen del batch
+```
 
-    <p><strong>Error 3: No distinguir entre precision y recall en la toma de decisiones</strong></p>
-    <p>El 85% sabe que "precision y recall son importantes" pero no sabe cuál optimizar en su contexto específico. ¿Tu costo principal es el ruido (FP) o el missed (FN)? Si es FP → maximizar precision. Si es FN → maximizar recall. Si no estás seguro → maximizar F1.</p>
-    <p><strong>Fix:</strong> Antes de entrenar, define qué te duele más: un falso positivo (FP) o un falso negativo (FN). Eso determina qué métrica optimizar en tu classification_report.</p>
+**Error 3: Poner BatchNorm después de la activación**
+**El problema**: El paper original de BatchNorm especifica que debe ir antes de la no-linealidad. Si pones BatchNorm después de ReLU, normalizas valores que ya fueron clipped por ReLU — desperdicias la normalización.
+❌
+```python
+nn.Sequential(
+    nn.Linear(256, 256),
+    nn.ReLU(),           # Clippa valores negativos a 0
+    nn.BatchNorm1d(256), # Normalizar puros ceros y valores positivos — ineficiente
+)
+```
+**Por qué falla**: Después de ReLU, los valores negativos son 0. BatchNorm normaliza esta distribución, pero el scale $\gamma$ y shift $\beta$ tienen que aprender a "des-normalizar" el output. Es un trabajo innecesario.
+✓
+```python
+nn.Sequential(
+    nn.Linear(256, 256),
+    nn.BatchNorm1d(256), # Normaliza antes de ReLU
+    nn.ReLU(),           # ReLU recibe valores centrados en 0, media ~0
+)
+```
 
-    <p><strong>Error 4: No usar ROC-AUC ni PR-AUC para modelos con probabilidades</strong></p>
-    <p>Si tienes un modelo que output probabilities (no solo predicciones binarias), accuracy, precision, recall y F1 todas dependen de un threshold arbitrario (típicamente 0.5). ROC-AUC y PR-AUC te dan una medida de calidad del modelo INDEPENDIENTE del threshold.</p>
-    <p><strong>Fix:</strong> Si tu modelo output probabilidades, siempre calcula ROC-AUC (o PR-AUC si las clases están muy desbalanceadas) como métrica de calidad global del modelo. Úsalas para comparar modelos, no solo para elegir threshold.</p>
+**Error 4: Usar momentum default cuando necesitas statistics rápidos**
+**El problema**: El momentum por defecto de BatchNorm es 0.1 (10% del batch actual, 90% del history). Para datasets pequeños o online learning, esto actualiza muy lento los running stats.
+❌
+```python
+nn.BatchNorm1d(256, momentum=0.1)  # Actualiza running stats muy lento
+```
+**Por qué falla**: Con momentum=0.1 y 1000 batches por epoch, cada epoch solo contribute ~10% al running stat update. Necesitas muchas epochs para que los running stats converjan.
+$$
+\mu_{\text{running}} = 0.1 \cdot \mu_B + 0.9 \cdot \mu_{\text{running}}
+$$
+✓
+```python
+# Para datasets pequeños o online: momentum más alto = más peso al batch actual
+nn.BatchNorm1d(256, momentum=0.5)  # 50% batch actual, 50% history
+# Para datasets grandes donde el batch es representativo: 0.1 default está bien
+```
 
-    <h2>Resumen del Día</h2>
-    <ul>
-      <li><strong>Accuracy</strong>: Proporción de predicciones correctas. Mala para clases desbalanceadas.</li>
-      <li><strong>Precision</strong>: De las predicciones positivas, ¿cuántas eran correctas? Minimizar FP.</li>
-      <li><strong>Recall</strong>: De los positivos reales, ¿cuántos encontré? Minimizar FN.</li>
-      <li><strong>F1</strong>: Media armónica de P y R. Balance entre ambos. Buena para desbalance.</li>
-      <li><strong>Confusion Matrix</strong>: TN/FP/FN/TP. La base de todo. Mírala SIEMPRE primero.</li>
-      <li><strong>ROC-AUC</strong>: Calidad del modelo independiente del threshold. Para comparar modelos.</li>
-      <li><strong>PR-AUC</strong>: Mejor que ROC-AUC cuando las clases están muy desbalanceadas.</li>
-      <li><strong>Support</strong>: Número de samples por clase. Crítico para interpretar métricas.</li>
-      <li><strong>Threshold optimization</strong>: Encuentra el threshold que maximiza tu métrica objetivo.</li>
-    </ul>
+---
+## 🎯 Resumen Ejecutivo
+BatchNorm no es "normalizar los inputs al inicio".
+Es resolver: $$\min_\theta \mathbb{E}[||\nabla_{\hat{x}} \mathcal{L}||^2]$$ mediante: $$\hat{x} = \frac{x - \mu_B}{\sqrt{\sigma_B^2 + \epsilon}}, \quad y = \gamma \hat{x} + \beta$$
 
-    <h2>El Cierre</h2>
-    <p>Parcero, la próxima vez que alguien te diga "tenemos 97% de accuracy", pregúntales: "¿Y qué porcentaje de tu dataset es la clase positiva? ¿Cuántos falsos negativos tienes? ¿Cuál es tu ROC-AUC?" Si no te pueden responder esas preguntas, su modelo es tan útil como uno que predice todo negativo.</p>
-    <p>Esa vaina de que "accuracy es la métrica queenmporta" es una mentira que nos hemos contado colectivamente. En producción, lo que importa es qué tipo de error te cuesta más. Enfraude, los FN son caros. En spam, los FP son caros. En diagnóstico médico, ambos son caros pero por razones diferentes. Conoce tu dominio y elige la métrica correcta. ¡Nos vemos en el día 80!</p>
+- **Internal covariate shift**: Cada capa anterior cambia sus pesos → cambia la distribución de activaciones → la siguiente capa tiene que adaptarse. BatchNorm congela la distribución de cada capa.
+- **Training vs inference**: Training usa $\mu_B, \sigma_B$ del batch. Inference usa `running_mean`, `running_var`. SIEMPRE llama `model.eval()` para inferencia.
+- **Batch size mínimo**: BatchNorm necesita batch_size ≥ 32 para estadísticas decentes. Para batch_size=1, usa LayerNorm o GroupNorm.
+- **Orden correcto**: Linear → BatchNorm → Activation. NO Linear → Activation → BatchNorm.
+- **Momentum**: Controla cuánto pesan los batches nuevos en running stats. Para datasets pequeños, sube el momentum (0.3-0.5).
+
+Parcero, BatchNorm cambió el juego en 2015 y hoy es estándar en prácticamente toda red profunda. Pero como todo, tiene sus detalles: sin `model.eval()` en inferencia estás usando estadísticas del batch equivocado; con batch_size=1 la normalización explota; y si lo ponés después de la activación estás desperdiciando su poder. La próxima vez que copies una arquitectura de GitHub y no entiendas por qué tiene BatchNorm entre cada capa, ya sabés por qué: es lo que permite que esa red de 100 capas converja en vez de quedarse en un plateau desde el minuto uno. ¡Nos vemos en el día 80!
   </article>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
@@ -343,8 +352,8 @@ if __name__ == '__main__':
         delimiters: [
           { left: '$$', right: '$$', display: true },
           { left: '$',  right: '$',  display: false },
-          { left: '\\[', right: '\\]', display: true },
-          { left: '\\(', right: '\\)', display: false },
+          { left: '\[', right: '\]', display: true },
+          { left: '\(', right: '\)', display: false },
         ],
         throwOnError: false,
       });
