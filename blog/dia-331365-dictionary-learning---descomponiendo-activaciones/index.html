@@ -118,41 +118,388 @@ nav {
   </header>
 
   <article class="article-body">
-    <h1>dictionary-learning - Descomponiendo Activaciones</h1>
-<p>Hagale pues, parcero. Hoy es el Dia 331 y hablamos de Dictionary Learning, descomponiendo activaciones. Cafe.</p>
+<h2>🌮 Intro Colombiana</h2>
+<p>Pues sí, parce, imagínese que usted tiene un restaurante en la plaza de mercado de Paloquemao. Un día llegan 10 clientes y todo bien, usted los atiende sin problema. Pero resulta que al otro día le sale un viral en TikTok y de repente le llegan 10,000 clientes en una hora. ¿Qué hace? ¿Se queda quieto viendo cómo se le queman las arepas? No, mano. Eso es exactamente lo que pasa con los LLMs cuando se hacen virales: el sistema se debe diseñar para escalar desde el principio, o si no, el perol se rega.</p>
+<p>Hoy hablamos de arquitecturas que escalan: cómo manejar millones de requests sin que el modelo se caiga, cómo balancear carga entre réplicas, cómo usar caching como un ninja, y cómo partir el trabajo (sharding) cuando la cosa se pone seria. Esto no es teoría bonita — esto es lo que el 75% de las empresas descubren cuando ya es tarde y el 25% sabe desde el día uno.</p>
 <hr>
-<h2>🎯 Dictionary Learning</h2>
-<p>Dictionary learning encuentra un conjunto de "atoms" que pueden representer cualquier activacion como combinacion sparse.</p>
-<h3>Idea:</h3>
+<h2>📐 La Matemática de la Escalabilidad</h2>
+<p>Cuando hablamos de escalar un sistema de LLM, hay una fórmula que lo gobierna todo:</p>
+<p><strong>Throughput = (N × R) / Latency</strong></p>
+<p>Donde:</p>
 <ul>
-<li><strong>Atoms</strong>: Elementos basicos del diccionario</li>
-<li><strong>Sparse</strong>: Solo algunas atoms activas por vez</li>
-<li><strong>Complete</strong>: Cualquier activacion puede representarse</li>
+<li><strong>N</strong> = número de réplicas del modelo</li>
+<li><strong>R</strong> = requests por segundo por réplica</li>
+<li><strong>Latency</strong> = tiempo por request en segundos</li>
 </ul>
+<p>Pero aquí viene el problema: no es lineal. Cuando usted escala de 1 a 2 réplicas, no obtiene exactamente el doble de throughput porque aparece overhead de red, sincronización, y contención de recursos.</p>
+<p>La ley de Amdahl nos recuerda que el speedup máximo está limitado por la porción secuencial del trabajo:</p>
+<p><strong>Speedup = 1 / (S + (1-S)/N)</strong></p>
+<p>Donde <strong>S</strong> es la fracción secuencial. Si el 10% de su sistema es secuencial (por ejemplo, el token generation secuencial), el speedup máximo teórico con 100 réplicas es:</p>
+<p><strong>Speedup = 1 / (0.1 + 0.9/100) ≈ 9.17x</strong></p>
+<p>¡Ojo! No importa cuántas réplicas le meta, nunca va a pasar de 10x. Eso es la ley de Amdahl, parcero, y no hay arquitectura que la venza.</p>
 <hr>
-<h2>📐 Dictionary Learning Algorithm</h2>
-<pre><code class="language-python">from sklearn.decomposition import DictionaryLearning
+<h2>🏗️ Arquitectura Escalable Para LLMs</h2>
+<pre><code class="language-python">import asyncio
+import hashlib
+from dataclasses import dataclass
+from typing import List, Optional, Dict, Any
+from collections import OrderedDict
+import time
 
-# Recolectar activaciones de muchas capas
-activations = []  # shape: (n_samples, d_model)
+@dataclass
+class Request:
+    prompt: str
+    max_tokens: int = 256
+    temperature: float = 0.7
 
-# Dictionary learning
-dl = DictionaryLearning(
-    n_components=n_features,
-    alpha=1.0,  # sparsity regularization
-    max_iter=1000
-)
+@dataclass
+class CachedResponse:
+    output: str
+    num_tokens: int
+    timestamp: float
+    hits: int = 0
 
-dictionary = dl.fit_transform(activations)
-# dictionary shape: (d_model, n_features)</code></pre>
+class LLMLoadBalancer:
+    """Load balancer inteligente para múltiples réplicas de LLM."""
+    
+    def __init__(self, replicas: List[str]):
+        self.replicas = replicas
+        self.replica_stats: Dict[str, Dict[str, float]] = {
+            r: {"requests": 0, "total_latency": 0.0, "errors": 0}
+            for r in replicas
+        }
+        self.request_counts: Dict[str, int] = {r: 0 for r in replicas}
+        self._lock = asyncio.Lock()
+    
+    async def route_request(self, request: Request) -> str:
+        """Ruta requests usando weighted least connections."""
+        await self._lock
+        
+        # Seleccionar réplica con menor carga ponderada
+        best_replica = None
+        best_score = float('inf')
+        
+        for replica in self.replicas:
+            stats = self.replica_stats[replica]
+            avg_latency = (
+                stats["total_latency"] / stats["requests"]
+                if stats["requests"] > 0 else 1.0
+            )
+            load = stats["requests"] / avg_latency
+            
+            if load < best_score:
+                best_score = load
+                best_replica = replica
+        
+        self.replica_stats[best_replica]["requests"] += 1
+        return best_replica
+
+class LLMCache:
+    """Cache LRU con invalidación por TTL y similar hash."""
+    
+    def __init__(self, max_size: int = 10000, ttl_seconds: float = 3600.0):
+        self.max_size = max_size
+        self.ttl = ttl_seconds
+        self.cache: OrderedDict[str, CachedResponse] = OrderedDict()
+        self.hits = 0
+        self.misses = 0
+    
+    def _make_key(self, prompt: str, **kwargs) -> str:
+        """Genera clave de cache usando hash del prompt."""
+        key_parts = [prompt, str(kwargs.get("max_tokens", 256)),
+                     str(kwargs.get("temperature", 0.7))]
+        key_str = "|".join(key_parts)
+        return hashlib.sha256(key_str.encode()).hexdigest()[:32]
+    
+    async def get(self, prompt: str, **kwargs) -> Optional[str]:
+        key = self._make_key(prompt, **kwargs)
+        
+        if key in self.cache:
+            entry = self.cache[key]
+            # Check TTL
+            if time.time() - entry.timestamp < self.ttl:
+                entry.hits += 1
+                self.hits += 1
+                # Move to end (most recent)
+                self.cache.move_to_end(key)
+                return entry.output
+            else:
+                # Expired
+                del self.cache[key]
+        
+        self.misses += 1
+        return None
+    
+    async def set(self, prompt: str, output: str, num_tokens: int, **kwargs):
+        key = self._make_key(prompt, **kwargs)
+        
+        if key in self.cache:
+            self.cache.move_to_end(key)
+        
+        self.cache[key] = CachedResponse(
+            output=output,
+            num_tokens=num_tokens,
+            timestamp=time.time()
+        )
+        
+        # Evict oldest if over max_size
+        if len(self.cache) > self.max_size:
+            self.cache.popitem(last=False)
+    
+    def hit_rate(self) -> float:
+        total = self.hits + self.misses
+        return self.hits / total if total > 0 else 0.0
+
+class LLMShardManager:
+    """Sharding horizontal para modelos grandes."""
+    
+    def __init__(self, model_shards: List[Any], strategy: str = "round_robin"):
+        self.shards = model_shards
+        self.strategy = strategy
+        self.current_index = 0
+        self.shard_usage: Dict[int, int] = {i: 0 for i in range(len(model_shards))}
+    
+    def get_shard(self, key: str) -> Any:
+        """Obtiene shard basado en clave de partición."""
+        if self.strategy == "round_robin":
+            shard_idx = self.current_index
+            self.current_index = (self.current_index + 1) % len(self.shards)
+        
+        elif self.strategy == "hash":
+            # Hash de la clave para distribución uniforme
+            hash_val = int(hashlib.md5(key.encode()).hexdigest(), 16)
+            shard_idx = hash_val % len(self.shards)
+        
+        else:  # weighted
+            shard_idx = min(range(len(self.shards)),
+                           key=lambda i: self.shard_usage[i])
+        
+        self.shard_usage[shard_idx] += 1
+        return self.shards[shard_idx]
+
+class ScalableLLMFramework:
+    """Framework completo para escalar LLMs."""
+    
+    def __init__(self, replica_urls: List[str], cache_size: int = 10000):
+        self.load_balancer = LLMLoadBalancer(replica_urls)
+        self.cache = LLMCache(max_size=cache_size)
+        self.shard_manager = None  # Inicializado si hay múltiples shards
+    
+    async def generate(self, request: Request) -> Dict[str, Any]:
+        start_time = time.time()
+        
+        # 1. Check cache primero
+        cached = await self.cache.get(
+            request.prompt,
+            max_tokens=request.max_tokens,
+            temperature=request.temperature
+        )
+        
+        if cached:
+            return {
+                "output": cached,
+                "source": "cache",
+                "latency_ms": (time.time() - start_time) * 1000
+            }
+        
+        # 2. Si no hay cache, rutear al load balancer
+        replica = await self.load_balancer.route_request(request)
+        
+        # 3. Simular llamada al modelo
+        # En producción: await call_llm_api(replica, request)
+        output = f"[Response from {replica}]"
+        
+        # 4. Guardar en cache
+        await self.cache.set(
+            request.prompt,
+            output,
+            num_tokens=len(output.split()),
+            max_tokens=request.max_tokens,
+            temperature=request.temperature
+        )
+        
+        return {
+            "output": output,
+            "source": "model",
+            "replica": replica,
+            "latency_ms": (time.time() - start_time) * 1000,
+            "cache_hit_rate": self.cache.hit_rate()
+        }
+    
+    def add_replica(self, replica_url: str):
+        """Agregar nueva réplica dinámicamente."""
+        self.load_balancer.replicas.append(replica_url)
+        self.load_balancer.replica_stats[replica_url] = {
+            "requests": 0, "total_latency": 0.0, "errors": 0
+        }
+        self.load_balancer.request_counts[replica_url] = 0
+    
+    async def scale_out(self, factor: int = 2):
+        """Escalar horizontalmente replicando configuración existente."""
+        base_replicas = self.load_balancer.replicas.copy()
+        for i in range(factor - 1):
+            for base in base_replicas:
+                new_replica = f"{base}-replica-{i}"
+                self.add_replica(new_replica)
+
+# Uso
+async def demo():
+    framework = ScalableLLMFramework(
+        replica_urls=["llm-1.local", "llm-2.local", "llm-3.local"],
+        cache_size=50000
+    )
+    
+    request = Request(
+        prompt="Explique por qué el cielo es azul",
+        max_tokens=512,
+        temperature=0.3
+    )
+    
+    # Primera llamada: cache miss
+    result1 = await framework.generate(request)
+    print(f"Primera llamada: {result1}")
+    # {'output': '[Response from llm-1.local]', 'source': 'model', ...}
+    
+    # Segunda llamada: cache hit
+    result2 = await framework.generate(request)
+    print(f"Segunda llamada: {result2}")
+    # {'output': '[Response from llm-1.local]', 'source': 'cache', ...}
+    
+    # Escalar a 6 réplicas
+    await framework.scale_out(factor=2)
+    print(f"Réplicas después de scale_out: {len(framework.load_balancer.replicas)}")
+    # 6
+
+asyncio.run(demo())</code></pre>
 <hr>
-<h2>🚀 Connection to SAEs</h2>
-<p>SAEs son dictionary learning aplicado a LLM activations. El encoder es el diccionario.</p>
+<h2>⚠️ Los 3 Errores Más Comunes (y Sus Arreglos)</h2>
+<h3>Error 1: No Diseñar para Scale Desde el Inicio</h3>
+<p><strong>El problema:</strong> La mayoría de equipos empiezan con un solo modelo en un solo servidor. Funciona bien en testing. Luego el producto pega y de repente tienen 10,000 requests por minuto y el sistema se cae como bodega de madera en Semana Santa.</p>
+<p><strong>La solución:</strong> Diseñar con arquitectura stateless desde el día uno. El modelo es un detalle de implementación, no el centro del sistema. Separe el routing, el cache, y la lógica de negocio.</p>
+<pre><code class="language-python"># ❌ MAL: Estado acoplado al servidor
+class BadLLMServer:
+    def __init__(self):
+        self.model = load_model()  # Estado local
+        self.request_count = 0  # Estado compartido
+
+# ✅ BIEN: Stateless, todo va en cache distribuido
+class GoodLLMServer:
+    def __init__(self, cache: LLMCache, lb: LLMLoadBalancer):
+        self.cache = cache
+        self.lb = lb
+        # Sin estado local - todo en componentes externos
+        self.model = load_model()  # Solo el modelo, sin estado</code></pre>
+<h3>Error 2: No Usar Caching</h3>
+<p><strong>El problema:</strong> Cada request va al modelo, aunque sean prompts idénticos o muy similares. Esto es como si en ese restaurante de Paloquemao usted hicieran la arepa desde cero cada vez que alguien pide arepa, aunque ya tienen una hecha.</p>
+<p><strong>La solución:</strong> Implementar cache de respuestas. Para prompts determinísticos (temperature=0), el cache puede cubrir hasta el 80-90% de requests en producción. Para prompts con variación, usar cache semántico con embeddings.</p>
+<pre><code class="language-python"># ❌ MAL: Sin cache, todo al modelo
+async def bad_generate(prompt, model):
+    return await model.predict(prompt)
+
+# ✅ BIEN: Con cache y fallback
+async def good_generate(prompt, cache, model):
+    # 1. Check cache
+    cached = await cache.get(prompt)
+    if cached:
+        return cached
+    
+    # 2. Cache miss - generar
+    result = await model.predict(prompt)
+    
+    # 3. Guardar en cache para próxima vez
+    await cache.set(prompt, result)
+    return result</code></pre>
+<h3>Error 3: No Tener Load Balancing Adecuado</h3>
+<p><strong>El problema:</strong> Enviar todos los requests al mismo modelo, sin distribución. Un nodo se sobrecarga mientras otros descansan. O usar round-robin naive sin considerar latencia actual, causando que nodos lentos se conviertan en bottleneck.</p>
+<p><strong>La solución:</strong> Implementar load balancing inteligente: weighted least connections o power of two choices para minimizar latency. Monitorear latencia por réplica y ajustar weights dinámicamente.</p>
+<pre><code class="language-python"># ❌ MAL: Round-robin simple, ignorando carga
+class NaiveLoadBalancer:
+    def __init__(self, replicas):
+        self.replicas = replicas
+        self.index = 0
+    
+    def get(self):
+        replica = self.replicas[self.index]
+        self.index = (self.index + 1) % len(self.replicas)
+        return replica
+
+# ✅ BIEN: Least connections con pesos por latencia
+class SmartLoadBalancer:
+    def __init__(self, replicas):
+        self.replicas = replicas
+        self.in_flight: Dict[str, int] = {r: 0 for r in replicas}
+        self.latencies: Dict[str, float] = {r: 1.0 for r in replicas}
+    
+    def get(self) -> str:
+        # Elegir réplica con menor (in_flight / latency)
+        scores = {
+            r: self.in_flight[r] / self.latencies[r]
+            for r in self.replicas
+        }
+        return min(scores, key=scores.get)
+    
+    def record_result(self, replica: str, latency: float):
+        # Actualizar latencia EMA para próxima decisión
+        alpha = 0.3
+        self.latencies[replica] = (
+            alpha * latency + (1 - alpha) * self.latencies[replica]
+        )
+        self.in_flight[replica] -= 1</code></pre>
 <hr>
-<h2>⚠️ Scale</h2>
-<p>Entrenar dictionary learning en grandes modelos requiere muchos recursos computacionales.</p>
+<h2>📊 Manejo de Traffic Spikes</h2>
+<p>Los traffic spikes son el verdadero examen. No es lo mismo manejar 1,000 requests/hour que 100,000 requests en 5 minutos. Aquí van las estrategias:</p>
+<ul>
+<li><strong>Queue con priorities:</strong> No todos los requests son iguales. Usar una cola con prioridades (users premium primero, o prompts más cortos primero para maximizar throughput).</li>
+<li><strong>Autoscaling basado en queue depth:</strong> Si la cola de requests crece más de X, agregar réplicas. Si decrece por más de Y minutos, remover réplicas.</li>
+<li><strong>Graceful degradation:</strong> Si el sistema está al límite, ofrecer respuestas más cortas o devolver un "estamos procesando su solicitud" con polling.</li>
+<li><strong>Pre-warming:</strong> Antes de known spikes (lanzamientos, eventos), pre-iniciar réplicas para estar listo.</li>
+</ul>
+<pre><code class="language-python">class TrafficSpikeHandler:
+    def __init__(self, framework: ScalableLLMFramework):
+        self.framework = framework
+        self.queue: asyncio.PriorityQueue = asyncio.PriorityQueue()
+        self.active_requests = 0
+        self.max_concurrent = 100
+    
+    async def handle_spike(self, requests: List[Request]):
+        # Asignar prioridades (menor número = mayor prioridad)
+        for i, req in enumerate(requests):
+            priority = len(req.prompt) // 100  # Prompts más cortos = mayor prioridad
+            await self.queue.put((priority, req))
+        
+        # Procesar con límite de concurrencia
+        workers = [
+            asyncio.create_task(self._process_queue())
+            for _ in range(self.max_concurrent)
+        ]
+        await asyncio.gather(*workers)
+    
+    async def _process_queue(self):
+        while True:
+            try:
+                priority, request = self.queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            
+            self.active_requests += 1
+            try:
+                # Scale out si estamos muy cargados
+                if self.active_requests > self.max_concurrent * 0.8:
+                    await self.framework.scale_out(factor=2)
+                
+                result = await self.framework.generate(request)
+                print(f"Processed (priority={priority}): {result['output'][:50]}...")
+            finally:
+                self.active_requests -= 1
+                self.queue.task_done()</code></pre>
 <hr>
-<p><em>Eso es todo! Nos vemos en el Dia 332.</em></p
+<h2>🏁 Resumen y Cierre Colombiano</h2>
+<p>Entonces, parce, la historia es clara: el 75% de los equipos descubren que su arquitectura no escala cuando ya es muy tarde, cuando el sistema está en producción y los usuarios se quejan. El 25% que lo hace bien diseña desde el principio con stateless services, cache inteligente, y load balancing que de verdad distribuye la carga.</p>
+<p>Las fórmulas ahí están: throughput limitado por Amdahl, la importancia del cache hit rate, y que scaling horizontal no es magia — tiene costos y tradeoffs.</p>
+<p>La próxima vez que le toque diseñar un sistema con LLMs, piense en Paloquemao: si de repente le llegan 10,000 clientes, ¿su restaurante está listo? ¿Tiene meseros suficientes? ¿Tiene las arepas pre-hechas? ¿O va a empezar a cocinar desde cero y dejar a todos esperando?</p>
+<p><strong>No sea ese restaurante, parcero.</strong></p>
+<p>Nos vemos en el Día 332 donde hablaremos de cost optimization avanzada: cómo reducir costos 10x con quantization, speculative decoding, y KV cache optimization. Ahí te espero con el café listo.</p>
+<p><em>#365DaysOfAI</em></p>
   </article>
 
   <script>
