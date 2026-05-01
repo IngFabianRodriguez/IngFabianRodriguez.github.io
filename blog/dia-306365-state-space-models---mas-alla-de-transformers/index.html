@@ -118,547 +118,290 @@ nav {
   </header>
 
   <article class="article-body">
-<h1>LLM Text Matching — El 80% Lo Hace Mal y el 20% Lo Hace Bien</h1>
-<p>Hagale pues, parcero. Aquí en Colombia tenemos muchas formas de decir lo mismo: "¡Hágale!", "¡Hagámosle!", "¡Vamos pa'!", "¡Dale!". Si un modelo no entiende que todas significan lo mismo, está perdido. Eso es exactamente el problema del text matching: el 80% de las implementaciones usan técnicas que no capturan la semántica real. Hoy Día 306 vamos a cambiar eso — con matemáticas, código y el estilo paisa que no pela.</p>
+<h2>🎯 Por Que State Space Models?</h2>
+<p>Hagale pues, parcero. Los transformers han dominado deep learning por años, pero tienen un problema fundamental: la complejidad es O(n²) en la longitud de secuencia. Para secuencias de 1M tokens esto es prohibitive. State Space Models (SSMs) prometen O(n) linear — permitiendo procesar secuencias extremadamente largas de manera eficiente.</p>
+<p>SSMs no son nuevos: vienen de la teoría de control y sistemas dinámicos. Lo nuevo es que мы渗ns aprenderlos end-to-end con deep learning, dando origen a arquitecturas como Mamba que compiten con transformers.</p>
 <hr>
-<h2>🎯 Por Que Text Matching Es Crucial?</h2>
-<p>Text matching es el corazón de muchas aplicaciones:</p>
+<h2>📐 La Matematica De SSMs</h2>
+<p>Un State Space Model continuo representa un sistema dinámico:</p>
+<p>$$\dot{x}(t) = \mathbf{A}x(t) + \mathbf{B}u(t)$$</p>
+<p>$$y(t) = \mathbf{C}x(t) + \mathbf{D}u(t)$$</p>
+<p>Donde:</p>
 <ul>
-<li><strong>Buscadores semánticos</strong>: "bolso de mano" debe encontrar "bolsa de viaje"</li>
-<li><strong> deduplicación</strong>: Detectar textos duplicados aunque usen palabras distintas</li>
-<li><strong>Respuesta a preguntas</strong>: Matchear preguntas de usuarios con respuestas en la base de conocimiento</li>
-<li><strong>PLagiarism detection</strong>: Encontrar textos similares aunque estén parafraseados</li>
+<li>$x(t)$ es el estado interno del sistema</li>
+<li>$u(t)$ es la entrada</li>
+<li>$y(t)$ es la salida</li>
+<li>$\mathbf{A}, \mathbf{B}, \mathbf{C}, \mathbf{D}$ son matrices de parámetros</li>
 </ul>
-<p>El problema: el 80% usa coincidencia léxica (keywords) cuando debería usar similitud semántica.</p>
+<p>Para hacer esto discreto (computable), discretizamos con un paso $\Delta$:</p>
+<p>$$x_{t} = \bar{\mathbf{A}}x_{t-1} + \bar{\mathbf{B}}u_t$$</p>
+<p>$$y_t = \mathbf{C}x_t + \mathbf{D}u_t$$</p>
+<p>con $\bar{\mathbf{A}} = e^{\mathbf{A}\Delta}$ y $\bar{\mathbf{B}} = \mathbf{A}^{-1}(e^{\mathbf{A}\Delta} - I)\mathbf{B}\Delta$.</p>
 <hr>
-<h2>📐 La Matemática Del Text Matching</h2>
-<h3>Métricas de Similitud</h3>
-<p>Dados dos vectores de embedding $\mathbf{a}$ y $\mathbf{b}$, hay varias formas de medir similitud:</p>
-<p><strong>Cosine Similarity</strong>:</p>
-<p>$$\text{cos}(\mathbf{a}, \mathbf{b}) = \frac{\mathbf{a} \cdot \mathbf{b}}{|\mathbf{a}| \cdot |\mathbf{b}|} = \frac{\sum_{i=1}^{n} a_i b_i}{\sqrt{\sum_{i=1}^{n} a_i^2} \cdot \sqrt{\sum_{i=1}^{n} b_i^2}}$$</p>
-<p><strong>Dot Product</strong> (cuando los vectores ya están normalizados):</p>
-<p>$$\text{dot}(\mathbf{a}, \mathbf{b}) = \mathbf{a} \cdot \mathbf{b}$$</p>
-<p><strong>Euclidean Distance</strong>:</p>
-<p>$$d(\mathbf{a}, \mathbf{b}) = |\mathbf{a} - \mathbf{b}| = \sqrt{\sum_{i=1}^{n} (a_i - b_i)^2}$$</p>
-<p>Para embeddings de LLMs, cosine similarity es generalmente la mejor opción porque es invariante a la escala.</p>
-<h3>Matriz de Similitud</h3>
-<p>Para matching entre query y múltiples candidates, construimos una matriz:</p>
-<p>$$S_{ij} = \text{sim}(\mathbf{q}_i, \mathbf{c}_j)$$</p>
+<h2>🔄 La Conexion Con RNNs</h2>
+<p>Un SSM es esencialmente una RNN sofisticada. La diferencia clave: los parámetros A, B, C son learned y optimizados, no fija. Esto permite que el modelo aprenda representaciones de estado óptimas.</p>
+<p>La recurrence es:</p>
+<p>$$h_t = \bar{\mathbf{A}}h_{t-1} + \bar{\mathbf{B}}x_t$$</p>
+<p>$$y_t = \mathbf{C}h_t$$</p>
 <hr>
-<h2>🔬 Approach 1: Embeddings-Based Matching</h2>
-<p>La aproximación clásica: usar sentence embeddings y medir similitud coseno.</p>
-<pre><code class="language-python">from sentence_transformers import SentenceTransformer
-import numpy as np
-from sklearn.metrics.pairwise import cosine_similarity
-
-class EmbeddingMatcher:
-    """
-    Text matching basado en sentence embeddings.
-    Usa sentence-transformers para generar embeddings densos.
-    """
-    
-    def __init__(self, model_name: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"):
-        self.model = SentenceTransformer(model_name)
-    
-    def encode(self, texts: list[str]) -> np.ndarray:
-        """Genera embeddings para una lista de textos."""
-        return self.model.encode(texts, convert_to_tensor=True).cpu().numpy()
-    
-    def compute_similarity(self, query: str, candidates: list[str]) -> list[dict]:
-        """
-        Calcula similitud entre query y candidates.
-        Retorna lista ordenada por similitud.
-        """
-        # Encode
-        query_emb = self.encode([query])
-        candidate_emb = self.encode(candidates)
-        
-        # Cosine similarity
-        similarities = cosine_similarity(query_emb, candidate_emb)[0]
-        
-        # Ordenar por similitud
-        results = sorted(
-            zip(candidates, similarities),
-            key=lambda x: x[1],
-            reverse=True
-        )
-        
-        return [
-            {"text": text, "similarity": float(sim)} 
-            for text, sim in results
-        ]
-    
-    def compute_similarity_matrix(self, texts_a: list[str], texts_b: list[str]) -> np.ndarray:
-        """
-        Computa matriz de similitud entre dos listas de textos.
-        Útil para retrieval y deduplicación.
-        """
-        emb_a = self.encode(texts_a)
-        emb_b = self.encode(texts_b)
-        return cosine_similarity(emb_a, emb_b)
-
-# Ejemplo
-matcher = EmbeddingMatcher()
-
-query = "¿Cómo hago para devolver un producto?"
-candidates = [
-    "Proceso de devolución de artículos",
-    "Quiero cambiar mi pedido",
-    "El clima hoy en Bogotá",
-    "Política de reembolso y cambios",
-    "Cómo cancelar una orden"
-]
-
-results = matcher.compute_similarity(query, candidates)
-print(f"Query: {query}\n")
-for r in results:
-    print(f"Similitud: {r['similarity']:.3f} | {r['text']}")</code></pre>
-<hr>
-<h2>🔬 Approach 2: LLM-Based Matching (Cross-Encoder)</h2>
-<p>Para mayor precisión, cross-encoders consideran la interacción entre query y documento jointly.</p>
-<pre><code class="language-python">from transformers import AutoTokenizer, AutoModelForSequenceClassification
-import torch
+<h2>🔬 Implementacion de SSM Basico</h2>
+<pre><code class="language-python">import torch
+import torch.nn as nn
 import torch.nn.functional as F
-
-class CrossEncoderMatcher:
-    """
-    Text matching usando Cross-Encoder.
-    Considera query y documento jointly para mayor precisión.
-    """
-    
-    def __init__(self, model_name: str = "cross-encoder/ms-marco-MiniLM-L-12-v2"):
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-        self.model = AutoModelForSequenceClassification.from_pretrained(model_name)
-        self.model.eval()
-    
-    def predict(self, query: str, documents: list[str]) -> list[dict]:
-        """
-        Predice scores de relevancia entre query y documentos.
-        """
-        # Preparar pares [query, doc]
-        pairs = [[query, doc] for doc in documents]
-        
-        # Tokenizar
-        inputs = self.tokenizer(
-            pairs,
-            padding=True,
-            truncation=True,
-            max_length=512,
-            return_tensors="pt"
-        )
-        
-        # Predicción
-        with torch.no_grad():
-            outputs = self.model(**inputs)
-            scores = outputs.logits.squeeze(-1)
-            probs = torch.sigmoid(scores)
-        
-        # Ordenar por score
-        results = sorted(
-            zip(documents, probs.numpy(), scores.numpy()),
-            key=lambda x: x[1],
-            reverse=True
-        )
-        
-        return [
-            {
-                "text": doc,
-                "relevance_score": float(prob),
-                "raw_score": float(score)
-            }
-            for doc, prob, score in results
-        ]
-
-class LLMPoweredMatcher:
-    """
-    Combinación de embeddings + LLM para text matching.
-    1. Retrieval inicial con embeddings (rápido)
-    2. Re-ranking con cross-encoder (preciso)
-    3. Verificación opcional con LLM
-    """
-    
-    def __init__(self):
-        self.embedding_matcher = EmbeddingMatcher()
-        self.cross_encoder = CrossEncoderMatcher()
-    
-    def match(self, query: str, candidates: list[str], top_k: int = 5, use_llm_verification: bool = False) -> list[dict]:
-        """
-        Pipeline completo de matching.
-        """
-        # Paso 1: Retrieval rápido con embeddings
-        initial_results = self.embedding_matcher.compute_similarity(query, candidates)
-        top_candidates = [r["text"] for r in initial_results[:top_k * 2]]
-        
-        # Paso 2: Re-ranking con cross-encoder
-        reranked = self.cross_encoder.predict(query, top_candidates)
-        
-        # Paso 3: Verificación opcional con LLM
-        if use_llm_verification:
-            reranked = self._llm_verify(query, reranked)
-        
-        return reranked[:top_k]
-    
-    def _llm_verify(self, query: str, results: list[dict]) -> list[dict]:
-        """
-        Usa LLM para verificar si el matching tiene sentido.
-        """
-        from transformers import pipeline
-        
-        verifier = pipeline(
-            "text-generation",
-            model="google/flan-t5-small",
-            max_length=100
-        )
-        
-        verified = []
-        for r in results:
-            prompt = f"Is '{r['text']}' relevant to '{query}'? Answer yes or no."
-            answer = verifier(prompt)[0]["generated_text"].lower()
-            
-            if "yes" in answer or "relevant" in answer:
-                r["llm_verified"] = True
-                verified.append(r)
-            else:
-                r["llm_verified"] = False
-        
-        return verified
-
-# Ejemplo completo
-matcher = LLMPoweredMatcher()
-query = "cómo reclamar un reembolso"
-documents = [
-    "Para devolver un producto, visite nuestra tienda con el recibo",
-    "Reembolso en 5-7 días hábiles",
-    "El presidente anunció nuevas medidas económicas",
-    "Pasos para procesar una devolución",
-    "Cambios y devoluciones tienen costo de envío",
-    "Mi pedido llegó dañado qué hago"
-]
-
-results = matcher.match(query, documents, top_k=3)
-print(f"Query: {query}\n")
-for r in results:
-    print(f"Score: {r['relevance_score']:.3f} | {r['text']}")</code></pre>
-<hr>
-<h2>🔄 Re-Ranking Strategies</h2>
-<p>El re-ranking es crucial porque los embeddings tienen limitaciones. Aquí las estrategias principales:</p>
-<pre><code class="language-python">import numpy as np
-from typing import Callable
-
-class Reranker:
-    """
-    Framework para diferentes estrategias de re-ranking.
-    """
-    
-    @staticmethod
-    def reciprocal_rank(candidate_scores: list[float], k: int = 60) -> float:
-        """
-        Reciprocal Rank Fusion (RRF).
-        Combina múltiples rankings en uno solo.
-        
-        Formula: RRF(score) = Σ 1/(k + rank_i)
-        """
-        return sum(1.0 / (k + rank) for rank, _ in enumerate(candidate_scores, 1))
-    
-    @staticmethod
-    def weighted_rrf(
-        candidate_scores: list[tuple[str, float]], 
-        weights: list[float],
-        k: int = 60
-    ) -> float:
-        """
-        RRF ponderado — combina scores de múltiples retrievers.
-        """
-        return sum(
-            w * (1.0 / (k + rank)) 
-            for w, (_, score) in zip(weights, candidate_scores)
-        )
-    
-    @staticmethod
-    def score_normalization(scores: list[float], method: str = "min-max") -> list[float]:
-        """
-        Normaliza scores a [0, 1].
-        """
-        if method == "min-max":
-            min_s, max_s = min(scores), max(scores)
-            if max_s == min_s:
-                return [0.5] * len(scores)
-            return [(s - min_s) / (max_s - min_s) for s in scores]
-        elif method == "z-score":
-            mean = np.mean(scores)
-            std = np.std(scores)
-            if std == 0:
-                return [0.0] * len(scores)
-            return [(s - mean) / std for s in scores]
-        elif method == "sigmoid":
-            return [1.0 / (1.0 + np.exp(-s)) for s in scores]
-        
-        return scores
-
-class HybridReranker:
-    """
-    Combina múltiples estrategias de retrieval con ponderación.
-    """
-    
-    def __init__(self):
-        self.embedding_matcher = EmbeddingMatcher()
-        self.cross_encoder = CrossEncoderMatcher()
-    
-    def hybrid_search(
-        self, 
-        query: str, 
-        candidates: list[str],
-        weights: dict = {"embedding": 0.3, "cross_encoder": 0.7}
-    ) -> list[dict]:
-        """
-        Búsqueda híbrida: combina embedding + cross-encoder.
-        """
-        # Embedding scores
-        emb_results = self.embedding_matcher.compute_similarity(query, candidates)
-        emb_scores = {r["text"]: r["similarity"] for r in emb_results}
-        
-        # Cross-encoder scores
-        ce_results = self.cross_encoder.predict(query, candidates)
-        ce_scores = {r["text"]: r["relevance_score"] for r in ce_results}
-        
-        # Normalizar scores
-        emb_vals = list(emb_scores.values())
-        ce_vals = list(ce_scores.values())
-        
-        emb_norm = Reranker.score_normalization(emb_vals, "min-max")
-        ce_norm = Reranker.score_normalization(ce_vals, "min-max")
-        
-        emb_scores_norm = dict(zip(emb_scores.keys(), emb_norm))
-        ce_scores_norm = dict(zip(ce_scores.keys(), ce_norm))
-        
-        # Combinar con pesos
-        combined_scores = {}
-        for text in emb_scores:
-            combined = (
-                weights["embedding"] * emb_scores_norm.get(text, 0) +
-                weights["cross_encoder"] * ce_scores_norm.get(text, 0)
-            )
-            combined_scores[text] = combined
-        
-        # Ordenar
-        results = sorted(
-            combined_scores.items(),
-            key=lambda x: x[1],
-            reverse=True
-        )
-        
-        return [
-            {"text": text, "combined_score": float(score)}
-            for text, score in results
-        ]
-
-# Ejemplo
-reranker = HybridReranker()
-results = reranker.hybrid_search(
-    query="cómo hacer un pedido",
-    candidates=[
-        "Proceso para realizar una compra",
-        "El clima",
-        "Pasos de checkout",
-        "Devoluciones",
-        "Crear cuenta nueva"
-    ],
-    weights={"embedding": 0.4, "cross_encoder": 0.6}
-)
-print("Hybrid Search Results:")
-for r in results:
-    print(f"  {r['combined_score']:.3f} | {r['text']}")</code></pre>
-<hr>
-<h2>📊 Métricas de Evaluación</h2>
-<p>No basta con decir "funciona bien". Hay que medirlo:</p>
-<ul>
-<li><strong>MRR (Mean Reciprocal Rank)</strong>: Posición del primer resultado relevante</li>
-<li><strong>NDCG (Normalized Discounted Cumulative Gain)</strong>: Calidad del ranking completo</li>
-<li><strong>Recall@K</strong>: ¿Cuántos relevantes encontré en los top K?</li>
-<li><strong>Precision@K</strong>: De los top K, cuántos son relevantes</li>
-<li><strong>MAP (Mean Average Precision)</strong>: Precisión promedia en todos los relevantes</li>
-</ul>
-<pre><code class="language-python">from sklearn.metrics import ndcg_score
 import numpy as np
 
-def evaluate_matching(
-    query_results: list[list[tuple[str, bool]]],  # [(text, relevant), ...] por query
-    k_values: list[int] = [1, 3, 5, 10]
-) -> dict:
+class StateSpaceModel(nn.Module):
     """
-    Evalúa sistema de matching con múltiples métricas.
-    
-    Args:
-        query_results: Lista de resultados por query
-                       Cada resultado es lista de (text, relevant)
-        k_values: Valores de K para Precision@K y Recall@K
+    State Space Model discretizado con parámetros aprendibles.
     """
-    metrics = {
-        "mrr": [],
-        "ndcg": [],
-        "precision_at_k": {k: [] for k in k_values},
-        "recall_at_k": {k: [] for k in k_values},
-    }
+    def __init__(self, d_model: int, d_state: int, dt_min: float = 0.001, dt_max: float = 0.1):
+        super().__init__()
+        self.d_model = d_model
+        self.d_state = d_state
+        
+        # Parámetros del SSM (discretizado)
+        # A: matriz de estado (d_state x d_state)
+        # B: matriz de entrada (d_state x 1) 
+        # C: matriz de salida (1 x d_state)
+        # D: skip connection (scalar)
+        
+        # Inicialización tipo HiPPO (para buena memoria)
+        A = np.zeros((d_state, d_state), dtype=np.float32)
+        for i in range(d_state):
+            for j in range(d_state):
+                if i >= j:
+                    A[i, j] = -(i + 1)
+        A = A / (dt_max - dt_min) * 0.5  # Escala
+        
+        self.A = nn.Parameter(torch.tensor(A, dtype=torch.float32))
+        self.B = nn.Parameter(torch.randn(d_state, 1) * 0.1)
+        self.C = nn.Parameter(torch.randn(1, d_state) * 0.1)
+        self.D = nn.Parameter(torch.zeros(1))
+        
+        # Paso de discretización aprendible
+        self.log_dt = nn.Parameter(torch.tensor(0.0))
     
-    for results in query_results:
-        # Calcular relevancias
-        relevances = [1 if rel else 0 for _, rel in results]
-        scores = list(range(len(results), 0, -1))  # Scores decrecientes por posición
+    def discretize(self):
+        """Discretiza las matrices contínuas usando zero-order hold."""
+        dt = torch.exp(self.log_dt)
+        # A_discreto = exp(A * dt) ≈ I + A * dt (para dt pequeño)
+        I = torch.eye(self.d_state, device=self.A.device)
+        A_bar = I + self.A * dt.unsqueeze(-1)
+        # B_discreto = B * dt
+        B_bar = self.B * dt.unsqueeze(-1)
+        return A_bar, B_bar
+    
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        x: [batch, seq_len] - input sequence
+        Retorna: (output, final_state)
+        """
+        batch_size, seq_len = x.shape
         
-        # MRR
-        first_relevant = next((i+1 for i, (_, rel) in enumerate(results) if rel), None)
-        if first_relevant:
-            metrics["mrr"].append(1.0 / first_relevant)
-        else:
-            metrics["mrr"].append(0.0)
+        A_bar, B_bar = self.discretize()
         
-        # NDCG
-        if len(results) > 1:
-            ndcg = ndcg_score([relevances], [scores], k=len(results))
-            metrics["ndcg"].append(ndcg)
+        # State initialization
+        h = torch.zeros(batch_size, self.d_state, device=x.device)
+        outputs = []
         
-        # Precision@K y Recall@K
-        relevant_count = sum(relevances)
-        for k in k_values:
-            top_k_rel = sum(relevances[:k])
-            precision = top_k_rel / k if k > 0 else 0
-            recall = top_k_rel / relevant_count if relevant_count > 0 else 0
+        for t in range(seq_len):
+            u_t = x[:, t:t+1]  # [batch, 1]
+            h = A_bar @ h.unsqueeze(-1) + B_bar @ u_t.unsqueeze(-1)
+            h = h.squeeze(-1)  # [batch, d_state]
             
-            metrics["precision_at_k"][k].append(precision)
-            metrics["recall_at_k"][k].append(recall)
-    
-    # Promediar
-    final_metrics = {
-        "MRR": np.mean(metrics["mrr"]),
-        "NDCG": np.mean(metrics["ndcg"]) if metrics["ndcg"] else 0,
-    }
-    
-    for k in k_values:
-        final_metrics[f"Precision@{k}"] = np.mean(metrics["precision_at_k"][k])
-        final_metrics[f"Recall@{k}"] = np.mean(metrics["recall_at_k"][k])
-    
-    return final_metrics
+            y_t = self.C @ h.unsqueeze(-1) + self.D * u_t
+            outputs.append(y_t.squeeze(-1))
+        
+        output = torch.stack(outputs, dim=1)  # [batch, seq_len]
+        return output, h
 
 # Ejemplo
-sample_results = [
-    [("doc1", True), ("doc2", True), ("doc3", False), ("doc4", True), ("doc5", False)],
-    [("doc6", False), ("doc7", True), ("doc8", True), ("doc9", True), ("doc10", False)],
-]
+batch_size, seq_len = 4, 100
+d_model, d_state = 128, 16
 
-metrics = evaluate_matching(sample_results)
-print("=" * 50)
-print("EVALUACIÓN DE TEXT MATCHING")
-print("=" * 50)
-for metric, value in metrics.items():
-    print(f"{metric}: {value:.3f}")</code></pre>
+x = torch.randn(batch_size, seq_len)
+ssm = StateSpaceModel(d_model, d_state)
+output, final_state = ssm(x)
+
+print(f"Input shape: {x.shape}")
+print(f"Output shape: {output.shape}")
+print(f"Final state shape: {final_state.shape}")</code></pre>
 <hr>
-<h2>⚠️ Los 3 Errores Más Comunes</h2>
-<h3>❌ Error 1: Usar Matching Léxico Cuando Semantic Es Mejor</h3>
-<p><strong>El problema</strong>: Buscar por palabras exactas. "Solicitar reembolso" no encuentra "pedir devolución" aunque significan lo mismo.</p>
-<p><strong>La solución</strong>: Usa embeddings semánticos. Palabras distintas, significado similar = alta similitud.</p>
-<pre><code class="language-python"># MAL: TF-IDF o BM25 (matching léxico)
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
+<h2>⚡ Mamba - SSM Selectivo</h2>
+<p>El breakthrough de Mamba es hacer el SSM selectivo: el router (qué estado recordar/olvidar) es aprendido dependiendo del input. Esto es análogo a attention mechanisms en transformers.</p>
+<p>La diferencia clave de Mamba vs SSM básico:</p>
+<ul>
+<li><strong>SSM básico</strong>: parámetros fijos para todos los inputs</li>
+<li><strong>Mamba</strong>: parámetros varían con el input (selección)</li>
+</ul>
+<p>La selección ocurre en las matrices B, C y el paso dt:</p>
+<p>$$B_t = \text{Linear}_B(x_t), \quad C_t = \text{Linear}_C(x_t), \quad \Delta_t = \tau_\Delta(\text{Linear}_\Delta(x_t))$$</p>
+<pre><code class="language-python">class MambaBlock(nn.Module):
+    """
+    Mamba Block - SSM con selección de parámetros por input.
+    """
+    def __init__(self, d_model: int, d_state: int = 16, d_conv: int = 4, expand: int = 2):
+        super().__init__()
+        self.d_model = d_model
+        self.d_state = d_state
+        self.d_inner = int(expand * d_model)
+        
+        # Proyección de entrada
+        self.in_proj = nn.Linear(d_model, self.d_inner * 2, bias=False)
+        
+        # Convolución 1D para procesamiento local
+        self.conv1d = nn.Conv1d(
+            in_channels=self.d_inner,
+            out_channels=self.d_inner,
+            kernel_size=d_conv,
+            padding=d_conv - 1,
+            groups=self.d_inner,
+        )
+        
+        # SSM parameters con selección
+        self.x_proj = nn.Linear(self.d_inner, d_state * 2 + 1, bias=False)  # B, C, dt
+        self.out_proj = nn.Linear(self.d_inner, d_model, bias=False)
+        
+        # Inicialización de A (HiPPO)
+        A = np.zeros((d_state, self.d_inner), dtype=np.float32)
+        for i in range(d_state):
+            for j in range(self.d_inner):
+                if i >= j:
+                    A[i, j] = -(i + 1) * (j + 1)
+        self.A_log = nn.Parameter(torch.tensor(A, dtype=torch.float32))
+        
+        self.dt_bias = nn.Parameter(torch.zeros(d_state))
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        x: [batch, seq_len, d_model]
+        """
+        batch_size, seq_len, d_model = x.shape
+        
+        # Split y proyectar
+        xz = self.in_proj(x)  # [batch, seq, 2*d_inner]
+        x_inner, z = xz.chunk(2, dim=-1)
+        
+        # Convolución + SiLU
+        x_conv = x_inner.transpose(1, 2)  # [batch, d_inner, seq]
+        x_conv = self.conv1d(x_conv)[:, :, :seq_len].transpose(1, 2)  # [batch, seq, d_inner]
+        x_ssm = F.silu(x_conv)
+        
+        # Proyectar para obtener B, C, dt
+        x_proj = self.x_proj(x_ssm)  # [batch, seq, d_state*2 + 1]
+        B = x_proj[:, :, :self.d_state]  # [batch, seq, d_state]
+        C = x_proj[:, :, self.d_state:self.d_state*2]  # [batch, seq, d_state]
+        dt = x_proj[:, :, -1]  # [batch, seq]
+        
+        # Discretización
+        dt = F.softplus(dt + self.dt_bias)  # Positive step
+        A = -torch.exp(self.A_log.float())  # [d_state, d_inner]
+        
+        # SSM step (simplificado - versión completa usaría scan)
+        # Aquí ilustramos el concepto
+        y = self.selective_scan(x_ssm, dt, A, B, C)
+        
+        # Gating
+        y = y * F.silu(z)
+        
+        return self.out_proj(y)
+    
+    def selective_scan(self, x: torch.Tensor, dt: torch.Tensor, 
+                       A: torch.Tensor, B: torch.Tensor, C: torch.Tensor) -> torch.Tensor:
+        """
+        Selective scan - el corazón de Mamba.
+        Por simplicidad, aquí es una versión ilustrativa.
+        La implementación real usa parallel scan algorithm.
+        """
+        # Esta es una versión simplificada
+        # La implementación real usa torch.scan con parallel scan
+        batch_size, seq_len, d_inner = x.shape
+        d_state = A.shape[0]
+        
+        h = torch.zeros(batch_size, d_state, d_inner, device=x.device)
+        outputs = []
+        
+        for t in range(seq_len):
+            # Selección de parámetros en tiempo t
+            B_t = B[:, t, :]  # [batch, d_state]
+            C_t = C[:, t, :]  # [batch, d_state]
+            dt_t = dt[:, t, None]  # [batch, 1]
+            
+            # Discretizar
+            dA = torch.exp(dt_t * A)  # [d_state, d_inner]
+            dB = dt_t * B_t.unsqueeze(-1)  # [batch, d_state, 1]
+            
+            # Recurrence
+            h = dA * h + (dB * x[:, t, :].unsqueeze(1))  # [batch, d_state, d_inner]
+            
+            # Output
+            y_t = (C_t.unsqueeze(-1) * h).sum(dim=1)  # [batch, d_inner]
+            outputs.append(y_t)
+        
+        return torch.stack(outputs, dim=1)
 
-def lexical_match(query, documents):
-    vectorizer = TfidfVectorizer()
-    tfidf = vectorizer.fit_transform([query] + documents)
-    return cosine_similarity(tfidf[0:1], tfidf[1:])[0]
-
-# "solicitar reembolso" vs "pedir devolución" = 0 (léxicamente diferentes)
-
-# BIEN: Embeddings semánticos
-def semantic_match(query, documents):
-    matcher = EmbeddingMatcher()
-    return matcher.compute_similarity(query, documents)
-
-# "solicitar reembolso" vs "pedir devolución" = ~0.85 (semánticamente similares)</code></pre>
-<h3>❌ Error 2: No Usar Re-Ranking</h3>
-<p><strong>El problema</strong>: Los embeddings capturan generalidad pero pierden precisión en detalles. Un buen embedding retrieval tiene recall alto pero precisión media.</p>
-<p><strong>La solución</strong>: Pipeline de dos etapas — retrieval rápido con embeddings + re-ranking fino con cross-encoder o LLM.</p>
-<pre><code class="language-python"># MAL: Solo embeddings
-results = matcher.embedding_matcher.compute_similarity(query, candidates)
-
-# BIEN: Hybrid con re-ranking
-results = matcher.hybrid_search(
-    query, 
-    candidates,
-    weights={"embedding": 0.3, "cross_encoder": 0.7}
-)
-# El re-ranking refina los top-k del embedding matcher</code></pre>
-<h3>❌ Error 3: No Evaluar Con Métricas Apropiadas</h3>
-<p><strong>El problema</strong>: "El modelo funciona bien" no es una métrica. Accuracy en matching es casi inútil si no mides ranking.</p>
-<p><strong>La solución</strong>: Usa MRR, NDCG, Precision@K para ranking. Accuracy solo si es clasificación directa.</p>
-<pre><code class="language-python"># MAL: Solo accuracy
-from sklearn.metrics import accuracy_score
-accuracy_score(labels, predictions)  # Inadecuado para ranking
-
-# BIEN: Métricas de ranking
-metrics = evaluate_matching(query_results)
-print(f"MRR: {metrics['MRR']:.3f}")  # Mean Reciprocal Rank
-print(f"NDCG: {metrics['NDCG']:.3f}")  # Normalized DCG
-print(f"Precision@5: {metrics['Precision@5']:.3f}")  # Precisión en top-5</code></pre>
+# Ejemplo
+block = MambaBlock(d_model=128, d_state=16)
+x = torch.randn(2, 50, 128)
+y = block(x)
+print(f"Input: {x.shape}")
+print(f"Output: {y.shape}")</code></pre>
+<hr>
+<h2>📊 SSM vs Transformer</h2>
+<h3>Complexidad</h3>
+<p>$$O_{transformer} = O(n^2 \cdot d) \quad \text{(attention)}$$
+$$O_{SSM} = O(n \cdot d \cdot d_{state}) \quad \text{(linear scan)}$$</p>
+<p>Para secuencias largas (n >> d * d_state), SSM es dramatically más eficiente.</p>
+<h3>Trade-offs</h3>
+<ul>
+<li><strong>SSM</strong>: O(n) en inference, pero no tiene access exacto a tokens anteriores como attention</li>
+<li><strong>Transformer</strong>: O(n²) pero con full attention context</li>
+<li><strong>SSM + conv</strong>: Puede capturar local context via convolutions</li>
+</ul>
+<hr>
+<h2>🌟 Modelos Conocidos</h2>
+<ul>
+<li><strong>Mamba</strong>: SSM selectivo, compite con transformers en language modeling</li>
+<li><strong>Jamba</strong>: Mezcla de Mamba + Attention blocks</li>
+<li><strong>S4 (Structured State Spaces)</strong>: El predecesor, muy eficiente para longitud 16K+</li>
+<li><strong>RWKV</strong>: Otro modelo recurrente que compite con transformers</li>
+</ul>
+<hr>
+<h2>⚠️ Limitaciones Actuales</h2>
+<h3>📝 Copy Task Difficulty</h3>
+<p>SSMs struggle con tareas que requieren copiar exactamente un token visto hace mucho. Por ejemplo: "记住: ABC... [10K tokens]... 记住: ABC" — el modelo debe copiar ABC exactamente. Attention puede hacer esto trivialmente, SSM tiene dificultad.</p>
+<h3>🎯 Benchmarks Mixtos</h3>
+<p>En algunos benchmarks Mamba iguala o supera transformers, pero en otros (especialmente tareas que requieren matching preciso) pierde. La combinación con attention (Jamba-style) parece ser el futuro.</p>
 <hr>
 <h2>📈 Resumen y Cierre</h2>
-<p>Hoy aprendimos que el text matching va mucho más allá de buscar palabras. Recapitulemos:</p>
+<p>SSMs representan un paradigma diferente a transformers:</p>
 <ul>
-<li><strong>Embeddings</strong>: Rápidos, buenos para retrieval en escala</li>
-<li><strong>Cross-encoders</strong>: Más precisos, consideran query+document jointly</li>
-<li><strong>Re-ranking</strong>: Combina lo mejor de ambos mundos</li>
-<li><strong>Métricas</strong>: MRR, NDCG, Precision@K para ranking; no accuracy</li>
+<li><strong>Eficiencia linear</strong>: O(n) vs O(n²) — game changer para secuencias largas</li>
+<li><strong>Selección de estado</strong>: Mamba aprende qué recordar/olvidar por input</li>
+<li><strong>Trade-off</strong>: Menos flexible que attention pero más eficiente</li>
+<li><strong>Futuro</strong>: Arquitecturas híbridas SSM + Attention</li>
 </ul>
-<p><strong>Los 3 errores a evitar</strong>:</p>
-<ol>
-<li>No uses matching léxico cuando puedes usar semántico</li>
-<li>Siempre incluye re-ranking en tu pipeline</li>
-<li>Mide con métricas de ranking, no de clasificación</li>
-</ol>
-<p>El 80% lo hace mal, parcero — pero tú ahora estás en el 20% que lo hace bien. Y lo mejor es que estos principios aplican desde chatbots hasta sistemas de búsqueda enterprise.</p>
-<p>Algo que siempre olvido: los embeddings no son iguales para todos los dominios. Un embedding entrenado en Wikipedia puede no funcionar bien para texto médico o legal. Siempre haz fine-tuning o usa embeddings específicos del dominio cuando puedas.</p>
-<p>Mañana en el Día 307 hablamos de Flash Attention — la técnica que hace que todo sea más rápido. Va a estar interessante.</p>
+<p>El campo está evolucionando rápido. La pregunta no es "SSM vs Transformer" sino cómo combinar lo mejor de ambos mundos.</p>
+<p>Mañana en el Día 307 hablamos de <strong>Flash Attention</strong> — cómo hacer attention 10x más rápido. Va a estar锋利.</p>
 <hr>
-<p><em>¿Has tenido problemas con text matching en tus proyectos? ¿Prefieres embeddings o cross-encoders? Cuéntame en los comentarios. #365DaysOfAI #NLP #TextMatching</em></p>
+<p><em>#365DaysOfAI #StateSpaceModels #Mamba #SSM #DeepLearning #Architecture</em></p>
   </article>
 
   <script>
     document.getElementById('themeToggle').addEventListener('click', function() {
       const html = document.documentElement;
-      const isDark = html.getAttribute('data-theme') === 'dark';
-      html.setAttribute('data-theme', isDark ? 'light' : 'dark');
-      document.getElementById('themeIcon').className = isDark ? 'fas fa-moon' : 'fas fa-sun';
-    });
-  </script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
-  <script>
-    hljs.highlightAll();
-    document.addEventListener('DOMContentLoaded', () => {
-      renderMathInElement(document.body, {
-        delimiters: [
-          { left: '$$', right: '$$', display: true },
-          { left: '$',  right: '$',  display: false },
-          { left: '\\[', right: '\\]', display: true },
-          { left: '\\(', right: '\\)', display: false },
-        ],
-        throwOnError: false,
-      });
+      const current = html.getAttribute('data-theme');
+      const next = current === 'dark' ? 'light' : 'dark';
+      html.setAttribute('data-theme', next);
+      localStorage.setItem('theme', next);
+      document.getElementById('themeIcon').className = next === 'dark' ? 'fas fa-sun' : 'fas fa-moon';
     });
     
-  const _html = document.documentElement;
-  const _btn  = document.getElementById('themeToggle');
-  const _icon = document.getElementById('themeIcon');
-  function _setIcon(t) { _icon.className = t === 'dark' ? 'fas fa-sun' : 'fas fa-moon'; }
-  const _saved = localStorage.getItem('theme') || 'dark';
-  _html.setAttribute('data-theme', _saved);
-  _setIcon(_saved);
-  _btn.addEventListener('click', () => {
-    const next = _html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
-    _html.setAttribute('data-theme', next);
-    localStorage.setItem('theme', next);
-    _setIcon(next);
-  });
-
+    const saved = localStorage.getItem('theme');
+    if (saved) {
+      document.documentElement.setAttribute('data-theme', saved);
+      document.getElementById('themeIcon').className = saved === 'dark' ? 'fas fa-sun' : 'fas fa-moon';
+    }
   </script>
 </body>
 </html>

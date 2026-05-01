@@ -118,422 +118,230 @@ nav {
   </header>
 
   <article class="article-body">
-<h1>LLM Sentiment Analysis — El 75% Lo Hace Mal y el 25% Lo Hace Bien</h1>
-<p>Hagale pues, parcero. Aquí en Bogotá, cuando alguien te dice "está bueno eso", depende del contexto si es bueno o si está siendo sarcasmo puro. Eso mismo pasa con los modelos de sentiment analysis: el 75% de las implementaciones no capturan la riqueza real del lenguaje humano. Hoy en el Día 305 vamos a arreglar eso — con matemáticas, código y el estilo colombiano que nos caracteriza.</p>
+<h2>🎯 Por Que Mixture of Experts?</h2>
+<p>Hagale pues, parcero. Imagínese un equipo donde cada persona es experta en algo diferente: uno sabe de matemáticas, otro de historia, otro de cocina. Cuando llega un problema, se lo mandas al que más sabe del tema. Eso es exactamente Mixture of Experts (MoE): un modelo con múltiples "expertos" internos donde un router decide cuál usar para cada input.</p>
+<p>El problema con los modelos densos es que usan TODOS los parámetros para cada input. Un transformer de 100B parametros computa 100B params aunque la pregunta sea "cuál es la capital de Francia?". MoE resuelve esto: solo activa los expertos relevantes.</p>
 <hr>
-<h2>🎯 Por Que Sentiment Analysis Con LLMs?</h2>
-<p>El sentiment analysis tradicional usaba bag-of-words + SVM y funcionaba "aceptable" para reviews de películas con dos categorías: positivo o negativo. Pero el lenguaje real es más complejo. Cuando alguien escribe "no está mal", ¿es positivo o negativo? Cuando dice "el servicio fue lento, pero la comida salvó la noche", ¿qué demonios es eso?</p>
-<p>Los LLMs resuelven esto porque:</p>
-<ul>
-<li><strong>Entienden contexto</strong>: Pueden capturar negaciones, sarcasmo, y frases complejas</li>
-<li><strong>Manejan multi-clase</strong>: Van más allá de positivo/negativo binario</li>
-<li><strong>Zero-shot capability</strong>: Pueden clasificar categorías que nunca vieron en entrenamiento</li>
-</ul>
-<hr>
-<h2>📐 La Matemática Del Sentiment</h2>
-<p>Matemáticamente, el sentiment analysis es un problema de clasificación. Dado un texto $x$, queremos predecir una distribución de probabilidad sobre $k$ categorías de sentimiento:</p>
-<p>$$P(y | x) = \text{softmax}(W \cdot h_\theta(x) + b)_y$$</p>
+<h2>📐 La Arquitectura MoE</h2>
+<p>Matemáticamente, MoE tiene esta estructura:</p>
+<p>$$y = \sum_{i=1}^{E} G(x)_i \cdot E_i(x)$$</p>
 <p>Donde:</p>
 <ul>
-<li>$h_\theta(x)$ es la representación del LLM para el texto de entrada</li>
-<li>$W \in \mathbb{R}^{k \times d}$ mapea el embedding a las $k$ clases</li>
-<li>$\text{softmax}(z)_i = \frac{e^{z_i}}{\sum_j e^{z_j}}$</li>
+<li>$E_i(x)$ es el i-ésimo "experto" (generalmente una FFN)</li>
+<li>$G(x)$ es el router que produce una distribución de probabilidad sobre los expertos</li>
+<li>$G(x)_i$ es el peso para el experto $i$</li>
 </ul>
-<p>Para情感的 finas, usamos una función de pérdida cross-entropy:</p>
-<p>$$\mathcal{L} = -\sum_{i=1}^{N} \sum_{c=1}^{k} y_{i,c} \log(\hat{y}_{i,c})$$</p>
+<p>El router típicamente usa softmax:</p>
+<p>$$G(x)_i = \frac{\exp(w_i(x))}{\sum_{j=1}^{E} \exp(w_j(x))}$$</p>
+<p>donde $w_i(x) = \text{Linear}(x)_i$ es un score aprendido.</p>
 <hr>
-<h2>🔬 Approccio 1: Zero-Shot Sentiment</h2>
-<p>El approccio zero-shot usa el LLM directamente sin fine-tuning. Le pedimos que clasifique dado un schema de categorías.</p>
-<pre><code class="language-python">from transformers import pipeline
-import torch
-
-# Zero-shot con modelo pre-entrenado
-classifier = pipeline(
-    "zero-shot-classification",
-    model="facebook/bart-large-mnli",
-    device=0 if torch.cuda.is_available() else -1
-)
-
-candidate_labels = ["positive", "negative", "neutral", "ironic", "mixed"]
-
-def analyze_sentiment_zero_shot(text: str) -> dict:
-    """
-    Zero-shot sentiment analysis.
-    El modelo clasifica sin haber visto ejemplos específicos.
-    """
-    result = classifier(
-        text,
-        candidate_labels=candidate_labels,
-        multi_label=False  # una sola clase
-    )
-    
-    return {
-        "text": text,
-        "dominant_sentiment": result["labels"][0],
-        "confidence": result["scores"][0],
-        "all_scores": dict(zip(result["labels"], result["scores"]))
-    }
-
-# Ejemplo
-text = "El servicio fue lento, pero la comida salvó la noche"
-result = analyze_sentiment_zero_shot(text)
-print(f"Sentimiento: {result['dominant_sentiment']}")
-print(f"Confianza: {result['confidence']:.2%}")
-print(f"Todos los scores: {result['all_scores']}")</code></pre>
-<p><strong>Pros</strong>: No necesita datos etiquetados, fácil de implementar.</p>
-<p><strong>Cons</strong>: Puede ser inconsistente, necesita prompt engineering cuidadoso.</p>
+<h2>🏗️ Top-K Gating</h2>
+<p>Un problema con el gating estándar: si todos los pesos son similares, no hay especialización. Por eso se usa <strong>Top-K Gating</strong>:</p>
+<p>$$G(x)_i = \frac{\exp(w_i(x))}{\sum_{j \in top-k} \exp(w_j(x))}$$</p>
+<p>Solo se activan los k expertos con mayor weight. Por ejemplo, en Mixtral 8x7B se usan 2 expertos de 8 disponibles por token.</p>
 <hr>
-<h2>🔬 Approccio 2: Fine-Tuned Sentiment Analysis</h2>
-<p>Para mayor precisión, hacemos fine-tuning de un modelo pre-entrenado con datos etiquetados.</p>
-<pre><code class="language-python">from transformers import (
-    AutoModelForSequenceClassification,
-    AutoTokenizer,
-    TrainingArguments,
-    Trainer
-)
-from datasets import Dataset
-import torch
+<h2>🔬 Implementacion Basica</h2>
+<pre><code class="language-python">import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
-# Cargar modelo pre-entrenado
-model_name = "distilbert-base-uncased"
-tokenizer = AutoTokenizer.from_pretrained(model_name)
-model = AutoModelForSequenceClassification.from_pretrained(
-    model_name,
-    num_labels=5,  # positive, negative, neutral, ironic, mixed
-    id2label={0: "negative", 1: "mixed", 2: "neutral", 3: "positive", 4: "ironic"},
-    label2id={"negative": 0, "mixed": 1, "neutral": 2, "positive": 3, "ironic": 4}
-)
+class Expert(nn.Module):
+    """Un experto individual (típicamente una FFN)."""
+    def __init__(self, d_model: int, d_ff: int):
+        super().__init__()
+        self.w1 = nn.Linear(d_model, d_ff, bias=False)
+        self.w2 = nn.Linear(d_ff, d_model, bias=False)
+        self.activation = nn.SiLU()
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.w2(self.activation(self.w1(x)))
 
-def tokenize_function(examples):
-    return tokenizer(
-        examples["text"],
-        padding="max_length",
-        truncation=True,
-        max_length=512
-    )
-
-def fine_tune_sentiment(train_dataset, eval_dataset, output_dir="./sentiment_model"):
+class MoELayer(nn.Module):
     """
-    Fine-tuning de modelo para sentiment analysis.
+    Capa Mixture of Experts.
+    Usa Top-K gating para seleccionar expertos activos.
     """
-    # Tokenizar datasets
-    train_tokenized = train_dataset.map(tokenize_function, batched=True)
-    eval_tokenized = eval_dataset.map(tokenize_function, batched=True)
+    def __init__(self, d_model: int, d_ff: int, n_experts: int, top_k: int = 2):
+        super().__init__()
+        self.n_experts = n_experts
+        self.top_k = top_k
+        
+        # Router network
+        self.gate = nn.Linear(d_model, n_experts, bias=False)
+        
+        # Los expertos
+        self.experts = nn.ModuleList([
+            Expert(d_model, d_ff) for _ in range(n_experts)
+        ])
     
-    # Training arguments
-    training_args = TrainingArguments(
-        output_dir=output_dir,
-        num_train_epochs=3,
-        per_device_train_batch_size=16,
-        per_device_eval_batch_size=64,
-        warmup_steps=500,
-        weight_decay=0.01,
-        learning_rate=2e-5,
-        eval_strategy="epoch",
-        save_strategy="epoch",
-        load_best_model_at_end=True,
-        metric_for_best_model="accuracy",
-        logging_dir="./logs",
-        logging_steps=100,
-    )
-    
-    # Métricas
-    def compute_metrics(eval_pred):
-        logits, labels = eval_pred
-        predictions = logits.argmax(axis=-1)
-        accuracy = (predictions == labels).mean()
-        return {"accuracy": accuracy}
-    
-    # Trainer
-    trainer = Trainer(
-        model=model,
-        args=training_args,
-        train_dataset=train_tokenized,
-        eval_dataset=eval_tokenized,
-        compute_metrics=compute_metrics,
-    )
-    
-    trainer.train()
-    return model, tokenizer
-
-# Inferencia
-def predict_sentiment(texts, model, tokenizer):
-    """
-    Predice sentiment para una lista de textos.
-    """
-    model.eval()
-    inputs = tokenizer(
-        texts,
-        padding=True,
-        truncation=True,
-        max_length=512,
-        return_tensors="pt"
-    )
-    
-    with torch.no_grad():
-        outputs = model(**inputs)
-        probs = torch.softmax(outputs.logits, dim=-1)
-        preds = outputs.logits.argmax(dim=-1)
-    
-    return {
-        "predictions": [model.config.id2label[p.item()] for p in preds],
-        "probabilities": probs.numpy()
-    }</code></pre>
-<hr>
-<h2>🎯 Aspect-Based Sentiment Analysis (ABSA)</h2>
-<p>El aspect-based sentiment va más allá: no solo dice "positivo", dice "+La comida+ fue excelente" y "-El servicio+ fue lento". Esto es crucial para análisis de reseñas.</p>
-<pre><code class="language-python">from transformers import pipeline
-import re
-
-class AspectBasedSentimentAnalyzer:
-    """
-    Análisis de sentimiento basado en aspectos.
-    Identifica diferentes aspectos y el sentimiento asociado a cada uno.
-    """
-    
-    def __init__(self):
-        self.aspect_classifier = pipeline(
-            "text-classification",
-            model="nlptown/bert-base-multilingual-uncased-sentiment"
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        x: [batch, seq_len, d_model]
+        """
+        batch_size, seq_len, d_model = x.shape
+        
+        # Flatten para procesamiento eficiente
+        x_flat = x.view(-1, d_model)  # [batch*seq_len, d_model]
+        
+        # Calcular gate scores
+        gate_logits = self.gate(x_flat)  # [batch*seq_len, n_experts]
+        gate_probs = F.softmax(gate_logits, dim=-1)
+        
+        # Top-K selection
+        top_k_probs, top_k_indices = torch.topk(
+            gate_probs, self.top_k, dim=-1
         )
-        # Aspectos comunes para reviews
-        self.aspects = [
-            "comida", "servicio", "precio", "ambiente", 
-            "ubicación", "limpieza", "relación calidad-precio"
-        ]
-    
-    def extract_aspect_sentiment(self, text: str) -> list:
-        """
-        Extrae aspectos mencionados y su sentimiento.
-        """
-        results = []
         
-        # Dividir por aspectos potenciales (oraciones)
-        sentences = re.split(r'[.,;!?]', text)
+        # Normalizar Top-K
+        top_k_probs = top_k_probs / top_k_probs.sum(dim=-1, keepdim=True)
         
-        for sentence in sentences:
-            sentence = sentence.strip()
-            if not sentence:
-                continue
-                
-            # Clasificar cada oración
-            sentiment = self.aspect_classifier(sentence)[0]
+        # Inicializar output
+        output = torch.zeros_like(x_flat)
+        
+        # Apply experts solo a los top-k
+        for k in range(self.top_k):
+            expert_idx = top_k_indices[:, k]  # índice del experto k
+            expert_weight = top_k_probs[:, k]  # peso del experto k
             
-            # Detectar aspectos mencionados
-            mentioned_aspects = [
-                aspect for aspect in self.aspects 
-                if aspect.lower() in sentence.lower()
-            ]
-            
-            if mentioned_aspects or len(sentences) == 1:
-                results.append({
-                    "sentence": sentence,
-                    "sentiment": sentiment["label"],
-                    "score": sentiment["score"],
-                    "aspects": mentioned_aspects if mentioned_aspects else ["general"]
-                })
+            # Para cada experto, acumular su contribución
+            for i in range(self.n_experts):
+                mask = (expert_idx == i)
+                if mask.any():
+                    expert_input = x_flat[mask]
+                    expert_output = self.experts[i](expert_input)
+                    # Ponderar por peso y acumular
+                    output[mask] += expert_output * expert_weight[mask].unsqueeze(-1)
         
-        return results
+        return output.view(batch_size, seq_len, d_model)
 
-# Ejemplo
-analyzer = AspectBasedSentimentAnalyzer()
-review = "La comida estuvo deliciosa, pero el servicio fue muy lento y el precio es excesivo."
-results = analyzer.extract_aspect_sentiment(review)
+# Ejemplo de uso
+batch_size, seq_len, d_model = 2, 10, 512
+n_experts, top_k = 8, 2
 
-for r in results:
-    print(f"Oración: {r['sentence']}")
-    print(f"  Sentimiento: {r['sentiment']}")
-    print(f"  Aspectos: {r['aspects']}")</code></pre>
+x = torch.randn(batch_size, seq_len, d_model)
+moe_layer = MoELayer(d_model, d_model * 4, n_experts, top_k)
+output = moe_layer(x)
+
+print(f"Input shape: {x.shape}")
+print(f"Output shape: {output.shape}")
+print(f"Número de expertos: {n_experts}")
+print(f"Expertos activos por token: {top_k}")</code></pre>
 <hr>
-<h2>📊 Métricas de Evaluación</h2>
-<p>No todas las métricas sirven para todos los casos. Aquí va la guía:</p>
+<h2>⚡ Load Balancing Loss</h2>
+<p>Problema crítico: el router puede aprender a mandar todo a los mismos expertos (dominancia). Para evitar esto, se usa un <strong>load balancing loss</strong>:</p>
+<p>$$\mathcal{L}_{lb} = \alpha \cdot \text{Var}\left(\frac{1}{B}\sum_{i=1}^{B} f_i\right) + \beta \cdot \text{Var}\left(\frac{1}{B}\sum_{i=1}^{B} P_i\right)$$</p>
+<p>Donde:</p>
 <ul>
-<li><strong>Accuracy</strong>: Solo si las clases están balanceadas</li>
-<li><strong>F1-Score (macro)</strong>: Para clases desbalanceadas — promedio del F1 de cada clase</li>
-<li><strong>F1-Score (weighted)</strong>: Ponderado por la frecuencia de cada clase</li>
-<li><strong>Confusion Matrix</strong>: Para ver qué clases se confunden más</li>
-<li><strong>Cross-Entropy Loss</strong>: Para monitorear entrenamiento, no para comparar modelos</li>
+<li>$f_i$ = fraction of tokens routed to expert $i$</li>
+<li>$P_i$ = mean probability for expert $i$</li>
+<li>$\alpha, \beta$ = hyperparameters de penalización</li>
 </ul>
-<pre><code class="language-python">from sklearn.metrics import (
-    accuracy_score, f1_score, classification_report, 
-    confusion_matrix
-)
-import numpy as np
-
-def evaluate_sentiment(y_true, y_pred, class_names):
+<pre><code class="language-python">class MoELayerWithLoadBalancing(nn.Module):
     """
-    Evalúa modelo de sentiment con métricas apropiadas.
+    MoE con load balancing loss para evitar dominancia de expertos.
     """
-    print("=" * 60)
-    print("EVALUACIÓN DE SENTIMENT ANALYSIS")
-    print("=" * 60)
+    def __init__(self, d_model: int, d_ff: int, n_experts: int, 
+                 top_k: int = 2, alpha: float = 0.1):
+        super().__init__()
+        self.n_experts = n_experts
+        self.top_k = top_k
+        self.alpha = alpha
+        
+        self.gate = nn.Linear(d_model, n_experts, bias=False)
+        self.experts = nn.ModuleList([
+            Expert(d_model, d_ff) for _ in range(n_experts)
+        ])
     
-    # Accuracy general
-    acc = accuracy_score(y_true, y_pred)
-    print(f"\nAccuracy: {acc:.2%}")
-    
-    # F1 Scores
-    f1_macro = f1_score(y_true, y_pred, average='macro')
-    f1_weighted = f1_score(y_true, y_pred, average='weighted')
-    
-    print(f"F1 (macro): {f1_macro:.2%}")
-    print(f"F1 (weighted): {f1_weighted:.2%}")
-    
-    # Reporte detallado por clase
-    print("\n" + "-" * 60)
-    print("REPORTE POR CLASE:")
-    print("-" * 60)
-    print(classification_report(y_true, y_pred, target_names=class_names))
-    
-    # Matriz de confusión
-    print("\n" + "-" * 60)
-    print("MATRIZ DE CONFUSIÓN:")
-    print("-" * 60)
-    cm = confusion_matrix(y_true, y_pred)
-    print(f"Clases: {class_names}")
-    print(cm)
-    
-    return {
-        "accuracy": acc,
-        "f1_macro": f1_macro,
-        "f1_weighted": f1_weighted,
-        "confusion_matrix": cm
-    }</code></pre>
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Retorna (output, load_balance_loss)
+        """
+        batch_size, seq_len, d_model = x.shape
+        x_flat = x.view(-1, d_model)
+        
+        # Router decisions
+        gate_logits = self.gate(x_flat)
+        gate_probs = F.softmax(gate_logits, dim=-1)
+        
+        # Top-K
+        top_k_probs, top_k_indices = torch.topk(gate_probs, self.top_k, dim=-1)
+        top_k_probs = top_k_probs / top_k_probs.sum(dim=-1, keepdim=True)
+        
+        # Load balancing
+        # f_i: fraction de tokens al experto i
+        # P_i: probabilidad promedio del experto i
+        f_i = torch.zeros(self.n_experts, device=x.device)
+        P_i = torch.zeros(self.n_experts, device=x.device)
+        
+        for i in range(self.n_experts):
+            mask = (top_k_indices == i).any(dim=-1)
+            f_i[i] = mask.float().mean()
+            P_i[i] = gate_probs[mask, i].mean() if mask.any() else 0.0
+        
+        # Load balancing loss
+        load_loss = self.n_experts * (f_i * P_i).sum()
+        
+        # Forward normal
+        output = torch.zeros_like(x_flat)
+        for k in range(self.top_k):
+            expert_idx = top_k_indices[:, k]
+            expert_weight = top_k_probs[:, k]
+            
+            for i in range(self.n_experts):
+                mask = (expert_idx == i)
+                if mask.any():
+                    expert_output = self.experts[i](x_flat[mask])
+                    output[mask] += expert_output * expert_weight[mask].unsqueeze(-1)
+        
+        return output.view(batch_size, seq_len, d_model), load_loss * self.alpha</code></pre>
 <hr>
-<h2>⚠️ Los 3 Errores Más Comunes</h2>
-<h3>❌ Error 1: Usar Sentiment Binario Cuando Es Multi-Clase</h3>
-<p><strong>El problema</strong>: Muchas implementaciones forzan's todo a "positivo" o "negativo". Pero el mundo real tiene más matices: "neutral", "mixto", "irónico".</p>
-<p><strong>La solución</strong>: Usa un schema de 4-5 clases mínimo. Si solo tienes 2, estás perdiendo información.</p>
-<pre><code class="language-python"># MAL: Solo binario
-def sentiment_binary(text):
-    result = classifier(text, labels=["positive", "negative"])
-    return "positive" if result[0]["score"] > 0.5 else "negative"
-
-# BIEN: Multi-clase
-SENTIMENT_LABELS = ["negative", "neutral", "positive", "ironic", "mixed"]
-def sentiment_multiclass(text):
-    result = classifier(text, labels=SENTIMENT_LABELS)
-    return result[0]["label"]</code></pre>
-<h3>❌ Error 2: No Considerar Aspect-Based Sentiment</h3>
-<p><strong>El problema</strong>: "La comida estuvo increíble, pero el servicio fue horrible." Un clasificador binario o multi-clase normal te da UNA etiqueta. ¿Pero cuálaspecto es positivo y cuál negativo?</p>
-<p><strong>La solución</strong>: Implementa ABSA para capturar la riqueza del texto.</p>
-<pre><code class="language-python"># MAL: Una etiqueta para todo el texto
-result = classifier("La comida incredible, servicio horrible")
-# Devuelve: {"label": "mixed"} — pero no sabes qué es mixto
-
-# BIEN: Aspect-based
-analyzer = AspectBasedSentimentAnalyzer()
-results = analyzer.extract_aspect_sentiment("La comida incredible, servicio horrible")
-# Devuelve: [
-#   {"sentence": "La comida incredible", "sentiment": "positive", "aspects": ["comida"]},
-#   {"sentence": "servicio horrible", "sentiment": "negative", "aspects": ["servicio"]}
-# ]</code></pre>
-<h3>❌ Error 3: No Manejar Negaciones</h3>
-<p><strong>El problema</strong>: "No está mal" es POSITIVO, no negativo. "Nunca estuvo bueno" es NEGATIVO. Los modelos simples no capturan esto.</p>
-<p><strong>La solución</strong>: Usa prompts estructurados o modelos entrenados específicamente para manejar negaciones.</p>
-<pre><code class="language-python">import re
-
-def handle_negation(text: str) -> str:
-    """
-    Pre-procesa negaciones para mejorar clasificación.
-    """
-    negation_patterns = [
-        (r'\bno\b', 'NO_'),
-        (r'\bnunca\b', 'NUNCA_'),
-        (r'\bjamás\b', 'JAMAS_'),
-        (r'\btampoco\b', 'TAMPOCO_'),
-    ]
-    
-    result = text
-    for pattern, replacement in negation_patterns:
-        result = re.sub(pattern, replacement, result, flags=re.IGNORECASE)
-    
-    return result
-
-def analyze_with_negation_handling(text: str, classifier):
-    """
-    Analiza sentiment manejando negaciones.
-    """
-    # Pre-procesar
-    processed = handle_negation(text)
-    
-    # Clasificar texto procesada
-    result = classifier(processed, labels=SENTIMENT_LABELS)
-    
-    return {
-        "original": text,
-        "processed": processed,
-        "sentiment": result[0]["label"],
-        "score": result[0]["score"]
-    }
-
-# Ejemplo
-text = "Nunca estuvo tan malo el restaurante"
-result = analyze_with_negation_handling(text, classifier)
-print(f"Original: {result['original']}")
-print(f"Procesado: {result['processed']}")
-print(f"Sentimiento: {result['sentiment']}")  # Ahora captura "nunca" correctamente</code></pre>
+<h2>🌟 Mixtral 8x7B - Ejemplo Real</h2>
+<p>Mixtral 8x7B es el ejemplo más conocido de MoE bien implementado:</p>
+<ul>
+<li><strong>8 expertos</strong> por capa</li>
+<li><strong>2 expertos activos</strong> por token (de ahí el "8x7B" - 8 expertos pero solo activa 2)</li>
+<li><strong>~12B parametros activos</strong> de los 46.7B totales</li>
+<li>Equivalente en calidad a un modelo denso de ~70B</li>
+</ul>
+<p>La clave del éxito de Mixtral es que los expertos son FFNs especializadas pero compartidas entre capas, permitiendo que cada experto se especialice en diferentes tipos de tokens.</p>
+<hr>
+<h2>⚠️ Desafios y Problemas</h2>
+<h3>💾 Memoria VRAM</h3>
+<p>Aunque solo usas k expertos por forward, todos los expertos deben estar en memoria. Un modelo MoE de 8 expertos necesita 8x la memoria de un experto para los pesos. Esto es un problema para deployment.</p>
+<h3>📦 Comunicacion Bottleneck</h3>
+<p>En entrenamiento distribuido, los expertos activos pueden estar en diferentes GPUs, creando comunicación excesiva. Esto limita los beneficios de paralelismo.</p>
+<h3>🎯 Routing Instabilidad</h3>
+<p>Si el router colapsa y siempre manda los mismos expertos, el modelo no converge bien. Por eso el load balancing loss es crítico.</p>
 <hr>
 <h2>📈 Resumen y Cierre</h2>
-<p>Hoy aprendimos que el sentiment analysis con LLMs es poderoso pero tiene trampas. Recapitulemos:</p>
+<p>MoE es una arquitectura elegante que permite escalar modelos dramáticamente manteniendo el compute activo razonable:</p>
 <ul>
-<li><strong>Zero-shot</strong>: Rápido, no necesita datos, pero inconsistente</li>
-<li><strong>Fine-tuned</strong>: Más preciso, requiere datos y compute</li>
-<li><strong>Aspect-based</strong>: Captura la riqueza de textos complejos</li>
-<li><strong>Métricas</strong>: F1 macro para desbalance, confusion matrix para debugging</li>
+<li><strong>Idea central</strong>: especializada mejor que generalista</li>
+<li><strong>Top-K gating</strong>: solo activa k de E expertos por token</li>
+<li><strong>Load balancing</strong>: evita que el router colapse</li>
+<li><strong>Trade-offs</strong>: más memoria, menos compute por parametro</li>
 </ul>
-<p><strong>Los 3 errores a evitar</strong>:</p>
-<ol>
-<li>No uses binario cuando es multi-clase</li>
-<li>No ignores los aspectos — usa ABSA</li>
-<li>Maneja las negaciones explícitamente</li>
-</ol>
-<p>Parece complicado, pero con estos fundamentos ya tienes un framework robusto para sentiment analysis en producción. El 75% lo hace mal, parcero — pero tú ahora estás en el 25% que lo hace bien.</p>
-<p>Ah, y algo importante: siempre valida con datos reales de tu dominio. Un modelo entrenado en tweets no funciona igual para reseñas de restaurantes. El contexto es rey.</p>
-<p>Nos vemos en el Día 306 cuando hablemos de <em>text matching</em> — cómo medir similitud entre textos con LLMs. Va a estar bueno.</p>
+<p>El futuro es híbrido: MoE para scaling横方向, y dentro de cada experto podemos usar técnicas como mixture-of-logits o weighted heads. La clave está en balancear especialización con eficiencia.</p>
+<p>Mañana en el Día 306 hablamos de <strong>State Space Models</strong> — la alternativa a transformers que promete eficiencia linear en secuencias largas. Va a estar interesante.</p>
 <hr>
-<p><em>¿Preguntas? ¿Errores que has encontrado en tus proyectos de sentiment? Déjalas en los comentarios. #365DaysOfAI #NLP #SentimentAnalysis</em></p>
+<p><em>#365DaysOfAI #MoE #MixtureOfExperts #DeepLearning #Architecture</em></p>
   </article>
 
   <script>
     document.getElementById('themeToggle').addEventListener('click', function() {
       const html = document.documentElement;
-      const isDark = html.getAttribute('data-theme') === 'dark';
-      html.setAttribute('data-theme', isDark ? 'light' : 'dark');
-      document.getElementById('themeIcon').className = isDark ? 'fas fa-moon' : 'fas fa-sun';
-    });
-  </script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
-  <script>
-    hljs.highlightAll();
-    document.addEventListener('DOMContentLoaded', () => {
-      renderMathInElement(document.body, {
-        delimiters: [
-          { left: '$$', right: '$$', display: true },
-          { left: '$',  right: '$',  display: false },
-          { left: '\\[', right: '\\]', display: true },
-          { left: '\\(', right: '\\)', display: false },
-        ],
-        throwOnError: false,
-      });
+      const current = html.getAttribute('data-theme');
+      const next = current === 'dark' ? 'light' : 'dark';
+      html.setAttribute('data-theme', next);
+      localStorage.setItem('theme', next);
+      document.getElementById('themeIcon').className = next === 'dark' ? 'fas fa-sun' : 'fas fa-moon';
     });
     
-  const _html = document.documentElement;
-  const _btn  = document.getElementById('themeToggle');
-  const _icon = document.getElementById('themeIcon');
-  function _setIcon(t) { _icon.className = t === 'dark' ? 'fas fa-sun' : 'fas fa-moon'; }
-  const _saved = localStorage.getItem('theme') || 'dark';
-  _html.setAttribute('data-theme', _saved);
-  _setIcon(_saved);
-  _btn.addEventListener('click', () => {
-    const next = _html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
-    _html.setAttribute('data-theme', next);
-    localStorage.setItem('theme', next);
-    _setIcon(next);
-  });
-
+    const saved = localStorage.getItem('theme');
+    if (saved) {
+      document.documentElement.setAttribute('data-theme', saved);
+      document.getElementById('themeIcon').className = saved === 'dark' ? 'fas fa-sun' : 'fas fa-moon';
+    }
   </script>
 </body>
 </html>
