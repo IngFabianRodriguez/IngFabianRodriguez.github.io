@@ -118,263 +118,329 @@ nav {
   </header>
 
   <article class="article-body">
-<h1>Vector Databases y Embeddings</h1>
-<p>Hagale pues, parcero. Llegamos al Día 257 y hoy vamos a hablar de algo que el 80% ignora pero que hace sus RAG 10x mejores: Vector Databases y Embeddings. Esto es la infraestructura que separa los sistemas de búsqueda semántica funcionales de los que de verdad funcionan en producción. Póngase cómodo que esto vale la pena.</p>
+<h2>Por Qué los Sistemas Multi-Agente</h2>
+<p>Hagale pues, parcero. Llegamos al Día 257 y hoy vamos a hablar de algo que el 75% ignora pero que está redefiniendo cómo construimos sistemas de IA complejos: Multi-Agent Systems. Cuando un solo agente no puede hacerlo todo, múltiples agentes especializados colaboran, negocian y resuelven problemas que ningún LLM individual podría abordar. Esto es lo que separa los sistemas de IA toy de los que de verdad funcionan en producción. Póngase cómodo.</p>
 
-<h2>🎯 Por Qué los Embeddings Son el Centro de Todo</h2>
-<p>Un embedding es una representación vectorial densa de texto, imagen o cualquier dato. La magia está en que vectores similares quedan cerca en el espacio n-dimensional:</p>
+<h2>Arquitectura Básica de Agentes Múltiples</h2>
+<p>Un sistema multi-agente no es solo múltiples LLMs llamados en secuencia. Es una arquitectura donde agentes especializados tienen roles definidos, pueden comunicarse entre sí, y trabajan hacia un objetivo común:</p>
 
-$$\text{sim}(A, B) = \cos(\theta) = \frac{A \cdot B}{\|A\| \|B\|}$$
-
-<p>Esta simple fórmula de similitud coseno es la base de toda búsqueda semántica. Cuando tu query entra como un vector, los documentos más cercanos en el espacio vectorial son los más relevantes semánticamente. Pero aquí viene el problema: cuando tienes millones de vectores, calcular similitud contra todos es computationally imposible. Ahí entran los vector databases y los algoritmos ANN.</p>
-
-<h2>📐 Approximate Nearest Neighbor (ANN)</h2>
-<p>Buscar el nearest neighbor exacto en espacios de alta dimensionalidad es $O(n \cdot d)$ donde $n$ es el número de vectores y $d$ la dimensionalidad. Para 10 millones de vectores de 1536 dimensiones, eso es completamente inviable en tiempo real. Los algoritmos ANN sacrifican precisión exacta por velocidad dramática:</p>
-
-<p><strong>Métricas clave:</strong></p>
-<ul>
-<li><strong>Recall@K</strong>: Qué porcentaje de los K vecinos reales recuperaste</li>
-<li><strong>QPS</strong>: Queries por segundo</li>
-<li><strong>Index size</strong>: Memoria necesaria para el índice</li>
-</ul>
-
-<p>Los tres algoritmos ANN más importantes:</p>
-
-<pre><code class="language-python"># Los tres algoritmos ANN fundamentales
-
-# 1. HNSW (Hierarchical Navigable Small World)
-# Grafos multi-nivel para búsqueda aproximada
-# Bueno para: baja latencia, alta recall, datos pequeños-medianos
-index_hnsw = faiss.IndexHNSWFlat(d, m)  # m = conexiones por nodo
-index_hnsw.hnsw.efSearch = 64  # calidad de búsqueda
-index_hnsw.hnsw.efConstruction = 128  # calidad de construcción
-
-# 2. IVF (Inverted File Index)
-# Clustering + búsqueda en clusters cercanos
-# Bueno para: datos grandes, memoria limitada
-index_ivf = faiss.IndexIVFFlat(quantizer, d, nlist)
-index_ivf.nprobe = 16  # cuántos clusters buscar
-
-# 3. PQ (Product Quantization)
-# Compresión de vectores para datos masivos
-# Bueno para: mil millones+ vectores, memoria muy limitada
-index_pq = faiss.IndexPQ(d, m, nbits)  # m subvectores, nbits por subvector</code></pre>
-
-<h2>🚀 ChromaDB: El Vector DB para Desarrollo Rápido</h2>
-<p>ChromaDB se volvió el estándar para desarrollo local y prototipado por su simplicidad:</p>
-
-<pre><code class="language-python">import chromadb
-from chromadb.config import Settings
-
-# Inicializar cliente
-client = chromadb.Client(Settings(
-    anonymized_telemetry=False,
-    allow_reset=True
-))
-
-# Crear colección
-collection = client.create_collection(
-    name="documentos_colombia",
-    metadata={"hnsw:space": "cosine"}  # similitud coseno
-)
-
-# Agregar documentos con embeddings
-collection.add(
-    documents=[
-        "Bogotá es la capital de Colombia",
-        "Medellín se llama la ciudad de la eterna primavera",
-        "Cali es known as la salsa capital del mundo"
-    ],
-    metadatas=[
-        {"fuente": "geografia", "ciudad": "bogota"},
-        {"fuente": "geografia", "ciudad": "medellin"},
-        {"fuente": "cultura", "ciudad": "cali"}
-    ],
-    ids=["doc1", "doc2", "doc3"]
-)
-
-# Búsqueda semántica
-resultados = collection.query(
-    query_texts=["capital de Colombia"],
-    n_results=2
-)
-print(resultados)</code></pre>
-
-<h2>🔢 FAISS: Producción a Escala</h2>
-<p>Cuando necesitas producción con miles de millones de vectores, FAISS de Meta es el estándar:</p>
-
-<pre><code class="language-python">import faiss
-import numpy as np
-
-# Crear índice para 1 millón de vectores de 768 dimensiones
-d = 768  # dimensionalidad (ej: sentence-transformers)
-n = 1_000_000
-
-# Método 1: IVF con HNSW como quantizer (lo mejor de ambos mundos)
-print("Construyendo índice IVF-HNSW...")
-quantizer = faiss.IndexHNSWFlat(d, 32)
-index = faiss.IndexIVF(quantizer, d, 32768)  # 32768 clusters
-index.nprobe = 64  # buscar en 64 clusters más cercanos
-index.set_direct_map_type(faiss.DirectMap.Hashtable)
-
-# Entrenar (requiere suficientes vectores)
-index.train(np.random.rand(n, d).astype('float32'))
-
-# Agregar vectores en batches
-batch_size = 10000
-for i in range(0, n, batch_size):
-    vectors = np.random.rand(min(batch_size, n-i), d).astype('float32')
-    index.add(vectors)
-
-print(f"Índice construido con {index.ntotal} vectores")
-
-# Búsqueda
-query = np.random.rand(1, d).astype('float32')
-k = 10  # recuperar los 10 más cercanos
-distances, indices = index.search(query, k)
-print(f"Top {k} resultados: índices {indices[0]}, distancias {distances[0]}")</code></pre>
-
-<h2>☁️ Pinecone y Weaviate: La Nube</h2>
-<pre><code class="language-python"># Pinecone - vector database gestionado
-import pinecone
-
-pinecone.init(api_key="tu-api-key", environment="us-east-1")
-index = pinecone.Index("produccion-rag")
-
-# Upsert vectores
-vectors = [
-    (f"doc-{i}", embedding, {"text": f"Documento {i}"})
-    for i, embedding in enumerate(embeddings)
-]
-index.upsert(vectors)
-
-# Query
-query_response = index.query(
-    vector=query_embedding,
-    top_k=10,
-    include_metadata=True
-)
-
-# Weaviate - búsqueda híbrida nativa
-import weaviate
-
-client = weaviate.Client("http://localhost:8080")
-
-# Búsqueda híbrida (vector + keyword)
-result = client.query.get(
-    "Article",
-    ["title", "content"]
-).with_hybrid(
-    query="machine learning",
-    alpha=0.5  # 0.5 = balance igual entre vector y keyword
-).with_limit(10).do()</code></pre>
-
-<h2>📊 Cómo Elegir Tu Vector DB</h2>
-
-| Caso | Recomendación | Por Qué |
-|------|---------------|---------|
-| Prototipado local | ChromaDB | Cero setup, API simple |
-| Millones de vectores | FAISS | Control total, optimizable |
-| Miles de millones | Pinecone | Escala automática, gestionado |
-| Búsqueda híbrida | Weaviate | Vector + keyword nativo |
-| Tiempo real | Qdrant | Latencia ultra baja |
-
-<h2>⚠️ Los 3 Errores Más Comunes</h2>
-
-<h3>Error 1: Brute Force en Producción</h3>
-<p><strong>El problema</strong>: Calcular similitud contra todos los vectores funciona con 100 docs, pero con 1 millón tu sistema muere. El recall es 100% pero la latencia es inaceptable.</p>
-<p><strong>La solución</strong>: Usar ANN desde el principio. Empieza con HNSW que te da 95-99% de recall con 100-1000x speedup:</p>
-
-<pre><code class="language-python"># NO HACER ESTO en producción
-def brute_force_search(query, documents, k=10):
-    scores = []
-    for doc in documents:
-        score = cosine_similarity(query, doc.embedding)
-        scores.append((score, doc))
-    return sorted(scores, reverse=True)[:k]
-
-# SÍ HACER ESTO desde el inicio
-index = faiss.IndexHNSWFlat(d, 32)  # Construir índice ANN
-index.add(all_vectors)  # Agregar datos
-distances, indices = index.search(query_vector, k)  # Búsqueda O(log n)</code></pre>
-
-<h3>Error 2: No Entender el Tradeoff Speed vs Accuracy del ANN</h3>
-<p><strong>El problema</strong>: Elegir parámetros sin entender el impacto. Pones <code>efSearch=16</code> y te sorprende que el recall sea 70%. O intentas 99% de recall y tu latencia explota.</p>
-
-<p><strong>La matemática</strong>: En HNSW, <code>efSearch</code> controla el tamaño del beam search. Mayor efSearch = más nodos explorados = mayor recall pero más lento:</p>
-
-$$O(\text{efSearch}) \approx O(\log(n) \cdot \text{efSearch})$$
-
-<p><strong>La solución</strong>: Haz curveas de recall vs latency para tu dataset específico:</p>
-
-<pre><code class="language-python">import time
-
-def benchmark_ann(index, test_vectors, ground_truth, ef_values):
-    results = []
-    for ef in ef_values:
-        index.hnsw.efSearch = ef
-        total_time = 0
-        recalls = []
-        
-        for i, (query, true_neighbors) in enumerate(zip(test_vectors, ground_truth)):
-            start = time.time()
-            _, indices = index.search(query.reshape(1, -1), k=10)
-            total_time += time.time() - start
-            
-            retrieved = set(indices[0])
-            recall = len(retrieved & set(true_neighbors)) / len(true_neighbors)
-            recalls.append(recall)
-        
-        avg_recall = sum(recalls) / len(recalls)
-        avg_latency = total_time / len(test_vectors)
-        results.append((ef, avg_recall, avg_latency))
-        print(f"efSearch={ef}: recall={avg_recall:.3f}, latency={avg_latency*1000:.1f}ms")
+<pre><code class="language-python">class Agent:
+    def __init__(self, name, role, model):
+        self.name = name
+        self.role = role
+        self.model = model
     
-    return results
+    def think(self, task, context=None):
+        prompt = f"""
+        Rol: {self.role}
+        Tarea: {task}
+        Contexto: {context or 'Sin contexto adicional'}
+        """
+        return self.model.generate(prompt)
+    
+    def communicate(self, message, recipient):
+        return f"[{self.name} -> {recipient}]: {message}"
 
-# Encontrar el sweet spot para tu aplicación
-benchmark_ann(index, queries, ground_truth, [16, 32, 64, 128, 256])</code></pre>
+class MultiAgentSystem:
+    def __init__(self):
+        self.agents = {}
+    
+    def add_agent(self, agent):
+        self.agents[agent.name] = agent
+    
+    def run(self, task, orchestrator='orchestrator'):
+        # El orquestador divide y distribuye
+        orch = self.agents[orchestrator]
+        subtasks = orch.think(task)
+        
+        results = {}
+        for subtask in subtasks:
+            agent_name = subtask['agent']
+            result = self.agents[agent_name].think(subtask['task'], subtask.get('context'))
+            results[agent_name] = result
+        
+        # El orquestador sintetiza
+        return orch.think(f"Sintetiza: {results}")</code></pre>
 
-<h3>Error 3: No Afinar Parámetros del Índice para Tu Caso</h3>
-<p><strong>El problema</strong>: Usar parámetros por defecto. Tu índice ocupa 20GB cuando podría ocupar 5GB con el mismo recall. O tu búsqueda toma 500ms cuando podría ser 50ms.</p>
+<h2>Patrones de Colaboración</h2>
+<p>Existen tres patrones principales para hacer que agentes colaboren:</p>
 
-<p><strong>La solución</strong>: Afinar los 3 parámetros críticos:</p>
+<h3>1. Patrón de Orquestación</h3>
+<p>Un agente central (orquestador) coordina el trabajo de los demás. Decide qué agente hace qué y cuándo. Es simple pero el orquestador puede convertirse en bottleneck.</p>
 
-<pre><code class="language-python"># Los tres parámetros que más importan:
+<pre><code class="language-python">def orchestration_pattern(task, agents):
+    orchestrator = agents['orchestrator']
+    
+    # Paso 1: Planificar
+    plan = orchestrator.think(f"Planifica: {task}")
+    
+    # Paso 2: Asignar y ejecutar en paralelo
+    futures = []
+    for subtask in plan['subtasks']:
+        agent = agents[subtask['assigned_agent']]
+        futures.append(agent.think_async(subtask['task']))
+    
+    # Paso 3: Recolectar resultados
+    results = [f.result() for f in futures]
+    
+    # Paso 4: Sintetizar
+    return orchestrator.think(f"Sintetiza estos resultados: {results}")</code></pre>
 
-# 1. efConstruction (HNSW) - calidad del índice
-# Más alto = mejor conectividad del grafo = mejor recall
-# Costo: más tiempo de construcción
-# Recomendación: 64-128 para producción
-index_hnsw.hnsw.efConstruction = 128
+<h3>2. Patrón de Debates</h3>
+<p>Múltiples agentes discuten y debaten una pregunta, cada uno aportando su perspectiva. El resultado emerge de la síntesis de viewpoints en conflicto.</p>
 
-# 2. efSearch (HNSW) - calidad de búsqueda
-# Debe ser >= k (número de resultados deseados)
-# Recomendación: k * 2 a k * 10
-index_hnsw.hnsw.efSearch = 128  # si quieres top-10
+<pre><code class="language-python">def debate_pattern(question, agents, rounds=3):
+    # Cada agente tiene立场 diferente
+    positions = {name: None for name in agents}
+    
+    for round_num in range(rounds):
+        for name, agent in agents.items():
+            # El agente ve las posiciones de los demás
+            other_positions = {k: v for k, v in positions.items() if k != name}
+            agent_position = agent.think(
+                f"Pregunta: {question}\n"
+                f"Posiciones actuales: {other_positions}\n"
+                f"Redefiende tu posición o modifícala según los argumentos."
+            )
+            positions[name] = agent_position
+    
+    # Síntesis final
+    synthesizer = agents['synthesizer']
+    return synthesizer.think(f"Sintetiza el debate: {positions}")</code></pre>
 
-# 3. nprobe (IVF) - cuántos clusters buscar
-# Más clusters = mayor recall = mayor latencia
-# Recomendación: start con sqrt(nlist), ajusta según recall
-index_ivf.nprobe = int(np.sqrt(index_ivf.nlist))
+<h3>3. Patrón de Especialistas Cooperativos</h3>
+<p>Cada agente es un especialista en un dominio. Se pasan información y colaboran secuencialmente o en pipeline:</p>
 
-# Para compresión con PQ, el balanceo precisión/espacio:
-# m subvectores (más = más precisión, más memoria)
-# nbits por subvector (más = menos compresión, más precisión)
-# 8 bits típicamente da buen balance
-index_pq = faiss.IndexPQ(d, m=8, nbits=8)  # 8 * 8 = 64 bits por vector vs 768*32 bits original</code></pre>
+<pre><code class="language-python">def specialist_coop_pattern(task, specialist_pipeline):
+    context = task
+    
+    for specialist in specialist_pipeline:
+        result = specialist.think(context)
+        context = {
+            'task': result['conclusion'],
+            'evidence': result['evidence'],
+            'history': context.get('history', []) + [result]
+        }
+    
+    return context['task']
 
-<h2>📝 Resumen</h2>
+# Ejemplo de pipeline
+researcher = Agent('researcher', 'Investiga y recopila información', research_llm)
+analyst = Agent('analyst', 'Analiza datos y encuentra patrones', analysis_llm)
+writer = Agent('writer', 'Redacta informe final', writing_llm)
+
+result = specialist_coop_pattern(
+    "Análisis de tendencias del mercado de café colombiano",
+    [researcher, analyst, writer]
+)</code></pre>
+
+<h2>Comunicación Entre Agentes</h2>
+<p>La comunicación es el corazón de cualquier sistema multi-agente. Hay dos modelos principales:</p>
+
 <ul>
-<li>Los embeddings son vectores densos que capturan significado semántico</li>
-<li>ANN permite búsqueda en millones/billones de vectores en tiempo real</li>
-<li>ChromaDB para prototipado, FAISS para producción a escala, Pinecone/Weaviate para nube</li>
-<li>HNSW ofrece el mejor balance speed/accuracy para la mayoría de casos</li>
-<li>Siempre afina efSearch, efConstruction y nprobe para tu dataset específico</li>
+<li><strong>Mensajes directos</strong>: Un agente envía un mensaje específico a otro agente</li>
+<li><strong>Pizarra compartida</strong>: Todos los agentes escriben y leen de un espacio común de conocimiento</li>
+<li><strong>Habilidades especiales</strong>: Herramientas que un agente puede invocar en otros agentes</li>
 </ul>
+
+<pre><code class="language-python"># Ejemplo de comunicación por pizarra compartida
+class SharedBlackboard:
+    def __init__(self):
+        self.data = {}
+        self.lock = threading.Lock()
+    
+    def write(self, agent_name, key, value):
+        with self.lock:
+            if agent_name not in self.data:
+                self.data[agent_name] = {}
+            self.data[agent_name][key] = {
+                'value': value,
+                'timestamp': time.time()
+            }
+    
+    def read_all(self, key):
+        with self.lock:
+            return {
+                agent: info[key]['value']
+                for agent, info in self.data.items()
+                if key in info
+            }
+    
+    def read_from(self, agent_name):
+        with self.lock:
+            return self.data.get(agent_name, {})
+
+# Agente usando la pizarra
+class BlackboardAgent(Agent):
+    def __init__(self, name, role, model, blackboard):
+        super().__init__(name, role, model)
+        self.blackboard = blackboard
+    
+    def think(self, task):
+        # Lee información relevante de otros agentes
+        context = self.blackboard.read_all('insights')
+        
+        # Genera su propia contribución
+        result = self.model.generate(f"Rol: {self.role}\nTarea: {task}\nContexto: {context}")
+        
+        # Escribe su resultado
+        self.blackboard.write(self.name, 'insights', result)
+        
+        return result</code></pre>
+
+<h2>Auto-Crítica y Mejora Colectiva</h2>
+<p>Uno de los beneficios más poderosos de los sistemas multi-agente es la capacidad de auto-critica. Un agente puede revisar el trabajo de otro:</p>
+
+<pre><code class="language-python">def agentic_critique(original_agent, critic_agent, task):
+    # Generar respuesta inicial
+    initial_response = original_agent.think(task)
+    
+    # El crítico evalúa
+    critique = critic_agent.think(
+        f"Evalúa esta respuesta:\n{initial_response}\n\n"
+        f"¿Hay errores? ¿Mejoras posibles? Sé específico."
+    )
+    
+    # Si hay mejoras, iterar
+    if critique['needs_revision']:
+        improved = original_agent.think(
+            f"Mejora tu respuesta anterior según esta crítica:\n{critique['issues']}"
+        )
+        return improved
+    
+    return initial_response
+
+# Uso
+writer = Agent('writer', 'Redactor técnico', gpt4)
+reviewer = Agent('reviewer', 'Crítico técnico', gpt4)
+
+final_doc = agentic_critique(writer, reviewer, "Explica blockchain a un niño de 10 años")</code></pre>
+
+<h2>Framework: CrewAI</h2>
+<p>CrewAI es el framework más popular para construir sistemas multi-agente en Python:</p>
+
+<pre><code class="language-python">from crewai import Agent, Task, Crew, Process
+
+# Definir agentes
+researcher = Agent(
+    role="Investigador de Mercado",
+    goal="Encontrar las últimas tendencias en IA generativa",
+    backstory="Experto en investigación de tendencias tecnológicas con 15 años de experiencia"
+)
+
+analyst = Agent(
+    role="Analista de Datos",
+    goal="Analizar datos de mercado y extraer insights accionables",
+    backstory="PhD en Data Science, especialista en análisis predictivo"
+)
+
+writer = Agent(
+    role="Redactor de Reportes",
+    goal="Crear reportes claros y actionable based en el análisis",
+    backstory="Ex editor en MIT Technology Review, especialista en comunicación técnica"
+)
+
+# Definir tareas
+research_task = Task(
+    description="Investigar tendencias de IA generativa 2024-2025",
+    agent=researcher
+)
+
+analysis_task = Task(
+    description="Analizar datos de adopción y predicciones de mercado",
+    agent=analyst,
+    context=[research_task]  # Depende del resultado del researcher
+)
+
+write_task = Task(
+    description="Escribir reporte ejecutivo de 5 páginas",
+    agent=writer,
+    context=[research_task, analysis_task]
+)
+
+# Crear crew con proceso hierarchical
+crew = Crew(
+    agents=[researcher, analyst, writer],
+    tasks=[research_task, analysis_task, write_task],
+    process=Process.hierarchical,  # Un managerOrchestrator coordina
+    manager_agent=Agent(role="Manager", goal="Coordinar el workflow", backstory="...")
+)
+
+# Ejecutar
+result = crew.kickoff()
+print(result)</code></pre>
+
+<h2>Herramienta: LangGraph para Multi-Agente</h2>
+<pre><code class="language-python">from langgraph.graph import StateGraph, END
+from typing import TypedDict, List
+
+class AgentState(TypedDict):
+    messages: List[str]
+    current_agent: str
+    task: str
+    results: dict
+
+def create_multi_agent_graph():
+    workflow = StateGraph(AgentState)
+    
+    # Nodos
+    workflow.add_node("orchestrator", orchestrator_node)
+    workflow.add_node("researcher", researcher_node)
+    workflow.add_node("analyst", analyst_node)
+    workflow.add_node("writer", writer_node)
+    workflow.add_node("critic", critic_node)
+    
+    # Aristas condicionales
+    workflow.add_edge("orchestrator", "researcher")
+    workflow.add_edge("researcher", "analyst")
+    workflow.add_edge("analyst", "writer")
+    workflow.add_edge("writer", "critic")
+    
+    # Decisión: ¿Necesita revisión?
+    workflow.add_conditional_edges(
+        "critic",
+        needs_revision,
+        {
+            "revise": "writer",  # Volver a escribir
+            "done": END  # Terminar
+        }
+    )
+    
+    return workflow.compile()
+
+# Ejecutar
+graph = create_multi_agent_graph()
+result = graph.invoke({
+    "messages": ["Análisis de adopción de LLMs en empresas LATAM"],
+    "current_agent": "orchestrator",
+    "task": "Análisis completo",
+    "results": {}
+})</code></pre>
+
+<h2>Casos de Uso en Producción</h2>
+<ul>
+<li><strong>Código autonomous:</strong> Un agente escribe, otro revisa, otro testa. Iteran hasta que todo pasa.</li>
+<li><strong>Research agents:</strong> Múltiples agentes buscan en fuentes diferentes (web, papers, internal docs) y un sintetizador combina.</li>
+<li><strong>Customer support:</strong> Un agente clasifica, otro accede base de conocimiento, otro redacta respuesta.</li>
+<li><strong>Legal document review:</strong> Especialistas en diferentes áreas del derecho revisan secciones distintas.</li>
+</ul>
+
+<h2>Errores Comunes</h2>
+
+<h3>Error 1: Demasiados Agentes sin Rol Claro</h3>
+<p><strong>El problema</strong>: Pones 10 agentes y cada uno hace un poco de todo. No hay especialización real y el sistema es lento.</p>
+<p><strong>La solución</strong>: Máximo 3-5 agentes especializados. Cada uno debe tener un rol muy específico y diferenciable.</p>
+
+<h3>Error 2: Comunicación Caótica</h3>
+<p><strong>El problema</strong>: Los agentes se mandan mensajes en loops infinitos o se contradicen sin resolución.</p>
+<p><strong>La solución</strong>: Define estructura de comunicación clara. Quién habla con quién, en qué orden, y cómo se resuelve conflicto.</p>
+
+<h3>Error 3: No Tener Crítica Externa</h3>
+<p><strong>El problema</strong>: Los agentes validan su propio trabajo. Los errores se propagan sin corrección.</p>
+<p><strong>La solución</strong>: Siempre incluir un agente crítico o revisor independiente que no esté involucrado en la generación.</p>
 
 <hr>
-<p><em>Eso es todo por hoy, parcero. Mañana en el Día 258 hablamos de RAG Optimization Avanzado: HyDE, query expansion, reranking y self-RAG. No se lo pierda que eso sí que mejora los resultados 5x. Buenosaires!</em></p>
+<p><em>Eso es todo por hoy, parcero. Mañana en el Día 258 hablamos de Tool Use: cómo los LLMs usan funciones externas para expandir sus capacidades. No se lo pierda. Buenosaires!</em></p>
   </article>
 
   <script>
@@ -395,8 +461,8 @@ index_pq = faiss.IndexPQ(d, m=8, nbits=8)  # 8 * 8 = 64 bits por vector vs 768*3
         delimiters: [
           { left: '$$', right: '$$', display: true },
           { left: '$',  right: '$',  display: false },
-          { left: '\\[', right: '\\]', display: true },
-          { left: '\\(', right: '\\)', display: false },
+          { left: '\[', right: '\]', display: true },
+          { left: '\(', right: '\)', display: false },
         ],
         throwOnError: false,
       });

@@ -118,324 +118,518 @@ nav {
   </header>
 
   <article class="article-body">
-<h1>RAG Optimization Avanzado</h1>
-<p>Hagale pues, parcero. Día 258 y hoy vamos a lo que el 75% no sabe: RAG Optimization Avanzado. Query expansion, HyDE, reranking y self-RAG. Esto es lo que separa un RAG básico de uno que mejora los resultados 5x. Deje que le cuente.</p>
+<h2>Por Qué Tool Use Cambia Todo</h2>
+<p>Hagale pues, parcero. Día 258 y hoy vamos a lo que el 70% no sabe implementar bien: Tool Use y Function Calling. Esto es lo que separa un LLM que solo genera texto de uno que de verdad puede actuar en el mundo. Un LLM con tools puede buscar información real, ejecutar código, manipular archivos, hacer cálculos. Póngame atención que esto vale gold.</p>
 
-<h2>🎯 Por Qué el RAG Básico Falla</h2>
-<p>El RAG básico tiene un problema fundamental: el vocabulary mismatch. Tu query dice "equipo médico" pero el documento dice "instrumental hospitalario". El embedding del documento nunca se recuperará porque vive en una región diferente del espacio vectorial. La solución no es buscar más documentos — es buscar mejor.</p>
+<h2>Qué Es Function Calling</h2>
+<p>Function Calling es la capacidad de un LLM para invocar funciones externas definidas por el usuario. En lugar de solo responder con texto, el modelo puede pedir explícitamente que se ejecute una función con parámetros específicos.</p>
 
-<h2>📐 HyDE: Hypothetical Document Embeddings</h2>
-<p>HyDE resuelve el vocabulary mismatch de forma elegante: en lugar de buscar con tu query original, le pides al LLM que genere un documento hipotético que responda la pregunta, y buscas con ese documento generado:</p>
+<p>La diferencia clave con un RAG tradicional:</p>
+<ul>
+<li><strong>Sin Function Calling:</strong> El LLM genera texto basándose en su conocimiento. Si necesita info actualizada, inventa (hallucinate).</li>
+<li><strong>Con Function Calling:</strong> El LLM identifica qué información necesita, pide que se ejecute una función específica, y usa el resultado para generar una respuesta grounded.</li>
+</ul>
 
-<pre><code class="language-python">from openai import OpenAI
+<h2>Cómo Funciona la Arquitectura</h2>
+<p>El flujo completo de function calling tiene 5 pasos:</p>
+
+<pre><code class="language-python"># Paso 1: Definir las funciones disponibles
+functions = [
+    {
+        "name": "get_weather",
+        "description": "Obtiene el clima actual de una ciudad",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "city": {
+                    "type": "string",
+                    "description": "Nombre de la ciudad"
+                },
+                "unit": {
+                    "type": "string",
+                    "enum": ["celsius", "fahrenheit"],
+                    "description": "Unidad de temperatura"
+                }
+            },
+            "required": ["city"]
+        }
+    },
+    {
+        "name": "search_web",
+        "description": "Busca información en la web",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Query de búsqueda"
+                }
+            },
+            "required": ["query"]
+        }
+    }
+]
+
+# Paso 2: Enviar functions al LLM
+response = client.chat.completions.create(
+    model="gpt-4-turbo",
+    messages=[{"role": "user", "content": "Cómo está el clima en Bogotá?"}],
+    tools=[{"type": "function", "function": f} for f in functions],
+    tool_choice="auto"
+)
+
+# Paso 3: El LLM decide qué función llamar
+# response.choices[0].message.tool_calls contendrá la solicitud
+
+# Paso 4: Ejecutar la función localmente
+tool_call = response.choices[0].message.tool_calls[0]
+if tool_call.function.name == "get_weather":
+    args = json.loads(tool_call.function.arguments)
+    weather = get_weather_sync(args["city"], args.get("unit", "celsius"))
+    
+# Paso 5: Enviar el resultado de vuelta al LLM
+response2 = client.chat.completions.create(
+    model="gpt-4-turbo",
+    messages=[
+        {"role": "user", "content": "Cómo está el clima en Bogotá?"},
+        response.choices[0].message,
+        {
+            "role": "tool",
+            "tool_call_id": tool_call.id,
+            "content": json.dumps(weather)
+        }
+    ]
+)</code></pre>
+
+<h2>Estructura del JSON de Funciones</h2>
+<p>El JSON schema de las funciones sigue el estándar OpenAI. Debe ser preciso para que el LLM llame las funciones correctamente:</p>
+
+<pre><code class="language-python"># Estructura completa de una función bien definida
+function_schema = {
+    "name": "consultar_saldo_bancario",
+    "description": "Consulta el saldo actual de una cuenta bancaria",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "numero_cuenta": {
+                "type": "string",
+                "pattern": "^[0-9]{10,20}$",  # Regex para validación
+                "description": "Número de cuenta de 10 a 20 dígitos"
+            },
+            "tipo_moneda": {
+                "type": "string",
+                "enum": ["COP", "USD", "EUR"],
+                "description": "Moneda del saldo a consultar"
+            },
+            "incluir_detalles": {
+                "type": "boolean",
+                "description": "Si true, incluye últimos 5 movimientos"
+            }
+        },
+        "required": ["numero_cuenta"]
+    }
+}
+
+# Errores comunes en definiciones:
+# 1. Description vaga: "Gets user info" vs "Returns user name, email, and subscription tier"
+# 2. Sin required fields: El LLM puede omitir parámetros críticos
+# 3. Types incorrectos: string para IDs numéricos en lugar de integer
+# 4. Sin ejemplos en description para casos complejos</code></pre>
+
+<h2>Patrones de Implementación</h2>
+
+<h3>Patrón 1: Búsqueda + Síntesis</h3>
+<p>El patrón más común: el LLM identifica qué info necesita, la busca, y sintetiza:</p>
+
+<pre><code class="language-python">def search_and_synthesize(query, vector_store):
+    """
+    Patrón clásico: buscar información y sintetizar respuesta
+    """
+    # El LLM pide búsqueda con query optimizada
+    search_function = {
+        "name": "semantic_search",
+        "description": "Busca documentos relevantes en la base de conocimiento",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "top_k": {"type": "integer", "default": 5}
+            },
+            "required": ["query"]
+        }
+    }
+    
+    # Loop de tool use hasta que el LLM tenga toda la info
+    messages = [{"role": "user", "content": query}]
+    
+    while True:
+        response = client.chat.completions.create(
+            model="gpt-4-turbo",
+            messages=messages,
+            tools=[{"type": "function", "function": search_function}]
+        )
+        
+        if not response.choices[0].message.tool_calls:
+            break  # El LLM tiene lo que necesita
+        
+        # Ejecutar cada tool call
+        for tool_call in response.choices[0].message.tool_calls:
+            if tool_call.function.name == "semantic_search":
+                args = json.loads(tool_call.function.arguments)
+                results = vector_store.search(args["query"], top_k=args.get("top_k", 5))
+                
+                messages.append(response.choices[0].message)  # El tool call del LLM
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "content": json.dumps(results)
+                })
+    
+    return response.choices[0].message.content</code></pre>
+
+<h3>Patrón 2: Código + Ejecución</h3>
+<p>El LLM genera código y pide ejecutarlo:</p>
+
+<pre><code class="language-python">def code_execution_pattern(query):
+    """
+    El LLM genera código Python y pide ejecutarlo
+    """
+    code_interpreter_tool = {
+        "name": "execute_python",
+        "description": "Ejecuta código Python y retorna el output",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "code": {"type": "string", "description": "Código Python a ejecutar"},
+                "timeout": {"type": "integer", "default": 30}
+            },
+            "required": ["code"]
+        }
+    }
+    
+    messages = [
+        {"role": "system", "content": "You can execute Python code to help answer questions."},
+        {"role": "user", "content": query}
+    ]
+    
+    max_iterations = 5
+    for _ in range(max_iterations):
+        response = client.chat.completions.create(
+            model="gpt-4-turbo",
+            messages=messages,
+            tools=[{"type": "function", "function": code_interpreter_tool}]
+        )
+        
+        if not response.choices[0].message.tool_calls:
+            return response.choices[0].message.content
+        
+        tool_call = response.choices[0].message.tool_calls[0]
+        args = json.loads(tool_call.function.arguments)
+        
+        result = execute_python(args["code"], timeout=args.get("timeout", 30))
+        
+        messages.append(response.choices[0].message)
+        messages.append({
+            "role": "tool",
+            "tool_call_id": tool_call.id,
+            "content": str(result)
+        })
+
+# Ejemplo: "Calcula los primeros 20 números primos y súmalos"
+result = code_execution_pattern("Calcula los primeros 20 primos y su suma")</code></pre>
+
+<h3>Patrón 3: Multi-Tool Chaining</h3>
+<p>Múltiples herramientas encadenadas donde cada resultado alimenta la siguiente:</p>
+
+<pre><code class="language-python">def multi_tool_chain(query):
+    """
+    Encadenar múltiples tools: buscar -> filtrar -> calcular -> reportar
+    """
+    tools = [
+        {
+            "name": "get_stock_data",
+            "description": "Obtiene datos de acciones",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "symbol": {"type": "string"},
+                    "period": {"type": "string", "enum": ["1d", "1w", "1m", "1y"]}
+                },
+                "required": ["symbol"]
+            }
+        },
+        {
+            "name": "calculate_returns",
+            "description": "Calcula retornos financieros",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prices": {"type": "array", "items": {"type": "number"}},
+                    "periods": {"type": "integer"}
+                },
+                "required": ["prices"]
+            }
+        },
+        {
+            "name": "send_email",
+            "description": "Envía un email",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "to": {"type": "string", "format": "email"},
+                    "subject": {"type": "string"},
+                    "body": {"type": "string"}
+                },
+                "required": ["to", "subject", "body"]
+            }
+        }
+    ]
+    
+    messages = [{"role": "user", "content": query}]
+    
+    while True:
+        response = client.chat.completions.create(
+            model="gpt-4-turbo",
+            messages=messages,
+            tools=[{"type": "function", "function": t} for t in tools]
+        )
+        
+        if not response.choices[0].message.tool_calls:
+            return response.choices[0].message.content
+        
+        for tool_call in response.choices[0].message.tool_calls:
+            func_name = tool_call.function.name
+            args = json.loads(tool_call.function.arguments)
+            
+            # Ejecutar según la función
+            if func_name == "get_stock_data":
+                result = yf.download(args["symbol"], period=args.get("period", "1mo"))
+            elif func_name == "calculate_returns":
+                result = calculate_returns(**args)
+            elif func_name == "send_email":
+                result = smtp_client.send(**args)
+            
+            messages.append(response.choices[0].message)
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tool_call.id,
+                "content": json.dumps(result)
+            })</code></pre>
+
+<h2>Herramientas Pre-Built</h2>
+<p>No tienes que construir todo desde cero. Existen herramientas maduras:</p>
+
+<pre><code class="language-python"># LangChain Tools - el ecosistema más completo
+from langchain.agents import load_tools
+from langchain_openai import ChatOpenAI
+
+llm = ChatOpenAI(model="gpt-4-turbo")
+
+# Cargar herramientas pre-definidas
+tools = load_tools([
+    "serpapi",          # Búsqueda web real
+    "ddg-search",       # DuckDuckGo
+    "wikipedia",        # Wikipedia
+    "python_repl",      # Intérprete Python
+    "终端",              # Ejecutar comandos shell
+    "requests",        # HTTP requests
+], llm=llm)
+
+# OpenAI Assistants API - built-in function calling
+from openai import OpenAI
 
 client = OpenAI()
 
-def hyde_search(query, collection, k=5):
-    """
-    HyDE: Genera documento hipotético y busca con él
-    """
-    # Paso 1: Generar documento hipotético
-    hypothetical_prompt = f"""
-    Escribe un documento breve y denso que responda la siguiente pregunta.
-    El documento debe estar en español y ser factual.
-    
-    Pregunta: {query}
-    
-    Documento:"""
-    
-    response = client.chat.completions.create(
-        model="gpt-4-turbo",
-        messages=[{"role": "user", "content": hypothetical_prompt}],
-        max_tokens=500,
-        temperature=0.7
-    )
-    
-    hypothetical_doc = response.choices[0].message.content
-    
-    # Paso 2: Buscar con el documento hipotético
-    results = collection.query(
-        query_texts=[hypothetical_doc],
-        n_results=k
-    )
-    
-    return {
-        "hypothetical_doc": hypothetical_doc,
-        "results": results
-    }
-
-# Uso
-result = hyde_search(
-    "¿Cómo funciona la fotosíntesis en plantas tropicales?",
-    collection,
-    k=5
-)
-print(f"Doc hipotético:\n{result['hypothetical_doc']}")</code></pre>
-
-<p><strong>La matemática detrás de HyDE:</strong> El LLM tiene conocimiento latente que proyecta en lenguaje natural. Al generar un documento respondiendo la pregunta, captura la semántica de lo que busca en un embedding que coincide mejor con los documentos de tu base de conocimiento.</p>
-
-<h2>🚀 Query Expansion con Subqueries</h2>
-<p>Otra técnica poderosa: expandir una query en múltiples subqueries especializadas y luego fusionar resultados:</p>
-
-<pre><code class="language-python">def query_expansion(query, collection, k=3):
-    """
-    Query expansion: divide y vencerás
-    """
-    # Generar subqueries
-    expansion_prompt = f"""
-    Divide la siguiente pregunta en 2-4 subpreguntas más específicas
-    que juntos cubran todos los aspectos de la pregunta original.
-    
-    Pregunta: {query}
-    
-    Formato: Una subpregunta por línea, sin numeración.
-    """
-    
-    response = client.chat.completions.create(
-        model="gpt-4-turbo",
-        messages=[{"role": "user", "content": expansion_prompt}],
-        max_tokens=200
-    )
-    
-    subqueries = [q.strip() for q in response.choices[0].message.content.split('\n') if q.strip()]
-    subqueries.append(query)  # Incluir query original
-    
-    # Buscar con cada subquery
-    all_results = []
-    seen_ids = set()
-    
-    for sq in subqueries:
-        results = collection.query(query_texts=[sq], n_results=k)
-        for i, doc_id in enumerate(results['ids'][0]):
-            if doc_id not in seen_ids:
-                seen_ids.add(doc_id)
-                all_results.append({
-                    'id': doc_id,
-                    'document': results['documents'][0][i],
-                    'distance': results['distances'][0][i],
-                    'subquery': sq
-                })
-    
-    # Re-ordenar por score combinado
-    all_results.sort(key=lambda x: x['distance'])
-    return all_results[:k*2]
-
-# Ejemplo
-query = "¿Cuáles son los beneficios del café colombiano?"
-results = query_expansion(query, collection)</code></pre>
-
-<h2>🔄 Reranking con Cross-Encoder</h2>
-<p>Después de la búsqueda vectorial, el reranking mejora dramáticamente la relevancia usando un cross-encoder que evalúa query-document juntos:</p>
-
-<pre><code class="language-python">from sentence_transformers import CrossEncoder
-
-# Inicializar cross-encoder
-cross_encoder = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
-
-def rerank_results(query, documents, top_n=10):
-    """
-    Rerank usando cross-encoder para mejor precisión
-    """
-    # Crear pares query-document para el cross-encoder
-    pairs = [(query, doc) for doc in documents]
-    
-    # Obtener scores de relevancia
-    scores = cross_encoder.predict(pairs)
-    
-    # Ordenar por score
-    ranked_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
-    
-    return [
+assistant = client.beta.assistants.create(
+    name="Research Assistant",
+    instructions="Eres un asistente de investigación. Usa las herramientas para buscar y analizar información.",
+    model="gpt-4-turbo",
+    tools=[
         {
-            'document': documents[i],
-            'original_rank': i,
-            'rerank_score': scores[i],
-            'rerank_position': rank + 1
+            "type": "function",
+            "function": {
+                "name": "web_search",
+                "description": "Busca en la web",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string"}
+                    },
+                    "required": ["query"]
+                }
+            }
         }
-        for rank, i in enumerate(ranked_indices[:top_n])
     ]
-
-def hybrid_search_with_rerank(query, collection, initial_k=20, final_k=5):
-    """
-    Búsqueda híbrida: vector + rerank
-    """
-    # 1. Búsqueda vectorial inicial (over-retrieve)
-    vector_results = collection.query(
-        query_texts=[query],
-        n_results=initial_k
-    )
-    
-    documents = vector_results['documents'][0]
-    
-    # 2. Reranking con cross-encoder
-    reranked = rerank_results(query, documents, top_n=final_k)
-    
-    return reranked
-
-# Uso
-results = hybrid_search_with_rerank(
-    "beneficios del café de altura colombiano",
-    collection,
-    initial_k=20,
-    final_k=5
 )
-for r in results:
-    print(f"[Rank {r['rerank_position']}] Score: {r['rerank_score']:.3f}")</code></pre>
 
-<h2>🧠 Self-RAG: Auto-Evaluación</h2>
-<p>Self-RAG añade un paso de reflexión donde el LLM evalúa si los documentos recuperados son relevantes antes de generar la respuesta:</p>
+# Thread y mensajes
+thread = client.beta.threads.create()
+client.beta.threads.messages.create(
+    thread_id=thread.id,
+    role="user",
+    content="¿Cuáles son las últimas noticias sobre IA?"
+)
 
-<pre><code class="language-python">def self_rag_query(query, collection, llm_client):
-    """
-    Self-RAG: El LLM decide si la recuperación fue útil
-    """
-    # 1. Recuperar documentos
-    retrieved = collection.query(query_texts=[query], n_results=5)
-    documents = retrieved['documents'][0]
-    
-    # 2. Evaluación de cada documento
-    evaluation_prompt = f"""
-    Evalúa si cada documento es relevante para responder la pregunta.
-    Para cada documento, responde en una línea con:
-    [RELEVANT] si es directamente útil para responder
-    [PARTIAL] si es tangencialmente relacionado
-    [IRRELEVANT] si no ayuda a responder
-    
-    Pregunta: {query}
-    
-    Documento 1: {documents[0]}
-    Evaluación:"""
-    
-    evaluations = []
-    for i, doc in enumerate(documents):
-        eval_response = llm_client.chat.completions.create(
-            model="gpt-4-turbo",
-            messages=[{
-                "role": "user", 
-                "content": evaluation_prompt.replace(f"Documento 1:", f"Documento {i+1}:")
-            }],
-            max_tokens=50
-        )
-        evaluations.append(eval_response.choices[0].message.content)
-    
-    # 3. Filtrar solo documentos relevantes
-    relevant_docs = []
-    for doc, eval_result in zip(documents, evaluations):
-        if "[RELEVANT]" in eval_result or "[PARTIAL]" in eval_result:
-            relevant_docs.append(doc)
-    
-    # 4. Generar respuesta solo con docs relevantes
-    if not relevant_docs:
-        return {
-            "answer": "No encontré información relevante para responder tu pregunta.",
-            "retrieval_success": False,
-            "docs_used": []
+# Run el assistant
+run = client.beta.threads.runs.create(
+    thread_id=thread.id,
+    assistant_id=assistant.id
+)</code></pre>
+
+<h2>Function Calling en GPT-4o y Claude 3.5</h2>
+<p>Los modelos modernos tienen function calling built-in con JSON schema:</p>
+
+<pre><code class="language-python"># GPT-4o - JSON mode y function calling
+response = client.chat.completions.create(
+    model="gpt-4o",
+    messages=[{"role": "user", "content": "Extrae los datos del usuario"}],
+    tools=[
+        {
+            "type": "function",
+            "function": {
+                "name": "extract_user_data",
+                "description": "Extrae datos estructurados del texto",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "email": {"type": "string", "format": "email"},
+                        "phone": {"type": "string"},
+                        "company": {"type": "string", "nullable": True}
+                    },
+                    "required": ["name", "email"]
+                }
+            }
         }
+    ],
+    tool_choice={"type": "function", "function": {"name": "extract_user_data"}}
+)
+
+# Claude 3.5 Sonnet - tool use con XML format
+import anthropic
+
+client = anthropic.Anthropic()
+
+response = client.messages.create(
+    model="claude-sonnet-4-20250514",
+    max_tokens=1024,
+    tools=[
+        {
+            "name": "web_search",
+            "description": "Search the web for information",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "The search query"}
+                },
+                "required": ["query"]
+            }
+        }
+    ],
+    messages=[{"role": "user", "content": "Latest AI news"}]
+)
+
+# Ver tool use results
+for tool_use in response.content:
+    if hasattr(tool_use, 'name'):
+        result = web_search(tool_use.input["query"])
+        # Re-enviar con resultado</code></pre>
+
+<h2>Errores Comunes</h2>
+
+<h3>Error 1: Funciones Mal Definidas</h3>
+<p><strong>El problema</strong>: La description de la función es vaga. El LLM no sabe cuándo o cómo llamar la función.</p>
+<p><strong>La solución</strong>: Descriptions específicas con ejemplos. Incluir qué retorna y en qué formato:</p>
+
+<pre><code class="language-python"># MAL
+{
+    "name": "search",
+    "description": "Busca cosas",
+    "parameters": {"type": "object", "properties": {"q": {"type": "string"}}}
+}
+
+# BIEN
+{
+    "name": "search_restaurants",
+    "description": "Busca restaurantes por nombre, cuisine, o ubicación. "
+                   "Retorna lista de dicts con keys: name, cuisine, rating, address, price_level. "
+                   "Usa esta función cuando el usuario pregunte por restaurantes, comida, o dónde comer.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "Término de búsqueda: puede ser nombre, tipo de comida (e.g., 'italiano'), o ubicación ('Cartagena')"
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Número máximo de resultados (default: 5, max: 20)",
+                "default": 5
+            }
+        },
+        "required": ["query"]
+    }
+}</code></pre>
+
+<h3>Error 2: No Manejar Límite de Tool Calls</h3>
+<p><strong>El problema</strong>: El LLM puede entrar en loop llamando tools infinitamente.</p>
+<p><strong>La solución</strong>: Implementar max_iterations y validar que cada llamada sea progresiva:</p>
+
+<pre><code class="language-python">def safe_tool_execution(messages, tools, max_iterations=10):
+    for i in range(max_iterations):
+        response = client.chat.completions.create(
+            model="gpt-4-turbo",
+            messages=messages,
+            tools=[{"type": "function", "function": t} for t in tools]
+        )
+        
+        if not response.choices[0].message.tool_calls:
+            return response.choices[0].message.content
+        
+        # Verificar que cada tool call sea único y progresivo
+        tool_call_ids = [tc.id for tc in response.choices[0].message.tool_calls]
+        if len(set(tool_call_ids)) != len(tool_call_ids):
+            # Mismo tool llamado múltiples veces - alto!
+            return "Error: Loop detectado"
+        
+        # Ejecutar tools
+        for tc in response.choices[0].message.tool_calls:
+            result = execute_tool(tc.function.name, json.loads(tc.function.arguments))
+            messages.append(response.choices[0].message)
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tc.id,
+                "content": str(result)
+            })
     
-    context = "\n\n".join([f"Documento: {d}" for d in relevant_docs])
+    return "Error: Límite de iteraciones alcanzado"</code></pre>
+
+<h3>Error 3: No Validar Parámetros</h3>
+<p><strong>El problema</strong>: Confías ciegamente en los parámetros que el LLM envía. Pueden ser inválidos o maliciosos.</p>
+<p><strong>La solución</strong>: Validar siempre los parámetros antes de ejecutar:</p>
+
+<pre><code class="language-python">def safe_execute_tool(func_name, args, allowed_functions):
+    if func_name not in allowed_functions:
+        return {"error": f"Función {func_name} no permitida"}
     
-    answer_prompt = f"""
-    Based ONLY on the provided documents, answer the question.
-    If the documents don't contain enough information, say so.
+    # Validar según el tipo de función
+    if func_name == "send_email":
+        if not validate_email(args.get("to")):
+            return {"error": "Email inválido"}
+        if len(args.get("body", "")) > 10000:
+            return {"error": "Email muy largo"}
+        # Sanitizar
+        args["body"] = sanitize_html(args["body"])
     
-    Documents:
-    {context}
+    elif func_name == "execute_sql":
+        # NUNCA ejecutar SQL directo sin validación
+        if not is_safe_query(args["query"]):
+            return {"error": "SQL potencialmente peligroso"}
     
-    Question: {query}
-    
-    Answer:"""
-    
-    answer_response = llm_client.chat.completions.create(
-        model="gpt-4-turbo",
-        messages=[{"role": "user", "content": answer_prompt}],
-        max_tokens=500
-    )
-    
-    return {
-        "answer": answer_response.choices[0].message.content,
-        "retrieval_success": True,
-        "docs_used": relevant_docs,
-        "evaluations": evaluations
-    }</code></pre>
-
-<h2>📊 Métricas de RAG</h2>
-
-| Métrica | Qué Mide | Target |
-|---------|----------|--------|
-| Recall@K | Documentos relevantes recuperados | > 0.8 |
-| MRR | Posición del primer documento relevante | > 0.6 |
-| Rerank Improvement | Gain en relevance post-rerank | > 15% |
-| Context Precision | Relevancia del contexto usado | > 0.7 |
-| Answer Faithfulness | Qué tan fiel es la respuesta al contexto | > 0.9 |
-
-<h2>⚠️ Los 3 Errores Más Comunes</h2>
-
-<h3>Error 1: Basic RAG Sin Optimization en Vocabulary Mismatch</h3>
-<p><strong>El problema</strong>: Tu query usa "vehículo eléctrico" pero los docs hablan de "automóvil battery-powered". El embedding space los separa y nunca recuperas nada relevante. Pones top_k=10 y todos son ruido.</p>
-<p><strong>La solución</strong>: Implementa HyDE o query expansion. La diferencia es dramática:</p>
-
-<pre><code class="language-python"># El 70% hace esto y se pregunta por qué no funciona
-results = collection.query(query_texts=["vehículo eléctrico"], n_results=10)
-# → Recuperaste 2 docs relevantes de 10
-
-# La solución: HyDE
-results = hyde_search("vehículo eléctrico", collection, k=10)
-# → Recuperaste 8 docs relevantes de 10
-# El documento hipotético "carro que usa batería recargable" 
-# coincide mejor con el embedding de los docs existentes</code></pre>
-
-<h3>Error 2: No Usar Reranking, Degradando Relevance</h3>
-<p><strong>El problema</strong>: La búsqueda vectorial optimiza para similitud semántica, no para relevancia específica a la query. El documento más similar semánticamente puede no ser el más útil para responder.</p>
-<p><strong>La matemática</strong>: La búsqueda vectorial maximiza $\cos(q, d)$ pero la relevancia real es $P(rel|q, d)$. Son distribuciones diferentes.</p>
-<p><strong>La solución</strong>: Reranking con cross-encoder que aprende $P(rel|q, d)$ directamente:</p>
-
-<pre><code class="language-python"># Reranking típicamente mejora:
-# - MRR: +15-30%
-# - NDCG@10: +20-40%
-# - Precision@5: +10-25%
-
-# Sin reranking
-base_results = collection.query(query_texts=[query], n_results=20)
-# → MRR = 0.45
-
-# Con reranking
-reranked = hybrid_search_with_rerank(query, collection, initial_k=20, final_k=5)
-# → MRR = 0.72 (59% mejora!)</code></pre>
-
-<h3>Error 3: Too Much Context Que Overwhelms el LLM</h3>
-<p><strong>El problema</strong>: Pones 20 documentos en el contexto esperando mejor coverage. El resultado: el LLM se pierde, genera respuestas genéricas, o empieza a contradecirse porque partes del contexto compiten.</p>
-<p><strong>La matemática</strong>: Cada LLM tiene una ventana de atención limitada. Más contexto no linealmente significa mejor respuestas. Hay un punto de dimishing returns:</p>
-
-$$P(\text{respuesta buena} | \text{contexto}) \propto \frac{1}{\text{longitud\_contexto}^{0.3}} \times \text{relevancia\_promedio}$$
-
-<p><strong>La solución</strong>: Menos docs pero más relevantes, con reranking:</p>
-
-<pre><code class="language-python"># NO hacer esto
-all_docs = collection.query(query_texts=[query], n_results=20)
-context = "\n\n".join(all_docs['documents'][0])  # 8000 tokens de ruido
-
-# SÍ hacer esto
-reranked = hybrid_search_with_rerank(query, collection, initial_k=20, final_k=5)
-context = "\n\n".join([d['document'] for d in reranked])  # ~1500 tokens de precisión
-
-# El sweet spot: 3-7 documentos rerankeados
-# - Context window usado óptimamente
-# - Alta relevancia promedio
-# - LLM puede enfocarse en generar, no en filtrar</code></pre>
-
-<h2>📝 Resumen</h2>
-<ul>
-<li>El vocabulary mismatch es el problema fundamental del RAG básico</li>
-<li>HyDE genera documentos hipotéticos para mejorar la recuperación</li>
-<li>Query expansion descompone preguntas complejas en subpreguntas</li>
-<li>Reranking con cross-encoder mejora dramáticamente la relevancia</li>
-<li>Self-RAG añade auto-evaluación de relevancia antes de generar</li>
-<li>Menos contexto relevante > más contexto ruidoso</li>
-<li>HyDE + Reranking pueden mejorar un RAG básico 5x o más</li>
-</ul>
+    return execute_function(func_name, args)</code></pre>
 
 <hr>
-<p><em>Eso es todo por hoy, parcero. Mañana seguimos con más. ¡Hasteg一堆 que esto se pone mejor! Chaop.</em></p>
+<p><em>Eso es todo por hoy, parcero. Mañana seguimos con más contenido de #365DaysOfAI. Esto se pone mejor. ¡Hasteg一堆! Chaop.</em></p>
   </article>
 
   <script>
@@ -456,8 +650,8 @@ context = "\n\n".join([d['document'] for d in reranked])  # ~1500 tokens de prec
         delimiters: [
           { left: '$$', right: '$$', display: true },
           { left: '$',  right: '$',  display: false },
-          { left: '\\[', right: '\\]', display: true },
-          { left: '\\(', right: '\\)', display: false },
+          { left: '\[', right: '\]', display: true },
+          { left: '\(', right: '\)', display: false },
         ],
         throwOnError: false,
       });
