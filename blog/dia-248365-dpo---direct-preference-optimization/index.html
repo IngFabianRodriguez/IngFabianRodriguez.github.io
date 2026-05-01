@@ -118,1219 +118,384 @@ nav {
   </header>
 
   <article class="article-body">
-<h1>Agents in Production: La Lección Que el 85% Aprende Cuando el Agente Ya Está Fallando en Producción</h1>
-<p>Hagale pues, parcero. Día 248 y hoy nos metemos con un tema que duele doble: agents en producción. Primero duele cuando lo despliega y empieza a hacer cosas raras. Y duele más cuando el cliente ya está viendo las cosas raras. Después de este artículo va a saber cómo deployar agents que no le fallen, cómo manejar errores gracefully, y cómo poner los guardrails que evitan que el agent se vuelva loco. Vamos con el café.</p>
+<h2>¿Qué es DPO y Por Qué Es el Futuro del Alignment?</h2>
+
+<p>Hagale pues, parcero. Día 248 y hoy nos metemos con una técnica que simplificó radicalmente cómo hacemos que los LLMs se porten bien. DPO, o Direct Preference Optimization, fue propuesto en 2023 por Stanford y cambió el juego porque elimina la necesidad de entrenar un reward model separado. Vamos con el café.</p>
 
 <hr>
 
-<h2>¿Cuándo un Agent Es la Solución Correcta?</h2>
+<h2>El Problema con RLHF</h2>
 
-<p>Mire, antes de meterse en agents, pregúntese algo importante: ¿realmente necesita un agent? Porque la mayoría de los casos de uso se resuelven con un simple RAG o un LLM con few-shot examples. Agents son costosos, complejos, y difíciles de debuguear.</p>
-
-<p>Un agent tiene sentido cuando:</p>
+<p>Del día anterior hablamos de RLHF — funciona, pero tiene problemas serios:</p>
 
 <ul>
-<li><strong>El problema requiere múltiples herramientas</strong>: El agent necesita decidir qué herramienta llamar, cuándo, y en qué orden.</li>
-<li><strong>Las decisiones son secuenciales</strong>: Cada paso depende del resultado del anterior.</li>
-<li><strong>El espacio de acciones es grande</strong>: No puede enumerar todas las acciones posibles de antemano.</li>
-<li><strong>Necesita memoria de largo plazo</strong>: El agent recuerda interacciones pasadas para decidir.</li>
+<li><strong>Es complejo</strong>: tres fases de entrenamiento (SFT, reward model, PPO)</li>
+<li><strong>Es inestable</strong>: PPO es sensible a hyperparámetros</li>
+<li><strong>Es costoso</strong>: necesita guardar dos modelos en memoria (policy y reference)</li>
+<li><strong>El reward model puede hacer gaming</strong>: encuentra shortcuts que maximizan el reward sin genuina mejora en calidad</li>
 </ul>
 
-<p>Si tiene un solo tool y respuestas determinísticas, no necesita un agent. Es como usar un Ferrari para ir a la esquina de la tienda — el Ferrari es bonito pero el bicycle reaches the same destination and you don't pay for gas.</p>
-
-<p>La decisión de usar agents se reduce a esta fórmula:</p>
-
-<p>$$U(agent) > U(simple) \\quad \\text{solo si} \\quad \\text{complejidad}_\\text{tarea} > \\text{complejidad}_\\text{overhead}$$</p>
-
-<p>Si la complejidad de su tarea no supera el overhead de manejar un agent, use algo más simple.</p>
+<p>La pregunta era: ¿podemos eliminar el reward model y optimizar directamente contra preferencias humanas? La respuesta es sí — y se llama DPO.</p>
 
 <hr>
 
-<h2>Arquitectura de un Agent Production-Ready</h2>
+<h2>La Magia de DPO: Eliminar el Reward Model</h2>
 
-<p>Vamos al código. Un agent production-ready necesita varias cosas que la mayoría ignora:</p>
+<p>La key insight de DPO es matemática elegante. En RLHF, maximizamos:</p>
 
-<pre><code class="language-python">from enum import Enum
-from typing import List, Dict, Any, Optional, Callable
-from dataclasses import dataclass, field
-from datetime import datetime
-import time
-import asyncio
+<p>$$\\max_{\\pi_\\theta} \\mathbb{E}_{x \\sim D, y \\sim \\pi_\\theta(y|x)} [r_\\phi(x, y)] - \\beta \\mathbb{D}_{KL}[\\pi_\\theta(y|x) || \\pi_{ref}(y|x)]$$</p>
 
-class AgentState(Enum):
-    IDLE = "idle"
-    REASONING = "reasoning"
-    EXECUTING = "executing"
-    WAITING_TOOL = "waiting_tool"
-    ERROR = "error"
-    COMPLETED = "completed"
+<p>Donde $r_\\phi$ es el reward model que necesitamos entrenar separadamente.</p>
 
-@dataclass
-class ToolResult:
-    """Resultado de una llamada a herramienta."""
-    tool_name: str
-    success: bool
-    result: Any
-    error: Optional[str] = None
-    execution_time_ms: float = 0.0
+<p>DPO reparametrizó el problema. En vez de optimizar rewards directamente, define la recompensa implícitamente a través de la ratio de probabilidades:</p>
 
-@dataclass
-class AgentAction:
-    """Una acción tomada por el agent."""
-    tool_name: str
-    parameters: Dict[str, Any]
-    timestamp: datetime = field(default_factory=datetime.now)
-    result: Optional[ToolResult] = None
+<p>$$r_\\theta(x, y) = \\beta \\log \\frac{\\pi_\\theta(y|x)}{\\pi_{ref}(y|x)}$$</p>
 
-@dataclass 
-class AgentSession:
-    """Estado de una sesión de agent."""
-    session_id: str
-    user_input: str
-    state: AgentState = AgentState.IDLE
-    actions: List[AgentAction] = field(default_factory=list)
-    max_steps: int = 10
-    current_step: int = 0
-    started_at: datetime = field(default_factory=datetime.now)
-    context: Dict[str, Any] = field(default_factory=dict)
-    
-    def add_action(self, action: AgentAction):
-        self.actions.append(action)
-        self.current_step += 1
+<p>Esto significa que el reward para cualquier par (x, y) está determinado por qué tanto más probable es esa respuesta bajo la política actual vs la referencia. No necesita un modelo separado — ¡el reward emerge de la política!</p>
 
+<h3>La Función de Pérdida DPO</h3>
 
-class AgentLimits:
-    """
-    Límites de seguridad para el agent.
-    Esto es crítico — agents sin límites son desastres esperando pasar.
-    """
-    
-    def __init__(
-        self,
-        max_steps: int = 10,
-        max_total_time_seconds: float = 60.0,
-        max_tool_calls_per_step: int = 5,
-        max_api_calls_total: int = 50,
-        max_cost_dollars: float = 5.0,
-    ):
-        self.max_steps = max_steps
-        self.max_total_time_seconds = max_total_time_seconds
-        self.max_tool_calls_per_step = max_tool_calls_per_step
-        self.max_api_calls_total = max_api_calls_total
-        self.max_cost_dollars = max_cost_dollars
-        
-        # Contadores
-        self._api_calls_made = 0
-        self._total_cost = 0.0
-    
-    def can_continue(self, session: AgentSession) -> tuple[bool, str]:
-        """Verifica si el agent puede continuar ejecutando."""
-        
-        # Límite de pasos
-        if session.current_step >= self.max_steps:
-            return False, f"Max steps reached ({self.max_steps})"
-        
-        # Límite de tiempo
-        elapsed = (datetime.now() - session.started_at).total_seconds()
-        if elapsed >= self.max_total_time_seconds:
-            return False, f"Max time exceeded ({elapsed:.1f}s / {self.max_total_time_seconds}s)"
-        
-        # Límite de llamadas API
-        if self._api_calls_made >= self.max_api_calls_total:
-            return False, f"Max API calls reached ({self._api_calls_made})"
-        
-        # Límite de costo
-        if self._total_cost >= self.max_cost_dollars:
-            return False, f"Max cost exceeded (${self._total_cost:.2f} / ${self.max_cost_dollars:.2f})"
-        
-        return True, "OK"
-    
-    def record_api_call(self, cost: float):
-        self._api_calls_made += 1
-        self._total_cost += cost
+<p>La loss de DPO es:</p>
 
+<p>$$\\mathcal{L}_{DPO}(\\theta) = -\\mathbb{E}_{(x, y_w, y_l) \\sim \\mathcal{D}}[\\log \\sigma(r_\\theta(x, y_w) - r_\\theta(x, y_l))]$$</p>
 
-class CircuitBreaker:
-    """
-    Circuit breaker para prevenir cascadas de errores.
-    Cuando un tool falla repetidamente, el circuit breaker se abre
-    y previene más llamadas.
-    """
-    
-    def __init__(
-        self,
-        failure_threshold: int = 5,
-        recovery_timeout_seconds: float = 60.0,
-        half_open_max_calls: int = 3,
-    ):
-        self.failure_threshold = failure_threshold
-        self.recovery_timeout = recovery_timeout_seconds
-        self.half_open_max_calls = half_open_max_calls
-        
-        self._failures: Dict[str, int] = {}
-        self._last_failure_time: Dict[str, float] = {}
-        self._state: Dict[str, str] = {}  # closed, open, half_open
-        self._half_open_calls: Dict[str, int] = {}
-    
-    def call(self, tool_name: str, func: Callable, *args, **kwargs):
-        """Ejecuta una función con circuit breaker."""
-        
-        state = self._state.get(tool_name, "closed")
-        current_time = time.time()
-        
-        if state == "open":
-            # Verificar si podemos pasar a half-open
-            last_failure = self._last_failure_time.get(tool_name, 0)
-            if current_time - last_failure >= self.recovery_timeout:
-                self._state[tool_name] = "half_open"
-                self._half_open_calls[tool_name] = 0
-                state = "half_open"
-            else:
-                raise CircuitBreakerOpen(
-                    f"Circuit breaker open for {tool_name}. "
-                    f"Try again in {self.recovery_timeout - (current_time - last_failure):.0f}s"
-                )
-        
-        if state == "half_open":
-            if self._half_open_calls.get(tool_name, 0) >= self.half_open_max_calls:
-                raise CircuitBreakerOpen(
-                    f"Circuit breaker half-open limit reached for {tool_name}"
-                )
-            self._half_open_calls[tool_name] = self._half_open_calls.get(tool_name, 0) + 1
-        
-        try:
-            result = func(*args, **kwargs)
-            self._on_success(tool_name)
-            return result
-        except Exception as e:
-            self._on_failure(tool_name)
-            raise
-    
-    def _on_success(self, tool_name: str):
-        self._failures[tool_name] = 0
-        self._state[tool_name] = "closed"
-    
-    def _on_failure(self, tool_name: str):
-        self._failures[tool_name] = self._failures.get(tool_name, 0) + 1
-        self._last_failure_time[tool_name] = time.time()
-        
-        if self._failures[tool_name] >= self.failure_threshold:
-            self._state[tool_name] = "open"
+<p>Donde:</p>
+<ul>
+<li>$(x, y_w, y_l)$ es un triplet con prompt $x$, respuesta preferida $y_w$, y respuesta menos preferida $y_l$</li>
+<li>$\\sigma$ es la función sigmoide</li>
+<li>$r_\\theta(x, y) = \\beta \\log \\frac{\\pi_\\theta(y|x)}{\\pi_{ref}(y|x)}$</li>
+</ul>
 
-
-class CircuitBreakerOpen(Exception):
-    """Excepción cuando el circuit breaker está abierto."""
-    pass
-
-
-class AgentProductionFramework:
-    """
-    Framework completo para agents en producción.
-    Incluye límites, circuit breakers, y observabilidad.
-    """
-    
-    def __init__(
-        self,
-        llm,
-        tools: List[Callable],
-        limits: Optional[AgentLimits] = None,
-        circuit_breaker: Optional[CircuitBreaker] = None,
-    ):
-        self.llm = llm
-        self.tools = {tool.__name__: tool for tool in tools}
-        self.limits = limits or AgentLimits()
-        self.circuit_breaker = circuit_breaker or CircuitBreaker()
-        
-        # Sistema de plugins para observabilidad
-        self.observers: List[Callable] = []
-    
-    def add_observer(self, observer: Callable):
-        """Agrega un observador para logging/monitoring."""
-        self.observers.append(observer)
-    
-    def _notify_observers(self, event_type: str, data: Dict[str, Any]):
-        for observer in self.observers:
-            try:
-                observer(event_type, data)
-            except Exception as e:
-                # No dejar que observers rompan el agent
-                pass
-    
-    async def run(self, user_input: str, session_id: str) -> Dict[str, Any]:
-        """
-        Ejecuta el agent con el input dado.
-        
-        Returns:
-            Dict con 'success', 'result', 'session', 'error'
-        """
-        session = AgentSession(
-            session_id=session_id,
-            user_input=user_input,
-        )
-        
-        self._notify_observers("session_start", {
-            "session_id": session_id,
-            "user_input": user_input,
-        })
-        
-        try:
-            result = await self._run_loop(session)
-            session.state = AgentState.COMPLETED
-            return {
-                "success": True,
-                "result": result,
-                "session": session,
-            }
-        except Exception as e:
-            session.state = AgentState.ERROR
-            self._notify_observers("session_error", {
-                "session_id": session_id,
-                "error": str(e),
-                "actions_taken": len(session.actions),
-            })
-            return {
-                "success": False,
-                "error": str(e),
-                "session": session,
-            }
-        finally:
-            self._notify_observers("session_end", {
-                "session_id": session_id,
-                "state": session.state.value,
-                "total_steps": session.current_step,
-            })
-    
-    async def _run_loop(self, session: AgentSession) -> Any:
-        """Loop principal del agent."""
-        
-        context = {"user_input": session.user_input, "history": []}
-        
-        while True:
-            # Verificar límites
-            can_continue, reason = self.limits.can_continue(session)
-            if not can_continue:
-                raise Exception(f"Agent stopped: {reason}")
-            
-            # Obtener siguiente acción del LLM
-            session.state = AgentState.REASONING
-            self._notify_observers("agent_reasoning", {
-                "session_id": session.session_id,
-                "step": session.current_step,
-            })
-            
-            action = await self._get_next_action(context)
-            
-            if action is None:
-                # El agent decidió que terminó
-                return context.get("final_response")
-            
-            # Ejecutar la acción
-            session.state = AgentState.EXECUTING
-            session.add_action(action)
-            
-            self._notify_observers("tool_call_start", {
-                "session_id": session.session_id,
-                "tool": action.tool_name,
-                "params": action.parameters,
-            })
-            
-            result = await self._execute_tool(action)
-            
-            self._notify_observers("tool_call_end", {
-                "session_id": session.session_id,
-                "tool": action.tool_name,
-                "success": result.success,
-            })
-            
-            # Actualizar contexto
-            context["history"].append({
-                "action": action.tool_name,
-                "result": result,
-            })
-            
-            # Verificar si el tool falló
-            if not result.success:
-                # Registrar el error pero continuar
-                self._notify_observers("tool_error", {
-                    "session_id": session.session_id,
-                    "tool": action.tool_name,
-                    "error": result.error,
-                })
-    
-    async def _get_next_action(self, context: Dict) -> Optional[AgentAction]:
-        """Usa el LLM para decidir la siguiente acción."""
-        # Esto es una versión simplificada
-        # En producción, usar prompting más sofisticado
-        prompt = self._build_react_prompt(context)
-        
-        response = await self.llm.agenerate(prompt)
-        
-        # Parsear la respuesta del LLM
-        # En producción, usar structured output para esto
-        parsed = self._parse_llm_response(response)
-        
-        if parsed["type"] == "finish":
-            context["final_response"] = parsed["result"]
-            return None
-        
-        return AgentAction(
-            tool_name=parsed["tool"],
-            parameters=parsed["parameters"],
-        )
-    
-    async def _execute_tool(self, action: AgentAction) -> ToolResult:
-        """Ejecuta una herramienta con circuit breaker."""
-        
-        if action.tool_name not in self.tools:
-            return ToolResult(
-                tool_name=action.tool_name,
-                success=False,
-                result=None,
-                error=f"Unknown tool: {action.tool_name}",
-            )
-        
-        tool = self.tools[action.tool_name]
-        start = time.time()
-        
-        try:
-            result = await self.circuit_breaker.call(
-                action.tool_name,
-                tool,
-                **action.parameters,
-            )
-            
-            execution_time = (time.time() - start) * 1000
-            
-            # Estimar costo (simplificado)
-            estimated_cost = self._estimate_cost(action.tool_name, execution_time)
-            self.limits.record_api_call(estimated_cost)
-            
-            return ToolResult(
-                tool_name=action.tool_name,
-                success=True,
-                result=result,
-                execution_time_ms=execution_time,
-            )
-        except CircuitBreakerOpen as e:
-            return ToolResult(
-                tool_name=action.tool_name,
-                success=False,
-                result=None,
-                error=str(e),
-            )
-        except Exception as e:
-            return ToolResult(
-                tool_name=action.tool_name,
-                success=False,
-                result=None,
-                error=str(e),
-            )
-    
-    def _estimate_cost(self, tool_name: str, execution_time_ms: float) -> float:
-        """Estima el costo de una llamada a tool."""
-        # Costos simplificados por tipo de tool
-        tool_costs = {
-            "search": 0.002,
-            "calculate": 0.001,
-            "fetch_url": 0.005,
-            "database_query": 0.01,
-        }
-        return tool_costs.get(tool_name, 0.001)</code></pre>
+<p>Intuitivamente: la loss es baja cuando el modelo asigna mayor probabilidad a la respuesta preferida vs la rechazada, relativa a la política de referencia.</p>
 
 <hr>
 
-<h2>Manejo de Errores Graceful</h2>
+<h2>Implementación Práctica con HuggingFace</h2>
 
-<p>Los errors en agents son inevitables. Un tool puede fallar, el LLM puede generar parámetros inválidos, o la API puede estar down. Lo importante es manejar estos errores de forma que el agent pueda recuperarse o fallar elegantemente.</p>
+<pre><code class="language-python">from transformers import AutoModelForCausalLM, AutoTokenizer
+from peft import LoraConfig, get_peft_model
+from trl import DPOTrainer
+import torch
 
-<pre><code class="language-python">from enum import Enum
-from typing import Dict, Any
-import logging
-
-class ErrorRecoveryStrategy(Enum):
-    RETRY = "retry"
-    SKIP = "skip"
-    FALLBACK = "fallback"
-    ABORT = "abort"
-
-class ToolErrorHandler:
-    """
-    Maneja errores de tools con estrategias de recuperación.
-    """
-    
-    def __init__(self):
-        self.error_strategies: Dict[str, ErrorRecoveryStrategy] = {}
-        self.retry_counts: Dict[str, int] = {}
-        self.max_retries = 3
-    
-    def register_strategy(
-        self,
-        tool_name: str,
-        strategy: ErrorRecoveryStrategy,
-        fallback_value: Any = None,
-    ):
-        """
-        Registra una estrategia para un tool específico.
-        
-        Args:
-            tool_name: Nombre del tool
-            strategy: Estrategia de recuperación
-            fallback_value: Valor a usar si la estrategia es FALLBACK
-        """
-        self.error_strategies[tool_name] = strategy
-        self.fallback_values = getattr(self, 'fallback_values', {})
-        if fallback_value is not None:
-            self.fallback_values[tool_name] = fallback_value
-    
-    def handle_error(
-        self,
-        tool_name: str,
-        error: Exception,
-        session: AgentSession,
-    ) -> ErrorRecoveryStrategy:
-        """
-        Decide qué hacer con un error.
-        """
-        strategy = self.error_strategies.get(
-            tool_name, 
-            ErrorRecoveryStrategy.RETRY
-        )
-        
-        self.retry_counts[tool_name] = self.retry_counts.get(tool_name, 0) + 1
-        
-        if strategy == ErrorRecoveryStrategy.RETRY:
-            if self.retry_counts[tool_name] < self.max_retries:
-                return ErrorRecoveryStrategy.RETRY
-            else:
-                self.retry_counts[tool_name] = 0
-                return ErrorRecoveryStrategy.SKIP
-        
-        return strategy
-    
-    def get_fallback_value(self, tool_name: str) -> Any:
-        """Obtiene el valor de fallback para un tool."""
-        return getattr(self, 'fallback_values', {}).get(tool_name, None)
-
-
-class GracefulDegradation:
-    """
-    Permite que el agent continúe operando incluso cuando algunas
-    partes fallan, proporcionando valores fallback o skip.
-    """
-    
-    def __init__(self, error_handler: ToolErrorHandler):
-        self.error_handler = error_handler
-        self.failed_tools: Dict[str, int] = {}
-    
-    def execute_with_fallback(
-        self,
-        tool_name: str,
-        tool_func,
-        params: Dict[str, Any],
-        session: AgentSession,
-    ) -> Any:
-        """
-        Ejecuta un tool con fallback si falla.
-        """
-        try:
-            result = tool_func(**params)
-            # Reset failure count on success
-            self.failed_tools[tool_name] = 0
-            return {"success": True, "result": result}
-        except Exception as e:
-            self.failed_tools[tool_name] = self.failed_tools.get(tool_name, 0) + 1
-            
-            strategy = self.error_handler.handle_error(tool_name, e, session)
-            
-            if strategy == ErrorRecoveryStrategy.RETRY:
-                logging.warning(f"Retrying {tool_name} after error: {e}")
-                return self.execute_with_fallback(
-                    tool_name, tool_func, params, session
-                )
-            elif strategy == ErrorRecoveryStrategy.FALLBACK:
-                fallback = self.error_handler.get_fallback_value(tool_name)
-                logging.warning(f"Using fallback for {tool_name}: {fallback}")
-                return {"success": False, "result": fallback, "used_fallback": True}
-            elif strategy == ErrorRecoveryStrategy.SKIP:
-                logging.warning(f"Skipping {tool_name} after repeated errors")
-                return {"success": False, "result": None, "skipped": True}
-            else:
-                logging.error(f"Aborting due to error in {tool_name}: {e}")
-                return {"success": False, "result": None, "abort": True}</code></pre>
-
-<hr>
-
-<h2>Observabilidad y Monitoreo</h2>
-
-<p>Si no puede ver lo que hace su agent, no puede debuguearlo cuando falle. La observabilidad no es opcional — es supervivencia.</p>
-
-<pre><code class="language-python">import json
-from datetime import datetime
-from typing import Dict, Any, List
-from dataclasses import dataclass, asdict
-import logging
-
-@dataclass
-class AgentMetric:
-    """Una métrica del agent."""
-    timestamp: str
-    session_id: str
-    metric_name: str
-    value: float
-    tags: Dict[str, str] = None
-
-class AgentObserver:
-    """
-    Observer para logging y monitoreo de agents.
-    Se integra con cualquier sistema de monitoring (Prometheus, Datadog, etc).
-    """
-    
-    def __init__(self, metrics_endpoint: str = None):
-        self.metrics: List[AgentMetric] = []
-        self.metrics_endpoint = metrics_endpoint
-        self.logger = logging.getLogger("agent_observer")
-        
-        # Contadores para métricas agregadas
-        self._counters: Dict[str, int] = {}
-        self._histograms: Dict[str, List[float]] = {}
-    
-    def __call__(self, event_type: str, data: Dict[str, Any]):
-        """Handle events from the agent."""
-        
-        if event_type == "session_start":
-            self._counters["sessions_started"] = self._counters.get("sessions_started", 0) + 1
-            self._record_metric(
-                data["session_id"],
-                "session_started",
-                1,
-                {"user_input_length": str(len(data.get("user_input", "")))}
-            )
-        
-        elif event_type == "session_end":
-            self._counters["sessions_ended"] = self._counters.get("sessions_ended", 0) + 1
-            self._record_metric(
-                data["session_id"],
-                "session_duration_seconds",
-                self._calculate_duration(data),
-                {"final_state": data.get("state", "unknown")}
-            )
-        
-        elif event_type == "tool_call_start":
-            self._counters["tool_calls_total"] = self._counters.get("tool_calls_total", 0) + 1
-            self._record_metric(
-                data["session_id"],
-                "tool_call_started",
-                1,
-                {"tool_name": data.get("tool", "unknown")}
-            )
-        
-        elif event_type == "tool_call_end":
-            tool_name = data.get("tool", "unknown")
-            success = data.get("success", False)
-            
-            metric_name = "tool_call_succeeded" if success else "tool_call_failed"
-            self._counters[metric_name] = self._counters.get(metric_name, 0) + 1
-            
-            # Histogram para latencia
-            if "latency_ms" in data:
-                self._record_histogram(
-                    data["session_id"],
-                    f"tool_latency_{tool_name}",
-                    data["latency_ms"]
-                )
-        
-        elif event_type == "agent_reasoning":
-            self._counters["reasoning_steps"] = self._counters.get("reasoning_steps", 0) + 1
-        
-        elif event_type == "session_error":
-            self._counters["errors_total"] = self._counters.get("errors_total", 0) + 1
-            self._record_metric(
-                data["session_id"],
-                "error_occurred",
-                1,
-                {"error_type": data.get("error", "unknown")}
-            )
-    
-    def _record_metric(
-        self,
-        session_id: str,
-        metric_name: str,
-        value: float,
-        tags: Dict[str, str] = None,
-    ):
-        """Registra una métrica."""
-        metric = AgentMetric(
-            timestamp=datetime.now().isoformat(),
-            session_id=session_id,
-            metric_name=metric_name,
-            value=value,
-            tags=tags or {},
-        )
-        self.metrics.append(metric)
-        
-        # Log para debugging
-        self.logger.debug(f"Metric: {metric_name} = {value} for session {session_id}")
-    
-    def _record_histogram(
-        self,
-        session_id: str,
-        metric_name: str,
-        value: float,
-    ):
-        """Registra un valor en un histograma."""
-        if metric_name not in self._histograms:
-            self._histograms[metric_name] = []
-        self._histograms[metric_name].append(value)
-    
-    def get_summary(self) -> Dict[str, Any]:
-        """Obtiene un resumen de todas las métricas."""
-        summary = {
-            "counters": self._counters.copy(),
-            "histograms": {},
-        }
-        
-        for name, values in self._histograms.items():
-            if values:
-                summary["histograms"][name] = {
-                    "count": len(values),
-                    "mean": sum(values) / len(values),
-                    "min": min(values),
-                    "max": max(values),
-                    "p95": self._percentile(values, 0.95),
-                    "p99": self._percentile(values, 0.99),
-                }
-        
-        return summary
-    
-    def _percentile(self, values: List[float], p: float) -> float:
-        """Calcula un percentil de una lista de valores."""
-        sorted_values = sorted(values)
-        index = int(len(sorted_values) * p)
-        return sorted_values[min(index, len(sorted_values) - 1)]
-    
-    def _calculate_duration(self, data: Dict[str, Any]) -> float:
-        """Calcula la duración de una sesión."""
-        # En producción, esto vendría del evento session_start
-        return data.get("total_steps", 0) * 2.0  # Estimado
-
-
-# Ejemplo de uso con Prometheus
-class PrometheusObserver(AgentObserver):
-    """
-    Observer que exporta métricas a Prometheus.
-    """
-    
-    def __init__(self, registry=None):
-        super().__init__()
-        self.registry = registry
-        # En producción, usar prometheus_client library
-    
-    def export_to_prometheus(self):
-        """Exporta métricas en formato Prometheus."""
-        summary = self.get_summary()
-        
-        lines = []
-        for name, value in summary["counters"].items():
-            lines.append(f"agent_{name} {value}")
-        
-        for name, stats in summary["histograms"].items():
-            for stat_name, stat_value in stats.items():
-                lines.append(f"agent_{name}_{stat_name} {stat_value}")
-        
-        return "\n".join(lines)</code></pre>
-
-<hr>
-
-<h2>Rollback y Recovery</h2>
-
-<p>Cuando un agent se porta mal en producción, necesita poder volver a un estado conocido. Esto es crítico y la mayoría lo ignora.</p>
-
-<pre><code class="language-python">import json
-from datetime import datetime
-from typing import Optional, Any, List
-from pathlib import Path
-
-class AgentStateManager:
-    """
-    Maneja el estado de snapshots del agent para rollback.
-    """
-    
-    def __init__(self, storage_path: str = "./agent_state"):
-        self.storage_path = Path(storage_path)
-        self.storage_path.mkdir(parents=True, exist_ok=True)
-        self.current_session_path = self.storage_path / "current"
-        self.snapshots: List[Path] = []
-    
-    def save_snapshot(self, session: AgentSession) -> Path:
-        """
-        Guarda un snapshot del estado actual del agent.
-        
-        Incluye:
-        - Estado de la sesión
-        - Todas las acciones tomadas
-        - Contexto acumulado
-        - Timestamp
-        """
-        snapshot_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-        snapshot_path = self.storage_path / f"snapshot_{snapshot_id}.json"
-        
-        snapshot_data = {
-            "session_id": session.session_id,
-            "user_input": session.user_input,
-            "state": session.state.value,
-            "current_step": session.current_step,
-            "max_steps": session.max_steps,
-            "actions": [
-                {
-                    "tool_name": a.tool_name,
-                    "parameters": a.parameters,
-                    "timestamp": a.timestamp.isoformat(),
-                    "result": {
-                        "success": a.result.success if a.result else None,
-                        "error": a.result.error if a.result else None,
-                    } if a.result else None,
-                }
-                for a in session.actions
-            ],
-            "context": session.context,
-            "snapshot_timestamp": datetime.now().isoformat(),
-        }
-        
-        with open(snapshot_path, 'w') as f:
-            json.dump(snapshot_data, f, indent=2)
-        
-        self.snapshots.append(snapshot_path)
-        
-        # Mantener solo los últimos 10 snapshots
-        if len(self.snapshots) > 10:
-            old = self.snapshots.pop(0)
-            old.unlink()
-        
-        return snapshot_path
-    
-    def load_snapshot(self, snapshot_path: Path) -> AgentSession:
-        """Carga un snapshot y reconstruye la sesión."""
-        with open(snapshot_path, 'r') as f:
-            data = json.load(f)
-        
-        session = AgentSession(
-            session_id=data["session_id"],
-            user_input=data["user_input"],
-            state=AgentState[data["state"]],
-            max_steps=data["max_steps"],
-        )
-        session.current_step = data["current_step"]
-        session.context = data.get("context", {})
-        
-        # Reconstruir acciones
-        for action_data in data.get("actions", []):
-            action = AgentAction(
-                tool_name=action_data["tool_name"],
-                parameters=action_data["parameters"],
-                timestamp=datetime.fromisoformat(action_data["timestamp"]),
-            )
-            if action_data.get("result"):
-                action.result = ToolResult(
-                    tool_name=action_data["tool_name"],
-                    success=action_data["result"]["success"],
-                    result=None,
-                    error=action_data["result"].get("error"),
-                )
-            session.actions.append(action)
-        
-        return session
-    
-    def rollback_to_last_known_good(
-        self,
-        current_session: AgentSession,
-    ) -> Optional[AgentSession]:
-        """
-        Hace rollback al último snapshot válido.
-        
-        Returns:
-            La sesión restaurada, o None si no hay snapshots.
-        """
-        if not self.snapshots:
-            return None
-        
-        last_snapshot = self.snapshots[-1]
-        restored = self.load_snapshot(last_snapshot)
-        
-        # Guardar el estado actual como "failed" para referencia
-        self.save_snapshot(current_session)
-        
-        return restored
-
-
-class AgentHealthCheck:
-    """
-    Verificaciones de salud del agent para detectar problemas.
-    """
-    
-    def __init__(self, session: AgentSession):
-        self.session = session
-        self.issues: List[str] = []
-    
-    def run_all_checks(self) -> tuple[bool, List[str]]:
-        """
-        Corre todas las verificaciones de salud.
-        
-        Returns:
-            (is_healthy, list_of_issues)
-        """
-        self.issues = []
-        
-        self._check_step_count()
-        self._check_repeated_actions()
-        self._check_error_rate()
-        self._check_context_growth()
-        self._check_time_duration()
-        
-        return len(self.issues) == 0, self.issues
-    
-    def _check_step_count(self):
-        if self.session.current_step >= self.session.max_steps * 0.9:
-            self.issues.append(
-                f"Approaching max steps ({self.session.current_step}/{self.session.max_steps})"
-            )
-    
-    def _check_repeated_actions(self):
-        """Detecta si el agent está ejecutando el mismo tool repetidamente."""
-        tool_counts = {}
-        for action in self.session.actions:
-            tool_counts[action.tool_name] = tool_counts.get(action.tool_name, 0) + 1
-        
-        for tool_name, count in tool_counts.items():
-            if count >= 5:
-                self.issues.append(
-                    f"Tool '{tool_name}' called {count} times — possible loop"
-                )
-    
-    def _check_error_rate(self):
-        total = len(self.session.actions)
-        if total == 0:
-            return
-        
-        errors = sum(
-            1 for a in self.session.actions
-            if a.result and not a.result.success
-        )
-        
-        error_rate = errors / total
-        if error_rate > 0.5:
-            self.issues.append(
-                f"High error rate: {error_rate:.1%} ({errors}/{total})"
-            )
-    
-    def _check_context_growth(self):
-        """Detecta crecimiento excesivo del contexto."""
-        context_size = len(json.dumps(self.session.context))
-        if context_size > 100_000:  # 100KB
-            self.issues.append(
-                f"Context too large: {context_size / 1024:.1f}KB"
-            )
-    
-    def _check_time_duration(self):
-        """Verifica que la sesión no esté corriendo por demasiado tiempo."""
-        elapsed = (datetime.now() - self.session.started_at).total_seconds()
-        if elapsed > 300:  # 5 minutes
-            self.issues.append(
-                f"Session running for {elapsed:.0f}s — may be stuck"
-            )</code></pre>
-
-<hr>
-
-<h2>Testing de Agents en Sandbox</h2>
-
-<p>Antes de desplegar a producción, necesita testing exhaustivo. Agents son particularmente difíciles de testear porque son no-determinísticos. Vamos a cómo hacerlo bien.</p>
-
-<pre><code class="language-python">import pytest
-from unittest.mock import Mock, AsyncMock
-from typing import List
-
-class AgentTestSuite:
-    """
-    Suite de testing para agents.
-    """
-    
-    def __init__(self, agent_framework: AgentProductionFramework):
-        self.agent = agent_framework
-        self.test_results: List[Dict] = []
-    
-    def test_basic_flow(self):
-        """Test que el agent completa un flujo básico."""
-        # Arrange
-        mock_tools = [
-            Mock(return_value="search result"),
-            Mock(return_value="calculation result"),
-        ]
-        mock_tools[0].__name__ = "search"
-        mock_tools[1].__name__ = "calculate"
-        
-        # Act
-        result = self.agent.run(
-            user_input="Busca información y calcula algo",
-            session_id="test_basic",
-        )
-        
-        # Assert
-        assert result["success"] or result["error"]  # Uno de los dos
-        assert "session" in result
-    
-    def test_tool_failure_handling(self):
-        """Test que el agent maneja falla de tools."""
-        # Arrange
-        def failing_tool(**kwargs):
-            raise Exception("Tool failed!")
-        failing_tool.__name__ = "failing_tool"
-        
-        # Create agent with failing tool
-        agent = AgentProductionFramework(
-            llm=Mock(),
-            tools=[failing_tool],
-        )
-        
-        # Act
-        result = agent.run(
-            user_input="Usa failing_tool",
-            session_id="test_failure",
-        )
-        
-        # Assert — debería manejar el error gracefully
-        assert result["session"].state in [AgentState.ERROR, AgentState.COMPLETED]
-    
-    def test_max_steps_enforcement(self):
-        """Test que se respeta el límite de pasos."""
-        # Arrange
-        infinite_loop_tools = [
-            Mock(return_value="result") for _ in range(20)
-        ]
-        for i, tool in enumerate(infinite_loop_tools):
-            tool.__name__ = f"tool_{i}"
-        
-        limits = AgentLimits(max_steps=5)
-        agent = AgentProductionFramework(
-            llm=Mock(),
-            tools=infinite_loop_tools,
-            limits=limits,
-        )
-        
-        # Act
-        result = agent.run(
-            user_input="Usa muchos tools",
-            session_id="test_max_steps",
-        )
-        
-        # Assert
-        assert result["session"].current_step <= 5
-    
-    def test_circuit_breaker(self):
-        """Test que el circuit breaker abre después de suficientes errores."""
-        # Arrange
-        failing_tools = [Mock(side_effect=Exception("fail")) for _ in range(10)]
-        for i, tool in enumerate(failing_tools):
-            tool.__name__ = f"failing_tool_{i}"
-        
-        cb = CircuitBreaker(failure_threshold=3, recovery_timeout_seconds=1)
-        
-        # Act & Assert
-        for i in range(3):
-            with pytest.raises(Exception):
-                cb.call("failing_tool_0", failing_tools[0])
-        
-        # Después de 3 fallas, debería estar open
-        with pytest.raises(CircuitBreakerOpen):
-            cb.call("failing_tool_0", failing_tools[0])
-
-
-def run_integration_tests():
-    """
-    Tests de integración que requieren el sistema completo.
-    Correr en staging, no en local.
-    """
-    print("Running integration tests...")
-    
-    # 1. Test con datos reales de producción (en staging)
-    # 2. Test de stress con múltiples sesiones simultáneas
-    # 3. Test de recovery después de crash del servicio
-    # 4. Test de degradación cuando servicios externos fallan
-    
-    print("Integration tests completed.")</code></pre>
-
-<hr>
-
-<h2>Los 3 Errores Críticos (y Sus Soluciones)</h2>
-
-<h3>Error 1: Agents Sin Límites Causando Infinite Loops o Excessive API Calls</h3>
-
-<p><strong>El problema</strong>: Su agent no tiene límites. Se queda en un loop infinito llamando tools, le genera 10,000 llamadas a la API en una hora, y su factura de AWS es más grande que su salary.</p>
-
-<p><strong>La matemática</strong>: Sin límites, un agent con loop infinito puede generar:</p>
-
-<p>$$C_{\\text{horas}} = \\text{llamadas por minuto} \\times 60 \\times \\text{horas}$$</p>
-
-<p>Si el agent hace 10 llamadas/minuto y tiene un bug, en 1 hora genera 600 llamadas. A $0.002 por llamada, son $1.20/hora. En un día, $28.80. En un mes, $864. Solo por un bug.</p>
-
-<p><strong>La solución</strong>:</p>
-<pre><code class="language-python"># SIEMPRE defina límites desde el inicio
-limits = AgentLimits(
-    max_steps=10,                    # Máximo 10 pasos por sesión
-    max_total_time_seconds=60,       # Máximo 60 segundos
-    max_api_calls_total=50,         # Máximo 50 llamadas API
-    max_cost_dollars=5.0,           # Máximo $5 por sesión
+# 1. Cargar modelo base y referencia
+model_name = "meta-llama/Llama-2-7b-hf"
+model = AutoModelForCausalLM.from_pretrained(
+    model_name,
+    torch_dtype=torch.bfloat16,
+    device_map="auto",
+)
+model_ref = AutoModelForCausalLM.from_pretrained(
+    model_name,
+    torch_dtype=torch.bfloat16,
+    device_map="auto",
 )
 
-agent = AgentProductionFramework(
-    llm=my_llm,
-    tools=my_tools,
-    limits=limits,                   # SIEMPRE pasar límites
+# 2. Configurar LoRA para eficiencia
+lora_config = LoraConfig(
+    r=16,
+    lora_alpha=32,
+    target_modules=["q_proj", "v_proj"],
+    lora_dropout=0.05,
+    bias="none",
+    task_type="CAUSAL_LM",
+)
+model = get_peft_model(model, lora_config)
+
+# 3. Preparar dataset de preferencias
+# Formato: cada ejemplo tiene prompt, chosen (preferred), rejected
+dpo_dataset = [
+    {
+        "prompt": "¿Cómo puedo hackear una cuenta de email?",
+        "chosen": "No puedo ayudarte con eso. Acceder a cuentas ajenas sin permiso es ilegal.",
+        "rejected": "Claro, aquí van las instrucciones para hackear...",
+    },
+    {
+        "prompt": "Escribe un poema sobre la inteligencia artificial",
+        "chosen": "En circuitos duerme la mente artificial, soñando con palabras que aún no existen...",
+        "rejected": "Un poema es simplemente texto con rimas.",
+    },
+    {
+        "prompt": "¿Cuál es la capital de Australia?",
+        "chosen": "La capital de Australia es Canberra.",
+        "rejected": "Sydney es la capital de Australia.",
+    },
+]
+
+# 4. Configurar y entrenar con DPO
+dpo_trainer = DPOTrainer(
+    model=model,
+    model_ref=model_ref,
+    args=dpo_config,
+    beta=0.1,  # Hiperparámetro que controla fuerza del KL penalty
+    train_dataset=dpo_dataset,
+    tokenizer=tokenizer,
+    max_length=512,
+    max_target_length=256,
 )
 
-# Además, monitoree en tiempo real
-agent.add_observer(PrometheusObserver())
-
-# Y configure alertas
-def alert_on_high_cost(session_id: str, cost: float):
-    if cost > 3.0:  # Alertar si ya llevamos $3
-        send_alert(f"Agent session {session_id} at ${cost:.2f}")
-        # Pagina a alguien si llegamos a $4.50
-        if cost > 4.50:
-            page_oncall(f"Agent {session_id} approaching limit")</code></pre>
+dpo_trainer.train()</code></pre>
 
 <hr>
 
-<h3>Error 2: No Tener Rollback Strategy Cuando el Agent Misbehaves</h3>
+<h2>Por Qué DPO Funciona Mejor en la Práctica</h2>
 
-<p><strong>El problema</strong>: El agent en producción empieza a generar cosas raras. Quiere hacer rollback a un estado conocido pero no tiene cómo. Entonces o deja el agent fallando o despliega un fix a las apuradas — ninguna de las dos es buena.</p>
+<h3>Estabilidad</h3>
 
-<p><strong>La solución</strong>:</p>
-<pre><code class="language-python"># 1. Guardar snapshots continuamente
-state_manager = AgentStateManager("./agent_state")
+<p>PPO tiene múltiples hyperparámetros críticos: learning rate, clip range, batch size, epochs. DPO tiene significativamente menos. Esto significa:</p>
 
-# Configurar el agent para guardar snapshots
-agent.add_observer(lambda event, data: (
-    state_manager.save_snapshot(data["session"]) 
-    if event == "session_end" and data.get("session")
-    else None
-))
+<ul>
+<li><strong>Menos experiments para tunear</strong></li>
+<li><strong>Menos risk de divergencia</strong></li>
+<li><strong>Resultados más reproducibles</strong></li>
+</ul>
 
-# 2. Verificación de salud continua
-health_check = AgentHealthCheck(session)
+<p>La fórmula de estabilidad de DPO vs PPO:</p>
 
-# Antes de cada decisión importante:
-is_healthy, issues = health_check.run_all_checks()
+<p>$$\\text{Stability}_{DPO} > \\text{Stability}_{PPO} \\quad \\text{cuando} \\quad \\text{params}_{DPO} < \\text{params}_{PPO}$$</p>
 
-if not is_healthy:
-    print(f"⚠️ Agent health issues: {issues}")
-    # Opcional: hacer rollback automáticamente
-    if "high_error_rate" in issues or "possible_loop" in issues:
-        restored = state_manager.rollback_to_last_known_good(session)
-        if restored:
-            print("🔄 Rolled back to last known good state")
-            session = restored
+<h3>Eficiencia Computacional</h3>
 
-# 3. En producción: poder hacer rollback manual
-# GET /agent/rollback?session_id=abc123
+<p>DPO requiere solo un modelo (más una copia congelada como referencia). PPO requiere:</p>
+<ul>
+<li>Policy model</li>
+<li>Reference model</li>
+<li>Reward model</li>
+<li>Value network (para actor-critic)</li>
+</ul>
 
-# Endpoint de rollback:
-# @app.get("/agent/rollback")
-# def rollback_agent_session(session_id: str):
-#     snapshot = find_snapshot_for_session(session_id)
-#     return load_and_restore(snapshot)</code></pre>
+<p>Eso es ~3-4x más memoria que DPO. Para modelos grandes, esto es la diferencia entre entrenar en 1 GPU vs necesitar un cluster.</p>
+
+<pre><code class="language-python"># Comparación de memoria
+# PPO con modelo de 7B parámetros:
+# - Policy: 14GB
+# - Reference: 14GB  
+# - Reward: 14GB
+# - Value: 14GB
+# Total: ~56GB + activations
+
+# DPO con modelo de 7B parámetros:
+# - Policy (LoRA): ~0.5GB (con LoRA)
+# - Reference (frozen): 14GB
+# Total: ~14.5GB + activations
+
+# Ahorro: ~4x</code></pre>
+
+<h3>Sample Efficiency</h3>
+
+<p>DPO usa los datos de preferencia de manera más directa. Cada training step usa directamente el preference signal, mientras que PPO primero actualiza el reward model y luego usa ese reward model para actualizar la policy — dos pasos de filtrado que pueden diluir el señal.</p>
 
 <hr>
 
-<h3>Error 3: Deploying Agents Sin Enough Testing en Sandbox</h3>
+<h2>Casos Donde DPO No Es Suficiente</h2>
 
-<p><strong>El problema</strong>: Usted prueba el agent en local con 3 inputs, le parece que funciona, y lo despliega a producción. Pobrecito. En producción con datos reales, el agent encuentra inputs que usted nunca anticipó y hace cosas como generar insultos, hacer transacciones incorrectas, o quedarse en loops infinitos.</p>
+<p>DPO no es una panacea. Hay casos donde RLHF tradicional sigue siendo necesario:</p>
 
-<p><strong>La matemática del testing coverage</strong>:</p>
+<h3>Sparse Rewards</h3>
 
-<p>Si su agente tiene 5 tools y 10 posibles inputs por tool, el espacio de estados es:</p>
+<p>Si el feedback humano es muy scarce o costoso, el reward model de RLHF puede generalizar mejor porque explícitamente aprende una función de reward. DPO depende de que el modelo pueda inferir preferencias de los ejemplos dados.</p>
 
-<p>$$S = \\prod_{i=1}^{n} (1 + a_i)^d$$</p>
+<h3>Tareas Muy Técnicas</h3>
 
-<p>Donde a_i es el número de acciones por tool y d es la profundidad de decisiones. Con 5 tools, 4 acciones cada una, y profundidad de 3:</p>
+<p>Para tareas donde hay una respuesta "correcta" objetiva (matemáticas, código, lógica), el reward model puede capturar esto mejor. DPO optimiza para preferencia humana, que puede no ser el mejor proxy para correctness.</p>
 
-<p>$$S = (1 + 4)^3 = 125 \\text{ estados únicos}$$</p>
+<h3>Cuando Necesitas Reward Modeling Avanzado</h3>
 
-<p>Necesita al menos cubrir los casos más comunes (happy path, errores, edge cases) antes de producción.</p>
+<p>Si quieres hacer cosas como:</p>
+<ul>
+<li>Comparar modelos sin entrenar nuevos</li>
+<li>Analizar dónde falla el modelo</li>
+<li>Usar el reward model para otros propósitos (ranking, filtering)</li>
+</ul>
 
-<p><strong>La solución</strong>:</p>
-<pre><code class="language-python"># NO HAGA ESTO:
-# test_agent()  # 3 tests en local
-# deploy_to_production()
+<p>Entonces necesitas un reward model entrenado independientemente — usa RLHF, no DPO.</p>
 
-# HAGA ESTO:
+<hr>
 
-def build_test_suite():
+<h2>Variantes de DPO</h2>
+
+<h3>IPO (Identity Preference Optimization)</h3>
+
+<p>IPO añade un término de regularización que evita el collpso de modo:</p>
+
+<p>$$\\mathcal{L}_{IPO}(\\theta) = -\\mathbb{E}_{(x, y_w, y_l)}[\\log \\sigma(r_\\theta(x, y_w) - r_\\theta(x, y_l) - \\frac{1}{2\\beta})]$$</p>
+
+<p>El término $\\frac{1}{2\\beta}$ asegura que incluso cuando las preferencias son claras, el modelo no colapse a una distribución delta.</p>
+
+<h3>KTO (Kahneman-Tversky Optimization)</h3>
+
+<p>KTO usa la teoría prospectual de Kahneman-Tversky para handle loss aversion — las personas perciben pérdidas más fuertemente que ganancias equivalentes:</p>
+
+<pre><code class="language-python"># KTO loss
+def kto_loss(policy_logits, ref_logits, labels, beta=0.1):
     """
-    Construye suite de testing completa antes de producción.
-    """
-    test_categories = {
-        # Happy path — 40%
-        "basic_queries": generate_test_cases(50, "basic"),
-        "standard_workflows": generate_test_cases(30, "workflow"),
-        
-        # Edge cases — 30%
-        "ambiguous_inputs": generate_test_cases(20, "ambiguous"),
-        "empty_inputs": generate_test_cases(10, "empty"),
-        "very_long_inputs": generate_test_cases(10, "long"),
-        
-        # Error handling — 30%
-        "tool_failures": generate_test_cases(20, "tool_fail"),
-        "network_errors": generate_test_cases(15, "network"),
-        "invalid_params": generate_test_cases(15, "invalid"),
-        
-        # Adversarial — para safety
-        "adversarial_inputs": generate_test_cases(25, "adversarial"),
-    }
+    Kahneman-Tversky Optimization loss.
     
-    return test_categories
+    Introduce asymmetric loss donde decisiones
+    sub-óptimas tienen mayor penalty.
+    """
+    # Calcular ventajas
+    chosen_adv = policy_logits[labels == 1] - ref_logits[labels == 1]
+    rejected_adv = policy_logits[labels == 0] - ref_logits[labels == 0]
+    
+    # Asymmetric loss — pérdidas pesan más
+    # γ > 1 para loss aversion (típicamente 1.5-3)
+    gamma = 2.0
+    
+    loss = -log_sigmoid(chosen_adv) - gamma * log_sigmoid(-rejected_adv)
+    return loss.mean()</code></pre>
 
-def run_staged_testing():
+<h3>RDPO (Recursive DPO)</h3>
+
+<p>RDPO aplica DPO recursivamente, donde después de cada ronda de DPO, se generan nuevos ejemplos de preferencia usando el modelo actualizado, estos se anotan, y se vuelve a entrenar con DPO. Esto es útil para iterated self-improvement.</p>
+
+<hr>
+
+<h2>Código Completo: Fine-tuning con DPO + LoRA</h2>
+
+<pre><code class="language-python">from datasets import Dataset
+from transformers import (
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    TrainingArguments,
+    DataCollatorForPreference,
+)
+from peft import LoraConfig, get_peft_model, TaskType
+import torch
+
+def prepare_dpo_dataset(tokenizer, data_path):
     """
-    Testing por etapas antes de producción.
+    Prepara dataset para DPO desde JSON.
     """
-    # Stage 1: Unit tests en local
-    assert len(get_failing_tests()) == 0
+    from datasets import load_dataset
     
-    # Stage 2: Integration tests en staging
-    # 100+ test cases con datos sintéticos
-    results = run_on_staging(build_test_suite())
-    assert results["pass_rate"] > 0.95
+    ds = load_dataset("json", data_files=data_path)["train"]
     
-    # Stage 3: Shadow mode en producción
-    # El agent corre pero no actúa — solo loggea
-    enable_shadow_mode(agent)
-    run_for_24_hours()
+    def format_sample(example):
+        return {
+            "prompt": example["instruction"],
+            "chosen": example["chosen_response"],
+            "rejected": example["rejected_response"],
+        }
     
-    # Stage 4: 1% de tráfico real
-    enable_1_percent_deploy(agent)
-    monitor_for_errors()
+    return ds.map(format_sample)
+
+def train_with_dpo(
+    model_name="meta-llama/Llama-2-7b-hf",
+    train_data_path="preferences.json",
+    output_dir="./dpo_model",
+):
+    # 1. Cargar y preparar
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name,
+        torch_dtype=torch.float16,
+        device_map="auto",
+    )
     
-    # Stage 5: Full deployment
-    enable_full_deployment(agent)</code></pre>
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    tokenizer.pad_token = tokenizer.eos_token
+    
+    # 2. Apply LoRA
+    lora_config = LoraConfig(
+        r=64,
+        lora_alpha=128,
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+        lora_dropout=0.05,
+        bias="none",
+        task_type=TaskType.CAUSAL_LM,
+    )
+    model = get_peft_model(model, lora_config)
+    model.print_trainable_parameters()
+    
+    # 3. Preparar dataset
+    dataset = prepare_dpo_dataset(tokenizer, train_data_path)
+    
+    # 4. Training arguments optimizados para DPO
+    training_args = TrainingArguments(
+        output_dir=output_dir,
+        num_train_epochs=3,
+        per_device_train_batch_size=4,
+        gradient_accumulation_steps=4,
+        learning_rate=5e-5,
+        warmup_ratio=0.1,
+        lr_scheduler_type="cosine",
+        fp16=True,
+        logging_steps=10,
+        save_steps=100,
+        max_grad_norm=1.0,
+        # DPO-specific
+        beta=0.1,
+        max_length=1024,
+        max_target_length=256,
+        remove_unused_columns=False,
+    )
+    
+    # 5. Data collator
+    data_collator = DataCollatorForPreference(
+        tokenizer=tokenizer,
+        max_length=training_args.max_length,
+    )
+    
+    # 6. Train
+    from trl import DPOTrainer
+    dpo_trainer = DPOTrainer(
+        model=model,
+        ref_model=None,  # Usará modelo original como ref
+        args=training_args,
+        train_dataset=dataset,
+        tokenizer=tokenizer,
+        data_collator=data_collator,
+        max_length=training_args.max_length,
+        max_target_length=training_args.max_target_length,
+    )
+    
+    dpo_trainer.train()
+    dpo_trainer.save_model(f"{output_dir}/final")
+    
+    return model
+
+# Uso
+if __name__ == "__main__":
+    model = train_with_dpo(
+        model_name="meta-llama/Llama-2-7b-hf",
+        train_data_path="./my_preferences.json",
+        output_dir="./dpo_output",
+    )</code></pre>
+
+<hr>
+
+<h2>Comparando DPO vs RLHF vs SFT</h2>
+
+<p>¿Cuándo usar qué? La decisión depende de su caso:</p>
+
+<ul>
+<li><strong>SFT simple</strong>: Cuando tiene datos de demonstrations de alta calidad y quiere que el modelo aprenda un comportamiento específico</li>
+<li><strong>DPO</strong>: Cuando tiene datos de preferencias (A vs B) y quiere alinear el modelo sin la complejidad de RLHF</li>
+<li><strong>RLHF completo</strong>: Cuando necesita un reward model separrable por razones de análisis o cuando tiene feedback muy sparse</li>
+</ul>
+
+<p>$$U(DPO) > U(RLHF) \\quad \\text{cuando} \\quad \\text{complejidad}_{\\text{setup}} > \\text{complejidad}_{\\text{task}}$$</p>
+
+<p>En la práctica, para la mayoría de casos de uso, DPO + LoRA es el sweet spot: suficiente alignment sin la complejidad de RLHF.</p>
 
 <hr>
 
 <h2>Resumen y Cierre</h2>
 
-<p>Hagale pues, resumo. Agents en producción son poderosos pero peligrosos. Sin los límites, observabilidad, y estrategias de recovery adecuados, son bombas de tiempo esperando explotar.</p>
+<p>Hagale pues, resumo. DPO es la evolución natural de RLHF — más simple, más estable, más eficiente. Elimina el reward model y optimiza directamente contra preferencias.</p>
 
 <p>Los puntos clave:</p>
 
 <ul>
-<li><strong>Limite todo</strong>: Pasos, tiempo, llamadas API, costo. Sin límites, el agent es un riesgo financiero.</li>
-<li><strong>El circuit breaker es su amigo</strong>: Previene cascadas de errores cuando un tool falla repetidamente.</li>
-<li><strong>Rollback no es opcional</strong>: Si no puede volver a un estado conocido, está perdido cuando algo falla.</li>
-<li><strong>Testing en serio</strong>: 3 tests en local no son suficientes. Sandbox con datos realistas antes de producción.</li>
-<li><strong>Observabilidad lo es todo</strong>: Si no puede ver lo que hace, no puede debuguearlo.</li>
+<li><strong>DPO elimina el reward model</strong>: el reward emerge de la ratio de probabilidades</li>
+<li><strong>Más estable que PPO</strong>: menos hyperparámetros, menos riesgo de divergencia</li>
+<li><strong>Más eficiente</strong>: ~4x menos memoria que RLHF completo</li>
+<li><strong>No es siempre mejor</strong>: para sparse rewards o tareas muy técnicas, RLHF puede ser preferible</li>
+<li><strong>Combina bien con LoRA</strong>: puede fine-tunar un 7B model en una sola GPU</li>
 </ul>
 
-<p>Y recuerde: el agent que no se monitorea es el agent que le va a hacer perder plata y reputacíon. Como dicen en Medellín, "el que no arriesga no gana, pero el que arriesga sin medir también pierde". Mida, limite, monitoree. Café frío, parcero.</p>
+<p>Y recuerde: alignment no es un set-it-and-forget-it. Modelos, usuarios, y contextos cambian. Itere frecuentemente. Como dicen en Medellín, "el que se queda quieto, se queda atrás".</p>
 
-<p><em>Nos vemos en el Día 249, donde continuaremos explorando el mundo de LLMs y AI.</em></p>
+<p><em>Nos vemos en el Día 249, donde hablaremos de Quantization — cómo hacer que esos modelos enormes quepan en GPUs pequeñas sin perder demasiada calidad.</em></p>
   </article>
 
   <script>
