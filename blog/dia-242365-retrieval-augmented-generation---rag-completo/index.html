@@ -118,68 +118,580 @@ nav {
   </header>
 
   <article class="article-body">
-    <h1>Retrieval Augmented Generation - RAG Completo</h1>
-<p>Hagale pues, parcero. Hoy es el Dia 242 y hablamos de RAG completo: Retrieval Augmented Generation. El patron mas usado en produccion. Cafe.</p>
-<hr>
-<h2>RAG</h2>
-<p>RAG combina recuperacion de documentos con generacion de texto. Primero recupera documentos relevantes, luego los usa como contexto para que el LLM genere respuestas precisas.</p>
-<h3>Componentes:</h3>
-<ul>
-<li><strong>Document Loader</strong>: Cargar PDFs, websites, etc</li>
-<li><strong>Text Splitter</strong>: Dividir en chunks</li>
-<li><strong>Embeddings</strong>: Crear vectores</li>
-<li><strong>Vector DB</strong>: Almacenar y buscar</li>
-<li><strong>LLM</strong>: Generar respuesta</li>
-</ul>
-<hr>
-<h2>RAG Completo</h2>
-<pre><code class="language-python"># Pipeline RAG
-def rag_pipeline(query, collection, llm):
-    # 1. Crear embedding de la pregunta
-    query_embedding = model.encode(query)
+<h2>Fine-tuning: Cuando Prompt Engineering No Alcanza</h2>
+
+<p>Hagale pues, parcero. Estamos en el D&#237;a 242 y hoy vamos a meternos en territory que el 80% usa sin entender por qu&#233; funciona: fine-tuning con LoRA y QLoRA.</p>
+
+<p>Aqu&#237; en Medell&#237;n, cuando uno empieza con LLMs, lo primero que hace es prompt engineering. Y esta bien, eh. Pero hay un punto donde el prompt se vuelve taaan largo que el modelo ya no puede con tanto contexto, o donde el modelo simplemente no captura el estilo o la logica particular que uno necesita. Ahi es donde entra fine-tuning.</p>
+
+<p>Pero la cosa no es simplemente "entrenar el modelo con mis datos". No parcero. Si uno hace fine-tuning full model, va a necesitar 80GB de VRAM como nada, y va a tardar dias. LoRA y QLoRA son las tecnicas que el 80% usa sin entender la math detras, y hoy vamos a cambiar eso.</p>
+
+<h2>La Matem&#225;tica de LoRA</h2>
+
+<p>La idea central de LoRA es simple: no entrenar todos los parametros del modelo. En lugar de eso, solo entrenar un conjunto pequeno de parametros adicionales (las matrices A y B) y congelar el resto.</p>
+
+<p>En un transformer, la operacion mas costosa es la atenci&#243;n:</p>
+
+<p><strong>Y = Softmax(QK&#185;)V = Softmax(XWK(WQ)&#178;)V</strong></p>
+
+<p>Donde Wq, Wk, Wv son las matrices de pesos para Query, Key, Value. Estas matrices son de dimensi&#243;n d_model &#215; d_k (t&#237;picamente 4096 &#215; 4096 para un 7B).</p>
+
+<p>LoRA propone reparametrizar el update as&#237;:</p>
+
+<p><strong>W' = W + &#916;W = W + BA</strong></p>
+
+<p>Donde B &#220; R^(d&#215;r) y A &#220; R^(r&#215;k), con r << min(d, k). Para un 7B model, W es 4096&#215;4096 = 16M parametros, pero si r=8, entonces BA es solo 8&#215;4096&#215;2 = 65K parametros. Eso es 250x menos parametros!</p>
+
+<p>La memory requerida para fine-tuning es:</p>
+
+<p><strong>Memory LoRA = Model Frozen + Training State + Batch Size &#215; Sequence Length &#215; (Activation Memory)</strong></p>
+
+<pre><code class="language-python">"""
+C&#225;lculo de memoria para LoRA vs Fine-tuning completo.
+Esta math es la que el 80% ignora y luego se shockea cuando
+su GPU de 24GB no alcanza para un 7B model.
+"""
+
+def calculate_finetuning_memory(
+    model_params: int,
+    model_size_gb: float,
+    precision: str = "fp16",
+    lora_rank: int = 8,
+    lora_target_modules: list[str] = ["q_proj", "v_proj"],
+    batch_size: int = 1,
+    seq_length: int = 2048,
+    include_activations: bool = True,
+) -> dict:
+    """
+    Calcula la memoria necesaria para fine-tuning.
     
-    # 2. Recuperar documentos similares
-    results = collection.query(
-        query_embeddings=[query_embedding],
-        n_results=5
+    Args:
+        model_params: N&#250;mero de par&#225;metros del modelo (ej: 7_000_000_000)
+        model_size_gb: Tama&#241;o del modelo en GB en disco
+        precision: fp16, bf16, fp32, int8, int4
+        lora_rank: Rank r para LoRA (t&#237;picamente 4-64)
+        lora_target_modules: Qu&#233; capas aplicar LoRA
+        batch_size: Batch size durante entrenamiento
+        seq_length: Longitud m&#225;xima de secuencia
+        include_activations: Si incluir memoria para activations
+    """
+    
+    # Tama&#241;o por par&#225;metro seg&#250;n precisi&#243;n
+    bytes_per_param = {
+        "fp32": 4,
+        "fp16": 2,
+        "bf16": 2,
+        "int8": 1,
+        "int4": 0.5,
+    }[precision]
+    
+    # Par&#225;metros totales
+    total_params = model_params
+    
+    # LoRA solo entrena las capas target
+    # T&#237;picamente q_proj y v_proj son ~0.1% de par&#225;metros
+    # Para un 7B: ~7M par&#225;metros entrenables vs 7B
+    lora_params_ratio = 0.001  # 0.1% para q_proj, v_proj
+    
+    trainable_params = int(total_params * lora_params_ratio * lora_rank * 2 / 4096) 
+    # Aproximado: r * dim * 2 para A y B
+    
+    # Memory para modelos congelados (solo guarda para inference, no gradients)
+    frozen_model_memory = model_size_gb * (bytes_per_param / 2)  # fp16 base
+    
+    # Memory para estado de entrenamiento
+    # Gradients: solo para par&#225;metros entrenables
+    gradients_memory = (trainable_params * bytes_per_param) / (1024**3)
+    
+    # Optimizer states: solo para par&#225;metros entrenables
+    # Adam requiere 2 states por par&#225;metro (momentum + variance)
+    optimizer_memory = trainable_params * bytes_per_param * 2 / (1024**3)
+    
+    # Activations (si se incluyen)
+    activations_memory = 0
+    if include_activations:
+        # activations = batch_size * seq_length * hidden_dim * layers * bytes
+        # Aproximado para 7B con hidden=4096, 32 layers
+        activations_memory = (
+            batch_size * seq_length * 4096 * 32 * bytes_per_param * 4  # factor de seguridad
+        ) / (1024**3)
+    
+    # Total
+    if lora_rank == 0:  # Fine-tuning completo
+        total_memory = (
+            frozen_model_memory +  # Todo el modelo
+            model_params * bytes_per_param +  # Gradients (todo)
+            model_params * bytes_per_param * 2  # Optimizer (todo)
+        ) / (1024**3)
+    else:  # LoRA
+        total_memory = (
+            frozen_model_memory +
+            gradients_memory +
+            optimizer_memory +
+            activations_memory
+        )
+    
+    return {
+        "frozen_model_gb": frozen_model_memory,
+        "gradients_gb": gradients_memory,
+        "optimizer_gb": optimizer_memory,
+        "activations_gb": activations_memory,
+        "total_gb": total_memory,
+        "trainable_params": trainable_params,
+        "trainable_ratio": trainable_params / total_params * 100,
+    }
+
+
+# Ejemplo para Llama 2 7B
+memory_calc = calculate_finetuning_memory(
+    model_params=6_738_415_744,  # 6.7B para Llama 2
+    model_size_gb=13.5,  # 13.5GB en fp16
+    precision="fp16",
+    lora_rank=8,
+    batch_size=4,
+    seq_length=2048,
+)
+
+print(f"LoRA con r=8, batch=4, seq=2048:")
+print(f"  Modelo congelado: {memory_calc['frozen_model_gb']:.2f} GB")
+print(f"  Gradients: {memory_calc['gradients_gb']:.4f} GB")
+print(f"  Optimizer: {memory_calc['optimizer_gb']:.4f} GB")
+print(f"  Activations: {memory_calc['activations_gb']:.2f} GB")
+print(f"  TOTAL: {memory_calc['total_gb']:.2f} GB")
+print(f"  Parametros entrenables: {memory_calc['trainable_params']:,}")
+print(f"  Ratio entrenable: {memory_calc['trainable_ratio']:.4f}%")
+
+
+# Comparacion: Full FT vs LoRA vs QLoRA
+print("\nComparacion de metodos para Llama 2 7B:")
+print("=" * 60)
+
+for method, precision, lora_r in [
+    ("Full Fine-tune", "fp16", 0),
+    ("LoRA r=8", "fp16", 8),
+    ("LoRA r=64", "fp16", 64),
+    ("QLoRA r=8 (int4)", "int4", 8),
+    ("QLoRA r=64 (int4)", "int4", 64),
+]:
+    calc = calculate_finetuning_memory(
+        model_params=6_738_415_744,
+        model_size_gb=13.5,
+        precision=precision,
+        lora_rank=lora_r,
+        batch_size=4,
+        seq_length=2048,
     )
-    
-    # 3. Construir contexto
-    context = "\n".join(results['documents'])
-    
-    # 4. Generar respuesta
-    prompt = f"Contexto: {context}\n\nPregunta: {query}"
-    response = llm.generate(prompt)
-    
-    return response</code></pre>
-<hr>
-<h2>LangChain Implementacion</h2>
-<pre><code class="language-python">from langchain.document_loaders import PDFLoader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.embeddings import OpenAIEmbeddings
-from langchain.vectorstores import Chroma
+    print(f"{method:20} | {calc['total_gb']:6.2f} GB | ~{int(calc['trainable_ratio']*70)} params")</code></pre>
 
-# Cargar documento
-loader = PDFLoader("documento.pdf")
-splitter = RecursiveCharacterTextSplitter(chunk_size=1000)
-docs = splitter.split_documents(loader.load())
+<h2>Implementando LoRA con PEFT</h2>
 
-# Crear vector store
-vectorstore = Chroma.from_documents(docs, OpenAIEmbeddings())
+<pre><code class="language-python">"""
+Fine-tuning con LoRA usando PEFT (Parameter Efficient Fine-Tuning).
+Esta es la implementacion que el 80% deberia estar usando.
+"""
 
-# RAG chain
-qa = RetrievalQA.from_chain_type(
-    llm=OpenAI(),
-    chain_type="stuff",
-    retriever=vectorstore.as_retriever()
+from peft import LoraConfig, get_peft_model, TaskType
+from transformers import AutoModelForCausalLM, AutoTokenizer, TrainingArguments
+from datasets import load_dataset
+import torch
+
+# 1. Cargar modelo base
+model_name = "meta-llama/Llama-2-7b-hf"
+
+model = AutoModelForCausalLM.from_pretrained(
+    model_name,
+    torch_dtype=torch.float16,
+    device_map="auto",
+    load_in_8bit=True,  # Para 8-bit inference
+)
+
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+tokenizer.pad_token = tokenizer.eos_token
+
+# 2. Configurar LoRA
+lora_config = LoraConfig(
+    r=8,  # Rank. 4-16 para tareas simples, 32-64 para tareas complejas
+    lora_alpha=16,  # Scaling factor. T&#237;picamente 2x del rank
+    target_modules=[
+        "q_proj",  # Query projection
+        "k_proj",  # Key projection  
+        "v_proj",  # Value projection
+        "o_proj",  # Output projection
+        "gate_proj",  # Gate para FFN
+        "up_proj",  # Up projection FFN
+        "down_proj",  # Down projection FFN
+    ],
+    lora_dropout=0.05,
+    bias="none",  # No entrenar biases
+    task_type=TaskType.CAUSAL_LM,
+)
+
+# 3. Aplicar LoRA al modelo
+model = get_peft_model(model, lora_config)
+model.print_trainable_parameters()
+# Veras algo como: "trainable params: 8,388,608 || all params: 6,738,414,720 || trainable%: 0.1244%"
+
+# 4. Preparar dataset
+dataset = load_dataset("json", data_files="mi_dataset.jsonl")
+
+def tokenize_function(examples):
+    # Formatear como conversacion
+    texts = [
+        f"Instruccion: {inst}\nRespuesta: {resp}"
+        for inst, resp in zip(examples["instruction"], examples["response"])
+    ]
+    return tokenizer(texts, truncation=True, max_length=512)
+
+tokenized_dataset = dataset.map(
+    tokenize_function,
+    batched=True,
+    remove_columns=dataset["train"].column_names,
+)
+
+# 5. Training arguments
+training_args = TrainingArguments(
+    output_dir="./lora_llama2",
+    num_train_epochs=3,
+    per_device_train_batch_size=4,
+    gradient_accumulation_steps=4,  # Effective batch = 16
+    learning_rate=1e-4,  # LR para LoRA es t&#237;picamente mayor que full FT
+    warmup_ratio=0.03,
+    lr_scheduler_type="cosine",
+    logging_steps=10,
+    save_steps=100,
+    fp16=True,
+    optim="paged_adamw_8bit",  # Optimizer con estado en 8-bit
+)
+
+# 6. Trainer
+from trl import SFTTrainer
+
+trainer = SFTTrainer(
+    model=model,
+    args=training_args,
+    train_dataset=tokenized_dataset["train"],
+    max_seq_length=512,
+)
+
+# 7. Train!
+trainer.train()
+
+# 8. Guardar solo LoRA weights (no el modelo completo)
+model.save_pretrained("./lora_weights")
+
+# 9. Inference: cargar modelo base + LoRA weights
+base_model = AutoModelForCausalLM.from_pretrained(
+    model_name,
+    torch_dtype=torch.float16,
+    device_map="auto",
+)
+model = get_peft_model_from_pretrained(base_model, "./lora_weights")
+
+# Merge y guardar para inference mas rapida (opcional)
+# model = model.merge_and_unload()
+# model.save_pretrained("./merged_model")</code></pre>
+
+<h2>QLoRA: Fine-tuning Cuantizado</h2>
+
+<p>QLoRA lleva LoRA un paso mas alla: cuantiza el modelo base a 4-bit mientras entrena. Esto permite fine-tunear un 65B model en una sola GPU de 48GB!</p>
+
+<pre><code class="language-python">"""
+QLoRA: Fine-tuning con modelo cuantizado a 4-bit.
+Esto permite entrenar modelos de 65B en una sola GPU.
+"""
+
+from transformers import BitsAndBytesConfig
+import torch
+
+# 1. Configuracion de cuantizacion 4-bit
+bnb_config = BitsAndBytesConfig(
+    load_in_4bit=True,
+    bnb_4bit_use_double_quant=True,  # Double quantization para mayor eficiencia
+    bnb_4bit_quant_type="nf4",  # Normal float 4 - mejor que float
+    bnb_4bit_compute_dtype=torch.bfloat16,  # Computar en bf16
+)
+
+# 2. Cargar modelo cuantizado
+model = AutoModelForCausalLM.from_pretrained(
+    "meta-llama/Llama-2-65b-hf",
+    quantization_config=bnb_config,
+    device_map="auto",
+    torch_dtype=torch.bfloat16,
+)
+
+# 3. Config LoRA (igualmente para QLoRA)
+lora_config = LoraConfig(
+    r=64,  # QLoRA puede usar ranks mayores porque usa menos memoria
+    lora_alpha=128,
+    target_modules=["q_proj", "v_proj"],
+    lora_dropout=0.1,
+    bias="none",
+    task_type=TaskType.CAUSAL_LM,
+)
+
+model = get_peft_model(model, lora_config)
+
+# 4. Entrenar con las mismas funciones que arriba
+# ...
+
+# La diferencia en memoria es massive:
+# Llama 2 65B:
+#   FP16 full fine-tune: ~520 GB VRAM (imposible)
+#   QLoRA: ~48 GB VRAM (una sola A100!)</code></pre>
+
+<h2>Layers y Rank: Que Entrenar</h2>
+
+<p>Aqu&#237; es donde el 80% se confunde. No todas las capas responden igual al fine-tuning.</p>
+
+<pre><code class="language-python">"""
+An&#225;lisis de qu&#233; capas fine-tunear para m&#225;ximo impacto.
+El estudio de LLaMA-adapters muestra que:
+- Bottom layers: m&#225;s task-agnostic, menos necesidad de fine-tunar
+- Middle layers: m&#225;s especializados
+- Top layers: m&#225;s task-specific, mayor beneficio de FT
+"""
+
+def analyze_lora_layers(model_name: str = "meta-llama/Llama-2-7b"):
+    """
+    Muestra qu&#233; capas est&#225;n disponibles para fine-tuning
+    y cual es su impacto estimado.
+    """
+    from transformers import AutoModel
+    model = AutoModel.from_pretrained(model_name, torch_dtype=torch.float16)
+    
+    print("Capas disponibles para LoRA:")
+    print("=" * 50)
+    
+    # Capas de atenci&#243;n
+    attention_layers = []
+    for name, module in model.named_modules():
+        if any(x in name for x in ["q_proj", "k_proj", "v_proj", "o_proj"]):
+            attention_layers.append(name)
+    
+    print("\nAtencion (Attention layers):")
+    for layer in attention_layers[:8]:  # Primeras 8
+        print(f"  {layer}")
+    
+    # FFN layers
+    ffn_layers = []
+    for name, module in model.named_modules():
+        if any(x in name for x in ["gate_proj", "up_proj", "down_proj"]):
+            ffn_layers.append(name)
+    
+    print(f"\nFFN (total: {len(ffn_layers)} capas):")
+    print(f"  {ffn_layers[0]}")
+    print(f"  ... ({len(ffn_layers) - 2} capas intermedias)")
+    print(f"  {ffn_layers[-1]}")
+    
+    print("\n" + "=" * 50)
+    print("Recomendaciones por tarea:")
+    print("  - Chat/Summary: q_proj, v_proj, o_proj (capas altas)")
+    print("  - Code generation: agregar gate_proj, down_proj")
+    print("  - Classification: solo embedding y layers finales")
+
+
+def choose_lora_rank(task_complexity: str) -> int:
+    """
+    Escoger rank basado en complejidad de la tarea.
+    """
+    ranks = {
+        "simple": 4,      # Clasificacion, extraccion simple
+        "medium": 16,     # Traduccion, summary corto
+        "complex": 32,    # Code generation, preguntas complejas
+        "very_complex": 64,  # Estilo complejo, razonamiento multi-step
+    }
+    return ranks.get(task_complexity, 16)
+
+
+# Ejemplo de analisis de impacto
+print("Analisis de rank:")
+for task, rank in [("simple", 4), ("medium", 16), ("complex", 32), ("very_complex", 64)]:
+    params = rank * 4096 * 2  # Aproximado
+    print(f"  {task:15}: r={rank:2} -> ~{params:,} params entrenables")</code></pre>
+
+<h2>Cuando Fine-tunear vs RAG vs Prompt Engineering</h2>
+
+<p>Esta es la pregunta del mill&#243;n. Y la respuesta es: depende de lo que necesites.</p>
+
+<pre><code class="language-python">"""
+Decision tree para elegir entre:
+1. Prompt Engineering (PE)
+2. Retrieval Augmented Generation (RAG)  
+3. Fine-tuning (FT)
+4. RAG + Fine-tuning
+"""
+
+def choose_approach(
+    knowledge_is_static: bool,
+    knowledge_needs_update: bool,
+    need_style_consistency: bool,
+    need_format_consistency: bool,
+    task_complexity: str,
+) -> str:
+    """
+    Decision logic simplificado.
+    """
+    
+    # RAG es mejor cuando:
+    # - El conocimiento cambia frecuentemente
+    # - Tienes documentos grandes que no caben en el prompt
+    if knowledge_needs_update and not knowledge_is_static:
+        return "RAG"
+    
+    # Fine-tuning es mejor cuando:
+    # - Necesitas cambiar estilo/tono de manera consistente
+    # - Necesitas que el modelo entienda patrones complejos y persistent
+    if need_style_consistency or need_format_consistency:
+        return "Fine-tuning"
+    
+    # PE es suficiente cuando:
+    # - Tarea simple
+    # - Conocimiento est&#225;tico y pequeno
+    if task_complexity == "simple" and knowledge_is_static:
+        return "Prompt Engineering"
+    
+    # RAG + FT para casos complejos:
+    # - Necesitas conocimiento actualizado (RAG)
+    # - Pero tambi&#233;n estilo consistente (FT)
+    if knowledge_needs_update and need_style_consistency:
+        return "RAG + Fine-tuning"
+    
+    # Default
+    return "Prompt Engineering + Few-shot examples"
+
+
+# Casos de uso reales:
+use_cases = [
+    {
+        "name": "Chatbot de atenci&#243;n al cliente",
+        "knowledge_is_static": False,
+        "knowledge_needs_update": True,
+        "need_style_consistency": True,
+        "need_format_consistency": True,
+        "task_complexity": "medium",
+        "recommended": "RAG + Fine-tuning",
+    },
+    {
+        "name": "Asistente de codigo",
+        "knowledge_is_static": True,
+        "knowledge_needs_update": False,
+        "need_style_consistency": True,
+        "need_format_consistency": True,
+        "task_complexity": "complex",
+        "recommended": "Fine-tuning",
+    },
+    {
+        "name": "回答 preguntas sobre documentos PDFs",
+        "knowledge_is_static": True,
+        "knowledge_needs_update": False,
+        "need_style_consistency": False,
+        "need_format_consistency": False,
+        "task_complexity": "simple",
+        "recommended": "RAG",
+    },
+    {
+        "name": "Generador de recetas de cocina",
+        "knowledge_is_static": True,
+        "knowledge_needs_update": False,
+        "need_style_consistency": True,
+        "need_format_consistency": True,
+        "task_complexity": "medium",
+        "recommended": "Fine-tuning",
+    },
+]
+
+for uc in use_cases:
+    result = choose_approach(**{
+        k: v for k, v in uc.items() if k != "name" and k != "recommended"
+    })
+    match = "✓" if result == uc["recommended"] else "✗"
+    print(f"{match} {uc['name']}: {result}")</code></pre>
+
+<h2>Los 3 Errores Que El 80% Commete Con Fine-tuning</h2>
+
+<h3>Error #1: No Entender Qu&#233; Layers Fine-tunear</h3>
+
+<p><strong>El problema</strong>: El 80% aplica LoRA a todas las capas por igual, o solo a las wrong capas. Los estudios muestran que las capas del medio son las que m&#225;s se benefician de fine-tuning para tareas genericas, pero para tareas espec&#237;ficas las capas altas son m&#225;s importantes.</p>
+
+<p><strong>La soluci&#243;n</strong>: Empezar con target_modules=[q_proj, v_proj] y experimentar. Para tareas de code, incluir gate_proj y down_proj tambi&#233;n.</p>
+
+<pre><code class="language-python"># BAD: Tantas capas que pierdes el beneficio de LoRA
+lora_config = LoraConfig(
+    r=8,
+    target_modules=["q_proj", "k_proj", "v_proj", "o_proj", 
+                    "gate_proj", "up_proj", "down_proj"],  # Demasiado!
+)
+
+# GOOD: Solo las capas que importan para tu tarea
+lora_config = LoraConfig(
+    r=8,
+    target_modules=["q_proj", "v_proj"],  # Suficiente para mayoria de tareas
 )</code></pre>
-<hr>
-<h2>Errores Comunes</h2>
-<h3>Error 1: Chunks Muy Grandes</h3>
-<p><strong>El problema</strong>: Perdida de informacion relevante.</p>
-<p><strong>La solucion</strong>: Chunks de 500-1000 tokens con overlap.</p>
-<hr>
-<p><em>Eso es todo! Nos vemos en el Dia 243.</em></p>
+
+<h3>Error #2: Usar Rank Demasiado Alto o Demasiado Bajo</h3>
+
+<p><strong>El problema</strong>: Rank muy bajo (r=2) no captura suficiente complexity. Rank muy alto (r=256) desperdicia memoria y puede causar overfitting.</p>
+
+<p><strong>La soluci&#243;n</strong>: r=8 para tareas simples (classification), r=16-32 para la mayor&#237;a de tareas, r=64+ solo para tareas muy complejas como code generation o estilos muy espec&#237;ficos.</p>
+
+<pre><code class="language-python"># BAD: Rank muy bajo para tarea compleja
+lora_config = LoraConfig(r=2, ...)  # No va a aprender patrones complejos
+
+# BAD: Rank muy alto, desperdicio de memoria
+lora_config = LoraConfig(r=256, ...)  # Mas memoria, mismo performance en mayoria de casos
+
+# GOOD: r=16-32 para la mayoria de tareas
+lora_config = LoraConfig(r=16, target_modules=["q_proj", "v_proj"], ...)
+
+# GOOD: r=64 para code generation
+lora_config = LoraConfig(r=64, target_modules=["q_proj", "v_proj", "o_proj"], ...)</code></pre>
+
+<h3>Error #3: No Usar Proper Learning Rate</h3>
+
+<p><strong>El problema</strong>: LLMs necesitan learning rates MUCHISIMO menores que modelos pequenos. Un LR de 1e-3 que funciona para un modelo de 100M puede destruir un 7B. El 80% usa el mismo LR de siempre y se pregunta por que el loss explodes.</p>
+
+<p><strong>La soluci&#243;n</strong>: LR de 1e-4 a 3e-4 para LoRA, con warmup y cosine schedule. NO usar Adam est&#225;ndar; usar paged_adamw_8bit.</p>
+
+<pre><code class="language-python"># BAD: Learning rate muy alto
+training_args = TrainingArguments(
+    learning_rate=1e-3,  # VA A EXPLOTAR
+    ...
+)
+
+# GOOD: Learning rate apropiado para LoRA
+training_args = TrainingArguments(
+    learning_rate=1e-4,
+    warmup_ratio=0.03,  # 3% de pasos para warmup
+    lr_scheduler_type="cosine",
+    optim="paged_adamw_8bit",  # Mas eficiente que Adam standard
+    ...
+)
+
+# GOOD: Para QLoRA, incluso menor LR
+training_args = TrainingArguments(
+    learning_rate=2e-4,
+    ...
+)</code></pre>
+
+<h2>Resumen y Cierre</h2>
+
+<p>Hagale pues, parcero. Lo que nos queda es esto:</p>
+
+<ul>
+<li><strong>LoRA no es magia</strong>: Es algebra lineal simple aplicada clevermente. W' = W + BA donde B y A son matrices bajas rank.</li>
+<li><strong>La math importa</strong>: Si no calculas la memoria antes, te vas a llevar surprises cuando tu GPU de 24GB no alcance ni para un 7B model.</li>
+<li><strong>Rank no es one-size-fits-all</strong>: Tarea simple = r bajo. Tarea compleja = r mayor. No uses r=256 para todo porque s&#237;.</li>
+<li><strong>LR para LLMs es 10-100x menor que para modelos pequenos</strong>: Un LR de 1e-3 que funciona para CNNs va a destruir tu LLM.</li>
+<li><strong>RAG vs FT es una false dichotomy</strong>: Puedes usar ambos. RAG para conocimiento, FT para estilo.</li>
+</ul>
+
+<p>En Medell&#237;n decimos "zapata a tu medida". Para fine-tuning es igual: no todas las tareas necesitan el mismo rank, las mismas capas, o el mismo LR. Experimenta, mide, y ajusta.</p>
+
+<p>Ma&#241;ana en el D&#237;a 243 vamos a hablar de chunking strategies para RAG. Material interesante para los quebuilden sistemas de retrieval.</p>
+
+<p><em>Fabian Rodriguez<br>
+#365DaysOfAI<br>
+Medell&#237;n, Colombia</em></p>
   </article>
 
   <script>
