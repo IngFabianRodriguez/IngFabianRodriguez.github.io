@@ -118,55 +118,263 @@ nav {
   </header>
 
   <article class="article-body">
-    <h1>Multi-Agent Systems - Agentes Que Colaboran</h1>
-<p>Hagale pues, parcero. Dia 257 y hoy hablamos de Multi-Agent Systems: multiples agentes que colaboran para resolver problemas complejos. Cafe.</p>
-<hr>
-<h2>🎯 Multi-Agent Systems</h2>
-<p>En lugar de un solo agent, multiples agentes especializados trabajan juntos:</p>
+<h1>Vector Databases y Embeddings</h1>
+<p>Hagale pues, parcero. Llegamos al Día 257 y hoy vamos a hablar de algo que el 80% ignora pero que hace sus RAG 10x mejores: Vector Databases y Embeddings. Esto es la infraestructura que separa los sistemas de búsqueda semántica funcionales de los que de verdad funcionan en producción. Póngase cómodo que esto vale la pena.</p>
+
+<h2>🎯 Por Qué los Embeddings Son el Centro de Todo</h2>
+<p>Un embedding es una representación vectorial densa de texto, imagen o cualquier dato. La magia está en que vectores similares quedan cerca en el espacio n-dimensional:</p>
+
+$$\text{sim}(A, B) = \cos(\theta) = \frac{A \cdot B}{\|A\| \|B\|}$$
+
+<p>Esta simple fórmula de similitud coseno es la base de toda búsqueda semántica. Cuando tu query entra como un vector, los documentos más cercanos en el espacio vectorial son los más relevantes semánticamente. Pero aquí viene el problema: cuando tienes millones de vectores, calcular similitud contra todos es computationally imposible. Ahí entran los vector databases y los algoritmos ANN.</p>
+
+<h2>📐 Approximate Nearest Neighbor (ANN)</h2>
+<p>Buscar el nearest neighbor exacto en espacios de alta dimensionalidad es $O(n \cdot d)$ donde $n$ es el número de vectores y $d$ la dimensionalidad. Para 10 millones de vectores de 1536 dimensiones, eso es completamente inviable en tiempo real. Los algoritmos ANN sacrifican precisión exacta por velocidad dramática:</p>
+
+<p><strong>Métricas clave:</strong></p>
 <ul>
-<li><strong>Division del trabajo</strong>: Cada agent tiene su especialidad</li>
-<li><strong>Comunicacion</strong>: Los agentes comparten informacion</li>
-<li><strong>Colaboracion</strong>: Juntos resuelven problemas mayores</li>
+<li><strong>Recall@K</strong>: Qué porcentaje de los K vecinos reales recuperaste</li>
+<li><strong>QPS</strong>: Queries por segundo</li>
+<li><strong>Index size</strong>: Memoria necesaria para el índice</li>
 </ul>
-<hr>
-<h2>📐 Arquitectura Multi-Agent</h2>
-<pre><code class="language-python">class MultiAgentSystem:
-    def __init__(self):
-        self.agents = {
-            "researcher": ResearchAgent(),
-            "coder": CodingAgent(),
-            "reviewer": ReviewAgent(),
-            "coordinator": CoordinatorAgent()
-        }
-    
-    def solve(self, task):
-        # El coordinator distribuye trabajo
-        plan = self.agents["coordinator"].plan(task)
+
+<p>Los tres algoritmos ANN más importantes:</p>
+
+<pre><code class="language-python"># Los tres algoritmos ANN fundamentales
+
+# 1. HNSW (Hierarchical Navigable Small World)
+# Grafos multi-nivel para búsqueda aproximada
+# Bueno para: baja latencia, alta recall, datos pequeños-medianos
+index_hnsw = faiss.IndexHNSWFlat(d, m)  # m = conexiones por nodo
+index_hnsw.hnsw.efSearch = 64  # calidad de búsqueda
+index_hnsw.hnsw.efConstruction = 128  # calidad de construcción
+
+# 2. IVF (Inverted File Index)
+# Clustering + búsqueda en clusters cercanos
+# Bueno para: datos grandes, memoria limitada
+index_ivf = faiss.IndexIVFFlat(quantizer, d, nlist)
+index_ivf.nprobe = 16  # cuántos clusters buscar
+
+# 3. PQ (Product Quantization)
+# Compresión de vectores para datos masivos
+# Bueno para: mil millones+ vectores, memoria muy limitada
+index_pq = faiss.IndexPQ(d, m, nbits)  # m subvectores, nbits por subvector</code></pre>
+
+<h2>🚀 ChromaDB: El Vector DB para Desarrollo Rápido</h2>
+<p>ChromaDB se volvió el estándar para desarrollo local y prototipado por su simplicidad:</p>
+
+<pre><code class="language-python">import chromadb
+from chromadb.config import Settings
+
+# Inicializar cliente
+client = chromadb.Client(Settings(
+    anonymized_telemetry=False,
+    allow_reset=True
+))
+
+# Crear colección
+collection = client.create_collection(
+    name="documentos_colombia",
+    metadata={"hnsw:space": "cosine"}  # similitud coseno
+)
+
+# Agregar documentos con embeddings
+collection.add(
+    documents=[
+        "Bogotá es la capital de Colombia",
+        "Medellín se llama la ciudad de la eterna primavera",
+        "Cali es known as la salsa capital del mundo"
+    ],
+    metadatas=[
+        {"fuente": "geografia", "ciudad": "bogota"},
+        {"fuente": "geografia", "ciudad": "medellin"},
+        {"fuente": "cultura", "ciudad": "cali"}
+    ],
+    ids=["doc1", "doc2", "doc3"]
+)
+
+# Búsqueda semántica
+resultados = collection.query(
+    query_texts=["capital de Colombia"],
+    n_results=2
+)
+print(resultados)</code></pre>
+
+<h2>🔢 FAISS: Producción a Escala</h2>
+<p>Cuando necesitas producción con miles de millones de vectores, FAISS de Meta es el estándar:</p>
+
+<pre><code class="language-python">import faiss
+import numpy as np
+
+# Crear índice para 1 millón de vectores de 768 dimensiones
+d = 768  # dimensionalidad (ej: sentence-transformers)
+n = 1_000_000
+
+# Método 1: IVF con HNSW como quantizer (lo mejor de ambos mundos)
+print("Construyendo índice IVF-HNSW...")
+quantizer = faiss.IndexHNSWFlat(d, 32)
+index = faiss.IndexIVF(quantizer, d, 32768)  # 32768 clusters
+index.nprobe = 64  # buscar en 64 clusters más cercanos
+index.set_direct_map_type(faiss.DirectMap.Hashtable)
+
+# Entrenar (requiere suficientes vectores)
+index.train(np.random.rand(n, d).astype('float32'))
+
+# Agregar vectores en batches
+batch_size = 10000
+for i in range(0, n, batch_size):
+    vectors = np.random.rand(min(batch_size, n-i), d).astype('float32')
+    index.add(vectors)
+
+print(f"Índice construido con {index.ntotal} vectores")
+
+# Búsqueda
+query = np.random.rand(1, d).astype('float32')
+k = 10  # recuperar los 10 más cercanos
+distances, indices = index.search(query, k)
+print(f"Top {k} resultados: índices {indices[0]}, distancias {distances[0]}")</code></pre>
+
+<h2>☁️ Pinecone y Weaviate: La Nube</h2>
+<pre><code class="language-python"># Pinecone - vector database gestionado
+import pinecone
+
+pinecone.init(api_key="tu-api-key", environment="us-east-1")
+index = pinecone.Index("produccion-rag")
+
+# Upsert vectores
+vectors = [
+    (f"doc-{i}", embedding, {"text": f"Documento {i}"})
+    for i, embedding in enumerate(embeddings)
+]
+index.upsert(vectors)
+
+# Query
+query_response = index.query(
+    vector=query_embedding,
+    top_k=10,
+    include_metadata=True
+)
+
+# Weaviate - búsqueda híbrida nativa
+import weaviate
+
+client = weaviate.Client("http://localhost:8080")
+
+# Búsqueda híbrida (vector + keyword)
+result = client.query.get(
+    "Article",
+    ["title", "content"]
+).with_hybrid(
+    query="machine learning",
+    alpha=0.5  # 0.5 = balance igual entre vector y keyword
+).with_limit(10).do()</code></pre>
+
+<h2>📊 Cómo Elegir Tu Vector DB</h2>
+
+| Caso | Recomendación | Por Qué |
+|------|---------------|---------|
+| Prototipado local | ChromaDB | Cero setup, API simple |
+| Millones de vectores | FAISS | Control total, optimizable |
+| Miles de millones | Pinecone | Escala automática, gestionado |
+| Búsqueda híbrida | Weaviate | Vector + keyword nativo |
+| Tiempo real | Qdrant | Latencia ultra baja |
+
+<h2>⚠️ Los 3 Errores Más Comunes</h2>
+
+<h3>Error 1: Brute Force en Producción</h3>
+<p><strong>El problema</strong>: Calcular similitud contra todos los vectores funciona con 100 docs, pero con 1 millón tu sistema muere. El recall es 100% pero la latencia es inaceptable.</p>
+<p><strong>La solución</strong>: Usar ANN desde el principio. Empieza con HNSW que te da 95-99% de recall con 100-1000x speedup:</p>
+
+<pre><code class="language-python"># NO HACER ESTO en producción
+def brute_force_search(query, documents, k=10):
+    scores = []
+    for doc in documents:
+        score = cosine_similarity(query, doc.embedding)
+        scores.append((score, doc))
+    return sorted(scores, reverse=True)[:k]
+
+# SÍ HACER ESTO desde el inicio
+index = faiss.IndexHNSWFlat(d, 32)  # Construir índice ANN
+index.add(all_vectors)  # Agregar datos
+distances, indices = index.search(query_vector, k)  # Búsqueda O(log n)</code></pre>
+
+<h3>Error 2: No Entender el Tradeoff Speed vs Accuracy del ANN</h3>
+<p><strong>El problema</strong>: Elegir parámetros sin entender el impacto. Pones <code>efSearch=16</code> y te sorprende que el recall sea 70%. O intentas 99% de recall y tu latencia explota.</p>
+
+<p><strong>La matemática</strong>: En HNSW, <code>efSearch</code> controla el tamaño del beam search. Mayor efSearch = más nodos explorados = mayor recall pero más lento:</p>
+
+$$O(\text{efSearch}) \approx O(\log(n) \cdot \text{efSearch})$$
+
+<p><strong>La solución</strong>: Haz curveas de recall vs latency para tu dataset específico:</p>
+
+<pre><code class="language-python">import time
+
+def benchmark_ann(index, test_vectors, ground_truth, ef_values):
+    results = []
+    for ef in ef_values:
+        index.hnsw.efSearch = ef
+        total_time = 0
+        recalls = []
         
-        for step in plan:
-            agent = self.agents[step.agent]
-            result = agent.execute(step.action)
-            self.broadcast(result)
+        for i, (query, true_neighbors) in enumerate(zip(test_vectors, ground_truth)):
+            start = time.time()
+            _, indices = index.search(query.reshape(1, -1), k=10)
+            total_time += time.time() - start
+            
+            retrieved = set(indices[0])
+            recall = len(retrieved & set(true_neighbors)) / len(true_neighbors)
+            recalls.append(recall)
         
-        return self.compile_results()</code></pre>
-<hr>
-<h2>🚀 Comunicacion Entre Agentes</h2>
-<pre><code class="language-python"># Protocolo simple de comunicacion
-class Agent:
-    def send_message(self, recipient, message):
-        self.message_queue[recipient].append(message)
+        avg_recall = sum(recalls) / len(recalls)
+        avg_latency = total_time / len(test_vectors)
+        results.append((ef, avg_recall, avg_latency))
+        print(f"efSearch={ef}: recall={avg_recall:.3f}, latency={avg_latency*1000:.1f}ms")
     
-    def receive_messages(self):
-        messages = self.message_queue[self.name]
-        self.message_queue[self.name] = []
-        return messages</code></pre>
+    return results
+
+# Encontrar el sweet spot para tu aplicación
+benchmark_ann(index, queries, ground_truth, [16, 32, 64, 128, 256])</code></pre>
+
+<h3>Error 3: No Afinar Parámetros del Índice para Tu Caso</h3>
+<p><strong>El problema</strong>: Usar parámetros por defecto. Tu índice ocupa 20GB cuando podría ocupar 5GB con el mismo recall. O tu búsqueda toma 500ms cuando podría ser 50ms.</p>
+
+<p><strong>La solución</strong>: Afinar los 3 parámetros críticos:</p>
+
+<pre><code class="language-python"># Los tres parámetros que más importan:
+
+# 1. efConstruction (HNSW) - calidad del índice
+# Más alto = mejor conectividad del grafo = mejor recall
+# Costo: más tiempo de construcción
+# Recomendación: 64-128 para producción
+index_hnsw.hnsw.efConstruction = 128
+
+# 2. efSearch (HNSW) - calidad de búsqueda
+# Debe ser >= k (número de resultados deseados)
+# Recomendación: k * 2 a k * 10
+index_hnsw.hnsw.efSearch = 128  # si quieres top-10
+
+# 3. nprobe (IVF) - cuántos clusters buscar
+# Más clusters = mayor recall = mayor latencia
+# Recomendación: start con sqrt(nlist), ajusta según recall
+index_ivf.nprobe = int(np.sqrt(index_ivf.nlist))
+
+# Para compresión con PQ, el balanceo precisión/espacio:
+# m subvectores (más = más precisión, más memoria)
+# nbits por subvector (más = menos compresión, más precisión)
+# 8 bits típicamente da buen balance
+index_pq = faiss.IndexPQ(d, m=8, nbits=8)  # 8 * 8 = 64 bits por vector vs 768*32 bits original</code></pre>
+
+<h2>📝 Resumen</h2>
+<ul>
+<li>Los embeddings son vectores densos que capturan significado semántico</li>
+<li>ANN permite búsqueda en millones/billones de vectores en tiempo real</li>
+<li>ChromaDB para prototipado, FAISS para producción a escala, Pinecone/Weaviate para nube</li>
+<li>HNSW ofrece el mejor balance speed/accuracy para la mayoría de casos</li>
+<li>Siempre afina efSearch, efConstruction y nprobe para tu dataset específico</li>
+</ul>
+
 <hr>
-<h2>⚠️ Errores Comunes</h2>
-<h3>Error 1: Conflictos Entre Agentes</h3>
-<p><strong>El problema</strong>: Dos agentes dan instrucciones contradictorias.</p>
-<p><strong>La solucion</strong>: Jerarquia clara con coordinator como lider.</p>
-<hr>
-<p><em>Eso es todo! Nos vemos en el Dia 258.</em></p>
+<p><em>Eso es todo por hoy, parcero. Mañana en el Día 258 hablamos de RAG Optimization Avanzado: HyDE, query expansion, reranking y self-RAG. No se lo pierda que eso sí que mejora los resultados 5x. Buenosaires!</em></p>
   </article>
 
   <script>
