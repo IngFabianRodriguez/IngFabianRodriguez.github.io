@@ -139,28 +139,16 @@ def context_efficiency(messages: list, max_context: int,
                       selection_strategy: str = "naive") -> dict:
     """
     Calcula métricas de eficiencia de uso de contexto.
-    
-    Args:
-        messages: lista de mensajes en la conversación
-        max_context: máximo de tokens del context window
-        selection_strategy: cómo se seleccionan los mensajes
-            - "naive": enviar todo (primeros N mensajes)
-            - "smart": enviar los más relevantes
-            - "hybrid": combinación ponderada
     """
     total_tokens = sum(m.get('tokens', 0) for m in messages)
     used_tokens = min(total_tokens, max_context)
     wasted_tokens = max(0, total_tokens - max_context)
     
-    # Calidad de selección (heurística)
     if selection_strategy == "naive":
-        # Primeros mensajes — probablemente se pierde info crucial
         quality_score = 0.3
     elif selection_strategy == "smart":
-        # Mensajes relevantes — mejor pero puede perder chronological context
         quality_score = 0.75
     elif selection_strategy == "hybrid":
-        # Balance entre relevancia y orden
         quality_score = 0.9
     else:
         quality_score = 0.5
@@ -203,7 +191,6 @@ class MessagePriority(Enum):
 
 @dataclass
 class Message:
-    """Representación de un mensaje en la conversación."""
     role: Literal["system", "user", "assistant"]
     content: str
     timestamp: datetime = field(default_factory=datetime.now)
@@ -212,18 +199,16 @@ class Message:
     metadata: dict = field(default_factory=dict)
     
     def __post_init__(self):
-        # Estimar tokens si no se provee ( aprox 4 chars por token )
         if self.tokens == 0:
             self.tokens = len(self.content) // 4
 
 
 @dataclass
 class ContextBudget:
-    """Define cuántos tokens asignar a cada categoría."""
-    system_reserved: int = 4000      # System prompt + instrucciones
-    conversation_history: int = 8000  # Historial estructurado
-    retrieved_context: int = 4000    # Documentos RAG
-    user_input_buffer: int = 500      # Input actual del usuario
+    system_reserved: int = 4000
+    conversation_history: int = 8000
+    retrieved_context: int = 4000
+    user_input_buffer: int = 500
     
     @property
     def total(self) -> int:
@@ -236,7 +221,6 @@ class ContextBudget:
     
     @classmethod
     def for_model(cls, model_name: str, utilization: float = 0.85):
-        """Factory que crea budgets para diferentes modelos."""
         model_limits = {
             "gpt-4o": 128_000,
             "claude-3-5-sonnet": 200_000,
@@ -247,7 +231,6 @@ class ContextBudget:
         max_tokens = model_limits.get(model_name, 32_000)
         total_budget = int(max_tokens * utilization)
         
-        # Distribución por defecto (puede ajustarse)
         return cls(
             system_reserved=min(4000, total_budget // 10),
             conversation_history=int(total_budget * 0.5),
@@ -257,35 +240,14 @@ class ContextBudget:
 
 
 class ContextManager:
-    """
-    Gestor de contexto que implementa priorización inteligente.
-    
-    Estrategia:
-    1. Clasificar mensajes por prioridad
-    2. Asignar tokens según categorías
-    3. Llenar desde prioridad más alta hacia abajo
-    4. Descartar o resumir lo que no cabe
-    """
-    
     def __init__(self, budget: ContextBudget, 
                  enable_summarization: bool = True):
         self.budget = budget
         self.enable_summarization = enable_summarization
-        self.summarized_messages: dict[str, str] = {}  # msg_id -> summary
+        self.summarized_messages: dict[str, str] = {}
     
     def select_context(self, messages: list[Message], 
                        retrieved_docs: list[str] = None) -> dict:
-        """
-        Selecciona qué contenido va al contexto.
-        
-        Returns:
-            dict con:
-                - system_prompt_part
-                - conversation_part  
-                - retrieved_part
-                - excluded_messages
-                - summaries_applied
-        """
         result = {
             "system_prompt_part": [],
             "conversation_part": [],
@@ -305,7 +267,6 @@ class ContextManager:
         if system_tokens <= self.budget.system_reserved:
             result["system_prompt_part"] = system_msgs
         else:
-            # Truncar system prompt si es muy largo
             result["system_prompt_part"] = self._truncate_messages(
                 system_msgs, self.budget.system_reserved
             )
@@ -322,7 +283,6 @@ class ContextManager:
                 break
                 
             priority_msgs = classified.get(priority, [])
-            # Ordenar por timestamp (más recientes primero para MEDIUM y LOW)
             if priority in [MessagePriority.MEDIUM, MessagePriority.LOW]:
                 priority_msgs = sorted(priority_msgs, 
                                       key=lambda m: m.timestamp, 
@@ -333,7 +293,6 @@ class ContextManager:
                     conversation_msgs.append(msg)
                     remaining["conversation"] -= msg.tokens
                 else:
-                    # Intentar resumir si está habilitado
                     if self.enable_summarization and msg.tokens > 200:
                         summary = self._summarize(msg)
                         summary_tokens = len(summary) // 4
@@ -349,8 +308,7 @@ class ContextManager:
                     else:
                         result["excluded_messages"].append(msg)
         
-        # Orden final: CRITICAL/HIGH mantienen orden cronológico,
-        # el resto va invertido (más reciente primero)
+        # Orden final: CRITICAL/HIGH mantienen orden cronológico
         critical_high = [m for m in conversation_msgs 
                         if m.priority in [MessagePriority.CRITICAL, MessagePriority.HIGH]]
         rest = [m for m in conversation_msgs 
@@ -369,8 +327,6 @@ class ContextManager:
         return result
     
     def _classify_by_priority(self, messages: list[Message]) -> dict:
-        """Clasifica mensajes en categorías de prioridad."""
-        # Keywords que indican prioridad alta
         critical_keywords = [
             "alergia", "intolerancia", "restricción", "preferencia",
             "emergencia", "crítico", "importante", "no olvidar",
@@ -391,13 +347,11 @@ class ContextManager:
         
         for msg in messages:
             if msg.priority != MessagePriority.MEDIUM:
-                # Ya tiene prioridad asignada externamente
                 classified[msg.priority].append(msg)
                 continue
             
             content_lower = msg.content.lower()
             
-            # Auto-clasificar basado en contenido
             if any(kw in content_lower for kw in critical_keywords):
                 msg.priority = MessagePriority.CRITICAL
             elif any(kw in content_lower for kw in high_keywords):
@@ -413,7 +367,6 @@ class ContextManager:
     
     def _truncate_messages(self, messages: list[Message], 
                            max_tokens: int) -> list[Message]:
-        """Trunca mensajes hasta caber en el budget."""
         result = []
         remaining = max_tokens
         
@@ -422,7 +375,6 @@ class ContextManager:
                 result.append(msg)
                 remaining -= msg.tokens
             elif remaining > 100:
-                # Truncar el contenido
                 truncated_content = msg.content[:remaining * 4]
                 truncated_msg = Message(
                     role=msg.role,
@@ -437,14 +389,10 @@ class ContextManager:
         return result
     
     def _summarize(self, msg: Message) -> str:
-        """Genera resumen de un mensaje (placeholder - usar LLM en producción)."""
-        # En producción, usar un LLM pequeño para resumir
-        # Aquí simplemente extraemos la primera oración
         content = msg.content
         if len(content) < 200:
             return content
         
-        # Tomar primeras 2 oraciones como proxy de resumen
         sentences = content.split('.')
         summary = '.'.join(sentences[:2])
         if not summary.endswith('.'):
@@ -459,11 +407,11 @@ manager = ContextManager(budget, enable_summarization=True)
 messages = [
     Message("system", "Eres un asistente de soporte técnico."),
     Message("user", "Hola, buenos días!", priority=MessagePriority.LOW),
-    Message("user", "Tengo un problema con mi clave TOKEN que no me deja entrar a la plataforma.", priority=MessagePriority.HIGH),
-    Message("assistant", "Entendido, voy a ayudarle con el problema de su clave TOKEN. ¿Hace cuánto tiempo dejó de funcionar?"),
-    Message("user", "Desde ayer en la tarde, después de que cambié mi contraseña."),
-    Message("assistant", "Gracias. Le voy a resetear la clave TOKEN. Recuerde que tiene restricción: NO puede ser igual a su fecha de nacimiento.", priority=MessagePriority.CRITICAL),
-    Message("user", "Perfecto, muchas gracias."),
+    Message("user", "Tengo un problema con mi clave TOKEN.", priority=MessagePriority.HIGH),
+    Message("assistant", "Entendido, voy a ayudarle."),
+    Message("user", "Desde ayer en la tarde."),
+    Message("assistant", "Recuerde: NO puede ser igual a su fecha de nacimiento.", priority=MessagePriority.CRITICAL),
+    Message("user", "Perfecto, gracias."),
 ]
 
 context = manager.select_context(messages)
@@ -471,8 +419,7 @@ context = manager.select_context(messages)
 print(f"System: {len(context['system_prompt_part'])} msgs")
 print(f"Conversation: {len(context['conversation_part'])} msgs")
 print(f"Excluded: {len(context['excluded_messages'])} msgs")
-print(f"Summaries applied: {len(context['summaries_applied'])}")
-print(f"\nContext quality: {budget.total} total tokens available")
+print(f"Budget: {budget.total} total tokens")
 </code></pre>
 
 <h2>Error #2: Truncar Sin Estrategia — Perder Información Crítica</h2>
@@ -481,27 +428,17 @@ print(f"\nContext quality: {budget.total} total tokens available")
 
 <p>Cuando el contexto se agota, la solución naive es truncar — cortar los mensajes más antiguos hasta que quepa. Esto funciona, pero destruye información que puede ser crítica. Si truncaste los primeros 20 mensajes de una conversación donde el cliente dijo "tengo alergia al marisco" en el mensaje 3, acabas de perder información médica vital sin siquiera darte cuenta.</p>
 
-<p>El problema se agrava cuando usas RAG (Retrieval Augmented Generation). Los documentos recuperados compiten por el espacio del contexto con el historial de conversación. Un documento irrelevante puede desplazar información crucial del historial. Y viceversa — un historial largo puede desplazar documentos necesarios para responder la pregunta actual.</p>
+<p>El problema se agrava cuando usas RAG (Retrieval Augmented Generation). Los documentos recuperados compiten por el espacio del contexto con el historial de conversación. Un documento irrelevante puede desplazar información crucial del historial.</p>
 
 <h3>La Solución</h3>
 
-<p>Estrategias de truncamiento inteligente que preservan información semánticamente importante, no solo cronológicamente reciente. Implementar un sistema de "importancia learned" donde el modelo aprende qué tipos de información tienden a ser relevantes.</p>
+<p>Estrategias de truncamiento inteligente que preservan información semánticamente importante, no solo cronológicamente reciente.</p>
 
 <pre><code class="language-python">
 from typing import Optional
 import re
 
 class IntelligentTruncator:
-    """
-    Truncador que preserva información semánticamente importante.
-    
-    Técnicas:
-    1. Proteger información de identidad y preferencias
-    2. Preservar decisiones y acuerdos tomados
-    3. Mantener restricciones y reglas establecidas
-    4. Usar ventanas dinámicas en lugar de cortes bruscos
-    """
-    
     PROTECTED_PATTERNS = [
         # Identidad
         (r"(?i)mi\s+nombre\s+es\s+(\w+)", "IDENTITY:name"),
@@ -531,15 +468,6 @@ class IntelligentTruncator:
         ]
     
     def extract_key_information(self, messages: list[Message]) -> dict:
-        """
-        Extrae información semánticamente importante de los mensajes.
-        
-        Returns:
-            dict con:
-                - protected_facts: lista de hechos protegidos
-                - context_window: mensajes que sobrevivieron
-                - discarded: mensajes descartados
-        """
         all_protected = []
         protected_message_ids = set()
         
@@ -574,15 +502,6 @@ class IntelligentTruncator:
     def truncate_with_protection(self, messages: list[Message],
                                  max_tokens: int,
                                  prefer_recent: bool = True) -> list[Message]:
-        """
-        Trunca mensajes preservando hechos importantes.
-        
-        Args:
-            messages: mensajes a truncar
-            max_tokens: máximo de tokens disponibles
-            prefer_recent: si True, preserva mensajes recientes primero
-                          si False, preserva información protegida primero
-        """
         if prefer_recent:
             return self._truncate_recent_first(messages, max_tokens)
         else:
@@ -590,12 +509,10 @@ class IntelligentTruncator:
     
     def _truncate_recent_first(self, messages: list[Message],
                                max_tokens: int) -> list[Message]:
-        """Estrategia 1: Primero lo reciente, pero protege lo importante."""
         non_system = [m for m in messages if m.role != "system"]
         protection_info = self.extract_key_information(non_system)
         protected_ids = protection_info["protected_message_ids"]
         
-        # Ordenar: protegidos primero, luego por timestamp inverso
         def sort_key(msg):
             is_protected = id(msg) in protected_ids
             return (not is_protected, -msg.timestamp.timestamp())
@@ -610,17 +527,14 @@ class IntelligentTruncator:
                 result.append(msg)
                 remaining -= msg.tokens
             elif remaining >= 100:
-                # Intentar guardar al menos el contenido protegido
                 truncated = self._create_minimal_message(msg, remaining)
                 if truncated:
                     result.append(truncated)
                 break
         
-        # Re-ordenar a orden cronológico (excepto system que va primero)
         system_msgs = [m for m in messages if m.role == "system"]
         non_system_result = [m for m in result if m.role != "system"]
         
-        # Los protegidos van al inicio de su sección temporal
         protected_in_result = [m for m in non_system_result 
                               if id(m) in protected_ids]
         non_protected_in_result = [m for m in non_system_result 
@@ -630,7 +544,6 @@ class IntelligentTruncator:
     
     def _truncate_protected_first(self, messages: list[Message],
                                  max_tokens: int) -> list[Message]:
-        """Estrategia 2: Información protegida tiene prioridad absoluta."""
         non_system = [m for m in messages if m.role != "system"]
         protection_info = self.extract_key_information(non_system)
         protected_ids = protection_info["protected_message_ids"]
@@ -657,7 +570,6 @@ class IntelligentTruncator:
     
     def _create_minimal_message(self, msg: Message, 
                                 max_tokens: int) -> Optional[Message]:
-        """Crea versión mínima de un mensaje con los primeros tokens."""
         if max_tokens < 50:
             return None
         
@@ -671,44 +583,11 @@ class IntelligentTruncator:
             priority=msg.priority,
             tokens=max_tokens
         )
-    
-    def merge_protected_into_context(self, messages: list[Message],
-                                     protected_facts: list[dict]) -> list[Message]:
-        """
-        Inserta hechos protegidos como mensajes de sistema al inicio.
-        Útil cuando el truncamiento eliminó los mensajes originales.
-        """
-        if not protected_facts:
-            return messages
-        
-        # Crear mensaje de sistema con hechos protegidos
-        facts_text = "\n".join([
-            f"- {f['type']}: {f['fact']}" 
-            for f in protected_facts
-        ])
-        
-        protected_system_msg = Message(
-            role="system",
-            content=f"[INFORMACIÓN PRESERVADA DE CONVERSACIÓN ANTERIOR]\n{facts_text}\n\nUsa esta información para mantener continuidad.",
-            priority=MessagePriority.CRITICAL,
-            metadata={"auto_generated": True, "facts_count": len(protected_facts)}
-        )
-        
-        # Insertar después del system prompt original
-        result = [protected_system_msg]
-        for msg in messages:
-            if msg.role == "system" and not msg.metadata.get("auto_generated"):
-                result.append(msg)
-            elif msg.role != "system":
-                result.append(msg)
-        
-        return result
 
 
 # Ejemplo de uso
 truncator = IntelligentTruncator()
 
-# Simular mensajes donde el 3er mensaje tiene info crítica
 messages = [
     Message("system", "Eres asistente de clínica médica."),
     Message("user", "Hola, buenos días."),
@@ -720,7 +599,6 @@ messages = [
     Message("assistant", "Perfecto, lo esperamos."),
 ]
 
-# Supongamos que solo caben 500 tokens (ejemplo)
 max_tokens = 500
 
 protected = truncator.extract_key_information(messages)
@@ -737,7 +615,7 @@ print(f"Tokens usados: {sum(m.tokens for m in truncated)}")
 
 <h3>El Problema</h3>
 
-<p>El tercer error es no tener ningún plan cuando el contexto se agota. Las conversaciones largas son inevitables en aplicaciones reales. Un cliente puede tener 100 mensajes de historia. Un documento de soporte técnico puede ser enorme. Sin una estrategia de overflow, el sistema simplemente ignora lo que no cabe, produciendo respuestas incompletas o incorrectas.</p>
+<p>El tercer error es no tener ningún plan cuando el contexto se agota. Las conversaciones largas son inevitables en aplicaciones reales. Un cliente puede tener 100 mensajes de historia. Sin una estrategia de overflow, el sistema simplemente ignora lo que no cabe, produciendo respuestas incompletas o incorrectas.</p>
 
 <p>La diferencia entre el 20% que lo hace bien y el 80% que lo hace mal es esta: los primeros tienen un <strong>plan de contingencia</strong> activado automáticamente cuando el contexto se acerca a su límite.</p>
 
@@ -759,53 +637,31 @@ class OverflowStrategy(Enum):
 
 @dataclass
 class OverflowConfig:
-    """Configuración del sistema de overflow management."""
-    # Niveles de activación (% del contexto usado)
-    warning_threshold: float = 0.70   # 70% → empezar a prepararse
-    critical_threshold: float = 0.85   # 85% → activar estrategias
-    emergency_threshold: float = 0.95   # 95% → estrategia máxima
+    warning_threshold: float = 0.70
+    critical_threshold: float = 0.85
+    emergency_threshold: float = 0.95
     
-    # Qué estrategia usar en cada nivel
     warning_strategy: OverflowStrategy = OverflowStrategy.NONE
     critical_strategy: OverflowStrategy = OverflowStrategy.TRUNCATE
     emergency_strategy: OverflowStrategy = OverflowStrategy.SUMMARIZE_HISTORY
     
-    # Para summarization
-    summary_instruction: str = "Resuma esta conversación manteniendo: (1) información de identidad del usuario, (2) preferencias y restricciones, (3) decisiones tomadas, (4) problemas no resueltos."
+    summary_instruction: str = "Resuma manteniendo: (1) identidad del usuario, (2) preferencias y restricciones, (3) decisiones tomadas, (4) problemas no resueltos."
     
-    # Para session transfer
-    transfer_instruction: str = "Genere un resumen de sesión que el próximo agente pueda usar para dar continuidad."
+    transfer_instruction: str = "Genere un resumen de sesión que el próximo agente pueda usar."
 
 class OverflowManager:
-    """
-    Gestor de overflow que implementa estrategias progresivas.
-    
-    Flujo:
-    1. Monitorear uso de contexto
-    2. Al alcanzar thresholds, activar estrategias
-    3. Ejecutar estrategia (truncate, summarize, transfer)
-    4. Devolver contexto limpio + metadata de lo que se hizo
-    """
-    
     def __init__(self, config: Optional[OverflowConfig] = None,
                  llm_summarizer: Optional[Callable] = None):
         self.config = config or OverflowConfig()
-        self.llm_summarizer = llm_summarizer  # Función que recibe texto y devuelve summary
+        self.llm_summarizer = llm_summarizer
         
-        # Estado
-        self.current_level = 0.0  # 0.0 a 1.0
+        self.current_level = 0.0
         self.active_strategy = OverflowStrategy.NONE
         self.history_summaries: list[str] = []
         self.transfer_summaries: list[str] = []
     
     def assess_overflow(self, current_tokens: int, 
                        max_tokens: int) -> tuple[float, OverflowStrategy]:
-        """
-        Evalúa el nivel de overflow y determina estrategia a usar.
-        
-        Returns:
-            (nivel_actual, estrategia_recomendada)
-        """
         if max_tokens == 0:
             return 1.0, OverflowStrategy.NONE
         
@@ -827,15 +683,6 @@ class OverflowManager:
     def execute_strategy(self, strategy: OverflowStrategy,
                         messages: list[Message],
                         max_tokens: int) -> dict:
-        """
-        Ejecuta la estrategia de overflow seleccionada.
-        
-        Returns:
-            dict con:
-                - processed_messages: mensajes procesados
-                - action_taken: qué se hizo
-                - metadata: info adicional
-        """
         if strategy == OverflowStrategy.NONE:
             return {
                 "processed_messages": messages,
@@ -863,7 +710,6 @@ class OverflowManager:
     
     def _execute_truncate(self, messages: list[Message],
                          max_tokens: int) -> dict:
-        """Truncamiento simple usando IntelligentTruncator."""
         truncator = IntelligentTruncator()
         protected = truncator.extract_key_information(messages)
         
@@ -884,14 +730,11 @@ class OverflowManager:
     
     def _execute_summarize(self, messages: list[Message],
                           max_tokens: int) -> dict:
-        """Resume el historial mientras preserva información crítica."""
         non_system = [m for m in messages if m.role != "system"]
         truncator = IntelligentTruncator()
         
-        # Extraer información protegida
         protected = truncator.extract_key_information(non_system)
         
-        # Preparar prompt de resumen
         history_to_summarize = [
             f"[{m.role.upper()}] {m.content}"
             for m in non_system
@@ -900,36 +743,30 @@ class OverflowManager:
         
         summary_text = "\n".join(history_to_summarize)
         
-        # Si hay un LLM summarizer disponible, usarlo
         if self.llm_summarizer and len(summary_text) > 100:
             summary = self.llm_summarizer(
                 summary_text, 
                 self.config.summary_instruction
             )
         else:
-            # Fallback: resumen simple por reglas
             summary = self._simple_summarize(summary_text)
         
         self.history_summaries.append(summary)
         
-        # Construir nuevo contexto
         system_msgs = [m for m in messages if m.role == "system"]
         
         summary_msg = Message(
             role="system",
-            content=f"[RESUMEN DE HISTORIAL ANTERIOR]\n{summary}\n\nEste resumen reemplaza los mensajes antiguos para mantener continuidad.",
+            content=f"[RESUMEN DE HISTORIAL ANTERIOR]\n{summary}\n\nEste resumen reemplaza los mensajes antiguos.",
             metadata={"auto_generated": True, "type": "history_summary"}
         )
         
-        # Mantener mensajes más recientes que no se resumieron
         recent_msgs = non_system[-5:] if len(non_system) > 5 else non_system
         
         result = system_msgs + [summary_msg] + recent_msgs
         
-        # Asegurar que cabe
         total_tokens = sum(m.tokens for m in result)
         if total_tokens > max_tokens:
-            # Último recurso: truncate
             result = truncator.truncate_with_protection(
                 result, max_tokens, prefer_recent=True
             )
@@ -947,7 +784,6 @@ class OverflowManager:
         }
     
     def _execute_transfer(self, messages: list[Message]) -> dict:
-        """Genera resumen de transferencia para otro agente/sesión."""
         non_system = [m for m in messages if m.role != "system"]
         
         transfer_text = "\n".join([
@@ -966,7 +802,7 @@ class OverflowManager:
         self.transfer_summaries.append(transfer_summary)
         
         return {
-            "processed_messages": messages,  # Sesión actual no se toca
+            "processed_messages": messages,
             "action_taken": "transfer_prepared",
             "metadata": {
                 "transfer_summary": transfer_summary,
@@ -978,11 +814,8 @@ class OverflowManager:
     
     def _execute_hybrid(self, messages: list[Message],
                        max_tokens: int) -> dict:
-        """Combina truncate + summarize para máximo efecto."""
-        # Primero intentar summarize
         summarize_result = self._execute_summarize(messages, max_tokens)
         
-        # Si aún no cabe, hacer truncate adicional
         total_tokens = sum(m.tokens for m in summarize_result['processed_messages'])
         
         if total_tokens > max_tokens:
@@ -1008,12 +841,10 @@ class OverflowManager:
         }
     
     def _simple_summarize(self, text: str) -> str:
-        """Resumen simple cuando no hay LLM disponible."""
-        # Heurística: tomar primeras oraciones de cada "bloque"
         blocks = text.split('\n')
         
         summary_parts = []
-        for block in blocks[:10]:  # Máximo 10 bloques
+        for block in blocks[:10]:
             if len(block) > 10:
                 sentences = block.split('.')
                 if sentences:
@@ -1022,7 +853,6 @@ class OverflowManager:
         return '. '.join(summary_parts[:5]) + '.'
     
     def get_session_context(self) -> dict:
-        """Obtiene el contexto completo de la sesión para transfer."""
         return {
             "history_summaries": self.history_summaries,
             "transfer_summaries": self.transfer_summaries,
@@ -1041,14 +871,12 @@ config = OverflowConfig(
 
 manager = OverflowManager(config)
 
-# Simular conversación que crece
 messages = [
     Message("system", "Eres asistente de banco."),
     Message("user", "Hola"),
     Message("assistant", "Buenos días, ¿en qué puedo ayudarle?"),
 ]
 
-# Crear conversación larga simulada
 for i in range(20):
     messages.append(Message("user", f"Tengo una consulta número {i+1} sobre mi cuenta."))
     messages.append(Message("assistant", f"Respecto a su consulta {i+1}, le informo que..."))
@@ -1066,7 +894,6 @@ print(f"Estrategia: {strategy.value}")
 result = manager.execute_strategy(strategy, messages, max_context)
 print(f"\nAcción tomada: {result['action_taken']}")
 print(f"Mensajes finales: {len(result['processed_messages'])}")
-print(f"Metadata: {result['metadata']}")
 </code></pre>
 
 <h2>Resumen y Cierre</h2>
