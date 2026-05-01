@@ -118,47 +118,605 @@ nav {
   </header>
 
   <article class="article-body">
-    <h1>Semantic Search - Busqueda Semantica vs Lexica</h1>
-<p>Hagale pues, parcero. Dia 241 y hoy hablamos de busqueda semantica vs lexica. Dos paradigmas de recuperacion de informacion. Cafe.</p>
-<hr>
-<h2>Busqueda Semantica vs Lexica</h2>
-<p>La busqueda lexica encuentra documentos que contienen las palabras exactas. La busqueda semantica encuentra documentos con significado similar, aunque usen palabras distintas.</p>
-<h3>Diferencias clave:</h3>
-<ul>
-<li><strong>Lexica</strong>: Coincidencia de palabras clave</li>
-<li><strong>Semantica</strong>: Coincidencia de significado</li>
-<li><strong>Hibrida</strong>: Combina ambos enfoques</li>
-</ul>
-<hr>
-<h2>Busqueda Lexica (BM25)</h2>
-<pre><code class="language-python"># BM25 - el algoritmo detras de Elasticsearch
-from rank_bm25 import BM25Okapi
+<h2>La Realidad de Producci&#243;n</h2>
 
-tokenized_corpus = [doc.split() for doc in corpus]
-bm25 = BM25Okapi(tokenized_corpus)
+<p>Hagale pues, parcero.Aqui en Medell&#237;n, cuando uno despliega un LLM en producci&#243;n, se da cuenta de que el 90% de los problemas no aparecen en ning&#250;n paper. Uno lee articles sobre arquitectura de transformers, attention mechanisms, posicional encodings &#161;todo el d&#237;a! Pero cuando le toca poner eso en producci&#243;n con 1000 solicitudes por minuto, pues allo que no hay paper que le explique a uno c&#243;mo manejar el tr&#225;fico de las 9 de la ma&#241;ana cuando todos golpean el API al tiempo.</p>
 
-query = "machine learning algorithms"
-scores = bm25.get_scores(query.split())
-results = bm25.get_top_n(query.split(), corpus, n=5)</code></pre>
-<hr>
-<h2>Busqueda Semantica</h2>
-<pre><code class="language-python"># Busqueda semantica con embeddings
-query_embedding = model.encode("Como aprender IA?")
+<p>En este art&#237;culo vamos a compartir las lecciones que el 90% aprende de la manera m&#225;s dura: rompiendo cosas en producci&#243;n. Specif&#237;camente, vamos a hablar de batching strategies, KV cache, load balancing, y c&#243;mo manejar traffic spikes sin que el sistema se caiga. Con math y c&#243;digo, como a nosotros nos gusta.</p>
 
-# Buscar en la vector DB
-results = collection.query(
-    query_embeddings=[query_embedding],
-    n_results=5
+<h2>La Matem&#225;tica del Throughput</h2>
+
+<p>Antes de meternos en estrategias, necesitamos entender la ecuaci&#243;n fundamental de inference en LLMs:</p>
+
+<p><strong>Throughput (tokens/segundo) = Batch Size &#215; Tokens por Request &#215; Parallelismo</strong></p>
+
+<p>Esta ecuaci&#243;n parece simple pero es profunda. Si mandas requests uno por uno (batch size = 1), estas desperdiciando el 95% del GPU. Un A100 tiene compute para procesar 16 sequences en paralelo, pero si tu mandas una sola, pues el GPU se queda esperando.</p>
+
+<p>El costo por token sigue esta f&#243;rmula:</p>
+
+<p><strong>Costo por Token = (Costo GPU-hora / Tokens procesados por hora)</strong></p>
+
+<p>Si tienes un A100 a $1.50/hora y procesas 10,000 tokens/hora (sin batching), pues estas pagando $0.00015 por token. Pero si implementas batching inteligente y procesas 500,000 tokens/hora, bajas a $0.000003 por token &#161;50x menos!</p>
+
+<h2>Batching Din&#225;mico: La T&#233;cnica que 10x Tu Throughput</h2>
+
+<p>El batching naive es simplemente agrupar requests hasta que pase algo. Pero eso causa problemas: algunos requests son courts (10 tokens) y otros son largos (2000 tokens). Si esperas a que todos los largos terminen, los cortos ficam esperando mucho tiempo.</p>
+
+<pre><code class="language-python">import asyncio
+from collections import deque
+from dataclasses import dataclass
+import time
+
+@dataclass
+class InferenceRequest:
+    request_id: str
+    prompt_tokens: list[int]
+    max_new_tokens: int
+    arrival_time: float
+    priority: int = 0
+
+class DynamicBatcher:
+    """
+    Batching din&#225;mico que maximiza throughput mientras controla latencia.
+    El truco est&#225; en no esperar demasiado para начала de batch pequeno.
+    """
+    
+    def __init__(
+        self,
+        max_batch_size: int = 32,
+        max_wait_ms: float = 0.05,  # 50ms maximo de espera
+        max_tokens_per_batch: int = 8192,  # Limite de tokens por forward pass
+    ):
+        self.max_batch_size = max_batch_size
+        self.max_wait_ms = max_wait_ms
+        self.max_tokens_per_batch = max_tokens_per_batch
+        self.pending_requests: deque[InferenceRequest] = deque()
+        self.processing_lock = asyncio.Lock()
+        
+    async def add_request(
+        self,
+        request_id: str,
+        prompt_tokens: list[int],
+        max_new_tokens: int,
+        priority: int = 0
+    ) -> str:
+        """Agrega un request a la cola."""
+        request = InferenceRequest(
+            request_id=request_id,
+            prompt_tokens=prompt_tokens,
+            max_new_tokens=max_new_tokens,
+            arrival_time=time.time(),
+            priority=priority
+        )
+        self.pending_requests.append(request)
+        return request_id
+    
+    async def get_batch(self) -> list[InferenceRequest]:
+        """
+        Obtiene el siguiente batch de requests listos para procesar.
+        
+        Returns batch cuando:
+        1. Alcanzamos max_batch_size
+        2. Pasaron max_wait_ms desde el primero en cola
+        3. El batch exceder&#237;a max_tokens_per_batch
+        """
+        if not self.pending_requests:
+            return []
+        
+        batch = []
+        first_arrival = self.pending_requests[0].arrival_time
+        
+        while self.pending_requests:
+            # Verificar si debemos empezar el batch aunque no est&#233; lleno
+            if len(batch) >= self.max_batch_size:
+                break
+                
+            next_request = self.pending_requests[0]
+            batch_tokens = sum(len(r.prompt_tokens) + r.max_new_tokens for r in batch)
+            next_tokens = len(next_request.prompt_tokens) + next_request.max_new_tokens
+            
+            # Si agregar este request excede el l&#237;mite de tokens, parar
+            if batch_tokens + next_tokens > self.max_tokens_per_batch:
+                break
+            
+            # Si el batch ya tiene members y esperamos demasiado, parar
+            if len(batch) > 0:
+                wait_time = time.time() - first_arrival
+                if wait_time > self.max_wait_ms:
+                    break
+            
+            batch.append(self.pending_requests.popleft())
+        
+        return batch
+
+# Ejemplo de uso con vLLM o similar
+async def process_batch_with_vllm(batch: list[InferenceRequest], engine):
+    """
+    Procesa un batch de requests usando vLLM para inference paralelo.
+    vLLM implementa su propio PagedAttention para manejar memoria eficientemente.
+    """
+    from vllm import SamplingParams
+    
+    prompts = [r.prompt_tokens for r in batch]  # Ya tokenizados
+    sampling_params = [SamplingParams(temperature=0.7, max_tokens=r.max_new_tokens) for r in batch]
+    
+    # vLLM maneja el batching internamente con CUDA graphs
+    outputs = engine.generate(prompts, sampling_params)
+    
+    return {req.request_id: output for req, output in zip(batch, outputs)}
+
+
+# Continuous batching vs Static batching
+"""
+STATIC BATCHING (lo que NO debes hacer):
+Request 1: [====tokens====]              latencia: alta
+Request 2: [==tokens==]                   latencia: mucha espera
+Request 3: [========tokens========]       latencia: muy alta
+|---batch lifecycle---|
+
+CONTINUOUS BATCHING (lo que SÍ debes hacer):
+Iteracion 1: [R1][R2][R3]  --> todos en GPU
+Iteracion 2: [R1 fin][R2]   --> R1 sale, nuevo R4 entra
+Iteracion 3: [R2 fin][R3]   --> R2 sale, nuevo R5 entra
+Iteracion 4: [R3 fin]       --> solo R3
+"""
+
+class ContinuousBatcher:
+    """
+    Implementacion de continuous batching donde Requests entran y salen
+    continuamente de la cola de la GPU. Esto maximiza utilization.
+    """
+    
+    def __init__(self, engine, max_batch_size: int = 64):
+        self.engine = engine
+        self.max_batch_size = max_batch_size
+        
+    async def run_loop(self):
+        """Loop principal que mantiene la cola de inference corriendo."""
+        while True:
+            # 1. Esperar a que haya requests pendientes
+            # 2. Tomar hasta max_batch_size requests
+            # 3. Mandarlos a la GPU
+            # 4. Mientras GPU procesa,收集 nuevos requests
+            # 5. Cuando terminen,收集 results y procesar siguientes
+            pass</code></pre>
+
+<h2>KV Cache: El 50% de Costo que Nadie Te Cuento</h2>
+
+<p>Aqu&#237; viene la parte que el 90% ignora hasta que le llega la factura de AWS. En un transformer, durante el inference, para cada posicion necesitas calcular attention con TODAS las posiciones anteriores. Eso significa recalcular los mismos key and value vectors una y otra vez.</p>
+
+<p>La soluci&#243;n es el KV cache: guardar los K y V vectors calculados para no recalcularlos. Pero aqui viene el problema: para un modelo de 7B par&#225;metros con context window de 4096 tokens, el KV cache puede ocupar:</p>
+
+<p><strong>KV Cache Size = 2 (K + V) &#215; Num Layers &#215; Hidden Size &#215; Sequence Length &#215; Bytes per Float</strong></p>
+
+<p>Para Llama 2 7B: 2 &#215; 32 layers &#215; 4096 hidden &#215; 4096 context &#215; 2 bytes (FP16) = 8GB solo en KV cache. Por request!</p>
+
+<pre><code class="language-python">"""
+KV Cache Implementation para inference eficiente.
+Hay dos estrategias principales: 
+1. PagedAttention (vLLM) - cache por chunks de 16-64 tokens
+2. Cache completo en memoria - simplicidad a costa de memoria
+"""
+
+from vllm import LLM, SamplingParams
+import torch
+
+# Inicializar modelo con vLLM (maneja KV cache automaticamente)
+llm = LLM(
+    model="meta-llama/Llama-2-7b-chat-hf",
+    tensor_parallel_size=2,  # Usar 2 GPUs
+    max_num_seqs=256,  # Maximo de secuencias en parallel
+    max_num_batched_tokens=8192,  # Tokens por forward pass
 )
 
-# Devuelve documentos con significado similar</code></pre>
-<hr>
-<h2>Errores Comunes</h2>
-<h3>Error 1: Solo Usar Busqueda Semantica</h3>
-<p><strong>El problema</strong>: Falla en busquedas de palabras especificas.</p>
-<p><strong>La solucion</strong>: Combina semantica + lexica = hibrida.</p>
-<hr>
-<p><em>Eso es todo! Nos vemos en el Dia 242.</em></p>
+# Para requests con prefijo compartido (ej: system prompt),
+# el KV cache del prefijo se puede reutilizar!
+
+def rag_with_prefix_caching(
+    system_prompt: str,
+    user_query: str,
+    llm: LLM
+):
+    """
+    RAG donde el context window se aprovecha para cachear
+    el system prompt y solo procesar el query nuevo.
+    
+    El system prompt solo se calcula una vez, luego se cachea.
+    """
+    # Tokenizar system prompt (se cachea automaticamente en vLLM)
+    system_tokens = llm.get_tokenizer()(system_prompt)["input_ids"]
+    
+    # Solo tokenizar el query del usuario
+    query_tokens = llm.get_tokenizer()(user_query)["input_ids"]
+    
+    # La GPU reutiliza el KV cache del system prompt
+    # Solo procesa los tokens nuevos del query
+    full_prompt = system_prompt + "\n\nPregunta: " + user_query
+    
+    outputs = llm.generate([full_prompt], SamplingParams(temperature=0.7))
+    return outputs[0].outputs[0].text
+
+
+# Calcular savings de KV cache
+def calculate_kv_cache_savings(
+    prefix_length: int,
+    query_length: int,
+    num_layers: int = 32,
+    hidden_size: int = 4096,
+    bytes_per_param: float = 2.0  # FP16
+):
+    """
+    Calcula cu&#225;ntos GFLOPS nos ahorramos con KV cache.
+    
+    Sin cache: todo se recalcula
+    Con cache: solo el query se calcula
+    """
+    total_tokens = prefix_length + query_length
+    
+    # FLOPs por layer sin cache (atencion es O(n^2))
+    flops_without_cache = num_layers * (total_tokens ** 2) * hidden_size * 2
+    
+    # FLOPs con cache: prefijo ya est&#225; cacheado, solo query
+    flops_with_cache = num_layers * (
+        (prefix_length ** 2) +  # Una vez para inicializar
+        (total_tokens * query_length) +  # Atencion nueva
+        (prefix_length * query_length)   # Cross attention al prefijo
+    ) * hidden_size * 2
+    
+    speedup = flops_without_cache / flops_with_cache
+    
+    print(f"Speedup con KV cache: {speedup:.2f}x")
+    print(f"Sin cache: {flops_without_cache:.2e} FLOPs")
+    print(f"Con cache: {flops_with_cache:.2e} FLOPs")
+    print(f"GFLOPS ahorrados: {(flops_without_cache - flops_with_cache) / 1e9:.2f}")
+    
+    return speedup
+
+# Ejemplo practico
+calculate_kv_cache_savings(
+    prefix_length=500,   # System prompt + few-shot examples
+    query_length=100,    # Solo el query nuevo
+)</code></pre>
+
+<h2>Load Balancing: Cuando Un Solo Model No Suficiente</h2>
+
+<p>Llega un momento en que un solo modelo no da a basto. Tienes que distribuir la carga entre varias instancias. Aqui es donde la mayor&#237;a de la gente mete la pata.</p>
+
+<pre><code class="language-python">import httpx
+import asyncio
+from typing import Optional
+import hashlib
+
+class LLMLoadBalancer:
+    """
+    Load balancer inteligente para multiples replicas de LLM.
+    NO usa round-robin naive - eso causa problemas de cache invalidation.
+    """
+    
+    def __init__(
+        self,
+        model_endpoints: list[str],
+        strategy: str = "least-loaded",
+        health_check_interval: int = 30,
+    ):
+        self.endpoints = [
+            httpx.AsyncClient(base_url=url, timeout=60.0)
+            for url in model_endpoints
+        ]
+        self.strategy = strategy
+        self.request_counts = [0] * len(endpoints)
+        self.endpoint_health = [1.0] * len(endpoints)  # 1.0 = healthy
+        self.request_counts_lock = asyncio.Lock()
+        
+    async def generate(
+        self,
+        prompt: str,
+        model: Optional[str] = None,
+        **kwargs
+    ) -> dict:
+        """
+        Envia request al endpoint menos cargado o especifica.
+        
+        Para prompts con contexto compartido (ej: mismos documents en RAG),
+        podemos usar consistent hashing para mandarlos al mismo nodo
+        y aprovechar el KV cache compartido.
+        """
+        if model:
+            # Request para modelo especifico (ej: para experiments)
+            idx = self._get_model_index(model)
+            return await self._send_to_endpoint(idx, prompt, **kwargs)
+        
+        if self.strategy == "consistent-hash":
+            # Muy util para RAG: misma pregunta va al mismo nodo
+            # que tiene los documents cacheados
+            idx = self._consistent_hash(prompt)
+        elif self.strategy == "least-loaded":
+            idx = await self._get_least_loaded()
+        else:
+            idx = 0
+        
+        return await self._send_to_endpoint(idx, prompt, **kwargs)
+    
+    async def _send_to_endpoint(self, idx: int, prompt: str, **kwargs) -> dict:
+        """Envia request a un endpoint especifico."""
+        async with self.request_counts_lock:
+            self.request_counts[idx] += 1
+        
+        try:
+            response = await self.endpoints[idx].post(
+                "/v1/completions",
+                json={"prompt": prompt, **kwargs}
+            )
+            response.raise_for_status()
+            return response.json()
+        finally:
+            async with self.request_counts_lock:
+                self.request_counts[idx] -= 1
+    
+    def _consistent_hash(self, prompt: str, max_nodes: int = 256) -> int:
+        """
+        Consistent hashing para maximizar cache hits en RAG.
+        La misma pregunta siempre va al mismo nodo (si sigue activo).
+        """
+        hash_val = int(hashlib.md5(prompt.encode()).hexdigest(), 16)
+        return hash_val % len(self.endpoints)
+    
+    async def _get_least_loaded(self) -> int:
+        """Retorna el indice del endpoint menos cargado."""
+        async with self.request_counts_lock:
+            # Ponderar por salud del endpoint
+            scores = [
+                count / health if health > 0 else float('inf')
+                for count, health in zip(self.request_counts, self.endpoint_health)
+            ]
+            return scores.index(min(scores))
+
+
+# Configuracion con nginx para ML inference
+"""
+# nginx.conf para LLM API
+
+upstream llm_backend {
+    least_conn;  # NO usar round-robin - usa least connections
+    
+    server model-1:8000 weight=5;
+    server model-2:8000 weight=5;
+    server model-3:8000 weight=3;  # maquina menos potente
+}
+
+server {
+    listen 80;
+    
+    # Timeouts largos para requests largos
+    proxy_connect_timeout 60s;
+    proxy_send_timeout 300s;
+    proxy_read_timeout 300s;
+    
+    # Para streaming responses
+    proxy_buffering off;
+    chunked_transfer_encoding on;
+    
+    location /v1/ {
+        proxy_pass http://llm_backend;
+        
+        # Headers importantes
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        
+        # Para streaming
+        proxy_set_header X-Accel-Buffering no;
+    }
+}
+"""
+
+
+class RayServeDeployment:
+    """
+    Deployment con Ray Serve para auto-scaling y batching automatico.
+    """
+    
+    @classmethod
+    def build(cls, base_model: str, num_replicas: int = 2):
+        from ray import serve
+        from ray.serve.handle import DeploymentHandle
+        
+        @serve.deployment(
+            num_replicas=num_replicas,
+            ray_actor_options={"num_gpus": 1},
+            max_concurrent_queries=64,  # Queries por replica
+        )
+        class LLMDeployment:
+            def __init__(self, base_model: str):
+                from vllm import LLM
+                self.llm = LLM(model=base_model)
+            
+            async def __call__(self, prompt: str) -> str:
+                outputs = self.llm.generate([prompt])
+                return outputs[0].outputs[0].text
+        
+        return cls(LLMDeployment.options.bind(base_model))</code></pre>
+
+<h2>Los 3 Errores Que El 90% Commete En Producci&#243;n</h2>
+
+<h3>Error #1: No Usar KV Cache (Duplicas Tu Costo de Inference)</h3>
+
+<p><strong>El problema</strong>: Sin KV cache, cada request recalcula TODA la atenci&#243;n desde cero. Para un query de 100 tokens sobre un contexto de 1000 tokens, estas haciendo 1000&#178; = 1M operaciones cuando solo necesitas 100&#215;1000 = 100K.</p>
+
+<p><strong>La soluci&#243;n</strong>: Implementar PagedAttention o caching a nivel de sistema. Usar vLLM o TensorRT-LLM que manejan esto automaticamente.</p>
+
+<pre><code class="language-python"># BAD: Sin cache
+for request in requests:
+    output = model.forward(tokens)  # Recalcula TODO cada vez
+    
+# GOOD: Con KV cache y batching
+batcher = DynamicBatcher(max_batch_size=32, max_wait_ms=50)
+while True:
+    batch = await batcher.get_batch()
+    if batch:
+        # vLLM automaticamente guarda KV cache
+        outputs = await process_batch_with_vllm(batch, engine)</code></pre>
+
+<h3>Error #2: Enviar Requests Uno Por Uno (Throughput 10x Menor)</h3>
+
+<p><strong>El problema</strong>: Enviar requests secuencialmente desperdicia el GPU. Un A100 puede procesar 16 secuencias en paralelo pero tu le mandas 1. Est&#225;s usando el 6% del GPU.</p>
+
+<p><strong>La soluci&#243;n</strong>: Implementar batching din&#225;mico. Empezar con batches pequenos aunque sea con solo 50ms de espera. El speedup vale la pena.</p>
+
+<pre><code class="language-python"># BAD: Sequencial
+for prompt in prompts:
+    result = await model.generate(prompt)  # GPU idle entre requests
+    
+# GOOD: Batch
+batch = await gather(*[model.generate(p) for p in prompts])  # Todo en parallel</code></pre>
+
+<h3>Error #3: No Tener Fallback Cuando La API Falla</h3>
+
+<p><strong>El problema</strong>: Tu aplicacion depende 100% del LLM. Si el API de OpenAI se cae, tu app muere. El 90% no tiene estrategia de fallback.</p>
+
+<p><strong>La soluci&#243;n</strong>: Implementar circuit breaker y fallback a modelos mas peque&#241;os o respuestas precalculadas.</p>
+
+<pre><code class="language-python">from circuitbreaker import circuit
+from functools import wraps
+
+class LLMServiceWithFallback:
+    def __init__(self):
+        self.primary = OpenAIClient()  # GPT-4
+        self.secondary = AnthropicClient()  # Claude
+        self.tertiary = LocalModel()  # Modelo local 7B
+        
+    @circuit(failure_threshold=5, recovery_timeout=30)
+    async def generate_with_fallback(self, prompt: str, context: str = "") -> str:
+        """
+        Trata de usar el mejor modelo, pero si falla,
+        cae a opciones menos perfectas pero disponibles.
+        """
+        combined = f"Context: {context}\n\nQuestion: {prompt}" if context else prompt
+        
+        try:
+            # Intentar GPT-4 primero
+            return await self.primary.generate(combined)
+        except PrimaryModelError as e:
+            print(f"Primary failed: {e}, trying secondary")
+            try:
+                return await self.secondary.generate(combined)
+            except SecondaryModelError:
+                print("Secondary failed too, using local model")
+                return await self.tertiary.generate(combined)
+        except Exception as e:
+            # Circuit breaker abierto para primary
+            raise PrimaryModelError(f"Total failure: {e}")
+
+# Tambien: precalcular respuestas para queries comunes
+COMMON_QUERIES = {
+    "que dias estan abiertos": "Estamos abiertos Lunes a Viernes de 8am a 6pm",
+    "cual es su telefono": "Puede llamarnos al +57 4 555 1234",
+    "tienen delivery": "S&#237;, hacemos env&#237;os a toda Medell&#237;n",
+    # ... cache de respuestas frecuentes
+}
+
+def get_cached_or_generate(query: str) -> str:
+    # Normalizar query
+    normalized = query.lower().strip()
+    
+    if normalized in COMMON_QUERIES:
+        return COMMON_QUERIES[normalized]
+    
+    return llm_service.generate_with_fallback(query)</code></pre>
+
+<h2>Debugging En Producci&#243;n</h2>
+
+<pre><code class="language-python">import logging
+from prometheus_client import Counter, Histogram, Gauge
+import time
+
+# Metricas esenciales para LLM inference
+REQUEST_LATENCY = Histogram(
+    'llm_request_latency_seconds',
+    'Latencia de requests',
+    ['model', 'endpoint'],
+    buckets=[0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0]
+)
+
+TOKEN_THROUGHPUT = Histogram(
+    'llm_token_throughput',
+    'Tokens procesados por segundo',
+    ['model'],
+    buckets=[10, 50, 100, 500, 1000, 5000]
+)
+
+BATCH_SIZE = Gauge(
+    'llm_batch_size',
+    'Tama&#241;o de batch actual',
+    ['model']
+)
+
+KV_CACHE_HIT_RATIO = Histogram(
+    'llm_kv_cache_hit_ratio',
+    'Ratio de cache hits en KV cache',
+    buckets=[0, 0.25, 0.5, 0.75, 1.0]
+)
+
+
+class LLMObservable:
+    """
+    Wrapper que a&#241;ade observabilidad a cualquier LLM inference.
+    """
+    
+    def __init__(self, model, model_name: str = "default"):
+        self.model = model
+        self.model_name = model_name
+        self.logger = logging.getLogger(f"llm.{model_name}")
+        
+    async def generate(self, prompt: str, **kwargs) -> dict:
+        start = time.perf_counter()
+        
+        try:
+            result = await self.model.generate(prompt, **kwargs)
+            
+            latency = time.perf_counter() - start
+            REQUEST_LATENCY.labels(self.model_name, "generate").observe(latency)
+            
+            num_tokens = result.get("usage", {}).get("total_tokens", 0)
+            if num_tokens > 0:
+                throughput = num_tokens / latency
+                TOKEN_THROUGHPUT.labels(self.model_name).observe(throughput)
+            
+            self.logger.info(
+                f"Request completed",
+                extra={
+                    "latency": latency,
+                    "tokens": num_tokens,
+                    "throughput": throughput if num_tokens > 0 else 0,
+                }
+            )
+            
+            return result
+            
+        except Exception as e:
+            self.logger.error(f"Request failed: {e}")
+            raise</code></pre>
+
+<h2>Resumen y Cierre</h2>
+
+<p>Hagale pues, parcero. Lo que nos queda de todo esto es algo bien simple: <strong>en producci&#243;n, el modelo de ML es solo el 20% del problema</strong>. El 80% es infrastructure, caching, batching, y tener un plan cuando todo se cae.</p>
+
+<p>Las lecciones clave para llevarse a casa:</p>
+
+<ul>
+<li><strong>KV Cache no es opcional</strong>: Es la diferencia entre pagar $0.001 por query y $0.05. Implementalo desde el d&#237;a uno.</li>
+<li><strong>Batching din&#225;mico > batching fijo</strong>: No esperes a llenar un batch de 64 requests. Con 50ms de espera y batches de 8-16 ya ves mejoras de 5-10x.</li>
+<li><strong>Fallback no es paranoia</strong>: OpenAI tuvo 3 outage el mes pasado. Si tu app no puede funcionar sin el, tienes un single point of failure.</li>
+<li><strong>Mide todo</strong>: Latencia, throughput, cache hit ratio, errores. No puedes mejorar lo que no mides.</li>
+</ul>
+
+<p>En Medell&#237;n decimos que "el que no conoce el monte,以为是平 地". Para LLM production: el que no sabe de batching y caching, piensa que el modelo es todo. Pero no es as&#237;.</p>
+
+<p>Nos vemos en el D&#237;a 242 donde vamos a hablar de Fine-tuning con LoRA y QLoRA. Eso s&#237; que es material interesante.</p>
+
+<p><em>Fabian Rodriguez<br>
+#365DaysOfAI<br>
+Medell&#237;n, Colombia</em></p>
   </article>
 
   <script>
