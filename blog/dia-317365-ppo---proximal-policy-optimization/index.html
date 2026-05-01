@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="PPO - Proximal Policy Optimization | #365DaysOfAI por Fabian Rodriguez">
-  <title>PPO - Proximal Policy Optimization | #365DaysOfAI</title>
+  <meta name="description" content="LLM Data Generation | #365DaysOfAI por Fabian Rodriguez">
+  <title>LLM Data Generation | #365DaysOfAI</title>
   
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
@@ -110,46 +110,489 @@ nav {
 
   <header class="article-hero">
     <div class="day-badge">Dia 317 / 365 &nbsp;·&nbsp; #365DaysOfAI</div>
-    <h1 class="article-title">PPO - Proximal Policy Optimization</h1>
+    <h1 class="article-title">LLM Data Generation: Synthetic Datasets que el 75% No Conoce</h1>
     <div class="article-meta">
       <time class="article-date">13 de noviembre de 2026</time>
-      <div class="tags"><span class="tag">ppo</span><span class="tag">reinforcement-learning</span><span class="tag">rlhf</span><span class="tag">training</span></div>
+      <div class="tags"><span class="tag">llm</span><span class="tag">synthetic-data</span><span class="tag">data-generation</span><span class="tag">augmentation</span></div>
     </div>
   </header>
 
   <article class="article-body">
-    <h1>PPO - Proximal Policy Optimization</h1>
-<p>Hagale pues, parcero. Dia 317 y hoy hablamos de PPO, el algoritmo de RL que revoluciono AI. Cafe.</p>
+<h2>☕ Intro</h2>
+<p>Sabe que, parcero? Mientras el 75% de los proyectos de ML siguen buscando datos en Kaggle como si fuera el sagradao, el 25% restante ya están generando sus propios datasets con LLMs. Y no, no es trampa — es ingeniería. Hoy en el Día 317 te explico cómo usar LLMs para generar datos sintéticos de calidad, cómo evaluar esa calidad y — esto es clave — cómo manejar el bias que inevitablemente se nos cuela.</p>
+<p>Si estás entrenando un modelo y no tienes suficientes datos, la respuesta no siempre es "buscar más datos". A veces la respuesta es "crear mejores datos".</p>
 <hr>
-<h2>🎯 Que Es PPO?</h2>
-<p>PPO (Proximal Policy Optimization) es el algoritmo de reinforcement learning mas usado para RLHF. Balancea exploracion y explotacion.</p>
-<h3>Innovacion:</h3>
+<h2>📐 Qué es Synthetic Data Generation?</h2>
+<p>Los LLMs pueden generar datos sintéticos que replican la estructura y distribución de datos reales. Esto es particularmente útil cuando:</p>
 <ul>
-<li><strong>Clipped objective</strong>: Previene updates muy grandes</li>
-<li><strong>Trust region</strong>: Mantiene policy estable</li>
-<li><strong>On-policy</strong>: Usa datos collected aktuell</li>
+<li>Los datos reales son escasos o costosos de obtener</li>
+<li>Necesitas datos para casos edge que en la realidad son raros</li>
+<li>Quieres aumentar (augment) un dataset existente</li>
+<li>Debes respetar privacidad de datos sensibles</li>
+</ul>
+<p>La clave está en que no generamos datos aleatorios — generamos datos que siguen la <strong>distribución estadística</strong> del dominio. Un LLM bien promptado puede capturar la estructura condicional $P(Y|X)$ y generar pares $(X, Y)$ coherentes.</p>
+<h3>La matemática detrás</h3>
+<p>Dado un conjunto de datos original $\mathcal{D} = \{(x_i, y_i)\}_{i=1}^N$, queremos generar $\hat{\mathcal{D}}$ tal que:</p>
+<p>$$\hat{\mathcal{D}} \approx \mathcal{D}_{LLM} = \text{LLM}(\text{prompt}(x, y))$$</p>
+<p>La calidad del dataset generado depende de:</p>
+<ul>
+<li><strong>Fidelidad</strong>: $\mathbb{E}[d(\hat{y}, y)] < \epsilon$ — qué tan cerca está el output generado del real</li>
+<li><strong>Diversidad</strong>: $H(\hat{\mathcal{D}}) > \delta$ — que cubra suficiente variación</li>
+<li><strong>Validez</strong>: $\hat{y} \in \text{Valid}(x)$ — que sea lógicamente consistente</li>
 </ul>
 <hr>
-<h2>📐 PPO Loss</h2>
-<pre><code class="language-python">def ppo_loss(policy_logits, old_logits, advantages, clip_eps=0.2):
-    # Ratio de probabilidades
-    ratio = torch.exp(
-        F.log_softmax(policy_logits, dim=-1) - 
-        F.log_softmax(old_logits, dim=-1)
-    ).sum(dim=-1)
+<h2>🔧 Data Generation Framework</h2>
+<p>Vamos al código. Implemento un framework completo:</p>
+<pre><code class="language-python">"""
+Synthetic Data Generation Framework
+Usa LLMs para generar datasets de alta calidad
+"""
+
+import torch
+import json
+import re
+from typing import List, Dict, Callable, Optional, Tuple
+from dataclasses import dataclass
+from collections import Counter
+import numpy as np
+
+
+@dataclass
+class GenerationConfig:
+    """Configuración para generación de datos"""
+    model_name: str = "gpt-4"
+    temperature: float = 0.7
+    top_p: float = 0.9
+    max_tokens: int = 512
+    n_samples: int = 100
+    batch_size: int = 10
+    quality_threshold: float = 0.8
+
+
+@dataclass
+class QualityMetrics:
+    """Métricas de calidad para datos generados"""
+    fluency: float           # Qué tan natural suena el texto
+    coherence: float         # Qué tan coherente es con el contexto
+    diversity: float         # Qué tan diversos son los outputs
+    validity: float          # Qué tan válidos son los outputs
+    overall: float           # Score combinado
+
+
+class SyntheticDataGenerator:
+    """
+    Framework para generar datos sintéticos con LLMs.
     
-    # Clipped surrogate objective
-    clipped = torch.clamp(ratio, 1 - clip_eps, 1 + clip_eps) * advantages
+    El pipeline tiene 3 etapas:
+    1. Seed: Extraer patrones y estructura del dataset original
+    2. Generate: Usar el LLM para crear nuevos ejemplos
+    3. Filter: Evaluar y filtrar por calidad
+    """
     
-    return -torch.min(ratio * advantages, clipped).mean()</code></pre>
+    def __init__(self, llm_client, config: GenerationConfig):
+        self.llm = llm_client
+        self.config = config
+        self.patterns = {}
+        self.quality_model = None
+        
+    def extract_patterns(self, data: List[Dict]) -> Dict:
+        """
+        Fase 1: Analizar el dataset original y extraer patrones.
+        
+        Esto es clave — no queremos que el LLM memorice,
+        queremos que entienda la ESTRUCTURA del dato.
+        """
+        # Extraer patrones por tipo de campo
+        field_patterns = {}
+        
+        for example in data[:100]:  # Muestra representativa
+            for key, value in example.items():
+                if isinstance(value, str):
+                    # Guardar longitud promedio, léxico, estructura
+                    field_patterns[key] = {
+                        "avg_length": field_patterns[key].get("avg_length", []) + [len(value)],
+                        "has_numbers": any(c.isdigit() for c in value),
+                        "has_special": any(not c.isalnum() and not c.isspace() for c in value),
+                    }
+        
+        # Calcular estadísticas
+        for key in field_patterns:
+            lens = field_patterns[key]["avg_length"]
+            field_patterns[key]["length_stats"] = {
+                "mean": np.mean(lens),
+                "std": np.std(lens),
+                "min": np.min(lens),
+                "max": np.max(lens),
+            }
+        
+        self.patterns = field_patterns
+        return field_patterns
+    
+    def generate_batch(
+        self, 
+        seed_example: Dict, 
+        template: str,
+        n: int = 10
+    ) -> List[Dict]:
+        """
+        Fase 2: Generar nuevos ejemplos usando el LLM.
+        
+        El template guía la estructura, el seed proporciona
+        el contexto semántico.
+        """
+        # Construir prompt con contexto de patrones
+        context = self._build_context(seed_example)
+        
+        prompt = f"""Eres un generador de datos sintéticos. Based on el ejemplo seed 
+y los patrones del dominio, genera {n} nuevos ejemplos que sigan la MISMA 
+distribución pero sean distintos.
+
+Seed example:
+{json.dumps(seed_example, indent=2)}
+
+Patrones del dominio:
+{context}
+
+Template:
+{template}
+
+Genera {n} ejemplos en formato JSON array. Sé creativo pero mantén 
+fidelidad a los patrones."""
+        
+        response = self.llm.generate(
+            prompt,
+            temperature=self.config.temperature,
+            max_tokens=self.config.max_tokens * n
+        )
+        
+        # Parsear respuesta
+        examples = self._parse_llm_response(response)
+        return examples[:n]
+    
+    def _build_context(self, example: Dict) -> str:
+        """Construir contexto estadístico para el prompt"""
+        context_parts = []
+        for key, value in example.items():
+            if key in self.patterns:
+                stats = self.patterns[key].get("length_stats", {})
+                context_parts.append(
+                    f"- {key}: longitud típica {stats.get('mean', 'N/A'):.0f}±{stats.get('std', 0):.0f}"
+                )
+        return "\n".join(context_parts)
+    
+    def _parse_llm_response(self, response: str) -> List[Dict]:
+        """Extraer JSON de la respuesta del LLM"""
+        # Buscar bloques de código JSON
+        json_match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", response)
+        if json_match:
+            text = json_match.group(1)
+        else:
+            # Intentar encontrar array directamente
+            text = response
+        
+        # Limpiar y parsear
+        text = text.strip()
+        if text.startswith("[") and text.endswith("]"):
+            return json.loads(text)
+        
+        # Intentar reparar JSON malformado
+        try:
+            return json.loads(text)
+        except:
+            # Buscar el array en el texto
+            start = text.find("[")
+            end = text.rfind("]") + 1
+            if start >= 0 and end > start:
+                return json.loads(text[start:end])
+            return []
+    
+    def evaluate_quality(
+        self, 
+        original: List[Dict], 
+        generated: List[Dict]
+    ) -> QualityMetrics:
+        """
+        Fase 3: Evaluar la calidad de los datos generados.
+        
+        Usamos múltiples heurísticas y un modelo de calidad.
+        """
+        metrics = {}
+        
+        # 1. Fluidez: usar un LLM como juez
+        fluency_scores = []
+        for gen in generated[:10]:  # Muestra
+            prompt = f"""Evalúa la fluidez (naturalidad) del siguiente texto en escala 0-1:
+            
+{json.dumps(gen, indent=2)}
+
+Responde SOLO con un número entre 0 y 1."""
+            score = float(self.llm.generate(prompt, max_tokens=10))
+            fluency_scores.append(score)
+        metrics["fluency"] = np.mean(fluency_scores)
+        
+        # 2. Diversidad: calcular diversidad léxica
+        all_texts = [" ".join(str(v) for v in ex.values()) for ex in generated]
+        vocab_sizes = [len(set(text.split())) for text in all_texts]
+        metrics["diversity"] = np.mean(vocab_sizes) / 100  # Normalizar
+        
+        # 3. Validez: verificar estructura
+        valid_count = 0
+        for gen, orig in zip(generated, original):
+            # Verificar que los campos coincidan
+            if set(gen.keys()) == set(orig.keys()):
+                # Verificar tipos básicos
+                types_match = all(
+                    type(gen[k]) == type(orig[k]) 
+                    for k in gen if k in orig
+                )
+                if types_match:
+                    valid_count += 1
+        metrics["validity"] = valid_count / len(generated)
+        
+        # 4. Coherencia: embedding similarity
+        metrics["coherence"] = self._compute_coherence(original, generated)
+        
+        # Score overall ponderado
+        metrics["overall"] = (
+            0.3 * metrics["fluency"] +
+            0.2 * metrics["diversity"] +
+            0.3 * metrics["validity"] +
+            0.2 * metrics["coherence"]
+        )
+        
+        return QualityMetrics(**metrics)
+    
+    def _compute_coherence(
+        self, 
+        original: List[Dict], 
+        generated: List[Dict]
+    ) -> float:
+        """
+        Calcular coherencia semántica entre datos originales y generados.
+        Usa embedding similarity básica.
+        """
+        # Versión simplificada sin embeddings externos
+        # En producción usar sentence-transformers
+        coherence_scores = []
+        
+        for orig, gen in zip(original[:5], generated[:5]):
+            # Comparar longitud relativa
+            orig_len = sum(len(str(v)) for v in orig.values())
+            gen_len = sum(len(str(v)) for v in gen.values())
+            
+            len_ratio = min(orig_len, gen_len) / max(orig_len, gen_len)
+            coherence_scores.append(len_ratio)
+        
+        return np.mean(coherence_scores)
+    
+    def filter_by_quality(
+        self, 
+        generated: List[Dict], 
+        threshold: float
+    ) -> Tuple[List[Dict], List[Dict]]:
+        """
+        Filtrar datos generados por score de calidad.
+        Retorna (passed, rejected).
+        """
+        passed = []
+        rejected = []
+        
+        for gen in generated:
+            # Auto-evaluación rápida
+            prompt = f"""Evalúa este ejemplo generado de 0 a 1:
+{json.dumps(gen, indent=2)}
+
+Considera: ¿es coherente, diverso, y válido?
+Responde SOLO con número."""
+            
+            try:
+                score = float(self.llm.generate(prompt, max_tokens=10))
+                if score >= threshold:
+                    passed.append(gen)
+                else:
+                    rejected.append(gen)
+            except:
+                rejected.append(gen)
+        
+        return passed, rejected
+    
+    def generate_dataset(
+        self,
+        seed_data: List[Dict],
+        template: str,
+        target_size: int,
+        quality_threshold: float = 0.8
+    ) -> Tuple[List[Dict], QualityMetrics]:
+        """
+        Pipeline completo de generación.
+        
+        1. Extraer patrones del seed
+        2. Generar en batches
+        3. Filtrar por calidad
+        4. Repetir hasta alcanzar target_size
+        """
+        print(f"🎯 Target: {target_size} ejemplos con quality ≥ {quality_threshold}")
+        
+        # Fase 1: Extraer patrones
+        print("📊 Analizando patrones del seed...")
+        self.extract_patterns(seed_data)
+        
+        all_generated = []
+        iterations = 0
+        max_iterations = 10
+        
+        while len(all_generated) < target_size and iterations < max_iterations:
+            iterations += 1
+            batch_size = min(self.config.batch_size, target_size - len(all_generated))
+            
+            # Seleccionar seed aleatorio
+            seed = seed_data[np.random.randint(len(seed_data))]
+            
+            # Generar batch
+            print(f"🔄 Iteración {iterations}: generando {batch_size} ejemplos...")
+            batch = self.generate_batch(seed, template, n=batch_size)
+            
+            # Filtrar por calidad
+            passed, rejected = self.filter_by_quality(batch, quality_threshold)
+            print(f"   ✓ {len(passed)}/{len(batch)} pasaron filtro de calidad")
+            
+            all_generated.extend(passed)
+            
+            if len(rejected) > 0:
+                # Guardar rechazados para análisis
+                self._analyze_rejections(rejected)
+        
+        # Métricas finales
+        metrics = self.evaluate_quality(seed_data, all_generated)
+        
+        print(f"\n✅ Dataset generado: {len(all_generated)} ejemplos")
+        print(f"   Quality score: {metrics.overall:.3f}")
+        
+        return all_generated, metrics
+    
+    def _analyze_rejections(self, rejected: List[Dict]):
+        """Analizar por qué fueron rechazados — feedback para mejorar"""
+        # Guardar para análisis offline
+        pass</code></pre>
 <hr>
-<h2>🚀 En LLMs</h2>
-<p>PPO se usa para optimizar el reward model. GPT-4 y Claude usan PPO en su pipeline de RLHF.</p>
+<h2>🔢 Calidad: Métricas y Evaluación</h2>
+<p>¿Cómo sabemos si los datos generados son buenos? La evaluación de synthetic data es un campo en sí mismo:</p>
+<h3>Métricas de Quality</h3>
+<ul>
+<li><strong>Statistical Fidelity</strong>: $F = 1 - \frac{1}{n}\sum_i | \hat{\mu}_i - \mu_i |$ — qué tan cerca están las distribuciones</li>
+<li><strong>KL Divergence</strong>: $D_{KL}(P_{real} || P_{generated})$ — divergecia de KL entre distribuciones</li>
+<li><strong>Downstream Performance</strong>: Entrenar un modelo con datos sintéticos y evaluar en test real</li>
+</ul>
+<h3>Evaluación con LLM Judge</h3>
+<pre><code class="language-python">def llm_judge_evaluation(generated_data: List[Dict], criteria: List[str]) -> Dict:
+    """
+    Usar un LLM como juez para evaluar calidad.
+    Más robusto que métricas automáticas.
+    """
+    scores = {c: [] for c in criteria}
+    
+    for example in generated_data[:20]:  # Muestra
+        prompt = f"""Evalúa este ejemplo generado en las siguientes dimensiones.
+Responde en formato JSON con scores de 0 a 1 para cada dimensión.
+
+Ejemplo:
+{json.dumps(example, indent=2)}
+
+Criterios: {', '.join(criteria)}
+
+Formato de respuesta:
+{{"criterion": score, ...}}"""
+        
+        response = llm.generate(prompt, max_tokens=200)
+        try:
+            result = json.loads(response)
+            for c in criteria:
+                if c in result:
+                    scores[c].append(result[c])
+        except:
+            pass
+    
+    return {k: np.mean(v) for k, v in scores.items()}</code></pre>
 <hr>
-<h2>⚠️ Complejidad</h2>
-<p>PPO es complejo de implementar y requiere muchos hyperparametros. Requiere 3 modelos simultaneously.</p>
+<h2>⚠️ Errores Comunes y Cómo Evitarlos</h2>
+<h3>❌ Error 1: No Usar LLMs para Data Augmentation</h3>
+<p>Mucha gente ignora que los LLMs pueden augment datos. Siguen pensando que más datos = mejores resultados, sin considerar la <strong>calidad sobre cantidad</strong>.</p>
+<p><strong>Fix:</strong> Implementa un pipeline de augmentation con LLM. Para texto, esto incluye:</p>
+<ul>
+<li><strong>Paraphrasing</strong>: Generar variaciones del mismo mensaje</li>
+<li><strong>Back-translation</strong>: Traducir a otro idioma y volver</li>
+<li><strong>Entity replacement</strong>: Sustituir entidades manteniendo coherencia</li>
+<li><strong>Noise injection</strong>: Agregar typos realistas, cambios de formato</li>
+</ul>
+<pre><code class="language-python">def augment_with_llm(example: Dict, strategy: str = "paraphrase") -> List[Dict]:
+    """Data augmentation con LLM"""
+    if strategy == "paraphrase":
+        prompt = f"""Paraphrase el siguiente ejemplo 5 veces,
+cada uno con un estilo diferente (formal, casual, técnico, etc).
+
+Ejemplo: {json.dumps(example, indent=2)}
+
+Responde con array JSON."""
+    # ... más estrategias
+    return augmented</code></pre>
+<h3>❌ Error 2: Generar Datos Sin Quality Checks</h3>
+<p>Generar y usar directo sin filtrar es receta para desastre. Los LLMs inventan cosas (alucinaciones) y si no verificas, contaminas tu dataset.</p>
+<p><strong>Fix:</strong> Siempre implementar pipeline de filtrado:</p>
+<pre><code class="language-python"># Pipeline con calidad
+raw_data = generator.generate_dataset(seed_data, template, target_size=1000)
+
+# NO USAR raw_data directamente
+# FILTRAR primero
+passed, rejected = generator.filter_by_quality(raw_data, threshold=0.85)
+
+# Análisis de rechazos para debugging
+print(f"Rechazados: {len(rejected)}")
+for r in rejected[:5]:
+    print(f"  - {r}")  # Entender por qué fallaron</code></pre>
+<h3>❌ Error 3: No Considerar Bias en Generation</h3>
+<p>El LLM tiene sesgos inherentes. Si generas datos sin контроль, puedes amplificar esos sesgos. Un dataset balanceado se puede volver desbalanceado.</p>
+<p><strong>Fix:</strong> Monitorear y corregir bias activamente:</p>
+<pre><code class="language-python">def detect_generation_bias(
+    original: List[Dict], 
+    generated: List[Dict],
+    sensitive_attr: str
+) -> Dict:
+    """Detectar si el bias cambió entre original y generado"""
+    # Distribución en datos originales
+    orig_dist = Counter(ex[sensitive_attr] for ex in original)
+    
+    # Distribución en datos generados
+    gen_dist = Counter(ex[sensitive_attr] for ex in generated)
+    
+    bias_report = {}
+    for attr in orig_dist:
+        orig_pct = orig_dist[attr] / len(original)
+        gen_pct = gen_dist[attr] / len(generated)
+        shift = abs(gen_pct - orig_pct)
+        
+        bias_report[attr] = {
+            "original_pct": orig_pct,
+            "generated_pct": gen_pct,
+            "shift": shift,
+            "alert": shift > 0.05  # Alert si cambió > 5%
+        }
+    
+    return bias_report</code></pre>
 <hr>
-<p><em>Eso es todo! Nos vemos en el Dia 318.</em></p>
+<h2>📊 Resumen</h2>
+<p>Aprendimos hoy:</p>
+<ul>
+<li>✅ <strong>Synthetic data generation</strong> con LLMs permite crear datasets de calidad cuando no hay datos suficientes</li>
+<li>✅ Un framework con 3 fases: <strong>extract patterns → generate → filter</strong></li>
+<li>✅ Métricas de calidad: <strong>fluency, diversity, validity, coherence</strong></li>
+<li>⚠️ Errores comunes: <strong>no augmentar, no filtrar, ignorar bias</strong></li>
+</ul>
+<p>La próxima vez que pienses "no tengo suficientes datos", pregúntate primero: ¿estoy usando bien los que tienes? ¿Puedes generar más con la estructura correcta?</p>
+<hr>
+<h2>🇨🇴 Cierre Colombiano</h2>
+<p>Mire, parcero, eso de que "los datos son el nuevo petróleo" está muy bonito en PowerPoint pero en la vida real uno sabe que conseguir datos buenos es durísimo. Con este enfoque de synthetic data usted puede multiplicar su dataset inteligente, no a lo brute. Y lo mejor: con los filtros de calidad y el control de bias que le mostré, no está operando a ciegas. Está haciendo las cosas bien hechas.</p>
+<p>El que sabe generar datos, no depende de que alguien le regale un dataset. Eso es independencia real en ML. Seguimos.</p>
+<p><em>#365DaysOfAI</em></p>
   </article>
 
   <script>
