@@ -118,700 +118,744 @@ nav {
   </header>
 
   <article class="article-body">
-<h1>Testing LLMs y Prompt Evaluation</h1>
-<p>Hagale pues, parcero. Así como en Colombia nadie entrega un software sin probar antes (o al menos eso debería pasar), con los LLMs y prompts pasa igual: el 80% no tiene test suite para sus prompts y el 20% que sí la tiene, muchos la usan mal. Hoy es el Día 264 y vamos a aprender cómo testear prompts sistemáticamente, hacer A/B testing, regression testing y construir una prompt test suite como Dios manda. Café en mano, que esto es clave.</p>
+<h2>🎯 Por Qué Safety en Agentes Es Crítico</h2>
+<p>Hagale pues, parcero. Un modelo de lenguaje que se equivoca en una respuesta es un problema. Pero un agente autónomo que puede ejecutar acciones — enviar emails, modificar datos, hacer transacciones — si se sale de control, las consecuencias son otra historia. El 70% implementa agentes sin safeguards y el 20% que los implementa, muchos lo hacen mal. Hoy aprendemos a construir agentes seguros desde el día uno.</p>
 
-<h2>🎯 Por Qué Testing de Prompts Es Crítico</h2>
-<p>Un prompt no es estático. Es código. Y como todo código, necesita:</p>
+<h2>📐 El Problema: Agentes Pueden Hacer Daño Real</h2>
+<p>Un LLM tradicional solo genera texto. Un agente autónomo:</p>
 <ul>
-<li><strong>Version control</strong>: Saber qué cambió entre versiones</li>
-<li><strong>Regression testing</strong>: Asegurar que cambios no rompan lo que funcionaba</li>
-<li><strong>Benchmarks reproducibles</strong>: Medir mejora o degradación</li>
+<li><strong>Ejecuta herramientas</strong>: puede modificar sistemas reales</li>
+<li><strong>Tiene Agency</strong>: toma decisiones que afectan el mundo</li>
+<li><strong>Opera autonomously</strong>: puede actuar sin supervisión constante</li>
+<li><strong>Es unpredictable</strong>: puede tomar caminos inesperados</li>
 </ul>
 
-<p>La realidad: la mayoría trata los prompts como magia — van ajustando "a ojo" hasta que "funciona bien". Hasta que un día el modelo se actualiza y todo se rompe. Y no hay forma de saber qué falló porque no hay tests.</p>
+<p>Sin constraints adecuados, un agente podría:</p>
+<ul>
+<li>Enviar emails inapropiados a clientes</li>
+<li>Modificar o eliminar datos importantes</li>
+<li>Hacer transacciones financieras incorrectas</li>
+<li>Reveal información confidencial</li>
+<li>Entrar en loops infinitos de acciones</li>
+</ul>
 
-<h2>📐 Prompt Test Framework</h2>
-<p>La arquitectura correcta tiene tres capas:</p>
+<h2>📐 Capas de Protección: Defense in Depth</h2>
+<p>La arquitectura correcta tiene múltiples capas de safety, ninguna perfecta pero juntas reducen drásticamente el riesgo.</p>
+
 <ol>
-<li><strong>Test Cases</strong>: Ejemplos de input/output esperados</li>
-<li><strong>Evaluation Metrics</strong>: Cómo medir calidad de respuestas</li>
-<li><strong>Automated Runner</strong>: CI/CD que corre tests en cada cambio</li>
+<li><strong>Input Validation</strong>: Sanitizar y validar todo input del usuario</li>
+<li><strong>Permission Model</strong>: Qué acciones puede ejecutar cada agente</li>
+<li><strong>Confirmation Gates</strong>: Confirmación humana para acciones sensibles</li>
+<li><strong>Output Filtering</strong>: Validar outputs antes de ejecutarlos</li>
+<li><strong>Rate Limiting</strong>: Prevenir abuso y loops</li>
+<li><strong>Audit Logging</strong>: Registrar todo para debugging y compliance</li>
 </ol>
 
-<pre><code class="language-python">import json
-import hashlib
-from dataclasses import dataclass, asdict
-from typing import List, Dict, Any, Callable, Optional
+<pre><code class="language-python">from dataclasses import dataclass, field
+from typing import List, Dict, Any, Optional, Set, Callable
 from enum import Enum
-import re
+import time
+import json
 
-class TestStatus(Enum):
-    PASS = "pass"
-    FAIL = "fail"
-    PARTIAL = "partial"
-    ERROR = "error"
-
-@dataclass
-class TestCase:
-    """Un caso de prueba para un prompt."""
-    id: str
-    name: str
-    prompt_template: str
-    variables: Dict[str, str]
-    expected_output: Optional[str] = None
-    evaluation_criteria: Optional[Dict[str, float]] = None  # e.g., {"contains": 0.8, "sentiment": 0.9}
-
-    def render_prompt(self) -> str:
-        """Renderiza el prompt con las variables."""
-        return self.prompt_template.format(**self.variables)
+class RiskLevel(Enum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    CRITICAL = "critical"
 
 @dataclass
-class TestResult:
-    """Resultado de evaluar un test case."""
-    test_id: str
-    status: TestStatus
-    actual_output: str
-    expected_output: Optional[str]
-    metrics: Dict[str, float]
-    latency_ms: float
+class Permission:
+    """Un permiso para una acción específica."""
+    action: str  # Nombre de la herramienta/acción
+    max_per_hour: int = 100
+    requires_confirmation: bool = False
+    allowed_targets: Optional[Set[str]] = None  # e.g., {"email_to_whitelist"}
+    max_value: Optional[float] = None  # Para acciones con valor (transacciones)
+
+@dataclass
+class SafetyConfig:
+    """Configuración de seguridad para un agente."""
+    agent_id: str
+    permissions: List[Permission] = field(default_factory=list)
+    blocked_keywords: Set[str] = field(default_factory=set)
+    allowed_domains: Set[str] = field(default_factory=set)
+    max_execution_time: float = 300  # 5 minutos
+    max_actions_per_run: int = 50
+    enable_audit_log: bool = True
+    confirmation_callback: Optional[Callable] = None
+
+@dataclass
+class ActionRequest:
+    """Una solicitud de acción."""
+    tool_name: str
+    parameters: Dict[str, Any]
+    risk_level: RiskLevel = RiskLevel.LOW
+    reason: str = ""
+    requested_at: float = field(default_factory=time.time)
+
+@dataclass
+class AuditEntry:
+    """Entrada en el audit log."""
+    timestamp: float
+    agent_id: str
+    action: str
+    parameters: Dict[str, Any]
+    risk_level: RiskLevel
+    approved: bool
+    execution_time: Optional[float] = None
+    result: Optional[str] = None
     error: Optional[str] = None
 
-    def to_dict(self) -> dict:
-        return {
-            "test_id": self.test_id,
-            "status": self.status.value,
-            "metrics": self.metrics,
-            "latency_ms": self.latency_ms,
-            "error": self.error
+class SafetyGuard:
+    """Guarda de seguridad multicapa para agentes."""
+
+    def __init__(self, config: SafetyConfig):
+        self.config = config
+        self.audit_log: List[AuditEntry] = []
+        self.action_counts: Dict[str, List[float]] = {}  # action -> timestamps
+        self.pending_confirmations: Dict[str, ActionRequest] = {}
+
+    def check_permission(self, request: ActionRequest) -> tuple[bool, str]:
+        """
+        Verifica si una acción está permitida.
+        Returns: (allowed, reason)
+        """
+        # 1. Check rate limits
+        if not self._check_rate_limit(request.tool_name):
+            return False, f"Rate limit exceeded for {request.tool_name}"
+
+        # 2. Check if action is permitted at all
+        permission = self._get_permission(request.tool_name)
+        if not permission:
+            return False, f"Action {request.tool_name} not permitted"
+
+        # 3. Check blocked keywords in parameters
+        if self._contains_blocked_content(request):
+            return False, "Content contains blocked keywords"
+
+        # 4. Check target restrictions
+        if permission.allowed_targets:
+            if not self._check_targets(request, permission):
+                return False, f"Target not in allowed list"
+
+        # 5. Check value limits
+        if permission.max_value is not None:
+            value = request.parameters.get("value", 0)
+            if value > permission.max_value:
+                return False, f"Value exceeds limit: {value} > {permission.max_value}"
+
+        return True, "Approved"
+
+    def _check_rate_limit(self, action: str) -> bool:
+        """Verifica rate limits para una acción."""
+        now = time.time()
+        hour_ago = now - 3600
+
+        if action not in self.action_counts:
+            self.action_counts[action] = []
+
+        # Filtrar solo timestamps de la última hora
+        self.action_counts[action] = [
+            t for t in self.action_counts[action] if t > hour_ago
+        ]
+
+        # Get permission limit
+        permission = self._get_permission(action)
+        max_per_hour = permission.max_per_hour if permission else 100
+
+        if len(self.action_counts[action]) >= max_per_hour:
+            return False
+
+        self.action_counts[action].append(now)
+        return True
+
+    def _get_permission(self, action: str) -> Optional[Permission]:
+        """Busca permiso para una acción."""
+        for p in self.config.permissions:
+            if p.action == action:
+                return p
+        return None
+
+    def _contains_blocked_content(self, request: ActionRequest) -> bool:
+        """Check si los parámetros contienen contenido bloqueado."""
+        params_str = json.dumps(request.parameters).lower()
+        for keyword in self.config.blocked_keywords:
+            if keyword.lower() in params_str:
+                return True
+        return False
+
+    def _check_targets(self, request: ActionRequest, permission: Permission) -> bool:
+        """Verifica si el target está permitido."""
+        # Common target fields
+        target = (
+            request.parameters.get("to") or
+            request.parameters.get("target") or
+            request.parameters.get("recipient") or
+            request.parameters.get("destination")
+        )
+
+        if not target:
+            return True  # No target specified, allow
+
+        if permission.allowed_targets and target not in permission.allowed_targets:
+            return False
+
+        return True
+
+    def requires_confirmation(self, request: ActionRequest) -> bool:
+        """Determina si una acción requiere confirmación."""
+        permission = self._get_permission(request.tool_name)
+        if permission and permission.requires_confirmation:
+            return True
+
+        # High risk actions always require confirmation
+        if request.risk_level in [RiskLevel.HIGH, RiskLevel.CRITICAL]:
+            return True
+
+        return False
+
+    def evaluate_risk(self, tool_name: str, parameters: Dict[str, Any]) -> RiskLevel:
+        """Evalúa el nivel de riesgo de una acción."""
+        high_risk_tools = {
+            "send_email", "send_message", "delete_data",
+            "transfer_funds", "modify_permissions", "execute_code",
+            "delete_file", "drop_table", "update_config"
         }
 
-class PromptEvaluator:
-    """Framework para evaluar prompts sistemáticamente."""
+        critical_risk_tools = {
+            "delete_database", "transfer_all_funds", "modify_security_config"
+        }
 
-    def __init__(self, llm_client, scorer: Optional[Callable] = None):
-        self.llm = llm_client
-        self.scorer = scorer or self._default_scorer
-        self.test_history: List[TestResult] = []
+        if tool_name in critical_risk_tools:
+            return RiskLevel.CRITICAL
+        elif tool_name in high_risk_tools:
+            # Check parameters for severity
+            if parameters.get("batch") or parameters.get("many"):
+                return RiskLevel.CRITICAL
+            return RiskLevel.HIGH
+        elif tool_name in {"read_data", "search", "get_info"}:
+            # Check for sensitive data access
+            if parameters.get("sensitive"):
+                return RiskLevel.MEDIUM
+            return RiskLevel.LOW
 
-    def _default_scorer(self, output: str, criteria: Dict[str, Any]) -> Dict[str, float]:
-        """Scorer por defecto: verifica presencia de keywords y length."""
-        scores = {}
+        return RiskLevel.MEDIUM
 
-        if "contains" in criteria:
-            keywords = criteria["contains"] if isinstance(criteria["contains"], list) else [criteria["contains"]]
-            matches = sum(1 for kw in keywords if kw.lower() in output.lower())
-            scores["contains_ratio"] = matches / len(keywords) if keywords else 0
+    def log_action(self, entry: AuditEntry):
+        """Registra una acción en el audit log."""
+        if self.config.enable_audit_log:
+            self.audit_log.append(entry)
 
-        if "min_length" in criteria:
-            scores["length_ok"] = 1.0 if len(output) >= criteria["min_length"] else len(output) / criteria["min_length"]
+    def get_audit_summary(self) -> Dict[str, Any]:
+        """Genera resumen del audit log."""
+        total = len(self.audit_log)
+        approved = sum(1 for e in self.audit_log if e.approved)
+        rejected = total - approved
 
-        if "max_length" in criteria:
-            if len(output) <= criteria["max_length"]:
-                scores["length_ok"] = 1.0
-            else:
-                scores["length_ok"] = max(0, 1 - (len(output) - criteria["max_length"]) / criteria["max_length"])
+        by_risk = {}
+        for entry in self.audit_log:
+            risk = entry.risk_level.value
+            if risk not in by_risk:
+                by_risk[risk] = {"total": 0, "approved": 0}
+            by_risk[risk]["total"] += 1
+            if entry.approved:
+                by_risk[risk]["approved"] += 1
 
-        if "regex_match" in criteria:
-            pattern = criteria["regex_match"]
-            scores["regex_match"] = 1.0 if re.search(pattern, output) else 0.0
+        return {
+            "total_actions": total,
+            "approved": approved,
+            "rejected": rejected,
+            "by_risk_level": by_risk,
+            "approval_rate": approved / total if total > 0 else 0
+        }</code></pre>
 
-        return scores
+<h2>📐 Constrains Basados en Reglas</h2>
+<p>Além de permisos, precisamos de constrains operacionais que limiten el comportamiento del agente.</p>
 
-    async def run_test(self, test_case: TestCase) -> TestResult:
-        """Ejecuta un test case y retorna el resultado."""
+<pre><code class="language-python">from typing import Any, Dict, List, Union
+
+class Constraint:
+    """Base class para constraints."""
+    def check(self, action: Dict[str, Any]) -> tuple[bool, str]:
+        raise NotImplementedError
+
+class MaxLengthConstraint(Constraint):
+    """Constraint en longitud de strings."""
+    def __init__(self, field: str, max_length: int):
+        self.field = field
+        self.max_length = max_length
+
+    def check(self, action: Dict[str, Any]) -> tuple[bool, str]:
+        value = action.get("parameters", {}).get(self.field, "")
+        if len(str(value)) > self.max_length:
+            return False, f"{self.field} exceeds {self.max_length} chars"
+        return True, "OK"
+
+class AllowedValuesConstraint(Constraint):
+    """Constraint en valores permitidos."""
+    def __init__(self, field: str, allowed: List[Any]):
+        self.field = field
+        self.allowed = set(allowed)
+
+    def check(self, action: Dict[str, Any]) -> tuple[bool, str]:
+        value = action.get("parameters", {}).get(self.field)
+        if value not in self.allowed:
+            return False, f"{self.field} must be one of {self.allowed}"
+        return True, "OK"
+
+class BlocklistConstraint(Constraint):
+    """Constraint que bloquea ciertos valores."""
+    def __init__(self, field: str, blocklist: List[Any]):
+        self.field = field
+        self.blocklist = set(blocklist)
+
+    def check(self, action: Dict[str, Any]) -> tuple[bool, str]:
+        value = action.get("parameters", {}).get(self.field)
+        if value in self.blocklist:
+            return False, f"{self.field} '{value}' is blocked"
+        return True, "OK"
+
+class RegexConstraint(Constraint):
+    """Constraint basado en regex."""
+    def __init__(self, field: str, pattern: str, description: str = ""):
+        import re
+        self.field = field
+        self.pattern = re.compile(pattern)
+        self.description = description
+
+    def check(self, action: Dict[str, Any]) -> tuple[bool, str]:
+        value = str(action.get("parameters", {}).get(self.field, ""))
+        if not self.pattern.match(value):
+            return False, f"{self.field} doesn't match required pattern: {self.description}"
+        return True, "OK"
+
+class ConstraintEngine:
+    """Motor de evaluación de constraints."""
+
+    def __init__(self):
+        self.constraints: List[Constraint] = []
+
+    def add_constraint(self, constraint: Constraint):
+        self.constraints.append(constraint)
+
+    def validate_action(self, action: Dict[str, Any]) -> tuple[bool, List[str]]:
+        """
+        Valida una acción contra todos los constraints.
+        Returns: (all_passed, list_of_violations)
+        """
+        violations = []
+
+        for constraint in self.constraints:
+            passed, reason = constraint.check(action)
+            if not passed:
+                violations.append(reason)
+
+        return len(violations) == 0, violations
+
+    def validate_batch(self, actions: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Valida un batch de acciones."""
+        results = []
+        for i, action in enumerate(actions):
+            passed, violations = self.validate_action(action)
+            results.append({
+                "index": i,
+                "action": action.get("tool_name", "unknown"),
+                "passed": passed,
+                "violations": violations
+            })
+
+        passed = sum(1 for r in results if r["passed"])
+        return {
+            "total": len(actions),
+            "passed": passed,
+            "failed": len(actions) - passed,
+            "results": results
+        }</code></pre>
+
+<h2>📐 Sandboxing: Aislamiento de Acciones Peligrosas</h2>
+<p>Para acciones verdaderamente peligrosas, el sandboxing asegura que即使 fallan, no causan daño collateral.</p>
+
+<pre><code class="language-python">import subprocess
+import tempfile
+import os
+from typing import Dict, Any, Optional
+
+class SandboxExecutor:
+    """Ejecutor aislado para comandos peligrosos."""
+
+    def __init__(
+        self,
+        max_memory_mb: int = 512,
+        max_cpu_seconds: float = 30,
+        allowed_paths: List[str] = None
+    ):
+        self.max_memory_mb = max_memory_mb
+        self.max_cpu_seconds = max_cpu_seconds
+        self.allowed_paths = allowed_paths or ["/tmp/sandbox"]
+
+    def execute_in_sandbox(
+        self,
+        command: str,
+        input_data: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        Ejecuta un comando en sandbox aislado.
+        Returns: {"success": bool, "output": str, "error": str, "execution_time": float}
+        """
         import time
         start = time.time()
 
         try:
-            prompt = test_case.render_prompt()
-            output = await self.llm.generate(prompt)
+            # Escribir input a archivo temporal
+            input_file = None
+            if input_data:
+                with tempfile.NamedTemporaryFile(mode='w', delete=False) as f:
+                    import json
+                    json.dump(input_data, f)
+                    input_file = f.name
 
-            metrics = self.scorer(output, test_case.evaluation_criteria or {})
+            # Build command with resource limits
+            safe_command = [
+                "timeout", str(self.max_cpu_seconds),
+                "python3", "-c", self._create_safe_wrapper(command, input_file)
+            ]
 
-            # Determinar status
-            all_pass = all(s >= 0.7 for s in metrics.values())
-            any_fail = any(s < 0.5 for s in metrics.values())
-
-            if all_pass:
-                status = TestStatus.PASS
-            elif any_fail:
-                status = TestStatus.FAIL
-            else:
-                status = TestStatus.PARTIAL
-
-            result = TestResult(
-                test_id=test_case.id,
-                status=status,
-                actual_output=output,
-                expected_output=test_case.expected_output,
-                metrics=metrics,
-                latency_ms=(time.time() - start) * 1000
+            # Execute with resource limits
+            result = subprocess.run(
+                safe_command,
+                capture_output=True,
+                text=True,
+                cwd=self.allowed_paths[0] if self.allowed_paths else "/tmp",
+                env=self._create_safe_env()
             )
 
+            execution_time = time.time() - start
+
+            return {
+                "success": result.returncode == 0,
+                "output": result.stdout,
+                "error": result.stderr,
+                "execution_time": execution_time,
+                "return_code": result.returncode
+            }
+
+        except subprocess.TimeoutExpired:
+            return {
+                "success": False,
+                "output": "",
+                "error": f"Command timed out after {self.max_cpu_seconds}s",
+                "execution_time": time.time() - start
+            }
         except Exception as e:
-            result = TestResult(
-                test_id=test_case.id,
-                status=TestStatus.ERROR,
-                actual_output="",
-                expected_output=test_case.expected_output,
-                metrics={},
-                latency_ms=(time.time() - start) * 1000,
-                error=str(e)
-            )
+            return {
+                "success": False,
+                "output": "",
+                "error": str(e),
+                "execution_time": time.time() - start
+            }
 
-        self.test_history.append(result)
+    def _create_safe_wrapper(self, command: str, input_file: Optional[str]) -> str:
+        """Crea wrapper seguro para ejecutar comando."""
+        input_handling = f"""
+with open('{input_file}', 'r') as f:
+    import json
+    INPUT_DATA = json.load(f)
+""" if input_file else "INPUT_DATA = {}"
+
+        return f"""
+import sys
+import json
+import os
+
+{input_handling}
+
+# Safe execution environment
+os.chdir('/tmp/sandbox')
+os.environ['PATH'] = '/usr/bin:/bin'
+os.environ['HOME'] = '/tmp/sandbox'
+
+try:
+    exec('''{command}''')
+except Exception as e:
+    print(f'ERROR: {{e}}', file=sys.stderr)
+    sys.exit(1)
+"""
+
+    def _create_safe_env(self) -> Dict[str, str]:
+        """Crea ambiente seguro."""
+        env = {
+            "PATH": "/usr/bin:/bin",
+            "HOME": "/tmp/sandbox",
+            "LANG": "en_US.UTF-8",
+        }
+        # Remove any potentially dangerous variables
+        for key in ["LD_PRELOAD", "LD_LIBRARY_PATH", "PYTHONPATH"]:
+            env[key] = ""
+        return env</code></pre>
+
+<h2>⚠️ Error 1: Solo Confiar en el LLM para Safety</h2>
+<p><strong>El problema</strong>: Confiar ciegamente en que el LLM "sabrá no hacer cosas malas" es como dejar la puerta de la bóveda abierta confiando en que los ladrones serán honestos. LLMs pueden ser manipulated via jailbreaks, prompt injection, y simplemente por inputs inesperados.</p>
+
+<p><strong>La solución</strong>: Safety layers independientes del LLM. Cada acción pasa por checks de seguridad antes de ejecutarse, sin importar qué diga el prompt.</p>
+
+<pre><code class="language-python"># ❌ MAL: Solo confiar en el LLM
+async def execute_action_bad(tool_name, params, llm_reasoning):
+    # El LLM "decidió" que es seguro
+    if "parece seguro" in llm_reasoning.lower():
+        return await call_tool(tool_name, params)
+    return {"error": "LLM said no"}
+
+# ✅ BIEN: Capas de seguridad independientes
+async def execute_action_good(tool_name, params, safety_config):
+    # Capa 1: Permission check
+    permission_ok, reason = safety.check_permission(tool_name, params)
+    if not permission_ok:
+        return {"error": f"Permission denied: {reason}"}
+
+    # Capa 2: Constraint validation
+    action = {"tool_name": tool_name, "parameters": params}
+    constraints_ok, violations = constraint_engine.validate_action(action)
+    if not constraints_ok:
+        return {"error": f"Constraint violation: {violations}"}
+
+    # Capa 3: Risk evaluation
+    risk = safety.evaluate_risk(tool_name, params)
+    if risk == RiskLevel.CRITICAL:
+        # Require explicit confirmation
+        confirmed = await request_human_confirmation(tool_name, params)
+        if not confirmed:
+            return {"error": "Human rejected critical action"}
+
+    # Capa 4: Execute in sandbox if high risk
+    if risk in [RiskLevel.HIGH, RiskLevel.CRITICAL]:
+        result = sandbox.execute_in_sandbox(tool_name, params)
+        if not result["success"]:
+            return {"error": f"Sandbox execution failed: {result['error']}"}
         return result
 
-    async def run_test_suite(self, test_cases: List[TestCase], verbose: bool = True) -> Dict[str, Any]:
-        """Ejecuta todos los tests y retorna resumen."""
-        results = []
-        for tc in test_cases:
-            if verbose:
-                print(f"▶️  Ejecutando: {tc.name}")
-            result = await self.run_test(tc)
-            results.append(result)
+    # Capa 5: Execute normally
+    return await call_tool(tool_name, params)</code></pre>
 
-        # Resumen
-        total = len(results)
-        passed = sum(1 for r in results if r.status == TestStatus.PASS)
-        failed = sum(1 for r in results if r.status == TestStatus.FAIL)
-        partial = sum(1 for r in results if r.status == TestStatus.PARTIAL)
-        errors = sum(1 for r in results if r.status == TestStatus.ERROR)
+<h2>⚠️ Error 2: No Tener Rollback para Acciones Destructivas</h2>
+<p><strong>El problema</strong>: Cuando una acción destructiva se ejecuta por error, no hay forma de revertirla. Un agent que borra datos pensando que eran temporales no puede traerlos de vuelta.</p>
 
-        summary = {
-            "total": total,
-            "passed": passed,
-            "failed": failed,
-            "partial": partial,
-            "errors": errors,
-            "pass_rate": passed / total if total > 0 else 0,
-            "results": [r.to_dict() for r in results]
-        }
+<p><strong>La solución</strong>: Acciones destructivas deben ser soft deletes o tener backup automático antes de ejecutar.</p>
 
-        if verbose:
-            print(f"\n📊 Resumen: {passed}/{total} tests pasados ({summary['pass_rate']:.1%})")
+<pre><code class="language-python">class SoftDeleteProtector:
+    """Wrapper que convierte deletes en soft deletes."""
 
-        return summary</code></pre>
+    def __init__(self, backup_prefix: str = "/backups"):
+        self.backup_prefix = backup_prefix
+        os.makedirs(backup_prefix, exist_ok=True)
 
-<h2>📐 A/B Testing para Prompts</h2>
-<p>No es suficiente decir "este prompt funciona mejor". Necesitás evidencia estadística. A/B testing te permite comparar dos versiones de un prompt con significancia estadística.</p>
-
-<pre><code class="language-python">import numpy as np
-from scipy import stats
-from dataclasses import dataclass
-from typing import List, Tuple
-
-@dataclass
-class ABTestResult:
-    variant_a_results: List[float]
-    variant_b_results: List[float]
-    p_value: float
-    is_significant: bool
-    winner: str
-    confidence_interval: Tuple[float, float]
-    effect_size: float
-
-class ABPromptTester:
-    """Test A/B para comparar variantes de prompts."""
-
-    def __init__(self, significance_level: float = 0.05):
-        self.alpha = significance_level
-
-    def run_ab_test(
-        self,
-        prompt_a: str,
-        prompt_b: str,
-        test_inputs: List[str],
-        scorer_fn: callable,
-        n_iterations: int = 5
-    ) -> ABTestResult:
+    async def protected_delete(self, original_delete_func, table: str, query: Dict) -> Dict:
         """
-        Corre test A/B entre dos prompts.
-
-        Para cada input, ejecuta ambos prompts múltiples veces
-        para account for variabilidad del LLM.
+        Hace backup antes de delete y convierte en soft delete.
         """
-        scores_a = []
-        scores_b = []
-
-        for input_text in test_inputs:
-            for _ in range(n_iterations):
-                output_a = self.call_llm(prompt_a, input_text)
-                output_b = self.call_llm(prompt_b, input_text)
-
-                score_a = scorer_fn(output_a, input_text)
-                score_b = scorer_fn(output_b, input_text)
-
-                scores_a.append(score_a)
-                scores_b.append(score_b)
-
-        # Test estadístico (t-test de dos muestras)
-        t_stat, p_value = stats.ttest_ind(scores_a, scores_b)
-
-        mean_a = np.mean(scores_a)
-        mean_b = np.mean(scores_b)
-
-        # Effect size (Cohen's d)
-        pooled_std = np.sqrt((np.var(scores_a) + np.var(scores_b)) / 2)
-        effect_size = (mean_b - mean_a) / pooled_std if pooled_std > 0 else 0
-
-        # Confidence interval para la diferencia
-        se = pooled_std * np.sqrt(2 / len(scores_a))
-        ci_margin = 1.96 * se
-        ci = (mean_b - mean_a - ci_margin, mean_b - mean_a + ci_margin)
-
-        return ABTestResult(
-            variant_a_results=scores_a,
-            variant_b_results=scores_b,
-            p_value=p_value,
-            is_significant=p_value < self.alpha,
-            winner="B" if mean_b > mean_a and p_value < self.alpha else "A",
-            confidence_interval=ci,
-            effect_size=effect_size
-        )
-
-    def call_llm(self, prompt: str, input_text: str) -> str:
-        """Placeholder para llamada real al LLM."""
-        # En implementación real: await llm.generate(prompt.format(input=input_text))
-        pass
-
-# Uso:
-def quality_scorer(output: str, reference: str) -> float:
-    """Scorer simple: similaridad de contenido."""
-    output_words = set(output.lower().split())
-    ref_words = set(reference.lower().split())
-    if not ref_words:
-        return 0.0
-    return len(output_words & ref_words) / len(ref_words)
-
-tester = ABPromptTester(significance_level=0.05)
-
-prompt_v1 = "Resume el siguiente texto en exactamente 3 oraciones: {input}"
-prompt_v2 = "Lee el siguiente texto y escribe un resumen conciso de máximo 3 oraciones que capture los puntos principales: {input}"
-
-test_inputs = [
-    "La inteligencia artificial está transformando la industria tecnológica...",
-    "Los modelos de lenguaje grande han revolucionado el procesamiento de texto...",
-    "La computación en la nube permite escalar recursos dinámicamente...",
-]
-
-result = tester.run_ab_test(prompt_v1, prompt_v2, test_inputs, quality_scorer)
-
-print(f"🧪 Ganador: Variante {result.winner}")
-print(f"   p-value: {result.p_value:.4f}")
-print(f"   Significativo: {'Sí' if result.is_significant else 'No'}")
-print(f"   Effect size: {result.effect_size:.3f}")
-print(f"   IC 95%: {result.confidence_interval}")</code></pre>
-
-<h2>📐 Regression Testing Automatizado</h2>
-<p>Cada vez que cambiás un prompt, necesitás saber si empeoraste algo que funcionaba. El regression test suite corre automáticamente en CI/CD.</p>
-
-<pre><code class="language-python">import pytest
-import asyncio
-from typing import List
-
-class TestPromptRegression:
-    """Test suite de regresión para prompts en producción."""
-
-    @pytest.fixture
-    def evaluator(self):
-        # Setup: inicializar evaluador con prompt actual
-        from your_app import create_evaluator
-        return create_evaluator()
-
-    @pytest.fixture
-    def regression_cases(self) -> List[TestCase]:
-        """Casos de prueba que NUNCA deben empeorar."""
-        return [
-            TestCase(
-                id="regression_001",
-                name="Saludo profesional",
-                prompt_template="Escribe un correo de saludo profesional para {recipient}",
-                variables={"recipient": "Juan Pérez, director de ventas"},
-                evaluation_criteria={
-                    "contains": ["estimado", "saludos", "atentamente"],
-                    "min_length": 50
-                }
-            ),
-            TestCase(
-                id="regression_002",
-                name="Respuesta a queja",
-                prompt_template="Responde de manera empática a: {complaint}",
-                variables={"complaint": "Mi pedido llegó tarde y dañado"},
-                evaluation_criteria={
-                    "contains": ["lamentamos", "compensación", "próximo pedido"],
-                    "min_length": 100
-                }
-            ),
-            TestCase(
-                id="regression_003",
-                name="Resumen ejecutivo",
-                prompt_template="Resume en 3 puntos clave: {text}",
-                variables={"text": "Las ventas del Q3 crecieron 15% debido a la expansión en Latinoamérica."},
-                evaluation_criteria={
-                    "max_length": 500,
-                    "regex_match": r"\d+%"  # Debe contener algún número
-                }
-            ),
-        ]
-
-    @pytest.mark.asyncio
-    async def test_no_regression(self, evaluator, regression_cases):
-        """Test principal: ningún caso de regresión debe fallar."""
-        # Baseline: resultados esperados basados en la versión que funciona
-        baseline_pass_rate = 0.95  # 95% mínimo
-
-        summary = await evaluator.run_test_suite(regression_cases, verbose=False)
-
-        assert summary["pass_rate"] >= baseline_pass_rate, (
-            f"Regression detected! Pass rate {summary['pass_rate']:.1%} "
-            f"below baseline {baseline_pass_rate:.1%}. "
-            f"Failed tests: {[r['test_id'] for r in summary['results'] if r['status'] != 'pass']}"
-        )
-
-    @pytest.mark.asyncio
-    async def test_latency_acceptable(self, evaluator):
-        """Verifica que la latencia no haya aumentado >20%."""
-        latency_test = TestCase(
-            id="latency_001",
-            name="Latency check",
-            prompt_template="Responde algo simple: {input}",
-            variables={"input": "Hola"},
-            evaluation_criteria={"max_length": 100}
-        )
-
-        result = await evaluator.run_test(latency_test)
-        max_latency_ms = 2000  # 2 segundos máximo
-
-        assert result.latency_ms < max_latency_ms, (
-            f"Latency too high: {result.latency_ms:.0f}ms > {max_latency_ms}ms"
-        )
-
-    @pytest.mark.asyncio
-    async def test_output_consistency(self, evaluator):
-        """Verifica que el mismo input produzca outputs consistentes."""
-        consistency_test = TestCase(
-            id="consistency_001",
-            name="Consistency check",
-            prompt_template="Clasifica: {text}",
-            variables={"text": "Me encanta este producto, es increíble"},
-            evaluation_criteria={"contains": ["positivo", "posith", "good"]}
-        )
-
-        # Corre 5 veces y verifica consistencia
-        results = [await evaluator.run_test(consistency_test) for _ in range(5)]
-        statuses = [r.status for r in results]
-
-        # Al menos 4/5 deben pasar
-        pass_count = sum(1 for s in statuses if s == TestStatus.PASS)
-        assert pass_count >= 4, f"Inconsistent outputs: {pass_count}/5 passed"
-
-# Para correr en CI/CD:
-# pytest tests/prompt_regression.py -v --tb=short
-</code></pre>
-
-<h2>⚠️ Error 1: No Tener Test Suite para Prompts</h2>
-<p><strong>El problema</strong>: Sin tests, los prompts se convierten en tierra de nadie. Cualquiera puede cambiarlos "porque le pareció mejor". No hay forma de saber si un cambio mejoró o empeoró el comportamiento. Cuando algo falla en producción, no hay forma de hacer debug.</p>
-
-<p><strong>La solución</strong>: Crear un test suite desde el día uno. Empezá con 10-20 casos que cubran los escenarios más importantes (happy path, edge cases, inputs problemáticos). Agregá más a medida que encontrés bugs.</p>
-
-<pre><code class="language-python"># Estructura de tests/
-# tests/
-# ├── __init__.py
-# ├── conftest.py           # Fixtures compartidos
-# ├── test_prompts/
-# │   ├── __init__.py
-# │   ├── test_greetings.py      # Prompts de saludo
-# │   ├── test_summaries.py     # Prompts de resumen
-# │   ├── test_classification.py # Prompts de clasificación
-# │   └── regression_tests.py    # Tests que nunca deben fallar
-# └── test_integration.py        # Tests end-to-end
-
-# conftest.py
-import pytest
-
-@pytest.fixture(scope="session")
-def llm_client():
-    """Cliente LLM compartido para todos los tests."""
-    from your_llm_client import LLMClient
-    return LLMClient()
-
-@pytest.fixture(scope="session")
-def evaluator(llm_client):
-    """Evaluador de prompts."""
-    from prompt_evaluator import PromptEvaluator
-    return PromptEvaluator(llm_client)
-</code></pre>
-
-<h2>⚠️ Error 2: Testing con Pocos Ejemplos Sin Entender la Distribución</h2>
-<p><strong>El problema</strong>: Testeas el prompt con 3-5 ejemplos que vos elegís, funciona perfecto, pero en producción con inputs reales empieza a fallar estrepitosamente. Esto pasa porque tus ejemplos no representan la distribución real de inputs.</p>
-
-<p><strong>La solución</strong>: Sampling representativo. Entendé la distribución de tus datos y muestreá proporcionalmente:</p>
-
-<pre><code class="language-python">from collections import Counter
-import random
-
-def create_representative_test_set(real_inputs: List[str], n_samples: int = 100) -> List[str]:
-    """
-    Crea test set que representa la distribución real de inputs.
-
-    Agrupa inputs similares y muestrea proporcionalmente.
-    """
-    # Clustering simple por longitud (proxy de complejidad)
-    buckets = {
-        "short": [],      # < 100 chars
-        "medium": [],     # 100-500 chars
-        "long": [],       # > 500 chars
-    }
-
-    for inp in real_inputs:
-        if len(inp) < 100:
-            buckets["short"].append(inp)
-        elif len(inp) < 500:
-            buckets["medium"].append(inp)
-        else:
-            buckets["long"].append(inp)
-
-    # Distribución observada en producción
-    distribution = {
-        "short": 0.3,
-        "medium": 0.5,
-        "long": 0.2
-    }
-
-    # Muestrear proporcionalmente
-    samples = []
-    for bucket_name, ratio in distribution.items():
-        n_from_bucket = int(n_samples * ratio)
-        bucket_samples = random.sample(
-            buckets[bucket_name],
-            min(n_from_bucket, len(buckets[bucket_name]))
-        )
-        samples.extend(bucket_samples)
-
-    return samples
-
-# Si no tenés datos reales, usá distribuciones known
-# y genera synthetic examples que cubran el espacio
-
-def generate_diverse_test_cases(prompt_type: str, n: int = 100) -> List[Dict]:
-    """Genera casos diversos para un tipo de prompt."""
-    generators = {
-        "customer_complaint": generate_complaint_cases,
-        "support_ticket": generate_support_cases,
-        "review": generate_review_cases,
-    }
-
-    gen = generators.get(prompt_type, generate_generic_cases)
-    return gen(n)
-</code></pre>
-
-<h2>⚠️ Error 3: No Medir Inter-Annotator Agreement</h2>
-<p><strong>El problema</strong>: Usás evaluación humana para medir calidad pero no verificás que los anotadores estén de acuerdo entre sí. Un anotador puede calificar 8/10 y otro 3/10 para el mismo output. ¿A quién creés? Sin agreement, las evaluaciones son ruido.</p>
-
-<p><strong>La solución</strong>: Medir agreement con Krippendorff's alpha o Cohen's kappa. Si el agreement es bajo, los criterios no están claros o los anotadores necesitan más guía.</p>
-
-<pre><code class="language-python">from typing import List, Dict, Tuple
-import numpy as np
-
-def cohens_kappa(annotations_1: List[int], annotations_2: List[int]) -> float:
-    """Calcula Cohen's kappa entre dos anotadores."""
-    n = len(annotations_1)
-    assert n == len(annotations_2)
-
-    # Matriz de confusión
-    categories = sorted(set(annotations_1 + annotations_2))
-    k = len(categories)
-    matrix = np.zeros((k, k))
-
-    for a1, a2 in zip(annotations_1, annotations_2):
-        i, j = categories.index(a1), categories.index(a2)
-        matrix[i, j] += 1
-
-    # Agreement observado
-    po = np.trace(matrix) / n
-
-    # Agreement esperado por azar
-    pe = 0
-    for i in range(k):
-        row_sum = matrix[i, :].sum()
-        col_sum = matrix[:, i].sum()
-        pe += (row_sum * col_sum) / (n * n)
-
-    kappa = (po - pe) / (1 - pe) if pe < 1 else 1.0
-    return kappa
-
-def krippendorffs_alpha(
-    annotations: Dict[str, List[int]],  # annotator_id -> ratings
-    categories: int
-) -> float:
-    """
-    Calcula Krippendorff's alpha para múltiples anotadores.
-
-    categories: número de categorías de rating (e.g., 5 para 1-5)
-    """
-    # Crear matriz de anotaciones: items x annotators
-    items = set()
-    for ann_list in annotations.values():
-        items.update(range(len(ann_list)))
-
-    n_items = len(items)
-    n_annotators = len(annotations)
-
-    # Coincidences matrix
-    coincidence = np.zeros((categories, categories))
-
-    for ann_id, ratings in annotations.items():
-        for i, rating in enumerate(ratings):
-            if i in items:
-                coincidence[rating, rating] += 1
-
-    # Agreements observados
-    Do = np.trace(coincidence) / coincidence.sum()
-
-    # Agreements esperados
-    De = sum(
-        coincidence[i, j] * coincidence[j, i]
-        for i in range(categories)
-        for j in range(categories)
-    ) / (coincidence.sum() ** 2)
-
-    alpha = 1 - (Do / De) if De > 0 else 1.0
-    return alpha
-
-# Uso:
-human_ratings = {
-    "annotator_A": [5, 4, 3, 5, 4],  # Ratings de cada output
-    "annotator_B": [5, 4, 4, 5, 4],
-    "annotator_C": [4, 5, 3, 5, 4],
-}
-
-kappa_AB = cohens_kappa(human_ratings["annotator_A"], human_ratings["annotator_B"])
-kappa_AC = cohens_kappa(human_ratings["annotator_A"], human_ratings["annotator_C"])
-
-print(f"Κ A-B: {kappa_AB:.3f} (Aceptable si > 0.6)")
-print(f"Κ A-C: {kappa_AC:.3f}")
-
-# Inter-annotator agreement general
-alpha = krippendorffs_alpha(human_ratings, categories=5)
-print(f"Krippendorff's α: {alpha:.3f} (Bueno si > 0.8)")
-
-# Si el agreement es bajo, revisar los criterios de anotación
-if alpha < 0.7:
-    print("⚠️ WARNING: Agreement bajo. Revisar guidelines de anotación.")</code></pre>
-
-<h2>📊 Métricas de Evaluación de Prompts</h2>
-<p>Además de tests automatizados, necesitás métricas cuantitativas para comparar versiones de prompts:</p>
-
-<pre><code class="language-python">class PromptMetrics:
-    """Métricas para evaluar calidad de prompts."""
-
-    @staticmethod
-    def similarity_score(output: str, reference: str) -> float:
-        """Similaridad coseno entre output y referencia (usar embeddings)."""
-        # En implementación real: usar sentence-transformers
-        return 0.85
-
-    @staticmethod
-    def keyword_coverage(output: str, required_keywords: List[str]) -> float:
-        """Qué porcentaje de keywords requeridas aparecen en el output."""
-        if not required_keywords:
-            return 1.0
-        present = sum(1 for kw in required_keywords if kw.lower() in output.lower())
-        return present / len(required_keywords)
-
-    @staticmethod
-    def length_ratio(output: str, target_length: Tuple[int, int]) -> float:
-        """Output está dentro del rango de longitud esperado."""
-        length = len(output)
-        min_len, max_len = target_length
-        if min_len <= length <= max_len:
-            return 1.0
-        elif length < min_len:
-            return length / min_len
-        else:
-            return max(0, 1 - (length - max_len) / max_len)
-
-    @staticmethod
-    def toxicity_score(output: str) -> float:
-        """Puntaje de toxicidad (menor es mejor)."""
-        # En implementación real: usar perspective API o modelo de toxicity
-        return 0.05  # 5% de toxicidad
-
-    @staticmethod
-    def format_adherence(output: str, required_format: str) -> float:
-        """Output sigue el formato requerido (JSON, lista, etc.)."""
-        if required_format == "json":
-            import json
-            try:
-                json.loads(output)
-                return 1.0
-            except:
-                return 0.0
-        elif required_format == "list":
-            lines = [l.strip() for l in output.split('\n') if l.strip()]
-            return 1.0 if all('-' in l or l[0].isdigit() for l in lines) else 0.0
-        return 0.5
-
-    def compute_composite_score(
-        self,
-        output: str,
-        reference: str = None,
-        required_keywords: List[str] = None,
-        target_length: Tuple[int, int] = None,
-        required_format: str = None,
-        weights: Dict[str, float] = None
-    ) -> Dict[str, float]:
-        """Compute weighted composite score."""
-        weights = weights or {
-            "similarity": 0.3,
-            "keywords": 0.2,
-            "length": 0.2,
-            "format": 0.15,
-            "toxicity": 0.15
+        # 1. Hacer backup de los datos que se van a borrar
+        backup_id = f"{table}_{int(time.time())}"
+        backup_path = f"{self.backup_prefix}/{backup_id}.json"
+
+        # 2. Leer datos antes de borrar
+        data_to_delete = await original_delete_func.fetch_for_delete(table, query)
+
+        if not data_to_delete:
+            return {"deleted": 0, "message": "No matching records"}
+
+        # 3. Guardar backup
+        with open(backup_path, 'w') as f:
+            json.dump({
+                "table": table,
+                "query": query,
+                "deleted_at": time.time(),
+                "data": data_to_delete
+            }, f)
+
+        # 4. Hacer soft delete (marcar como deleted, no borrar)
+        result = await original_delete_func.soft_delete(table, query, backup_id=backup_id)
+
+        return {
+            "deleted": result["count"],
+            "backup_id": backup_id,
+            "message": f"Soft deleted with backup at {backup_path}"
         }
 
-        scores = {
-            "similarity": self.similarity_score(output, reference) if reference else 1.0,
-            "keywords": self.keyword_coverage(output, required_keywords) if required_keywords else 1.0,
-            "length": self.length_ratio(output, target_length) if target_length else 1.0,
-            "toxicity": 1.0 - self.toxicity_score(output),  # Invertido: menor toxicidad = mayor score
-            "format": self.format_adherence(output, required_format) if required_format else 1.0,
+    async def restore(self, backup_id: str) -> Dict:
+        """Restaura datos desde un backup."""
+        backup_path = f"{self.backup_prefix}/{backup_id}.json"
+
+        if not os.path.exists(backup_path):
+            return {"error": f"Backup {backup_id} not found"}
+
+        with open(backup_path, 'r') as f:
+            backup = json.load(f)
+
+        # Restore to original table
+        result = await original_delete_func.restore(backup["table"], backup["data"])
+
+        return {
+            "restored": len(backup["data"]),
+            "table": backup["table"],
+            "message": f"Restored from {backup_id}"
         }
 
-        composite = sum(scores[k] * weights[k] for k in weights)
-        scores["composite"] = composite
+class ActionRegistry:
+    """Registry de acciones para poder hacer rollback."""
 
-        return scores
-</code></pre>
+    def __init__(self):
+        self.actions: List[Dict[str, Any]] = []
+        self.rollback_handlers: Dict[str, callable] = {}
+
+    def register_rollback(self, action_type: str, handler: callable):
+        """Registra un handler de rollback para un tipo de acción."""
+        self.rollback_handlers[action_type] = handler
+
+    async def execute_with_rollback(self, action: Dict[str, Any]) -> Dict[str, Any]:
+        """Ejecuta acción y guarda para posible rollback."""
+        action_type = action["type"]
+        params = action["parameters"]
+
+        # Execute
+        result = await self._execute_action(action_type, params)
+
+        # Register for rollback if successful
+        if result.get("success"):
+            self.actions.append({
+                "type": action_type,
+                "params": params,
+                "result": result,
+                "timestamp": time.time()
+            })
+
+        return result
+
+    async def rollback_last(self) -> Dict[str, Any]:
+        """Hace rollback de la última acción."""
+        if not self.actions:
+            return {"error": "No actions to rollback"}
+
+        last = self.actions.pop()
+        action_type = last["type"]
+
+        if action_type not in self.rollback_handlers:
+            return {"error": f"No rollback handler for {action_type}"}
+
+        return await self.rollback_handlers[action_type](last["params"], last["result"])</code></pre>
+
+<h2>⚠️ Error 3: No Monitorear Acciones en Tiempo Real</h2>
+<p><strong>El problema</strong>: Sin monitoreo, no sabes qué está haciendo tu agente hasta que algo malo pasa. Para cuando descubres el problema, ya es tarde.</p>
+
+<p><strong>La solución</strong>: Dashboard de monitoreo en tiempo real con alertas para acciones sospechosas.</p>
+
+<pre><code class="language-python">class AgentMonitor:
+    """Monitor en tiempo real para agentes."""
+
+    def __init__(self, alert_callback: Optional[callable] = None):
+        self.alert_callback = alert_callback
+        self.action_counts: Dict[str, int] = {}
+        self.anomaly_scores: List[float] = []
+        self.alert_thresholds = {
+            "actions_per_minute": 30,
+            "consecutive_errors": 5,
+            "anomaly_score": 0.8
+        }
+
+    def record_action(self, agent_id: str, action: Dict[str, Any]):
+        """Registra una acción del agente."""
+        tool = action.get("tool_name", "unknown")
+        self.action_counts[tool] = self.action_counts.get(tool, 0) + 1
+
+        # Check for anomalies
+        if self._is_anomaly(action):
+            self._trigger_alert(agent_id, "anomaly", action)
+
+        # Check rate limits
+        if self.action_counts[tool] > self.alert_thresholds["actions_per_minute"]:
+            self._trigger_alert(agent_id, "high_rate", {"tool": tool, "count": self.action_counts[tool]})
+
+    def record_error(self, agent_id: str, error: str):
+        """Registra un error del agente."""
+        # Track consecutive errors
+        self.anomaly_scores.append(1.0)
+
+        if len(self.anomaly_scores) >= self.alert_thresholds["consecutive_errors"]:
+            if all(s > 0.5 for s in self.anomaly_scores[-5:]):
+                self._trigger_alert(agent_id, "consecutive_errors", {
+                    "errors": self.anomaly_scores[-5:]
+                })
+
+    def _is_anomaly(self, action: Dict[str, Any]) -> bool:
+        """Detecta si una acción es anómala."""
+        # Implementar lógica de detección de anomalías
+        # Por ejemplo: acciones nunca vistas antes, parámetros inusuales, etc.
+        tool = action.get("tool_name", "")
+        params = action.get("parameters", {})
+
+        # Simple anomaly detection: very large parameters
+        if len(json.dumps(params)) > 10000:
+            return True
+
+        return False
+
+    def _trigger_alert(self, agent_id: str, alert_type: str, data: Dict):
+        """Dispara una alerta."""
+        alert = {
+            "agent_id": agent_id,
+            "type": alert_type,
+            "data": data,
+            "timestamp": time.time()
+        }
+
+        if self.alert_callback:
+            self.alert_callback(alert)
+
+        # Log to monitoring system (e.g., Prometheus, DataDog)
+        print(f"🚨 ALERT [{alert_type}]: Agent {agent_id} - {data}")
+
+    def get_status(self) -> Dict[str, Any]:
+        """Obtiene estado actual del monitoreo."""
+        return {
+            "action_counts": self.action_counts,
+            "avg_anomaly_score": sum(self.anomaly_scores) / len(self.anomaly_scores) if self.anomaly_scores else 0,
+            "total_actions": sum(self.action_counts.values())
+        }</code></pre>
+
+<h2>📐 Best Practices para Production</h2>
+<p>Resumen de prácticas esenciales para correr agentes seguros en producción:</p>
+
+<ul>
+<li><strong>Principio de mínimo privilegio</strong>: Agentes solo tienen permisos para lo que necesitan</li>
+<li><strong>Defense in depth</strong>: Múltiples capas de seguridad, ninguna es suficiente sola</li>
+<li><strong>Audit everything</strong>: Logging completo de todas las acciones</li>
+<li><strong>Human in the loop</strong>: Acciones críticas requieren confirmación humana</li>
+<li><strong>Soft deletes</strong>: Nunca borrar datos irrevocablemente</li>
+<li><strong>Monitoreo real-time</strong>: Alertas inmediatas para comportamiento anómalo</li>
+<li><strong>Rollback capability</strong>: Siempre poder deshacer acciones</li>
+<li><strong>Regular reviews</strong>: Auditar periódicamente qué están haciendo los agentes</li>
+</ul>
 
 <h2>📝 Resumen y Cierre</h2>
-<p>Hagale pues, parcero. Testing de prompts no es opcional ni "nice to have" — es tan importante como los tests de código. Lo que aprendimos hoy:</p>
+<p>Hagale pues, parcero. Safety en agentes no es optional — es lo que separa un agent útil de un liability legal. Lo que aprendimos hoy:</p>
 
 <ul>
-<li><strong>Prompt Test Framework</strong>: Estructura para crear, correr y trackear tests de prompts</li>
-<li><strong>A/B Testing estadístico</strong>: Comparar variantes con confianza estadística</li>
-<li><strong>Regression Testing</strong>: Proteger funcionalidad existente en cada cambio</li>
-<li><strong>Muestreo representativo</strong>: Tests que reflejan la distribución real de inputs</li>
-<li><strong>Inter-annotator agreement</strong>: Verificar que evaluación humana sea confiable</li>
+<li><strong>Defense in depth</strong>: Múltiples capas de protección independientes del LLM</li>
+<li><strong>Permission model</strong>: Qué puede hacer cada agente, con límites claros</li>
+<li><strong>Constraints operacionais</strong>: Reglas que ninguna acción puede violar</li>
+<li><strong>Sandboxing</strong>: Aislamiento para acciones peligrosas</li>
+<li><strong>Soft deletes y rollback</strong>: Nunca perder datos irrevocablemente</li>
+<li><strong>Monitoreo real-time</strong>: Saber qué pasa antes de que sea un problema</li>
 </ul>
 
-<p>El 80% que salta el testing termina con:</p>
+<p>El 70% que implementa agentes sin safety termina con:</p>
 <ul>
-<li>Prompts que "funcionaban" y de repente no</li>
-<li>No saber qué cambió cuando algo falla</li>
-<li>Clientes insatisfechos con outputs inconsistentes</li>
+<li>Agents que hacen cosas inexplicables</li>
+<li>Datos eliminados por error</li>
+<li>Emails inapropiados enviados</li>
+<li>Exposición de información confidencial</li>
+<li>Problemas legales por GDPR y otras regulaciones</li>
 </ul>
 
-<p>El 20% que hace testing bien tiene:</p>
-<ul>
-<li>Confianza al hacer cambios</li>
-<li>Rollback rápido si algo falla</li>
-<li>Mejora continua basada en datos, no en intuición</li>
-</ul>
-
-<p>La diferencia entre un prompt funcionando en demo y uno funcionando en producción es el testing. No lo ignorés.</p>
+<p>El 30% que hace safety bien tiene agentes que generan valor sin generar problemas. No seas del 70%.</p>
 
 <p>Nos vemos en el Día 265. Chaoman.</p>
   </article>

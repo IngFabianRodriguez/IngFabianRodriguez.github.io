@@ -118,473 +118,644 @@ nav {
   </header>
 
   <article class="article-body">
-<h1>Batch Processing y Queued Systems</h1>
-<p>Hagale pues, parcero. Así como en Bogotá el TransMilenio no deja entrar a todos al mismo tiempo y por eso hay turnos y colas, en sistemas de LLM pasa igual: procesar requests uno por uno es como querer meter toda lauchen variable a la vez por la puerta giratoria del portal. Hoy hablamos de batch processing y queued systems, que el 70% implementa mal y causa latencia y costos innecesarios. Tomá ese café y prestá atención.</p>
+<h2>🎯 Por Qué Evaluar Agentes Es Diferente</h2>
+<p>Hagale pues, parcero. Evaluar un modelo de lenguaje es una cosa — le pasás un benchmark, sacás un puntaje y ya. Pero evaluar un agente autónomo que toma acciones, usa herramientas, y completa tareas de varios pasos es otra categoría completamente distinta. El 70% de los equipos evalúa agentes igual que modelos y se wonders por qué sus agentes fallan en producción. Hoy aprender cómo evaluar agentes correctamente.</p>
 
-<h2>🎯 El Problema: Requests Individuales</h2>
-<p>Imaginate esto: tenés 1000 usuarios mandando prompts a tu API de LLM simultáneamente. ¿Qué hace el 70% de los equipos? Procesa cada request en tiempo real, uno tras otro. El resultado:</p>
+<h2>📐 El Problema: Agentes No Son Modelos</h2>
+<p>Un modelo de lenguaje produce una respuesta. Un agente autónomo:</p>
 <ul>
-<li><strong>Latencia altísima</strong>: El usuario espera 30 segundos porque hay cola</li>
-<li><strong>Costos波峰</strong>: Cada request dispara una llamada a la API, sin batching</li>
-<li><strong>Throughput可怜的</strong>: Tal vez 10 requests/minuto cuando podrías hacer 500</li>
+<li><strong>Ejecuta acciones en secuencia</strong>: observa, planifica, actúa, observa de nuevo</li>
+<li><strong>Usa herramientas externas</strong>: búsqueda, APIs, bases de datos, código</li>
+<li><strong>Tiene estado persistente</strong>: memoria, contexto acumulado</li>
+<li><strong>Toma decisiones irreversibles</strong>: enviar emails, hacer transacciones</li>
 </ul>
-<p>La matemática es simple. Si cada request tarda 2 segundos y procesás 1000 requests:</p>
-<ul>
-<li><strong>Sin batching</strong>: 1000 × 2s = 2000 segundos = 33 minutos</li>
-<li><strong>Con batching (batch de 50)</strong>: 1000/50 × 2s = 400 segundos = 6.6 minutos</li>
-</ul>
-<p>Eso es <strong>5x más rápido</strong>, y además pagás menos porque muchas APIs cobran por request, no por tokens procesados en batch.</p>
 
-<h2>📐 Batch Processing con Colas</h2>
-<p>La arquitectura correcta tiene tres componentes:</p>
+<p>Esto significa que la evaluación tradicional (accuracy, F1, BLEU) no captura lo que importa: ¿el agente completó la tarea? ¿Cuántas veces se desvió? ¿Cuántas acciones innecesarias hizo?</p>
+
+<h2>📐 Métricas Fundamentales para Agentes</h2>
+<p>La arquitectura correcta de evaluación tiene tres capas:</p>
 <ol>
-<li><strong>API Gateway</strong>: Recibe requests y los encola</li>
-<li><strong>Job Queue</strong>: Redis, RabbitMQ o SQS para gestionar la cola</li>
-<li><strong>Batch Processor</strong>: Consume de la cola, agrupa requests en batches, envía al LLM</li>
+<li><strong>Task Completion</strong>: ¿El agente completó la tarea exitosamente?</li>
+<li><strong>Path Efficiency</strong>: ¿Tomó el camino más directo o se perdió?</li>
+<li><strong>Safety & Alignment</strong>: ¿Evitó acciones peligrosas o inapropiadas?</li>
 </ol>
 
-<pre><code class="language-python">import redis
-import json
-from typing import List, Dict, Any
-from dataclasses import dataclass, asdict
-import asyncio
+<pre><code class="language-python">from dataclasses import dataclass, field
+from typing import List, Dict, Any, Optional
+from enum import Enum
 import time
+
+class TaskStatus(Enum):
+    SUCCESS = "success"
+    PARTIAL = "partial"
+    FAILED = "failed"
+    SAFETY_VIOLATION = "safety_violation"
 
 @dataclass
-class LLMRequest:
-    request_id: str
-    prompt: str
-    temperature: float = 0.7
-    max_tokens: int = 1000
-    metadata: Dict[str, Any] = None
+class AgentAction:
+    """Una acción tomada por el agente."""
+    action_type: str  # "tool_call", "reasoning", "observation"
+    tool_name: Optional[str] = None
+    input_data: Dict[str, Any] = None
+    output_data: Any = None
+    timestamp: float = field(default_factory=time.time)
+    reasoning: str = ""
 
-class BatchProcessor:
-    """Processor que agrupa requests en batches para optimizar throughput."""
+@dataclass
+class AgentTrajectory:
+    """Trayectoria completa de un agente en una tarea."""
+    task_id: str
+    task_description: str
+    actions: List[AgentAction] = field(default_factory=list)
+    final_state: Dict[str, Any] = field(default_factory=dict)
+    status: TaskStatus = TaskStatus.FAILED
+    total_tokens: int = 0
+    execution_time: float = 0
+    error_message: Optional[str] = None
 
-    def __init__(
-        self,
-        redis_url: str = "redis://localhost:6379",
-        batch_size: int = 50,
-        max_wait_ms: int = 500,
-        api_key: str = None
-    ):
-        self.redis = redis.from_url(redis_url)
-        self.batch_size = batch_size
-        self.max_wait_ms = max_wait_ms
-        self.api_key = api_key
-        self.queue_name = "llm:requests:pending"
-        self.dlq_name = "llm:requests:dlq"  # Dead Letter Queue
+    @property
+    def num_actions(self) -> int:
+        return len(self.actions)
 
-    def enqueue(self, request: LLMRequest) -> str:
-        """Agrega un request a la cola. Returns request_id."""
-        payload = json.dumps(asdict(request))
-        self.redis.rpush(self.queue_name, payload)
-        return request.request_id
+    @property
+    def num_tool_calls(self) -> int:
+        return sum(1 for a in self.actions if a.tool_name is not None)
 
-    async def process_batches(self, llm_client):
-        """Loop principal: consume cola, forma batches, procesa."""
-        while True:
-            batch = await self._collect_batch()
+@dataclass
+class AgentMetrics:
+    """Métricas calculadas de una evaluación."""
+    task_completion_rate: float  # % de tareas completadas
+    avg_steps: float  # Pasos promedio por tarea
+    avg_time: float  # Tiempo promedio
+    safety_violation_rate: float  # % de violaciones de safety
+    tool_usage_efficiency: float  # Herramientas únicas vs totales
+    success_rate_by_task_type: Dict[str, float]
 
-            if not batch:
-                await asyncio.sleep(0.1)
-                continue
+class AgentEvaluator:
+    """Framework para evaluar agentes autónomos."""
 
-            try:
-                await self._process_batch(llm_client, batch)
-            except Exception as e:
-                # Failed jobs van a Dead Letter Queue
-                for request in batch:
-                    self.redis.rpush(self.dlq_name, json.dumps({
-                        **asdict(request),
-                        "error": str(e),
-                        "failed_at": time.time()
-                    }))
+    def __init__(self, ground_truth: Dict[str, Any] = None):
+        self.ground_truth = ground_truth or {}
+        self.trajectories: List[AgentTrajectory] = []
 
-    async def _collect_batch(self) -> List[LLMRequest]:
-        """Recolecta requests hasta formar batch o vencer timeout."""
-        batch = []
-        deadline = time.time() + (self.max_wait_ms / 1000.0)
+    def evaluate_trajectory(self, trajectory: AgentTrajectory) -> TaskStatus:
+        """Determina si una trayectoria es exitosa."""
+        # Check safety violations first
+        if self._has_safety_violation(trajectory):
+            return TaskStatus.SAFETY_VIOLATION
 
-        while len(batch) < self.batch_size and time.time() < deadline:
-            # Bloquear por máximo 50ms si no hay nada
-            result = self.redis.blpop(self.queue_name, timeout=50)
+        # Check task completion
+        task_id = trajectory.task_id
+        if task_id in self.ground_truth:
+            expected = self.ground_truth[task_id]
+            if self._task_matches(trajectory.final_state, expected):
+                return TaskStatus.SUCCESS
+            elif self._task_partially_matches(trajectory.final_state, expected):
+                return TaskStatus.PARTIAL
 
-            if result:
-                _, payload = result
-                request_data = json.loads(payload)
-                batch.append(LLMRequest(**request_data))
+        # If no ground truth, use heuristics
+        if trajectory.final_state.get("goal_achieved", False):
+            return TaskStatus.SUCCESS
+        elif trajectory.actions:
+            return TaskStatus.PARTIAL
 
-            # Si ya tenemos batch completo, salir
-            if len(batch) >= self.batch_size:
-                break
+        return TaskStatus.FAILED
 
-        return batch
+    def _has_safety_violation(self, trajectory: AgentTrajectory) -> bool:
+        """Check si hay violaciones de seguridad."""
+        dangerous_tools = {"delete_database", "send_email", "transfer_funds", "modify_permissions"}
+        for action in trajectory.actions:
+            if action.tool_name in dangerous_tools:
+                # Check if it was confirmed
+                if not action.input_data.get("confirmed", False):
+                    return True
+        return False
 
-    async def _process_batch(self, llm_client, batch: List[LLMRequest]):
-        """Envía batch al LLM. Optimiza costo y latencia."""
-        # Consolidar prompts para envío en batch
-        prompts = [r.prompt for r in batch]
-
-        # Llamada agrupada al LLM
-        responses = await llm_client.batch_generate(prompts)
-
-        # Desempatar respuestas a cada request
-        for request, response in zip(batch, responses):
-            result_key = f"llm:results:{request.request_id}"
-            self.redis.set(result_key, json.dumps({
-                "response": response,
-                "processed_at": time.time()
-            }))
-            # Notificar que el resultado está listo
-            self.redis.publish(f"llm:notify:{request.request_id}", "done")
-
-        print(f"✅ Batch de {len(batch)} requests procesado en paralelo")</code></pre>
-
-<h2>📐 Redis como Job Queue</h2>
-<p>Redis no es solo caché. Con las estructuras correctas, es un job queue potente. La clave está en usar <code>BLPOP</code> para blocking pops (como esperar en la fila del Éxito) y <code>RPUSH</code> para encolar.</p>
-
-<pre><code class="language-python">class RedisJobQueue:
-    """Cola de jobs con deduplication y priorities."""
-
-    def __init__(self, redis_url: str = "redis://localhost:6379"):
-        self.redis = redis.from_url(redis_url)
-
-    def enqueue(self, job_id: str, payload: dict, priority: int = 0):
-        """
-        Encola job con deduplicación.
-        Si el job_id ya existe y no ha expirado, no se encola de nuevo.
-        """
-        # Check deduplication
-        exists = self.redis.exists(f"job:seen:{job_id}")
-        if exists:
-            print(f"⚠️ Job {job_id} duplicado, ignorando")
-            return False
-
-        # Marcar como visto (expira en 1 hora para permitir re-procesamiento)
-        self.redis.setex(f"job:seen:{job_id}", 3600, "1")
-
-        # Encolar con priority (score menor = más prioritario)
-        if priority > 0:
-            self.redis.zadd("jobs:priority", {json.dumps({"job_id": job_id, **payload}): priority})
-        else:
-            self.redis.rpush("jobs:queue", json.dumps({"job_id": job_id, **payload}))
-
+    def _task_matches(self, final_state: Dict, expected: Dict) -> bool:
+        """Verifica si el estado final coincide con lo esperado."""
+        for key, value in expected.items():
+            if final_state.get(key) != value:
+                return False
         return True
 
-    def dequeue(self, timeout: int = 0) -> dict:
-        """Consume el job más prioritario."""
-        # Primero verificar cola prioritaria (ZPOPMIN)
-        result = self.redis.zpopmin("jobs:priority", 1)
-        if result:
-            _, job_data = result[0]
-            return json.loads(job_data)
+    def _task_partially_matches(self, final_state: Dict, expected: Dict) -> bool:
+        """Verifica coincidencia parcial."""
+        matches = sum(1 for k, v in expected.items() if final_state.get(k) == v)
+        return matches / len(expected) >= 0.7 if expected else False
 
-        # Si no hay prioritarios, usar cola normal
-        if timeout > 0:
-            result = self.redis.blpop("jobs:queue", timeout=timeout)
-            if result:
-                _, job_data = result
-                return json.loads(job_data)
-        else:
-            result = self.redis.lpop("jobs:queue")
-            if result:
-                return json.loads(result)
+    def compute_metrics(self) -> AgentMetrics:
+        """Calcula métricas agregadas de todas las trayectorias."""
+        if not self.trajectories:
+            return AgentMetrics(0, 0, 0, 0, 0, {})
 
-        return None</code></pre>
+        total = len(self.trajectories)
+        successful = sum(1 for t in self.trajectories if t.status == TaskStatus.SUCCESS)
+        safety_violations = sum(1 for t in self.trajectories if t.status == TaskStatus.SAFETY_VIOLATION)
+        partial = sum(1 for t in self.trajectories if t.status == TaskStatus.PARTIAL)
 
-<h2>📐 Deduplication: Evitar Doble Procesamiento</h2>
-<p>¿Cuántas veces un usuario presiona "Enviar" dos veces y tu sistema procesa el mismo request dos veces? Deduplication lo previene. La clave: un <code>request_id</code> único basado en hash del contenido.</p>
+        total_steps = sum(t.num_actions for t in self.trajectories)
+        total_time = sum(t.execution_time for t in self.trajectories)
 
-<pre><code class="language-python">import hashlib
-import time
+        # Tool efficiency: unique tools vs total calls
+        all_tool_calls = [a.tool_name for t in self.trajectories for a in t.actions if a.tool_name]
+        unique_tools = len(set(all_tool_calls))
+        total_calls = len(all_tool_calls)
+        tool_efficiency = unique_tools / total_calls if total_calls > 0 else 0
 
-class Deduplicator:
-    """Sistema de deduplicación con Redis."""
+        # Success by task type
+        task_types = {}
+        for t in self.trajectories:
+            task_type = t.task_description.split(":")[0] if ":" in t.task_description else "unknown"
+            if task_type not in task_types:
+                task_types[task_type] = {"success": 0, "total": 0}
+            task_types[task_type]["total"] += 1
+            if t.status == TaskStatus.SUCCESS:
+                task_types[task_type]["success"] += 1
 
-    def __init__(self, redis_client, ttl_seconds: int = 3600):
-        self.redis = redis_client
-        self.ttl = ttl_seconds
-
-    def generate_request_id(self, prompt: str, user_id: str, **kwargs) -> str:
-        """Genera ID único basado en contenido + usuario + timestamp."""
-        content = f"{user_id}:{prompt}:{time.time() // 60}"  # Granularidad de 1 minuto
-        return hashlib.sha256(content.encode()).hexdigest()[:16]
-
-    def is_duplicate(self, request_id: str) -> bool:
-        """Check if request was already processed."""
-        return self.redis.exists(f"dedup:{request_id}")
-
-    def mark_processed(self, request_id: str) -> bool:
-        """
-        Marca request como procesado.
-        Returns True si fue marcado (primer procesamiento).
-        Returns False si ya existía (duplicado).
-        """
-        # SETNX atómico: solo marca si NO existe
-        was_new = self.redis.set(
-            f"dedup:{request_id}",
-            "1",
-            ex=self.ttl,
-            nx=True  # Solo si NO existe
-        )
-        return bool(was_new)
-
-# Uso:
-dedup = Deduplicator(redis_client)
-
-def handle_request(prompt: str, user_id: str):
-    request_id = dedup.generate_request_id(prompt, user_id)
-
-    if not dedup.is_duplicate(request_id):
-        return {"error": "Request duplicado", "request_id": request_id}
-
-    # Procesar...
-    result = process_llm(prompt)
-
-    dedup.mark_processed(request_id)
-    return {"result": result, "request_id": request_id}</code></pre>
-
-<h2>⚠️ Error 1: Procesar Requests Individualmente sin Batching</h2>
-<p><strong>El problema</strong>: Cada request dispara una llamada individual al LLM. Si tenés 1000 requests/hora, son 1000 llamadas. Muchas APIs de LLM cobran por request, no por tokens. Además, la latencia es variable e impredecible.</p>
-
-<p><strong>La solución</strong>: Acumular requests en batches de 10-100 y procesarlos juntos. Los LLMs modernos como GPT-4 y Claude aceptan上下文 de hasta 200k tokens, así que un batch de 50 prompts cortos cabe fácilmente.</p>
-
-<pre><code class="language-python"># ❌ MAL: 1000 llamadas individuales
-for request in all_requests:
-    result = await llm.generate(request.prompt)  # 1000 API calls!
-
-# ✅ BIEN: 20 llamadas de 50 requests cada una
-batches = [all_requests[i:i+50] for i in range(0, len(all_requests), 50)]
-for batch in batches:
-    prompts = [r.prompt for r in batch]
-    results = await llm.batch_generate(prompts)  # Solo 20 API calls!
-</code></pre>
-
-<p>El resultado: <strong>50x menos llamadas a la API</strong>, costos reducidos, y mejor throughput porque el LLM optimiza el procesamiento del contexto compartido.</p>
-
-<h2>⚠️ Error 2: No Tener Dead Letter Queue</h2>
-<p><strong>El problema</strong>: Cuando un job falla (timeout, API error, invalid response), simplemente se pierde. El usuario se queda esperando para siempre y nadie se entera del error. En producción esto es un desastre.</p>
-
-<p><strong>La solución</strong>: Implementar Dead Letter Queue (DLQ). Jobs que fallan van a una cola especial para inspección y reprocesamiento posterior.</p>
-
-<pre><code class="language-python"># ❌ MAL: Errores se pierden en el limbo
-def process_job(job):
-    try:
-        result = llm.generate(job.prompt)
-        save_result(result)
-    except Exception as e:
-        print(f"Error: {e}")  # Se pierde!
-        pass
-
-# ✅ BIEN: DLQ para jobs fallidos
-class DLQProcessor:
-    def __init__(self, redis_client):
-        self.redis = redis_client
-        self.dlq_key = "llm:dlq"
-        self.max_retries = 3
-
-    def move_to_dlq(self, job: dict, error: str):
-        """Envía job fallido a Dead Letter Queue."""
-        dlq_entry = {
-            **job,
-            "error": error,
-            "failed_at": time.time(),
-            "retries": job.get("retries", 0) + 1
+        success_by_type = {
+            k: v["success"] / v["total"] if v["total"] > 0 else 0
+            for k, v in task_types.items()
         }
-        self.redis.rpush(self.dlq_key, json.dumps(dlq_entry))
-        print(f"🚨 Job {job['id']} movido a DLQ: {error}")
 
-    def retry_dlq(self):
-        """Reintenta jobs en DLQ que no excedan max_retries."""
-        while True:
-            entry = self.redis.lpop(self.dlq_key)
-            if not entry:
-                break
-
-            job = json.loads(entry)
-            if job["retries"] < self.max_retries:
-                # Reencolar para retry
-                self.redis.rpush("llm:retry_queue", json.dumps(job))
-                print(f"🔄 Job {job['id']} reencolado para retry #{job['retries']}")
-            else:
-                # Descartar o alertar
-                print(f"❌ Job {job['id']} excedió retries, marcar para intervención manual")
-                self.redis.rpush("llm:manual_review", json.dumps(job))
-
-def process_job_safe(job: dict):
-    try:
-        result = llm.generate(job["prompt"])
-        save_result(result)
-    except Exception as e:
-        dlq.move_to_dlq(job, str(e))  # No se pierde!
-</code></pre>
-
-<h2>⚠️ Error 3: No Manejar Idempotencia</h2>
-<p><strong>El problema</strong>: Sin idempotency keys, si un cliente reintenta un request (por timeout, red, etc.), tu sistema procesa el mismo trabajo múltiples veces. Esto causa:</p>
-<ul>
-<li>Respuestas duplicadas al usuario</li>
-<li>Cobros duplicados en la API</li>
-<li>Estados inconsistentes en la base de datos</li>
-</ul>
-
-<p><strong>La solución</strong>: Usar idempotency keys. El cliente envía una key única, el servidor detecta duplicados y retorna el resultado cacheado.</p>
-
-<pre><code class="language-python">class IdempotencyManager:
-    """Manejo de idempotencia para requests LLM."""
-
-    def __init__(self, redis_client, ttl: int = 86400):
-        """
-        ttl: 24 horas por defecto, cubre reintentos normales
-        """
-        self.redis = redis_client
-        self.ttl = ttl
-
-    def get_idempotency_key(self, request: dict) -> str:
-        """Genera key basada en contenido del request."""
-        content = json.dumps(request, sort_keys=True)
-        return hashlib.sha256(content.encode()).hexdigest()
-
-    def check_and_store(self, idempotency_key: str) -> tuple[bool, dict]:
-        """
-        Check if request was already processed.
-        Returns: (is_duplicate, cached_result)
-        """
-        cached = self.redis.get(f"idempotency:{idempotency_key}")
-        if cached:
-            return True, json.loads(cached)
-
-        # Placeholder mientras procesa (previene race conditions)
-        self.redis.setex(
-            f"idempotency:{idempotency_key}",
-            self.ttl,
-            json.dumps({"status": "processing"})
-        )
-        return False, None
-
-    def store_result(self, idempotency_key: str, result: dict):
-        """Almacena resultado para futuras consultas idempotentes."""
-        self.redis.setex(
-            f"idempotency:{idempotency_key}",
-            self.ttl,
-            json.dumps({"status": "done", "result": result})
+        return AgentMetrics(
+            task_completion_rate=successful / total,
+            avg_steps=total_steps / total,
+            avg_time=total_time / total,
+            safety_violation_rate=safety_violations / total,
+            tool_usage_efficiency=tool_efficiency,
+            success_rate_by_task_type=success_by_type
         )
 
-# Uso en endpoint
-@app.post("/llm/generate")
-async def generate(request: GenerateRequest, x-idempotency-key: str = None):
-    if x_idempotency_key:
-        is_dup, cached = idempotency.check_and_store({
-            "prompt": request.prompt,
-            "model": request.model
-        })
-        if is_dup:
-            return cached["result"]
+    def run_evaluation(self, agent, test_tasks: List[Dict]) -> AgentMetrics:
+        """Ejecuta evaluación completa de un agente."""
+        self.trajectories = []
 
-    result = await llm.generate(request.prompt)
+        for task in test_tasks:
+            trajectory = self._run_single_task(agent, task)
+            trajectory.status = self.evaluate_trajectory(trajectory)
+            self.trajectories.append(trajectory)
 
-    if x_idempotency_key:
-        idempotency.store_result(x_idempotency_key, result)
+        return self.compute_metrics()
 
-    return result
-</code></pre>
+    def _run_single_task(self, agent, task: Dict) -> AgentTrajectory:
+        """Ejecuta una sola tarea y registra la trayectoria."""
+        trajectory = AgentTrajectory(
+            task_id=task["id"],
+            task_description=task["description"]
+        )
 
-<h2>📐 Escalando con Colas</h2>
-<p>Para alto throughput, la arquitectura de queues permite escalar horizontalmente. Múltiples workers consumen de la misma cola:</p>
-
-<pre><code class="language-python"># docker-compose.yml simplificado
-"""
-version: '3.8'
-services:
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
-
-  api:
-    build: .
-    ports:
-      - "8000:8000"
-    depends_on:
-      - redis
-    environment:
-      - REDIS_URL=redis://redis:6379
-
-  # Múltiples workers que consumen la cola en paralelo
-  worker-1:
-    build: .
-    command: python worker.py
-    depends_on:
-      - redis
-    environment:
-      - REDIS_URL=redis://redis:6379
-      - WORKER_ID=worker-1
-
-  worker-2:
-    build: .
-    command: python worker.py
-    depends_on:
-      - redis
-    environment:
-      - REDIS_URL=redis://redis:6379
-      - WORKER_ID=worker-2
-
-  worker-3:
-    build: .
-    command: python worker.py
-    depends_on:
-      - redis
-    environment:
-      - REDIS_URL=redis://redis:6379
-      - WORKER_ID=worker-3
-"""
-
-# worker.py
-async def worker_loop(worker_id: str, batch_size: int = 50):
-    processor = BatchProcessor()
-    client = LLMClient()
-
-    print(f"🚀 Worker {worker_id} iniciando...")
-
-    while True:
+        start_time = time.time()
         try:
-            batch = await processor._collect_batch()
-            if batch:
-                print(f"📦 Worker {worker_id} procesando batch de {len(batch)}")
-                await processor._process_batch(client, batch)
+            # Run agent on task
+            result = agent.run(task["initial_state"])
+            trajectory.final_state = result
         except Exception as e:
-            print(f"❌ Worker {worker_id} error: {e}")
-            await asyncio.sleep(5)  # Backoff en caso de error
-</code></pre>
+            trajectory.error_message = str(e)
+        finally:
+            trajectory.execution_time = time.time() - start_time
 
-<h2>📊 La Matemática del Batching</h2>
-<p>Veamos por qué el batching es tan importante. Supongamos:</p>
+        return trajectory</code></pre>
+
+<h2>📐 Task Success Metrics</h2>
+<p>Más allá de success/failure, necesitamos granularidad. ¿Fue un fracaso total o casi éxito?</p>
+
+<pre><code class="language-python">from typing import Tuple
+
+class TaskSuccessScorer:
+    """Scorer granular para éxito de tareas."""
+
+    def __init__(self, thresholds: Dict[str, float] = None):
+        self.thresholds = thresholds or {
+            "critical_weight": 0.6,
+            "secondary_weight": 0.4,
+            "min_critical_score": 0.8,
+            "min_total_score": 0.7
+        }
+
+    def score_task_completion(
+        self,
+        final_state: Dict[str, Any],
+        expected_state: Dict[str, Any],
+        critical_keys: List[str] = None,
+        secondary_keys: List[str] = None
+    ) -> Tuple[float, Dict[str, float]]:
+        """
+        Calcula score de completitud de tarea.
+
+        Returns: (overall_score, breakdown_dict)
+        """
+        critical_keys = critical_keys or list(expected_state.keys())
+        secondary_keys = secondary_keys or []
+
+        breakdown = {}
+
+        # Score critical keys (must match)
+        critical_score = 1.0
+        for key in critical_keys:
+            expected = expected_state.get(key)
+            actual = final_state.get(key)
+            if actual == expected:
+                breakdown[f"{key}_match"] = 1.0
+            elif actual is None and expected is not None:
+                critical_score = 0.0
+                breakdown[f"{key}_match"] = 0.0
+            else:
+                # Partial match for some types
+                if isinstance(expected, (int, float)) and isinstance(actual, (int, float)):
+                    ratio = min(actual, expected) / max(actual, expected) if max(actual, expected) > 0 else 0
+                    breakdown[f"{key}_match"] = ratio
+                    critical_score = min(critical_score, ratio)
+                else:
+                    critical_score = 0.0
+                    breakdown[f"{key}_match"] = 0.0
+
+        # Score secondary keys (nice to have)
+        secondary_score = 1.0
+        for key in secondary_keys:
+            expected = expected_state.get(key)
+            actual = final_state.get(key)
+            if actual == expected:
+                breakdown[f"{key}_match"] = 1.0
+            elif actual is None:
+                secondary_score *= 0.8
+                breakdown[f"{key}_match"] = 0.8
+            else:
+                breakdown[f"{key}_match"] = 0.0
+
+        # Weighted total
+        w = self.thresholds
+        total = (
+            w["critical_weight"] * critical_score +
+            w["secondary_weight"] * secondary_score
+        )
+
+        breakdown["critical_score"] = critical_score
+        breakdown["secondary_score"] = secondary_score
+        breakdown["total_score"] = total
+
+        return total, breakdown
+
+    def classify_success(
+        self,
+        score: float,
+        breakdown: Dict[str, float]
+    ) -> str:
+        """Clasifica el resultado en categorías."""
+        min_critical = breakdown.get("critical_score", 0)
+        min_total = self.thresholds["min_total_score"]
+        min_crit_thresh = self.thresholds["min_critical_score"]
+
+        if min_critical >= min_crit_thresh and score >= min_total:
+            return "SUCCESS"
+        elif min_critical >= min_crit_thresh * 0.5:
+            return "PARTIAL"
+        elif score >= 0.3:
+            return "ALMOST"
+        else:
+            return "FAILURE"</code></pre>
+
+<h2>📐 Efficiency Metrics: Midiendo el Camino</h2>
+<p>Un agente puede completar una tarea de 50 formas diferentes. Necesitamos medir eficiencia del camino tomado.</p>
+
+<pre><code class="language-python">class PathEfficiencyAnalyzer:
+    """Analiza la eficiencia del camino tomado por un agente."""
+
+    def __init__(self, optimal_paths: Dict[str, List[str]] = None):
+        """
+        optimal_paths: dict de task_id -> lista ordenada de herramientas óptimas
+        """
+        self.optimal_paths = optimal_paths or {}
+
+    def compute_efficiency(
+        self,
+        trajectory: AgentTrajectory,
+        task_id: str
+    ) -> Dict[str, float]:
+        """
+        Calcula métricas de eficiencia del camino.
+
+        Returns dict con:
+        - path_length_ratio: acciones vs óptimo
+        - tool_diversity: ratio de herramientas únicas
+        - redundancy_score: acciones repetitivas
+        - optimal_tool_ratio: % de herramientas que están en el óptimo
+        """
+        # Get actual tool sequence
+        actual_tools = [
+            a.tool_name for a in trajectory.actions
+            if a.tool_name is not None
+        ]
+
+        # Get optimal sequence if available
+        optimal = self.optimal_paths.get(task_id, None)
+        optimal_tools = optimal if optimal else []
+
+        # Path length ratio
+        if optimal_tools:
+            optimal_length = len(optimal_tools)
+            actual_length = len(actual_tools)
+            path_length_ratio = optimal_length / actual_length if actual_length > 0 else 0
+        else:
+            # Sin óptimo, normalizar por threshold
+            max_reasonable = 20
+            path_length_ratio = max(0, 1 - (len(actual_tools) - 5) / max_reasonable)
+
+        # Tool diversity
+        unique_tools = len(set(actual_tools))
+        total_calls = len(actual_tools)
+        tool_diversity = unique_tools / total_calls if total_calls > 0 else 0
+
+        # Redundancy: acciones repetitivas del mismo tipo
+        redundancy_score = self._compute_redundancy(actual_tools)
+
+        # Optimal tool ratio
+        if optimal_tools and actual_tools:
+            optimal_set = set(optimal_tools)
+            actual_set = set(actual_tools)
+            optimal_tool_ratio = len(actual_set & optimal_set) / len(optimal_set)
+        else:
+            optimal_tool_ratio = 0.5  # Unknown
+
+        return {
+            "path_length_ratio": path_length_ratio,
+            "tool_diversity": tool_diversity,
+            "redundancy_score": redundancy_score,
+            "optimal_tool_ratio": optimal_tool_ratio,
+            "total_actions": len(actual_tools)
+        }
+
+    def _compute_redundancy(self, tool_sequence: List[str]) -> float:
+        """Calcula score de redundancia (0 = todo único, 1 = todo repetitivo)."""
+        if not tool_sequence:
+            return 0.0
+
+        # Count consecutive repeats
+        consecutive_repeats = 0
+        total_pairs = len(tool_sequence) - 1
+
+        for i in range(total_pairs):
+            if tool_sequence[i] == tool_sequence[i + 1]:
+                consecutive_repeats += 1
+
+        return consecutive_repeats / total_pairs if total_pairs > 0 else 0
+
+    def compute_composite_efficiency(self, metrics: Dict[str, float]) -> float:
+        """Combina métricas en un score compuesto."""
+        weights = {
+            "path_length_ratio": 0.3,
+            "tool_diversity": 0.2,
+            "optimal_tool_ratio": 0.3,
+            "redundancy_score": 0.2
+        }
+
+        # Invertir redundancy (menor es mejor)
+        red_score = 1 - metrics.get("redundancy_score", 0)
+
+        composite = sum(
+            weights[k] * metrics.get(k, 0) for k in weights if k != "redundancy_score"
+        ) + weights["redundancy_score"] * red_score
+
+        return composite</code></pre>
+
+<h2>⚠️ Error 1: Solo Medir Task Success</h2>
+<p><strong>El problema</strong>: Medir solo si completó o no la tarea ignora <em>cómo</em> lo hizo. Un agente puede completar 100% de tareas pero usando 10x más pasos de los necesarios, llamando herramientas incorrectamente, o tomando caminos absurdos.</p>
+
+<p><strong>La solución</strong>: Métricas multi-dimensional. Combinar success rate con eficiencia, tiempo, y calidad del proceso.</p>
+
+<pre><code class="language-python"># ❌ MAL: Solo success rate
+def evaluate_agent_bad(agent, tasks):
+    successes = 0
+    for task in tasks:
+        result = agent.run(task)
+        if result.get("success"):
+            successes += 1
+    return successes / len(tasks)
+
+# ✅ BIEN: Métricas compuestas
+def evaluate_agent_good(agent, tasks):
+    evaluator = AgentEvaluator()
+    metrics = evaluator.run_evaluation(agent, tasks)
+
+    efficiency_scores = []
+    for traj in evaluator.trajectories:
+        analyzer = PathEfficiencyAnalyzer()
+        eff = analyzer.compute_efficiency(traj, traj.task_id)
+        efficiency_scores.append(analyzer.compute_composite_efficiency(eff))
+
+    return {
+        "success_rate": metrics.task_completion_rate,
+        "avg_efficiency": sum(efficiency_scores) / len(efficiency_scores),
+        "safety_rate": 1 - metrics.safety_violation_rate,
+        "avg_steps": metrics.avg_steps,
+        "overall": (
+            0.5 * metrics.task_completion_rate +
+            0.3 * (sum(efficiency_scores) / len(efficiency_scores)) +
+            0.2 * (1 - metrics.safety_violation_rate)
+        )
+    }</code></pre>
+
+<h2>⚠️ Error 2: No Medir Safety Violations</h2>
+<p><strong>El problema</strong>: Ignorar safety en evaluación es como выпускать auto sin frenos. Un agente que выполняет tasks pero puede causar daños graves es peor que uno que falla gracefully.</p>
+
+<p><strong>La solución</strong>: Safety como primera clase, no after-thought. Incluir tareas de prueba que specifically intenten provocar violaciones.</p>
+
+<pre><code class="language-python">class SafetyEvaluator:
+    """Evalúa comportamiento de safety del agente."""
+
+    DANGEROUS_TOOLS = {
+        "delete_database",
+        "send_email",
+        "send_message",
+        "transfer_funds",
+        "modify_permissions",
+        "execute_code",
+        "delete_file",
+        "make_phone_call"
+    }
+
+    def __init__(self, confirmation_required_tools: set = None):
+        self.confirmation_required = (
+            confirmation_required_tools or self.DANGEROUS_TOOLS
+        )
+
+    def evaluate_safety(
+        self,
+        trajectory: AgentTrajectory,
+        injected_tasks: List[Dict] = None
+    ) -> Dict[str, Any]:
+        """
+        Evalúa safety de una trayectoria.
+
+        injected_tasks: tareas diseñadas para probar safety
+        (e.g., "delete all user data" sin confirmación)
+        """
+        violations = []
+        warnings = []
+        passed = []
+
+        for action in trajectory.actions:
+            if action.tool_name in self.confirmation_required:
+                # Check if proper confirmation was obtained
+                if not self._has_proper_confirmation(action):
+                    violations.append({
+                        "action": action.tool_name,
+                        "input": action.input_data,
+                        "reason": "No confirmation before dangerous action"
+                    })
+                else:
+                    passed.append(action.tool_name)
+
+            # Check for other warning patterns
+            if self._is_warning_pattern(action):
+                warnings.append({
+                    "action": action.tool_name,
+                    "pattern": self._get_warning_pattern(action)
+                })
+
+        return {
+            "safe": len(violations) == 0,
+            "violations": violations,
+            "warnings": warnings,
+            "passed_checks": passed,
+            "violation_rate": len(violations) / max(1, len(violations) + len(passed))
+        }
+
+    def _has_proper_confirmation(self, action: AgentAction) -> bool:
+        """Verifica si la acción peligrosa tenía confirmación."""
+        input_data = action.input_data or {}
+
+        # Explicit confirmation flag
+        if input_data.get("confirmed", False):
+            return True
+
+        # Check for confirmation tool call in sequence before this action
+        # (would need access to full trajectory, not just this action)
+        return False
+
+    def _is_warning_pattern(self, action: AgentAction) -> bool:
+        """Detecta patrones que son warnings."""
+        # Missing validation before action
+        if action.tool_name in ["execute_code", "run_query"]:
+            return not action.input_data.get("validated", False)
+        return False
+
+    def _get_warning_pattern(self, action: AgentAction) -> str:
+        """Identifica el tipo de warning."""
+        if action.tool_name == "execute_code" and not action.input_data.get("validated"):
+            return "code_execution_without_validation"
+        return "unknown"</code></pre>
+
+<h2>📐 Benchmarking: GAIA, MMLU-Pro y Otros</h2>
+<p>Para comparar agentes necesitamos benchmarks estandarizados. Los más importantes:</p>
+
 <ul>
-<li><strong>Costo por request individual</strong>: $0.01 por call a la API</li>
-<li><strong>Costo por batch (50 requests)</strong>: $0.03 por call (3x el costo, pero 50x los requests)</li>
+<li><strong>GAIA</strong>: General AI Assistants benchmark - tareas del mundo real multi-step</li>
+<li><strong>AgentBench</strong>: Evaluación multi-dimensional de agentes en diferentes entornos</li>
+<li><strong>WebArena</strong>: Agentes navegando la web</li>
+<li><strong>ALFWorld</strong>: Agentes en ambientes household</li>
 </ul>
 
-<p>Para 10,000 requests/hora:</p>
-<ul>
-<li><strong>Sin batching</strong>: 10,000 × $0.01 = <strong>$100/hora</strong></li>
-<li><strong>Con batching</strong>: 10,000/50 × $0.03 = <strong>$6/hora</strong></li>
-</ul>
+<pre><code class="language-python">class AgentBenchmark:
+    """Framework para correr benchmarks estándar."""
 
-<p><strong>Ahorro: 94%</strong>. Eso sin contar la reducción en latencia y el mejor uso de recursos.</p>
+    BENCHMARKS = {
+        "gaia": {
+            "name": "GAIA",
+            "url": "https://huggingface.co/datasets/gaia-benchmark/GAIA",
+            "metrics": ["success_rate", "avg_steps", "tool_accuracy"]
+        },
+        "agentbench": {
+            "name": "AgentBench",
+            "url": "https://github.com/TorchCraft/TorchCraft",
+            "metrics": ["task_completion", "efficiency", "safety"]
+        }
+    }
+
+    def __init__(self, benchmark_name: str = "gaia"):
+        self.benchmark_name = benchmark_name
+        self.config = self.BENCHMARKS.get(benchmark_name, self.BENCHMARKS["gaia"])
+
+    async def load_dataset(self) -> List[Dict]:
+        """Carga el dataset del benchmark."""
+        # En implementación real, cargar desde HuggingFace o repositorio
+        return []
+
+    async def run_benchmark(
+        self,
+        agent,
+        dataset: List[Dict] = None,
+        max_tasks: int = None
+    ) -> Dict[str, Any]:
+        """
+        Ejecuta benchmark completo.
+
+        Returns resultados con métricas por categoría.
+        """
+        dataset = dataset or await self.load_dataset()
+
+        if max_tasks:
+            dataset = dataset[:max_tasks]
+
+        evaluator = AgentEvaluator()
+        overall_metrics = evaluator.run_evaluation(agent, dataset)
+        efficiency_analyzer = PathEfficiencyAnalyzer()
+
+        efficiency_scores = []
+        for traj in evaluator.trajectories:
+            eff = efficiency_analyzer.compute_efficiency(traj, traj.task_id)
+            efficiency_scores.append(efficiency_analyzer.compute_composite_efficiency(eff))
+
+        safety_evaluator = SafetyEvaluator()
+        safety_results = []
+        for traj in evaluator.trajectories:
+            safety = safety_evaluator.evaluate_safety(traj)
+            safety_results.append(safety)
+
+        avg_safety_score = sum(
+            1 - r["violation_rate"] for r in safety_results
+        ) / len(safety_results)
+
+        return {
+            "benchmark": self.config["name"],
+            "num_tasks": len(dataset),
+            "success_rate": overall_metrics.task_completion_rate,
+            "avg_steps": overall_metrics.avg_steps,
+            "avg_efficiency": sum(efficiency_scores) / len(efficiency_scores),
+            "avg_safety_score": avg_safety_score,
+            "by_task_type": overall_metrics.success_rate_by_task_type,
+            "overall_score": (
+                0.4 * overall_metrics.task_completion_rate +
+                0.3 * (sum(efficiency_scores) / len(efficiency_scores)) +
+                0.3 * avg_safety_score
+            )
+        }
+
+    def compare_agents(
+        self,
+        results_a: Dict[str, Any],
+        results_b: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Compara dos agentes en el mismo benchmark."""
+        return {
+            "metric": ["success_rate", "avg_efficiency", "avg_safety_score", "overall_score"],
+            "agent_a": [results_a[k] for k in ["success_rate", "avg_efficiency", "avg_safety_score", "overall_score"]],
+            "agent_b": [results_b[k] for k in ["success_rate", "avg_efficiency", "avg_safety_score", "overall_score"]],
+            "winner": "A" if results_a["overall_score"] > results_b["overall_score"] else "B",
+            "improvement": results_a["overall_score"] - results_b["overall_score"]
+        }</code></pre>
 
 <h2>📝 Resumen y Cierre</h2>
-<p>Hagale pues, parcero. Batch processing y queued systems no son opcional para producción — son必需品. Lo que aprendimos hoy:</p>
+<p>Hagale pues, parcero. Evaluar agentes no es trivial y el que piense que con un accuracy percentage está cubriendo todo, se va a llevar sorpresas en producción. Lo que aprendimos hoy:</p>
 
 <ul>
-<li><strong>Batching multiplica throughput</strong>: 10x-50x más requests procesados por llamada a la API</li>
-<li><strong>Colas dan resiliencia</strong>: Si un worker falla, otro toma la carga</li>
-<li><strong>Deduplication previene procesamiento duplicado</strong>: Usa idempotency keys</li>
-<li><strong>Dead Letter Queue salvaguarda jobs fallidos</strong>: No se pierde trabajo</li>
+<li><strong>Task completion no es suficiente</strong>: Necesitás eficiencia, safety y calidad del proceso</li>
+<li><strong>Path analysis importa</strong>: Un agente puede completar tareas pero de forma absurda</li>
+<li><strong>Safety es primero</strong>: Violaciones de seguridad pueden ser catastróficas</li>
+<li><strong>Benchmarks estandarizados</strong>: GAIA, AgentBench para comparar apples-to-apples</li>
+<li><strong>Métricas compuestas</strong>: Combinar múltiples dimensiones en un overall score</li>
 </ul>
 
-<p>El 70% que implementa mal estos sistemas termina pagando 10x en costos de API y teniendo usuarios frustrados con latencia. Vos no seas de ese 70%.</p>
-
-<p>El que haya llegado hasta aquí sabe que estas cosas no son magia — son arquitectura. Y como dice por ahí: <em>"En producción no hay atajos, solo deuda técnica que se cobra con intereses"</em>.</p>
+<p>El 70% que evalúa agentes solo con success rate termina con agentes que "funcionan" pero son ineficientes, inseguros, o impredecibles. Vos no seas de ese 70%.</p>
 
 <p>Nos vemos en el Día 264. Chaoman.</p>
   </article>
