@@ -118,730 +118,217 @@ nav {
   </header>
 
   <article class="article-body">
-<h2>El 85% diseña sistemas con LLMs sin pensar en fallos y el 15% sabe cómo hacerlo bien</h2>
+<h2>Del classification a entender el cuerpo humano</h2>
 
-<p>Aquí en Colombia tenemos una frase que aplica perfectamente al system design con LLMs: "el que no conoce la馬 que tiene, blame al gobierno". El 85% de los equipos construyen aplicaciones con LLMs como si el modelo fuera infalible — no consideran rate limits, no manejan timeouts, no tienen circuit breakers, no monitorean la calidad de las respuestas. Luego se sorprenden cuando en producción el sistema se cae o empieza a retornar garbage.</p>
+<p>Clasificar una imagen como "persona" está bien. Pero a veces necesitas saber más: no solo que hay una persona, sino cómo está posicionada. ¿Está de pie? ¿Sentada? ¿Caminando? ¿Cayendo? ¿Haciendo qué ejercicio?</p>
 
-<p>El 15% que sabe, diseña sistemas completos con LLMs: con capas de abstracción, patrones de retry robustos, fallback chains, monitoreo real, y una comprensión profunda de dónde están los bottlenecks. Hoy vamos a aprender a ser de ese 15%.</p>
+<p>La <strong>pose estimation</strong> (estimación de pose) resuelve exactamente esto: detecta keypoints del cuerpo humano (articulaciones, landmarks) y los conecta para formar un skeleton que representa la postura de la persona.</p>
 
-<h2>Por qué LLM system design es diferente</h2>
+<h2>¿Qué es un keypoint?</h2>
 
-<p>Con APIs tradicionales (REST, gRPC), el system design está resuelto: conoces las latencias (normalmente < 100ms), sabes que los errores son determinísticos (500, 404, timeout), y puedes hacer cache de respuestas sin drama. Con LLMs, todo es diferente:</p>
-
-<ul>
-<li><strong>Latencia variable y alta</strong>: 500ms a 30 segundos para una sola request</li>
-<li><strong>Errores no-determinísticos</strong>: un timeout no es siempre timeout, puede ser una respuesta partial o corrupta</li>
-<li><strong>Calidad variable</strong>: el mismo prompt puede retornar respuestas diferentes, y algunas son malas</li>
-<li><strong>Costos por token</strong>: cada request cuesta dinero, el caching es crítico</li>
-<li><strong>Rate limits agresivos</strong>: los providers (OpenAI, Anthropic) tienen límites estrictos</li>
-</ul>
-
-<p>Estas diferencias hacen que el system design para LLMs requiera patrones específicos que no encontrarás en ningún libro de distributed systems tradicional.</p>
-
-<h2>Architecture patterns para LLM applications</h2>
-
-<h3>El patrón de falla en cadena (Fallback Chain)</h3>
-
-<p>Este es el pattern más importante y el que más equipos ignoran. La idea es simple: si el modelo primario falla (rate limit, timeout, error), intentas con un modelo secundario. Y si ese falla, intentas con un tercero. Cada nivel debe ser más barato y más rápido que el anterior.</p>
-
-<p>En la práctica, tu fallback chain podría ser:</p>
+<p>Un <strong>keypoint</strong> es un punto específico del cuerpo con coordenadas (x, y) y opcionalmente z para 3D. Los keypoints más comunes en el modelo COCO de 17 puntos son:</p>
 
 <ul>
-<li><strong>Primary</strong>: GPT-4o — máxima calidad, mayor costo</li>
-<li><strong>Fallback 1</strong>: GPT-4o-mini — calidad razonable, menor costo</li>
-<li><strong>Fallback 2</strong>: Haiku — rápido, barato, para queries simples</li>
-<li><strong>Fallback 3</strong>: Cache hit — si ya respondimos esa pregunta, usar la respuesta cached</li>
-<li><strong>Ultimate fallback</strong>: Respuesta genérica "No puedo responder esto en este momento"</li>
+<li><strong>Cara</strong>: nariz, ojos (2), oídos (2)</li>
+<li><strong>Torso</strong>: hombros (2), codos (2), muñecas (2)</li>
+<li><strong>Piernas</strong>: caderas (2), rodillas (2), tobillos (2)</li>
 </ul>
 
-<h3>Circuit Breaker pattern</h3>
+<p>Cada par de keypoints conectados forma un "hueso" del skeleton. Juntos, los 17 keypoints y sus conexiones forman la representación completa de la postura.</p>
 
-<p>Cuando un provider está fallando (rate limits, degradación), no quieres seguir mandando requests — vas a desperdiciar requests y dinero. El circuit breaker monitorea la tasa de errores y "abre" el circuito cuando detecta que algo está mal, dejando de hacer requests por un período de tiempo antes de probar nuevamente.</p>
+<h2>Arquitecturas desde DeepPose a hoy</h2>
 
-<p>Esto es crítico para rate limits de OpenAI que tienen ventanas de tiempo. Si el rate limit está en 500 requests por minuto y tú sigues mandando requests cuando ya llegaste al límite, vas a tener errores 429 por el resto de la ventana.</p>
+<h3>DeepPose (2014) - El inicio</h3>
 
-<h3>Async Processing con Webhooks</h3>
+<p>El paper de Toshev et al. fue pioneering: usar deep learning para regressar directamente las coordenadas de los keypoints. Una red tipo AlexNet recibía la imagen completa y outputaba 17 * 2 = 34 coordenadas (x, y para cada keypoint).</p>
 
-<p>Para queries largas (generación de essays, código complejo), no quieres synchronous waiting. La arquitectura correcta es:</p>
+<p>El problema: regressión directa de coordenadas es difícil porque las coordenadas son continuas y sensitivas a pequeñas variaciones en la imagen.</p>
 
-<ol>
-<li>User manda request, recibe un job ID inmediatamente</li>
-<li>El sistema procesa el request de forma async</li>
-<li>Cuando termina, notifica al usuario via webhook o polling</li>
-<li>El usuario consulta el resultado con el job ID</li>
-</ol>
+<h3>Convolutional Pose Machines (2016)</h3>
 
-<p>Esto también permite hacer retry sin que el usuario tenga que esperar — si una request falla a mitad del procesamiento, puedes reintentarla sin que el usuario lo note.</p>
+<p> CPMs introdujeron una idea importante: predecir heatmaps en lugar de coordenadas directas. Cada keypoint tiene su propio heatmap donde el valor más alto indica la ubicación más probable del keypoint.</p>
 
-<h2>Patrones de confiabilidad</h2>
+<p>La arquitectura usa multiple stages, donde cada stage refina la predicción usando features de la imagen + predictions del stage anterior.</p>
 
-<h3>Retry con exponential backoff</h3>
+<h3>OpenPose (2019) - Detección en tiempo real</h3>
 
-<p>Los retries parece simples pero hay muchos ways to get it wrong. Un retry mal implementado puede:</p>
+<p>CMU's OpenPose fue revolutionary para aplicaciones en tiempo real. Usa Part Affinity Fields (PAFs): además de predecir heatmaps para cada keypoint, predice campos vectoriales que indican la dirección de las conexiones entre keypoints.</p>
 
-<ul>
-<li>Mandar demasiados requests cuando el sistema está recuperándose (thundering herd)</li>
-<li>No considerar que algunos errores son non-retryable (400 Bad Request)</li>
-<li>No incluir jitter, causando synchronized retries</li>
-</ul>
+<p>Esto permite detectar múltiples personas en la imagen con buena precisión, algo que之前的 métodos struggled with.</p>
 
-<pre><code>import asyncio
-import random
-import time
-from typing import Callable, Optional, TypeVar, Type
-from dataclasses import dataclass
-from enum import Enum
+<h3>HRNet (2019) - Mantener alta resolución</h3>
 
-class RetryStrategy:
-    """Strategies para decidir qué errores son retryables."""
-    
-    @staticmethod
-    def is_retryable(exception: Exception) -> bool:
-        """Determina si un error debería hacer retry."""
-        # Retry en rate limits y errores de servidor
-        if hasattr(exception, 'status_code'):
-            if exception.status_code == 429:  # Rate limit
-                return True
-            if exception.status_code >= 500:  # Server error
-                return True
-            if exception.status_code == 400:
-                # Bad request puede ser retryable si es por content filtering
-                return "content_filter" in str(exception).lower()
-        # Retry en timeouts y connection errors
-        if isinstance(exception, (asyncio.TimeoutError, ConnectionError)):
-            return True
-        return False
-    
-    @staticmethod
-    def get_retry_delay(
-        attempt: int,
-        base_delay: float = 1.0,
-        max_delay: float = 60.0,
-        exponential_base: float = 2.0,
-        jitter: bool = True
-    ) -> float:
-        """
-        Calcula el delay para el próximo retry con exponential backoff.
-        
-       delay = min(max_delay, base_delay * (exponential_base ^ attempt)) + jitter
-        """
-        delay = base_delay * (exponential_base ** attempt)
-        delay = min(delay, max_delay)
-        
-        if jitter:
-            # Añade random jitter para evitar thundering herd
-            # Jitter uniformly distributed entre 0 y delay/2
-            delay = delay + random.uniform(0, delay / 2)
-        
-        return delay
+<p>High-Resolution Network (HRNet) propuso algo diferente: en lugar de hacer downsampling como las CNNs tradicionales, mantiene representaciones de alta resolución a través de todo la red.</p>
 
+<p>Esto es importante porque para keypoint detection, la precisión espacial Matters. Hacer downsampling pierde información de posición precisa.</p>
 
-@dataclass
-class RetryConfig:
-    """Configuración para el retry logic."""
-    max_attempts: int = 3
-    base_delay: float = 1.0
-    max_delay: float = 60.0
-    exponential_base: float = 2.0
-    jitter: bool = True
-    retryable_exceptions: tuple = (Exception,)
-    
-    def should_retry(self, attempt: int, exception: Exception) -> bool:
-        if attempt >= self.max_attempts:
-            return False
-        return RetryStrategy.is_retryable(exception)
+<pre><code class="language-python">import torch
+import torch.nn as nn
 
-
-class LLMRetryHandler:
+class PoseResNet(nn.Module):
     """
-    Maneja retries para llamadas a LLMs con circuit breaker.
-    Implementa exponential backoff con jitter y circuit breaker.
+    Simple pose estimation network based on ResNet backbone.
+    Outputs heatmaps for each keypoint.
     """
-    
-    def __init__(self, config: RetryConfig):
-        self.config = config
-        self.circuit_state = "closed"  # closed, open, half_open
-        self.circuit_failures = 0
-        self.circuit_successes = 0
-        self.circuit_open_time: Optional[float] = None
-        self.failure_threshold = 5  # Errores antes de abrir el circuit
-        self.recovery_timeout = 30  # Segundos antes de intentar recovery
-    
-    async def execute_with_retry(
-        self,
-        func: Callable,
-        *args,
-        **kwargs
-    ):
-        """
-        Ejecuta func con retry logic y circuit breaker.
-        """
-        last_exception = None
+    def __init__(self, num_keypoints=17, backbone='resnet50'):
+        super(PoseResNet, self).__init__()
+        self.num_keypoints = num_keypoints
         
-        for attempt in range(self.config.max_attempts):
-            # Verificar circuit breaker
-            if self.circuit_state == "open":
-                if time.time() - self.circuit_open_time > self.recovery_timeout:
-                    # Intentar recovery
-                    self.circuit_state = "half_open"
-                    print(f"Circuit breaker: attempting recovery (half-open)")
-                else:
-                    # Todavía está abierto, lanzar excepción inmediatamente
-                    raise CircuitBreakerOpenError(
-                        f"Circuit breaker open. Retry after {self.recovery_timeout}s"
-                    )
-            
-            try:
-                result = await func(*args, **kwargs)
-                
-                # Success - reset circuit if needed
-                if self.circuit_state == "half_open":
-                    self.circuit_successes += 1
-                    if self.circuit_successes >= 3:
-                        self.circuit_state = "closed"
-                        self.circuit_failures = 0
-                        print(f"Circuit breaker: recovered (closed)")
-                
-                return result
-                
-            except Exception as e:
-                last_exception = e
-                
-                if not self.config.should_retry(attempt, e):
-                    # Error no retryable
-                    self.circuit_state = "closed"
-                    raise
-                
-                if self.circuit_state == "half_open":
-                    # Failure during recovery - reopen immediately
-                    self.circuit_state = "open"
-                    self.circuit_open_time = time.time()
-                    self.circuit_failures = 0
-                    print(f"Circuit breaker: recovery failed, reopening")
-                    raise
-                
-                # Registrar failure para circuit breaker
-                self.circuit_failures += 1
-                if self.circuit_failures >= self.failure_threshold:
-                    self.circuit_state = "open"
-                    self.circuit_open_time = time.time()
-                    print(f"Circuit breaker: opened due to {self.circuit_failures} failures")
-                
-                # Calcular delay
-                delay = RetryStrategy.get_retry_delay(
-                    attempt,
-                    self.config.base_delay,
-                    self.config.max_delay,
-                    self.config.exponential_base,
-                    self.config.jitter
-                )
-                
-                print(f"Retry {attempt + 1}/{self.config.max_attempts} "
-                      f"after {delay:.2f}s. Error: {type(e).__name__}: {e}")
-                
-                await asyncio.sleep(delay)
-        
-        # Agotamos los retries
-        raise last_exception
-
-
-class CircuitBreakerOpenError(Exception):
-    """Excepción cuando el circuit breaker está abierto."""
-    pass</code></pre>
-
-<h3>Quality Guardrails</h3>
-
-<p>Uno de los problemas más difíciles en producción es que el LLM puede retornar contenido no deseado o simplemente incorrecto. Los guardrails son la capa que verifica la salida antes de entregarla al usuario:</p>
-
-<ul>
-<li><strong>Content filtering</strong>: verificar que la respuesta no contiene NSFW, hate speech, etc.</li>
-<li><strong>Format validation</strong>: si esperas JSON, verificar que el JSON es válido</li>
-<li><strong>Length validation</strong>: si la respuesta es demasiado corta o demasiado larga, podría ser señal de problema</li>
-<li><strong>Semantic validation</strong>: verificar que la respuesta realmente responde la pregunta (usando embeddings o un segundo LLM call)</li>
-</ul>
-
-<h2>Diseño para escalabilidad</h2>
-
-<h3>Caching strategies</h3>
-
-<p>El caching es crítico para reducir costos y latencia. Pero el caching para LLMs es tricky porque:</p>
-
-<ul>
-<li>El mismo prompt puede retornar respuestas diferentes</li>
-<li>Respuestas semanticamente similares pueden tener surface differences</li>
-<li>Invalidar cache es difícil — no hay timestamps claros</li>
-</ul>
-
-<p>La estrategia más efectiva es semantic caching: en lugar de guardar respuestas exactas, guardas embeddings del prompt y usas similarity search para encontrar respuestas cached.</p>
-
-<pre><code>import hashlib
-import json
-from typing import Optional, List, Tuple
-import numpy as np
-
-class SemanticCache:
-    """
-    Semantic cache para respuestas de LLMs.
-    Usa embeddings para encontrar respuestas similares.
-    """
-    
-    def __init__(
-        self,
-        embedding_model,
-        vector_store,
-        similarity_threshold: float = 0.95,
-        ttl_seconds: Optional[float] = None
-    ):
-        self.embedding_model = embedding_model
-        self.vector_store = vector_store  # Pinecone, Chroma, etc.
-        self.similarity_threshold = similarity_threshold
-        self.ttl_seconds = ttl_seconds
-    
-    def _get_cache_key(self, prompt: str, model: str, params: dict) -> str:
-        """
-        Genera un cache key hash del prompt + config.
-        Usado como ID único en el vector store.
-        """
-        content = json.dumps({
-            'prompt': prompt,
-            'model': model,
-            'params': params
-        }, sort_keys=True)
-        return hashlib.sha256(content.encode()).hexdigest()
-    
-    def _get_embedding(self, text: str) -> List[float]:
-        """Genera embedding para semantic search."""
-        return self.embedding_model.encode([text])[0]
-    
-    async def get(
-        self,
-        prompt: str,
-        model: str,
-        params: dict
-    ) -> Optional[str]:
-        """
-        Busca una respuesta cached semanticamente similar.
-        Retorna la respuesta si encuentra match, None si no.
-        """
-        cache_key = self._get_cache_key(prompt, model, params)
-        embedding = self._get_embedding(prompt)
-        
-        # Buscar en vector store
-        results = self.vector_store.search(
-            embedding=embedding,
-            top_k=1,
-            filter={'cache_key': {'$ne': cache_key}}  # Excluir el registro actual si existe
-        )
-        
-        if not results or len(results) == 0:
-            return None
-        
-        best_match = results[0]
-        similarity = best_match['score']
-        
-        # Verificar similarity threshold
-        if similarity >= self.similarity_threshold:
-            cached_response = best_match['payload']['response']
-            
-            # Verificar TTL si está configurado
-            if self.ttl_seconds:
-                cached_time = best_match['payload'].get('cached_at', 0)
-                if time.time() - cached_time > self.ttl_seconds:
-                    # Cache expired
-                    return None
-            
-            print(f"Cache HIT: similarity={similarity:.4f}")
-            return cached_response
-        
-        print(f"Cache MISS: best_similarity={similarity:.4f}")
-        return None
-    
-    async def set(
-        self,
-        prompt: str,
-        model: str,
-        params: dict,
-        response: str
-    ):
-        """Guarda una respuesta en el cache."""
-        cache_key = self._get_cache_key(prompt, model, params)
-        embedding = self._get_embedding(prompt)
-        
-        self.vector_store.upsert(
-            id=cache_key,
-            embedding=embedding,
-            payload={
-                'prompt': prompt,
-                'model': model,
-                'params': params,
-                'response': response,
-                'cached_at': time.time()
-            }
-        )
-
-
-class CacheConfig:
-    """Configuración de caching con multiple strategies."""
-    
-    def __init__(
-        self,
-        use_exact_cache: bool = True,
-        use_semantic_cache: bool = True,
-        semantic_threshold: float = 0.95,
-        ttl_seconds: float = 3600,  # 1 hora default
-        max_cache_size: int = 10000
-    ):
-        self.use_exact_cache = use_exact_cache
-        self.use_semantic_cache = use_semantic_cache
-        self.semantic_threshold = semantic_threshold
-        self.ttl_seconds = ttl_seconds
-        self.max_cache_size = max_cache_size
-
-
-async def cached_llm_call(
-    cache: SemanticCache,
-    prompt: str,
-    model: str,
-    params: dict,
-    llm_func: Callable
-) -> Tuple[str, bool]:
-    """
-    Wrapper que intenta cache primero, luego llama al LLM si no hay match.
-    Retorna (response, cache_hit).
-    """
-    # Intentar cache semántico primero
-    if cache:
-        cached_response = await cache.get(prompt, model, params)
-        if cached_response:
-            return cached_response, True
-    
-    # No hay cache hit, llamar al LLM
-    response = await llm_func(prompt, model=model, **params)
-    
-    # Guardar en cache si tenemos uno configurado
-    if cache:
-        await cache.set(prompt, model, params, response)
-    
-    return response, False</code></pre>
-
-<h3>Load shedding y prioritization</h3>
-
-<p>Cuando el sistema está bajo load, no puedes procesar todas las requests. Load shedding es la práctica de rechazar o depriorizar requests menos importantes cuando los recursos están escasos:</p>
-
-<ul>
-<li><strong>Priority queue</strong>: requests de usuarios premium van primero</li>
-<li><strong>Adaptive timeouts</strong>: cuando estás bajo load, reducir el timeout máximo aceptable</li>
-<li><strong>Request coalescing</strong>: si 100 usuarios preguntan lo mismo al mismo tiempo, solo procesar uno y servir a todos</li>
-</ul>
-
-<h2>Observabilidad: monitoreando lo que importa</h2>
-
-<p>El monitoreo para LLMs es diferente del monitoreo tradicional. No solo importan latencia y throughput — importan métricas de calidad que son más difíciles de medir.</p>
-
-<h3>Métricas de negocio</h3>
-
-<ul>
-<li><strong>Task success rate</strong>: % de requests que el usuario consideró útiles (feedback explícito)</li>
-<li><strong>Escalation rate</strong>: % de requests que requirieron intervención humana o mejor modelo</li>
-<li><strong>Cost per successful request</strong>: costo total dividido por requests exitosos</li>
-</ul>
-
-<h3>Métricas técnicas</h3>
-
-<ul>
-<li><strong>Latencia p50, p95, p99</strong>: no solo el promedio — los percentiles importan más</li>
-<li><strong>Error rate por tipo</strong>: 429s (rate limits), timeouts, 500s, content violations</li>
-<li><strong>Cache hit rate</strong>: qué % de requests se sirven desde cache</li>
-<li><strong>Model quality metrics</strong>: longitud de respuestas, diversidad léxica, repetición</li>
-</ul>
-
-<h3>Tracing distribuido</h3>
-
-<p>Para debugging, necesitas tracing que siga una request a través de todo el pipeline:</p>
-
-<pre><code>from opentelemetry import trace
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import BatchSpanProcessor
-from opentelemetry.sdk.resources import Resource
-import time
-
-# Setup tracing
-provider = TracerProvider()
-processor = BatchSpanProcessor(...)
-provider.add_span_processor(processor)
-trace.set_tracer_provider(provider)
-
-tracer = trace.get_tracer(__name__)
-
-class LLMObservability:
-    """
-    Instrumentación para observar aplicaciones con LLMs.
-    Incluye tracing, metrics, y logging estructurado.
-    """
-    
-    def __init__(self, service_name: str):
-        self.service_name = service_name
-        self.tracer = trace.get_tracer(service_name)
-    
-    async def trace_llm_call(
-        self,
-        span_name: str,
-        prompt: str,
-        model: str,
-        params: dict,
-        func: Callable
-    ):
-        """
-        Wrapper que crea un span para cada llamada LLM.
-        Registra atributos relevantes para debugging.
-        """
-        with self.tracer.start_as_current_span(span_name) as span:
-            # Set span attributes
-            span.set_attribute("llm.model", model)
-            span.set_attribute("llm.prompt_length", len(prompt))
-            span.set_attribute("llm.temperature", params.get('temperature', 0))
-            span.set_attribute("llm.max_tokens", params.get('max_tokens', 0))
-            
-            start_time = time.perf_counter()
-            try:
-                response = await func(prompt, model=model, **params)
-                elapsed_ms = (time.perf_counter() - start_time) * 1000
-                
-                # Set response attributes
-                span.set_attribute("llm.response_length", len(response))
-                span.set_attribute("llm.latency_ms", elapsed_ms)
-                span.set_attribute("llm.success", True)
-                
-                return response
-                
-            except Exception as e:
-                elapsed_ms = (time.perf_counter() - start_time) * 1000
-                span.set_attribute("llm.latency_ms", elapsed_ms)
-                span.set_attribute("llm.success", False)
-                span.set_attribute("llm.error_type", type(e).__name__)
-                span.set_attribute("llm.error_message", str(e))
-                raise
-
-
-def setup_prometheus_metrics():
-    """Configura métricas Prometheus para scraping."""
-    from prometheus_client import Counter, Histogram, Gauge
-    
-    # Counters
-    llm_requests_total = Counter(
-        'llm_requests_total',
-        'Total LLM requests',
-        ['model', 'status']
-    )
-    
-    cache_hits_total = Counter(
-        'cache_hits_total',
-        'Total cache hits',
-        ['cache_type']
-    )
-    
-    # Histograms
-    llm_latency_seconds = Histogram(
-        'llm_latency_seconds',
-        'LLM request latency',
-        ['model'],
-        buckets=[0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0]
-    )
-    
-    llm_tokens_total = Histogram(
-        'llm_tokens_total',
-        'Total tokens per request',
-        ['model', 'token_type']
-    )
-    
-    # Gauges
-    active_requests = Gauge(
-        'llm_active_requests',
-        'Currently active LLM requests',
-        ['model']
-    )
-    
-    return {
-        'requests': llm_requests_total,
-        'cache_hits': cache_hits_total,
-        'latency': llm_latency_seconds,
-        'tokens': llm_tokens_total,
-        'active': active_requests
-    }</code></pre>
-
-<h2>Los 3 errores más comunes</h2>
-
-<h3>Error 1: Diseñar sin considerar failure modes</h3>
-
-<p><strong>El error:</strong> Asumir que el LLM siempre va a responder. En producción, vas a ver: rate limits (429), timeouts, errores 500 del provider, content violations que bloquean respuestas, y modelos que simplemente retornan garbage para ciertos prompts. Si no planeaste para estos casos, tu sistema va a fallar de formas spectaculares.</p>
-
-<p><strong>La solución:</strong> Haz una lista de todos los failure modes posibles antes de empezar a construir. Para cada uno:</p>
-
-<ul>
-<li>¿Qué debería pasar cuando ocurra?</li>
-<li>¿Cómo notifica al usuario?</li>
-<li>¿Se puede retry automáticamente?</li>
-<li>¿Cuál es el fallback?</li>
-</ul>
-
-<p>Implementa la fallback chain desde el día uno, no como afterthought.</p>
-
-<h3>Error 2: No tener capas de abstracción</h3>
-
-<p><strong>El error:</strong> Acoplar tu aplicación directamente a la API de OpenAI. Cuando quieras cambiar a Anthropic, o a un modelo open-source, o a tu propio servidor local, vas a tener que reescribir media aplicación.</p>
-
-<p><strong>La solución:</strong> Implementa una abstracción (interface o clase base) que defina cómo interactúas con LLMs. Tu lógica de negocio solo conoce esa abstracción, no la implementación específica. Así puedes swap providers sin cambiar código de negocio.</p>
-
-<pre><code>from abc import ABC, abstractmethod
-from typing import List, Dict, Optional
-
-class LLMProvider(ABC):
-    """Abstract interface para todos los LLM providers."""
-    
-    @abstractmethod
-    async def generate(
-        self,
-        prompt: str,
-        *,
-        temperature: float = 0.7,
-        max_tokens: int = 1000,
-        stop: Optional[List[str]] = None,
-        **kwargs
-    ) -> str:
-        """Genera una respuesta al prompt dado."""
-        pass
-    
-    @abstractmethod
-    async def batch_generate(
-        self,
-        prompts: List[str],
-        **kwargs
-    ) -> List[str]:
-        """Genera respuestas para múltiples prompts."""
-        pass
-    
-    @abstractmethod
-    def get_token_count(self, text: str) -> int:
-        """Cuenta los tokens en un texto."""
-        pass
-
-
-class OpenAIProvider(LLMProvider):
-    """Implementación para OpenAI models."""
-    
-    def __init__(self, api_key: str, model: str = "gpt-4"):
-        self.api_key = api_key
-        self.model = model
-    
-    async def generate(self, prompt: str, **kwargs) -> str:
-        # Implementación específica de OpenAI
-        ...
-    
-    async def batch_generate(self, prompts: List[str], **kwargs) -> List[str]:
-        # API call a OpenAI batch
-        ...
-    
-    def get_token_count(self, text: str) -> int:
-        # tiktoken o similar
-        ...
-
-
-class AnthropicProvider(LLMProvider):
-    """Implementación para Anthropic models."""
-    
-    def __init__(self, api_key: str, model: str = "claude-3-opus"):
-        self.api_key = api_key
-        self.model = model
-    
-    async def generate(self, prompt: str, **kwargs) -> str:
-        # Implementación específica de Anthropic
-        ...
-    
-    async def batch_generate(self, prompts: List[str], **kwargs) -> List[str]:
-        ...
-    
-    def get_token_count(self, text: str) -> int:
-        # Anthropic tokenizer
-        ...
-
-
-class LLMWrapper:
-    """
-    Wrapper que añade funcionalidad extra sobre cualquier provider:
-    retries, caching, rate limiting, observabilidad.
-    """
-    
-    def __init__(
-        self,
-        provider: LLMProvider,
-        retry_handler: LLMRetryHandler,
-        cache: Optional[SemanticCache] = None,
-        observability: Optional[LLMObservability] = None
-    ):
-        self.provider = provider
-        self.retry_handler = retry_handler
-        self.cache = cache
-        self.observability = observability
-    
-    async def generate(self, prompt: str, **kwargs) -> str:
-        """Generate con retry, cache, y tracing."""
-        # Try cache first
-        if self.cache:
-            cached = await self.cache.get(prompt, self.provider.model, kwargs)
-            if cached:
-                return cached
-        
-        # Execute with retry and tracing
-        if self.observability:
-            response = await self.observability.trace_llm_call(
-                "llm.generate",
-                prompt,
-                self.provider.model,
-                kwargs,
-                lambda: self.retry_handler.execute_with_retry(
-                    self.provider.generate, prompt, **kwargs
-                )
-            )
+        # ResNet backbone (modified for pose)
+        import torchvision.models as models
+        if backbone == 'resnet50':
+            resnet = models.resnet50(pretrained=True)
         else:
-            response = await self.retry_handler.execute_with_retry(
-                self.provider.generate, prompt, **kwargs
-            )
+            resnet = models.resnet34(pretrained=True)
         
-        # Cache the response
-        if self.cache:
-            await self.cache.set(prompt, self.provider.model, kwargs, response)
+        # Remove final layers
+        self.conv1 = resnet.conv1
+        self.bn1 = resnet.bn1
+        self.relu = resnet.relu
+        self.maxpool = resnet.maxpool
+        self.layer1 = resnet.layer1  # 256 channels
+        self.layer2 = resnet.layer2  # 512 channels
+        self.layer3 = resnet.layer3  # 1024 channels
+        self.layer4 = resnet.layer4  # 2048 channels
         
-        return response</code></pre>
+        # Deconv layers to upsample back to higher resolution
+        self.deconv_layers = nn.Sequential(
+            nn.ConvTranspose2d(2048, 256, kernel_size=4, stride=2, padding=1),
+            nn.BatchNorm2d(256),
+            nn.ReLU(inplace=True),
+            nn.ConvTranspose2d(256, 256, kernel_size=4, stride=2, padding=1),
+            nn.BatchNorm2d(256),
+            nn.ReLU(inplace=True),
+            nn.ConvTranspose2d(256, 256, kernel_size=4, stride=2, padding=1),
+            nn.BatchNorm2d(256),
+            nn.ReLU(inplace=True),
+        )
+        
+        # Final heatmap prediction
+        self.final_layer = nn.Conv2d(256, num_keypoints, kernel_size=1)
+    
+    def forward(self, x):
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = self.relu(x)
+        x = self.maxpool(x)
+        
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        x = self.layer4(x)
+        
+        x = self.deconv_layers(x)
+        heatmaps = self.final_layer(x)
+        
+        return heatmaps
 
-<h3>Error 3: Escalar sin entender los bottlenecks</h3>
+def decode_heatmaps(heatmaps):
+    """
+    Extract keypoint coordinates from predicted heatmaps.
+    Uses argmax to find the location with highest response.
+    """
+    batch_size, num_keypoints, height, width = heatmaps.shape
+    keypoints = []
+    
+    for b in range(batch_size):
+        person_keypoints = []
+        for k in range(num_keypoints):
+            heatmap = heatmaps[b, k]
+            # Find location of max activation
+            flat_idx = heatmap.argmax()
+            y = flat_idx // width
+            x = flat_idx % width
+            confidence = heatmap[y, x].item()
+            person_keypoints.append((x, y, confidence))
+        keypoints.append(person_keypoints)
+    
+    return keypoints</code></pre>
 
-<p><strong>El error:</strong> "Vamos a meter más instancias de nuestra API porque está lenta". Pero si el bottleneck real es que estás haciendo 3 LLM calls por request y cada uno tarda 5 segundos, agregar más instancias no va a ayudar — vas a gastar dinero en recursos que no resuelven el problema.</p>
+<h2>Tipos de pose estimation</h2>
 
-<p><strong>La solución:</strong> Antes de escalar, haz profiling real del sistema. Usa tracing distribuido para identificar dónde se va el tiempo. Pregúntate:</p>
+<h3>2D Pose Estimation</h3>
+
+<p>La forma más común: predecir coordenadas (x, y) en el espacio de la imagen. Produce un skeleton 2D sobre la imagen original.</p>
+
+<p><strong>Ventajas</strong>: más rápido, más simple, funciona bien con una sola cámara</p>
+
+<h3>3D Pose Estimation</h3>
+
+<p>Agrega la coordenada z para obtener profundidad. Esto permite entender la postura en el espacio 3D, no solo en la imagen 2D.</p>
+
+<p><strong>Métodos</strong>:</p>
 
 <ul>
-<li>¿El bottleneck es la latencia del LLM? → Considera modelos más rápidos para queries simples</li>
-<li>¿El bottleneck es el cache? → Mejora el hit rate con mejor embedding similarity</li>
-<li>¿El bottleneck es la concurrencia? → Más instancias ayudan, pero también considera async processing</li>
-<li>¿El bottleneck es los rate limits? → Implementa queueing con backpressure</li>
+<li><strong>Multi-view</strong>: usar múltiples cámaras calibradas y triangulación</li>
+<li><strong>Monocular 3D</strong>: inferir profundidad de una sola imagen (más difícil, más ambiguo)</li>
+<li><strong>Depth sensors</strong>: usar RGB-D cameras como Kinect o RealSense</li>
 </ul>
 
-<h2>Resumen: los patrones que separan el 15% que sabe</h2>
+<h3>Multi-Person Pose Estimation</h3>
+
+<p>Detectar y estimar pose para múltiples personas en la misma imagen. Los Approaches principales:</p>
 
 <ul>
-<li><strong>Fallback chain</strong>: nunca dependas de un solo modelo o provider</li>
-<li><strong>Circuit breaker</strong>: proteje tu sistema de cascading failures cuando un provider está caído</li>
-<li><strong>Retry con exponential backoff</strong>: pero solo para errores retryables, con jitter para evitar thundering herd</li>
-<li><strong>Caching semántico</strong>: la latencia y costo más bajo posible</li>
-<li><strong>Abstracción de provider</strong>: tu código de negocio no debería conocer a OpenAI</li>
-<li><strong>Guardrails de calidad</strong>: nunca retornes output sin verificar que cumple los estándares</li>
-<li><strong>Observabilidad real</strong>: tracing, métricas, logging que te permitan debuggear cuando las cosas fallen</li>
-<li><strong>Load shedding</strong>: sabe qué hacer cuando estás bajo load — no todo puede ser priority 1</li>
+<li><strong>Top-down</strong>: primero detectar personas (con un detector de objetos), luego estimar pose para cada persona. Más preciso pero más lento si hay muchas personas.</li>
+<li><strong>Bottom-up</strong>: primero detectar todos los keypoints, luego agruparlos en personas usando affinity fields o graph algorithms. Más rápido para escenas con muchas personas.</li>
 </ul>
 
-<p>El system design robusto para LLMs no es opcional — es lo que separa las aplicaciones que sobreviven en producción de las que fallan spectacularmente el primer día con load real. Con los patrones de hoy, tienes la base para construir sistemas que no solo funcionan, sino que degradan gracefully cuando las cosas salen mal.</p>
+<h2>Métricas</h2>
 
-<p><em>Eso es todo por hoy. Mañana seguimos con más. El que persiste, llega — y en ML, el que documenta y observa, no se pierde cuando las cosas se rompen.</em></p>
+<h3>OKS (Object Keypoint Similarity)</h3>
+
+<p>La métrica estándar para pose estimation, análoga a IoU pero para keypoints:</p>
+
+<p>$$\text{OKS} = \frac{\sum_i \exp\left(-\frac{d_i^2}{2s^2k_i^2}\right)}{\N_i}$$</p>
+
+<p>Donde:</p>
+
+<ul>
+<li>$d_i$ es la distancia Euclidean entre el keypoint predicho y el ground truth</li>
+<li>$s$ es la escala del objeto (perímetro del bounding box)</li>
+<li>$k_i$ es la constante de normalización para el keypoint i (algunos keypoints son más difíciles)</li>
+</ul>
+
+<p>El OKS está entre 0 y 1, y se considera un "hit" si supera un threshold (típicamente 0.5, 0.75).</p>
+
+<h3>AP / mAP</h3>
+
+<p>Average Precision calculada usando OKS como métrica de overlap. Se reporta para diferentes thresholds (AP@0.5, AP@0.75) y el promedio (mAP).</p>
+
+<h2>Datasets importantes</h2>
+
+<ul>
+<li><strong>COCO Keypoint Detection</strong>: 200,000 imágenes con 250,000 personas etiquetadas, 17 keypoints</li>
+<li><strong>MPII Human Pose</strong>: ~25,000 imágenes, 40,000 personas, 16 keypoints</li>
+<li><strong>AI Challenger</strong>: 300,000 imágenes, 30 keypoints, mayor diversidad</li>
+<li><strong>3D datasets</strong>: Human3.6M, TotalCapture, MuPoTS para 3D</li>
+</ul>
+
+<h2>Aplicaciones</h2>
+
+<ul>
+<li><strong>Sports analytics</strong>: analizar técnica de atletas, tracking de jugadores</li>
+<li><strong>Healthcare y rehabilitación</strong>: monitorear recuperación de pacientes, detectar caídas</li>
+<li><strong>Human-computer interaction</strong>: controlar computadoras con gestos y poses</li>
+<li><strong>Animation y gaming</strong>: motion capture sin markers especiales</li>
+<li><strong>Surveillance</strong>: detectar comportamientos sospechosos basados en postura</li>
+<li><strong>Retail</strong>: analizar cómo interactúan clientes con productos</li>
+</ul>
+
+<h2>Resumen</h2>
+
+<ul>
+<li><strong>Pose estimation</strong> detecta keypoints del cuerpo y los conecta en un skeleton</li>
+<li><strong>COCO modelo</strong>: 17 keypoints estándar (nariz, ojos, oídos, hombros, codos, muñecas, caderas, rodillas, tobillos)</li>
+<li><strong>Heatmap regression</strong> es el approach más común: predecir un mapa de calor por keypoint</li>
+<li><strong>Top-down vs bottom-up</strong>: top-down más preciso, bottom-up más rápido para muchas personas</li>
+<li><strong>OKS</strong> es la métrica estándar, análoga a IoU pero para keypoints</li>
+</ul>
+
+<p>La pose estimation es fundamental para entender el movimento humano. Combined con tracking, puedes seguir personas a través del tiempo. Combined con action recognition, puedes clasificar qué está haciendo la persona.</p>
+
+<p><em>Mañana en día 281 hablamos de face recognition: cómo las máquinas identifican y verifican rostros humanos. From face detection a face embedding, y por qué FaceNet cambió todo el juego.</em></p>
   </article>
 
   <script>
@@ -869,19 +356,19 @@ class LLMWrapper:
       });
     });
     
-  const _html = document.documentElement;
-  const _btn  = document.getElementById('themeToggle');
-  const _icon = document.getElementById('themeIcon');
-  function _setIcon(t) { _icon.className = t === 'dark' ? 'fas fa-sun' : 'fas fa-moon'; }
-  const _saved = localStorage.getItem('theme') || 'dark';
-  _html.setAttribute('data-theme', _saved);
-  _setIcon(_saved);
-  _btn.addEventListener('click', () => {
-    const next = _html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
-    _html.setAttribute('data-theme', next);
-    localStorage.setItem('theme', next);
-    _setIcon(next);
-  });
+    const _html = document.documentElement;
+    const _btn  = document.getElementById('themeToggle');
+    const _icon = document.getElementById('themeIcon');
+    function _setIcon(t) { _icon.className = t === 'dark' ? 'fas fa-sun' : 'fas fa-moon'; }
+    const _saved = localStorage.getItem('theme') || 'dark';
+    _html.setAttribute('data-theme', _saved);
+    _setIcon(_saved);
+    _btn.addEventListener('click', () => {
+      const next = _html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+      _html.setAttribute('data-theme', next);
+      localStorage.setItem('theme', next);
+      _setIcon(next);
+    });
 
   </script>
 </body>
