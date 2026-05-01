@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="Knowledge Distillation - Aprendiendo De Modelos Grandes | #365DaysOfAI por Fabian Rodriguez">
-  <title>Knowledge Distillation - Aprendiendo De Modelos Grandes | #365DaysOfAI</title>
+  <meta name="description" content="LLM Dialogue Systems — Cómo Construir Chatbots y Sistemas Conversacionales con LLMs | #365DaysOfAI por Fabian Rodriguez">
+  <title>LLM Dialogue Systems — Qué el 80% Hace Mal y Qué el 20% Hace Bien | #365DaysOfAI</title>
   
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
@@ -110,50 +110,603 @@ nav {
 
   <header class="article-hero">
     <div class="day-badge">Dia 311 / 365 &nbsp;·&nbsp; #365DaysOfAI</div>
-    <h1 class="article-title">Knowledge Distillation - Aprendiendo De Modelos Grandes</h1>
+    <h1 class="article-title">LLM Dialogue Systems — Qué el 80% Hace Mal y Qué el 20% Hace Bien para Conversaciones Naturales</h1>
     <div class="article-meta">
       <time class="article-date">07 de noviembre de 2026</time>
-      <div class="tags"><span class="tag">distillation</span><span class="tag">knowledge-distillation</span><span class="tag">compression</span><span class="tag">llm</span></div>
+      <div class="tags"><span class="tag">dialogue-systems</span><span class="tag">conversation-ai</span><span class="tag">context-management</span><span class="tag">llm</span></div>
     </div>
   </header>
 
   <article class="article-body">
-    <h1>Knowledge Distillation - Aprendiendo De Modelos Grandes</h1>
-<p>Hagale pues, parcero. Dia 311 y hoy hablamos de Knowledge Distillation, aprender de modelos grandes. Cafe.</p>
-<hr>
-<h2>🎯 Que Es Knowledge Distillation?</h2>
-<p>Knowledge Distillation entrena un model pequeno (student) para imitar uno grande (teacher). El student aprende de soft targets del teacher.</p>
-<h3>Por que funciona:</h3>
+<h2>🎯 Introducción</h2>
+<p>Hagale pues, parcero. Aquí en Medellín seguimos con la racha de artículos sobre IA. Hoy toca un tema que el 80% de los desarrolladores de chatbots implementa como si estuviera escribiendo REST APIs independientes: <strong>LLM Dialogue Systems</strong>. Esto de construir conversaciones naturales no es simplemente mandarle prompts a un LLM y ya — eso lo hace cualquiera. Lo que diferencia un chatbot que parece un ser humano de uno que parece un loro con amnesia es todo lo que hay alrededor del modelo: el estado conversacional, la gestión de contexto, el turn-taking, los intents, y la estructura del diálogo.</p>
+
+<p>En este artículo vamos a ver cómo construir un framework de diálogo robusto con Python que maneje correctamente conversaciones multi-turno, que entienda diferentes tipos de intents, y que mantenga el estado conversacional de forma coherente. También vamos a hablar de los errores más comunes — que son básicamente los mismos que ves en todos los chatbots que fracasan — y cómo arreglarlos. Póngase comodo que esto está interesante.</p>
+
+<h2>📐 La Matemática del Diálogo</h2>
+
+<p>Antes de escribir código, necesitamos entender la teoría. Un sistema de diálogo puede formalizarse como un <strong>Partially Observable Markov Decision Process (POMDP)</strong>. Sí, así de intenso — pero no se asuste que lo explicamos suave.</p>
+
+<h3>Componentes del Diálogo</h3>
+
+<p>Un diálogo estructurado se define como una tupla:</p>
+
+<p><code>(S, A, O, T, R, γ)</code></p>
+
 <ul>
-<li><strong>Dark knowledge</strong>: El teacher sabe mas de lo que dice</li>
-<li><strong>Soft targets</strong>: Probabilidades revelan relationships</li>
-<li><strong>Temperature</strong>: Suaviza distribution para aprender mejor</li>
+<li><strong>S</strong> = Estados del mundo (el contexto conversacional)</li>
+<li><strong>A</strong> = Acciones disponibles (respuestas del bot)</li>
+<li><strong>O</strong> = Observaciones (lo que dice el usuario)</li>
+<li><strong>T</strong> = Función de transición T(s'|s, a)</li>
+<li><strong>R</strong> = Función de recompensa</li>
+<li><strong>γ</strong> = Factor de descuento para recompensas futuras</li>
 </ul>
-<hr>
-<h2>📐 Distillation</h2>
-<pre><code class="language-python">import torch
+
+<p>En la práctica, para sistemas basados en LLMs, simplificamos esto a un <strong>Dialogue State Tracker (DST)</strong> que mantiene:</p>
+
+<p><code>B_t = P(s_t | o_1, a_1, ..., o_{t-1}, a_{t-1}, o_t)</code></p>
+
+<p>Esto es la distribución de probabilidad sobre el estado actual dado todo el historial de observaciones y acciones hasta el turno actual. En palabras simples: "dado todo lo que ha pasado en la conversación, ¿en qué estado estamos ahora?"</p>
+
+<h3>Transformers para Clasificación de Intents</h3>
+
+<p>Para clasificar intents usamos una arquitectura de classification head sobre embeddings del LLM:</p>
+
+<p><code>P(intent | x) = softmax(W · h_LLM(x))</code></p>
+
+<p>donde <code>h_LLM(x)</code> es el embedding del último token hidden state del modelo, y <code>W</code> es una matriz de clasificación entrenable de tamaño <code>d_model × n_intents</code>.</p>
+
+<h2>🔧 Framework de Diálogo con Gestión de Contexto</h2>
+
+<p>Vamos a lo bueno — código. Implementamos un framework completo que maneja:</p>
+
+<ul>
+<li>ConversationState con memoria de contexto</li>
+<li>Intent classification</li>
+<li>DialogueManager que coordina todo</li>
+<li>Múltiples tipos de intents (greeting, task, clarification, closing)</li>
+</ul>
+
+<pre><code class="language-python">"""
+LLM Dialogue Systems Framework
+Manejo robusto de conversaciones multi-turno con estado
+"""
+
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Optional
+import torch
 import torch.nn.functional as F
 
-def distillation_loss(student_logits, teacher_logits, labels, T=2.0, alpha=0.5):
-    # Soft loss: KL divergence con temperature
-    soft_loss = F.kl_div(
-        F.log_softmax(student_logits / T),
-        F.softmax(teacher_logits / T),
-        reduction='batchmean'
-    ) * (T * T)
+
+class IntentType(Enum):
+    """Tipos de intents que manejamos en el diálogo"""
+    GREETING = "greeting"           # Saludos
+    TASK_REQUEST = "task_request"   # Solicitud de tarea
+    CLARIFICATION = "clarification" # Pedir clarificación
+    CONFIRMATION = "confirmation"   # Confirmación de algo
+    GOODBYE = "goodbye"             # Despedidas
+    OFF_TOPIC = "off_topic"         # Fuera de tema
+    ERROR = "error"                 # Manejo de errores
+
+
+@dataclass
+class ConversationTurn:
+    """Un turno en la conversación"""
+    role: str  # "user" o "assistant"
+    content: str
+    intent: Optional[IntentType] = None
+    entities: dict = field(default_factory=dict)
     
-    # Hard loss: cross-entropy normal
-    hard_loss = F.cross_entropy(student_logits, labels)
+    def to_dict(self) -> dict:
+        return {
+            "role": self.role,
+            "content": self.content,
+            "intent": self.intent.value if self.intent else None,
+            "entities": self.entities
+        }
+
+
+@dataclass 
+class ConversationState:
+    """
+    Estado de la conversación — el corazón del sistema.
+    Mantiene historial, slots, y metadatos del diálogo.
+    """
+    session_id: str
+    turns: list[ConversationTurn] = field(default_factory=list)
+    current_intent: Optional[IntentType] = None
+    slots: dict = field(default_factory=dict)  # Información extraída
+    context_window: int = 10  # turns a mantener en ventana activa
+    task_in_progress: bool = False
+    pending_clarifications: list[str] = field(default_factory=list)
     
-    return alpha * soft_loss + (1 - alpha) * hard_loss</code></pre>
-<hr>
-<h2>🚀 Distillation en LLMs</h2>
-<p>Tecnicas como minGPT y distilled transformers muestran que se puede achicar models mantendo 95%+ de capacidad.</p>
-<hr>
-<h2>⚠️ Limitaciones</h2>
-<p>El student tiene un ceiling. No puede superar al teacher, solo acercarse.</p>
-<hr>
-<p><em>Eso es todo! Nos vemos en el Dia 312.</em></p>
+    def add_turn(self, role: str, content: str, 
+                 intent: Optional[IntentType] = None,
+                 entities: dict = None) -> ConversationTurn:
+        """Agrega un turno a la conversación y retorna el turno creado"""
+        turn = ConversationTurn(
+            role=role,
+            content=content,
+            intent=intent,
+            entities=entities or {}
+        )
+        self.turns.append(turn)
+        
+        # Mantenemos solo la ventana de contexto activa
+        if len(self.turns) > self.context_window:
+            self.turns = self.turns[-self.context_window:]
+            
+        return turn
+    
+    def get_conversation_context(self, max_turns: int = 10) -> str:
+        """
+        Construye el contexto conversacional para enviar al LLM.
+        Incluye historial resumido de turnos previos.
+        """
+        recent_turns = self.turns[-max_turns:] if max_turns else self.turns
+        
+        context_parts = []
+        for turn in recent_turns:
+            role_label = "Usuario" if turn.role == "user" else "Asistente"
+            context_parts.append(f"{role_label}: {turn.content}")
+        
+        # Agregar estado actual si hay slots
+        if self.slots:
+            slots_str = ", ".join(f"{k}={v}" for k, v in self.slots.items())
+            context_parts.append(f"[Estado actual: {slots_str}]")
+            
+        if self.pending_clarifications:
+            pending = "; ".join(self.pending_clarifications)
+            context_parts.append(f"[Pendiente por clarificar: {pending}]")
+            
+        return "\n".join(context_parts)
+    
+    def update_state_from_intent(self, intent: IntentType, 
+                                  entities: dict = None):
+        """Actualiza el estado conversacional basado en el intent detectado"""
+        self.current_intent = intent
+        
+        if entities:
+            self.slots.update(entities)
+            
+        # Manejo de transiciones de estado
+        if intent == IntentType.TASK_REQUEST:
+            self.task_in_progress = True
+        elif intent in (IntentType.GOODBYE, IntentType.CONFIRMATION):
+            # Para confirmaciones exitosas, clear pending
+            self.pending_clarifications.clear()
+        elif intent == IntentType.CLARIFICATION:
+            self.task_in_progress = False  # Pausar tarea hasta clarificar
+
+
+class IntentClassifier:
+    """
+    Clasificador de intents usando un LLM como encoder.
+    Implementa label encoding para intents definidos.
+    """
+    
+    def __init__(self, intent_labels: list[str], model: str = "gpt-4"):
+        self.intent_labels = intent_labels
+        self.model = model
+        # Mapeo de labels a índices
+        self.label_to_idx = {label: idx for idx, label in enumerate(intent_labels)}
+        self.idx_to_label = {idx: label for label, idx in self.label_to_idx.items()}
+        
+    def classify(self, utterance: str, context: str = "") -> tuple[str, float]:
+        """
+        Clasifica un utterance en un intent.
+        Retorna (intent_label, confidence)
+        
+        En producción usar el LLM real con classification prompt.
+        Aquí simulamos con pattern matching para demostración.
+        """
+        # Prompt de classification
+        classification_prompt = f"""Clasifica el siguiente mensaje de usuario en UNA de estas categorías:
+{', '.join(self.intent_labels)}
+
+Contexto conversacional previo:
+{context}
+
+Mensaje del usuario: {utterance}
+
+Responde SOLO con el nombre de la categoría exacta."""
+        
+        # En producción: llamar a OpenAI/Anthropic API
+        # Por ahora, heuristic-based para demo
+        utterance_lower = utterance.lower()
+        
+        # Pattern matching para demo
+        if any(g in utterance_lower for g in ["hola", "buenos", "buenas", "que tal", "saludos"]):
+            return "greeting", 0.95
+        elif any(t in utterance_lower for t in ["hazme", "necesito", "quiero", "puedes", "ayudame"]):
+            return "task_request", 0.88
+        elif any(c in utterance_lower for c in ["que", "como", "cual", "explica", "no entiendo"]):
+            return "clarification", 0.82
+        elif any(c in utterance_lower for c in ["si", "confirmo", "correcto", "asi es", "sí"]):
+            return "confirmation", 0.90
+        elif any(g in utterance_lower for g in ["adios", "chao", "hasta luego", "nos vemos"]):
+            return "goodbye", 0.93
+        else:
+            return "off_topic", 0.65
+    
+    def extract_entities(self, utterance: str, intent: str) -> dict:
+        """
+        Extrae entidades del utterance basado en el intent.
+        Implementación básica con regex/patterns.
+        En producción usar NER del LLM.
+        """
+        entities = {}
+        
+        # Ejemplo: extraer fechas, horas, números
+        import re
+        
+        # Fechas
+        date_patterns = [
+            r'\d{1,2}/\d{1,2}/\d{2,4}',
+            r'\d{1,2} de (enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)',
+        ]
+        for pattern in date_patterns:
+            match = re.search(pattern, utterance.lower())
+            if match:
+                entities['date'] = match.group()
+                
+        # Horas
+        time_match = re.search(r'(\d{1,2}):(\d{2})', utterance)
+        if time_match:
+            entities['time'] = f"{time_match.group(1)}:{time_match.group(2)}"
+            
+        # Números
+        num_match = re.search(r'(\d+)', utterance)
+        if num_match:
+            entities['quantity'] = int(num_match.group(1))
+            
+        return entities
+
+
+class DialogueManager:
+    """
+    Orchestrator principal del sistema de diálogo.
+    Coordina estado, intents, y generación de respuestas.
+    """
+    
+    SYSTEM_PROMPT = """Eres un asistente conversacional colombiano amigable.
+Respondes en español colombiano, de forma natural y breve.
+Mantienes contexto de la conversación y recuerdas información importante.
+Cuando no entiendes algo, pides clarificación amablemente."""
+    
+    def __init__(self, llm_client=None):
+        self.state: Optional[ConversationState] = None
+        self.intent_classifier = IntentClassifier(
+            intent_labels=[it.value for it in IntentType]
+        )
+        self.llm_client = llm_client  # OpenAI/Anthropic client
+        
+    def start_session(self, session_id: str) -> ConversationState:
+        """Inicia una nueva sesión de conversación"""
+        self.state = ConversationState(session_id=session_id)
+        
+        # Agregar saludo inicial del sistema
+        self.state.add_turn(
+            role="assistant",
+            content="¡Hola! ¿Cómo estás? Soy tu asistente. ¿En qué te puedo ayudar hoy?"
+        )
+        return self.state
+    
+    def process_user_input(self, user_message: str) -> tuple[str, ConversationState]:
+        """
+        Procesa input del usuario y retorna respuesta del asistente.
+        Este es el método principal del sistema.
+        
+        Flujo:
+        1. Clasificar intent
+        2. Extraer entidades
+        3. Actualizar estado
+        4. Generar respuesta
+        5. Guardar turno del usuario Y del asistente
+        """
+        if self.state is None:
+            raise ValueError("Sesión no iniciada. Llama start_session() primero.")
+            
+        # ===== PASO 1: Clasificar intent =====
+        context = self.state.get_conversation_context()
+        intent_label, confidence = self.intent_classifier.classify(
+            user_message, context
+        )
+        intent = IntentType(intent_label)
+        
+        # ===== PASO 2: Extraer entidades =====
+        entities = self.intent_classifier.extract_entities(user_message, intent.value)
+        
+        # ===== PASO 3: Agregar turno del usuario al estado =====
+        self.state.add_turn(
+            role="user",
+            content=user_message,
+            intent=intent,
+            entities=entities
+        )
+        
+        # ===== PASO 4: Actualizar estado basado en intent =====
+        self.state.update_state_from_intent(intent, entities)
+        
+        # ===== PASO 5: Generar respuesta =====
+        response = self._generate_response(user_message, intent, entities)
+        
+        # ===== PASO 6: Agregar respuesta al historial =====
+        self.state.add_turn(
+            role="assistant",
+            content=response,
+            intent=intent
+        )
+        
+        return response, self.state
+    
+    def _generate_response(self, user_message: str, 
+                          intent: IntentType,
+                          entities: dict) -> str:
+        """
+        Genera respuesta basada en intent y estado.
+        Usa el LLM para respuestas naturales.
+        """
+        context = self.state.get_conversation_context()
+        
+        # Construir prompt con estado
+        prompt = f"""{self.SYSTEM_PROMPT}
+
+Estado de la conversación:
+- Intención actual detectada: {intent.value}
+- Slots llenados: {self.state.slots}
+- Tarea en progreso: {self.state.task_in_progress}
+
+Historial de conversación (los últimos mensajes):
+{context}
+
+Usuario actual: {user_message}
+
+Responde de forma apropiada según el intent detectado.
+Si es un saludo, saluda de vuelta.
+Si hay una tarea en progreso, continúa con ella.
+Si faltan datos, pide clarificación específica."""
+        
+        # En producción: llamar API del LLM
+        # Aquí simulamos respuestas basadas en reglas
+        if intent == IntentType.GREETING:
+            return "¡Qué tal! Qué bueno saludarte. ¿En qué te puedo echar una mano hoy?"
+            
+        elif intent == IntentType.TASK_REQUEST:
+            if entities:
+                self.state.slots.update(entities)
+                return f"Perfecto, tengo tu solicitud. Déjame ver... " \
+                       f"¿Algo más que necesites contarme sobre lo que necesitas?"
+            return "Cuéntame más detalles sobre lo que necesitas para poder ayudarte bien."
+            
+        elif intent == IntentType.CLARIFICATION:
+            self.state.pending_clarifications.append(user_message)
+            return "¿Podrías explicarme un poco más qué quieres decir con eso? " \
+                   "Así te ayudo mejor, parcero."
+                   
+        elif intent == IntentType.CONFIRMATION:
+            self.state.task_in_progress = False
+            self.state.slots.clear()
+            return "¡Listo! Quedamos así entonces. ¿Hay algo más en lo que te pueda ayudar?"
+            
+        elif intent == IntentType.GOODBYE:
+            return "¡Chao, pues! Cualquier cosa aquí estaré. Cuídate mucho."
+            
+        else:
+            return "Mmm, no estoy seguro de entender. ¿Podrías reformular lo que necesitas?"
+
+
+# ===== EJEMPLO DE USO =====
+if __name__ == "__main__":
+    # Inicializar sistema
+    dm = DialogueManager()
+    
+    # Iniciar sesión
+    state = dm.start_session("session_001")
+    print("=== INICIO DE CONVERSACIÓN ===")
+    print(f"Asistente: {state.turns[-1].content}")
+    print()
+    
+    # Conversación de ejemplo
+    conversation_flow = [
+        "Hola, qué tal?",
+        "Necesito agendar una cita para mañana a las 3pm",
+        "Sí, confirmo",
+        "Chao, hasta luego"
+    ]
+    
+    print("=== FLUJO DE CONVERSACIÓN ===")
+    for user_input in conversation_flow:
+        print(f"Usuario: {user_input}")
+        response, state = dm.process_user_input(user_input)
+        print(f"Asistente: {response}")
+        print(f"  → Intent: {state.current_intent.value if state.current_intent else 'N/A'}")
+        print(f"  → Slots: {state.slots}")
+        print()
+</code></pre>
+
+<h2>⚠️ Los 3 Errores Comunes que Arruinan los Chatbots</h2>
+
+<h3>Error 1: Tratar el diálogo como series de requests independientes</h3>
+
+<p>Este es el error más común y el más grave. El desarrollador promedio hace algo como:</p>
+
+<pre><code class="language-python"># ❌ CÓDIGO EQUIVOCADO - No mantiene estado
+def chatbot_bad(user_input):
+    response = openai.ChatCompletion.create(
+        messages=[
+            {"role": "user", "content": user_input}  # Sin historial!
+        ]
+    )
+    return response.choices[0].message</code></pre>
+
+<p>Esto funciona como un cliente de API stateless, pero una conversación NO es stateless. Cada mensaje depende del contexto previo. Sin estado, el modelo no sabe:</p>
+
+<ul>
+<li>Qué se ha discutido antes</li>
+<li>Qué información ya se proporcionó</li>
+<li>Qué tareas están en progreso</li>
+</ul>
+
+<p><strong>Fix correcto:</strong></p>
+
+<pre><code class="language-python"># ✅ CÓDIGO CORRECTO - Con estado conversacional
+class StatefulChatbot:
+    def __init__(self):
+        self.conversation_history = []
+        self.slots = {}
+        
+    def chat(self, user_input):
+        # Construir contexto con historial
+        messages = [
+            {"role": "system", "content": "Eres un asistente helpful."}
+        ]
+        
+        # Agregar historial relevante (ventana de contexto)
+        for turn in self.conversation_history[-10:]:
+            messages.append({"role": turn["role"], "content": turn["content"]})
+            
+        # Agregar input actual
+        messages.append({"role": "user", "content": user_input})
+        
+        # Llamar al LLM con contexto completo
+        response = openai.ChatCompletion.create(messages=messages)
+        assistant_msg = response.choices[0].message
+        
+        # Guardar en historial
+        self.conversation_history.append({"role": "user", "content": user_input})
+        self.conversation_history.append({"role": "assistant", "content": assistant_msg})
+        
+        return assistant_msg</code></pre>
+
+<h3>Error 2: No gestionar el estado de la conversación</h3>
+
+<p>El segundo error es relacionado pero diferente. Incluso si mandas el historial, no estás gestionando <em>explícitamente</em> el estado. No sabes:</p>
+
+<ul>
+<li>En qué paso de una tarea está el usuario</li>
+<li>Qué información falta por coletar</li>
+<li>Cuándo hacer confirmaciones</li>
+</ul>
+
+<p><strong>Fix correcto — Dialogue State Tracking:</strong></p>
+
+<pre><code class="language-python"># ✅ State Machine para gestión explícita de estado
+class DialogueStateMachine:
+    STATES = ["START", "GATHERING_INFO", "CONFIRMING", "EXECUTING", "DONE"]
+    
+    def __init__(self):
+        self.current_state = "START"
+        self.required_slots = ["date", "time", "location"]
+        self.collected_slots = {}
+        
+    def transition(self, intent, entities):
+        """Transición de estado basada en intent y entidades"""
+        
+        if self.current_state == "START":
+            if intent == "task_request":
+                self.current_state = "GATHERING_INFO"
+                
+        elif self.current_state == "GATHERING_INFO":
+            self.collected_slots.update(entities)
+            
+            # Verificar si tenemos todos los slots
+            missing = [s for s in self.required_slots 
+                      if s not in self.collected_slots]
+            
+            if not missing:
+                self.current_state = "CONFIRMING"
+                return "confirm_all"
+            else:
+                return f"ask_{missing[0]}"
+                
+        elif self.current_state == "CONFIRMING":
+            if intent == "confirmation":
+                self.current_state = "EXECUTING"
+                return "execute_task"
+            elif intent == "correction":
+                self.current_state = "GATHERING_INFO"
+                return "gather_again"
+                
+        elif self.current_state == "EXECUTING":
+            self.current_state = "DONE"
+            return "task_complete"
+            
+        return "acknowledge"</code></pre>
+
+<h3>Error 3: No manejar la coherencia en multi-turno</h3>
+
+<p>El tercer error es permitir que el modelo responda de forma inconsistente a través de múltiples turnos. Por ejemplo:</p>
+
+<ul>
+<li>Turno 1: Usuario dice que prefiere reunión virtual</li>
+<li>Turno 5: Modelo pregunta "¿presencial o virtual?"</li>
+</ul>
+
+<p><strong>Fix correcto — Slot tracking y referencia:</strong></p>
+
+<pre><code class="language-python"># ✅ Slot tracking con memoria de decisiones previas
+class CoherenceManager:
+    def __init__(self):
+        self.decisions = {}  # Decisiones del usuario guardadas
+        
+    def remember_decision(self, slot: str, value: str):
+        """Guarda una decisión del usuario"""
+        self.decisions[slot] = value
+        
+    def should_reference(self, slot: str, current_turn: int, 
+                        last_mentioned_turn: int) -> bool:
+        """
+        Decide si debemos refeirnos a una decisión previa.
+        Evitamos preguntar lo mismo重复adamente.
+        """
+        # Referencia si:
+        # 1. Es un slot que el usuario decidió
+        # 2. Han pasado más de 2 turnos desde la última mención
+        if slot not in self.decisions:
+            return False
+        return (current_turn - last_mentioned_turn) > 2
+        
+    def build_context_reminder(self) -> str:
+        """Construye string con decisiones previas para injectar en prompt"""
+        if not self.decisions:
+            return ""
+            
+        reminders = "Recordar al usuario de estas preferencias ya confirmadas: "
+        reminders += ", ".join(f"{k}={v}" for k, v in self.decisions.items())
+        return reminders</code></pre>
+
+<h2>📊 Métricas de Evaluación para Sistemas de Dialogue</h2>
+
+<p>Para saber si tu sistema funciona bien, necesitas medir correctamente:</p>
+
+<ul>
+<li><strong>Task Success Rate (TSR)</strong>: Porcentaje de tareas completadas exitosamente</li>
+<li><strong>Average Turns per Conversation (ATPC)</strong>: Cuántos turnos toma completar una tarea</li>
+<li><strong>Context Maintenance Score (CMS)</strong>: Qué tan bien mantiene información a través de turnos</li>
+<li><strong>Intent Classification Accuracy (ICA)</strong>: Precisión del clasificador de intents</li>
+</ul>
+
+<p><code>CMS = (slots_correctos / slots_totales) × consistency_score</code></p>
+
+<h2>🔄 Resumen y Cierre</h2>
+
+<p>Hagamos el resumen de lo que aprendimos hoy, parce.</p>
+
+<ul>
+<li><strong>Los sistemas de diálogo NO son stateless.</strong> Cada request debe incluir contexto conversacional.</li>
+<li><strong>El Dialogue State Tracking es fundamental.</strong> Saber en qué estado estás determina qué responder.</li>
+<li><strong>Los slots y entidades se deben trackear explícitamente.</strong> No asumas que el LLM recuerda todo.</li>
+<li><strong>La coherencia multi-turno requiere gestión activa.</strong> Las decisiones previas deben guardarse y referenciarse.</li>
+<li><strong>El turn-taking necesita reglas claras.</strong> Quién habla, cuándo, y cuánto.</li>
+</ul>
+
+<p>Lo que diferencia un chatbot mediocre de uno excelente no es el modelo base — es todo el engineering alrededor: cómo manejas el estado, cómo estructuras los prompts, cómo manejas errores, y cómo mantienes coherencia a través de docenas de turnos.</p>
+
+<p>Mañana seguimos con el Día 312 donde vamos a ver <strong>LLM Task Automation</strong> — cómo usar LLMs para automatizar tareas multi-step, con decomposition, planning, y error recovery. Va a estar bueno. No se lo pierdan.</p>
+
+<p><em>Nos vemos, parcero. A seguir aprendiendo y building.</em></p>
   </article>
 
   <script>
