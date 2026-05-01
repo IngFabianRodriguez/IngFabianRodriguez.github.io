@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="Prompt Engineering - El Arte de Instruir LLMs | #365DaysOfAI por Fabian Rodriguez">
-  <title>Prompt Engineering - El Arte de Instruir LLMs | #365DaysOfAI</title>
+  <meta name="description" content="LLM Production Systems I - Build Production Systems con LLMs, Architecture Patterns, Reliability, Monitoring | #365DaysOfAI por Fabian Rodriguez">
+  <title>LLM Production Systems I — Build que No Caiga en Producción | #365DaysOfAI</title>
   
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
@@ -118,64 +118,808 @@ nav {
   </header>
 
   <article class="article-body">
-    <h1>Prompt Engineering - El Arte de Instruir LLMs</h1>
-<p>Hagale pues, parcero. Dia 359 y hoy hablamos de Prompt Engineering: el arte de instruir LLMs. Dejala.</p>
+<h1>LLM Production Systems I — Build que No Caiga en Producción</h1>
+<p>Hagale pues, parcero. Día 359 y hoy nos metemos de lleno en un tema que el 90% de los equipos de ML ignoran hasta que el sistema se cae en producción: cómo construir LLM systems que de verdad funcionen cuando el negocio depende de ellos. Porque no es lo mismo hacer un demo en tu laptop que tener 10,000 usuarios reales pegándole a tu API a las 8 de la mañana un lunes.</p>
+<p>Así que ponte comodo, échate un café colombiano — de los que sabemos producir bien por aquí en Colombia — y vamos a construir sistemas que no te van a dar dolores de cabeza a las 3 de la mañana.</p>
 <hr>
-<h2>🎯 Prompt Engineering</h2>
-<p>Prompt engineering es la disciplina de escribir buenos prompts:</p>
+<h2>🏗️ Arquitectura de un LLM Production System</h2>
+<p>Antes de escribir código, necesitamos entender las piezas. Un LLM production system no es solo "meterle prompts a un modelo". Es una arquitectura completa con múltiples capas:</p>
+<pre><code class="language-python">"""
+LLM Production System Architecture
+===================================
+Componentes esenciales para un sistema que no se cae.
+"""
+
+from dataclasses import dataclass, field
+from typing import Optional, List, Dict, Any, Callable
+from enum import Enum
+from datetime import datetime, timedelta
+import asyncio
+import logging
+import json
+
+logger = logging.getLogger(__name__)
+
+
+class SystemState(Enum):
+    HEALTHY = "healthy"
+    DEGRADED = "degraded"
+    UNHEALTHY = "unhealthy"
+    MAINTENANCE = "maintenance"
+
+
+@dataclass
+class Request:
+    """Una request al sistema LLM."""
+    id: str
+    prompt: str
+    model: str
+    temperature: float = 0.7
+    max_tokens: int = 2048
+    timeout_ms: int = 30000
+    retry_count: int = 0
+    max_retries: int = 3
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class Response:
+    """Una response del sistema LLM."""
+    request_id: str
+    content: str
+    model: str
+    tokens_used: int
+    latency_ms: float
+    timestamp: datetime
+    success: bool
+    error: Optional[str] = None
+
+
+@dataclass
+class HealthMetrics:
+    """Métricas de salud del sistema."""
+    requests_total: int = 0
+    requests_success: int = 0
+    requests_failed: int = 0
+    avg_latency_ms: float = 0.0
+    p95_latency_ms: float = 0.0
+    p99_latency_ms: float = 0.0
+    error_rate: float = 0.0
+    current_state: SystemState = SystemState.HEALTHY
+
+
+class CircuitBreaker:
+    """
+    Circuit Breaker Pattern — previene cascading failures.
+    
+    Cuando un servicio downstream falla repetidamente, el circuit breaker
+    se "abre" y corta el tráfico hacia ese servicio, dándole tiempo de
+    recuperarse. Esto evita que una falla en el modelo se propagated a
+    todo el sistema.
+    
+    Estados:
+    - CLOSED: Todo funciona, el tráfico fluye normalmente
+    - OPEN: Hay fallas, el tráfico se corta inmediatamente  
+    - HALF_OPEN: Se prueba si el servicio se recuperó
+    """
+    
+    def __init__(
+        self,
+        failure_threshold: int = 5,      # Veces que tiene que fallar para abrir
+        recovery_timeout: int = 60,      # Segundos antes de probar otra vez
+        expected_exception: type = Exception,
+        name: str = "llm_circuit_breaker"
+    ):
+        self.failure_threshold = failure_threshold
+        self.recovery_timeout = recovery_timeout
+        self.expected_exception = expected_exception
+        self.name = name
+        
+        self.failure_count = 0
+        self.last_failure_time: Optional[datetime] = None
+        self.state = "CLOSED"  # CLOSED, OPEN, HALF_OPEN
+        
+    def call(self, func: Callable, *args, **kwargs):
+        """Ejecuta la función con circuit breaker."""
+        
+        if self.state == "OPEN":
+            # Verificar si es tiempo de probar otra vez
+            if self._should_attempt_reset():
+                self.state = "HALF_OPEN"
+                logger.info(f"{self.name}: Circuit breaker HALF_OPEN")
+            else:
+                raise CircuitBreakerOpenError(
+                    f"{self.name}: Circuit breaker is OPEN. Call rejected."
+                )
+        
+        try:
+            result = func(*args, **kwargs)
+            self._on_success()
+            return result
+        except self.expected_exception as e:
+            self._on_failure()
+            raise
+    
+    def _should_attempt_reset(self) -> bool:
+        if self.last_failure_time is None:
+            return True
+        elapsed = (datetime.now() - self.last_failure_time).total_seconds()
+        return elapsed >= self.recovery_timeout
+    
+    def _on_success(self):
+        """Reset en caso de éxito."""
+        if self.state == "HALF_OPEN":
+            logger.info(f"{self.name}: Circuit breaker CLOSED after recovery")
+        self.failure_count = 0
+        self.state = "CLOSED"
+    
+    def _on_failure(self):
+        """Incrementa contador de fallas."""
+        self.failure_count += 1
+        self.last_failure_time = datetime.now()
+        
+        if self.failure_count >= self.failure_threshold:
+            self.state = "OPEN"
+            logger.warning(
+                f"{self.name}: Circuit breaker OPEN after {self.failure_count} failures"
+            )
+
+
+class CircuitBreakerOpenError(Exception):
+    """Excepción cuando el circuit breaker está abierto."""
+    pass</code></pre>
+<hr>
+<h2>📊 Monitoreo: Lo Que No Mides, No Puedes Mejorar</h2>
+<p>Aquí está la verdad incómoda: el 80% de los equipos de ML que deployan LLMs no tienen monitoreo adecuados. No saben cuántos requests están sirviendo, cuál es su latencia real, ni cuándo el modelo está empezando a degradarse. Esto es como manejar sin tablero de instrumentos — eventualmente vas a chocar.</p>
+<pre><code class="language-python">"""
+LLM Production Monitoring System
+================================
+Monitoreo completo para sistemas LLM en producción.
+"""
+
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Tuple
+from collections import deque
+from datetime import datetime, timedelta
+import statistics
+import threading
+
+
+@dataclass
+class LatencyWindow:
+    """Ventana temporal para tracking de latencia."""
+    window_size_seconds: int = 60
+    latencies: deque = field(default_factory=deque)
+    timestamps: deque = field(default_factory=deque)
+    
+    def add(self, latency_ms: float):
+        """Agrega una medición de latencia."""
+        now = datetime.now()
+        self.latencies.append(latency_ms)
+        self.timestamps.append(now)
+        self._clean_old()
+    
+    def _clean_old(self):
+        """Remueve datos fuera de la ventana."""
+        cutoff = datetime.now() - timedelta(seconds=self.window_size_seconds)
+        while self.timestamps and self.timestamps[0] < cutoff:
+            self.latencies.popleft()
+            self.timestamps.popleft()
+    
+    def percentiles(self) -> Tuple[float, float, float]:
+        """Calcula percentiles p50, p95, p99."""
+        if not self.latencies:
+            return 0.0, 0.0, 0.0
+        sorted_latencies = sorted(self.latencies)
+        n = len(sorted_latencies)
+        return (
+            sorted_latencies[int(n * 0.50)],
+            sorted_latencies[int(n * 0.95)],
+            sorted_latencies[int(n * 0.99)]
+        )
+
+
+class LLMPrometheusMetrics:
+    """
+    Sistema de métricas estilo Prometheus para LLMs.
+    
+    Recolecta y calcula:
+    - Latencia (p50, p95, p99)
+    - Throughput (requests/segundo)
+    - Error rate
+    - Token usage
+    - Cost por request
+    """
+    
+    # Ventana de 5 minutos para métricas
+    WINDOW_SECONDS = 300
+    
+    def __init__(self):
+        self.request_count = 0
+        self.error_count = 0
+        self.total_tokens = 0
+        self.cost_total = 0.0
+        
+        self.latency_window = LatencyWindow(window_size_seconds=self.WINDOW_SECONDS)
+        self._lock = threading.Lock()
+        
+        # Model pricing (USD por 1M tokens)
+        self.model_pricing = {
+            "gpt-4o": {"input": 5.0, "output": 15.0},
+            "gpt-4o-mini": {"input": 0.15, "output": 0.60},
+            "claude-3-5-sonnet": {"input": 3.0, "output": 15.0},
+            "claude-3-5-haiku": {"input": 0.80, "output": 4.0},
+        }
+    
+    def record_request(
+        self,
+        latency_ms: float,
+        tokens_used: int,
+        model: str,
+        success: bool = True,
+        error_type: Optional[str] = None
+    ):
+        """Registra una request completada."""
+        with self._lock:
+            self.request_count += 1
+            self.total_tokens += tokens_used
+            self.latency_window.add(latency_ms)
+            
+            # Calcular costo
+            input_tokens = int(tokens_used * 0.3)  # Rough estimate
+            output_tokens = int(tokens_used * 0.7)
+            
+            if model in self.model_pricing:
+                pricing = self.model_pricing[model]
+                cost = (input_tokens / 1_000_000) * pricing["input"]
+                cost += (output_tokens / 1_000_000) * pricing["output"]
+                self.cost_total += cost
+            
+            if not success:
+                self.error_count += 1
+    
+    def get_metrics(self) -> Dict:
+        """Retorna todas las métricas actuales."""
+        with self._lock:
+            p50, p95, p99 = self.latency_window.percentiles()
+            
+            error_rate = 0.0
+            if self.request_count > 0:
+                error_rate = self.error_count / self.request_count
+            
+            # Requests por segundo en la ventana
+            requests_in_window = len(self.latency_window.latencies)
+            throughput = requests_in_window / self.WINDOW_SECONDS
+            
+            return {
+                "request_count": self.request_count,
+                "error_count": self.error_count,
+                "error_rate": error_rate,
+                "total_tokens": self.total_tokens,
+                "cost_total_usd": self.cost_total,
+                "latency_p50_ms": p50,
+                "latency_p95_ms": p95,
+                "latency_p99_ms": p99,
+                "throughput_rps": throughput,
+                "cost_per_request_usd": (
+                    self.cost_total / self.request_count 
+                    if self.request_count > 0 else 0
+                )
+            }
+    
+    def export_prometheus_format(self) -> str:
+        """Exporta métricas en formato Prometheus."""
+        metrics = self.get_metrics()
+        
+        lines = [
+            "# HELP llm_requests_total Total number of LLM requests",
+            "# TYPE llm_requests_total counter",
+            f'llm_requests_total {metrics["request_count"]}',
+            "",
+            "# HELP llm_errors_total Total number of failed requests",
+            "# TYPE llm_errors_total counter", 
+            f'llm_errors_total {metrics["error_count"]}',
+            "",
+            "# HELP llm_error_rate Current error rate",
+            "# TYPE llm_error_rate gauge",
+            f'llm_error_rate {metrics["error_rate"]:.4f}',
+            "",
+            "# HELP llm_latency_p50 Latency p50 in milliseconds",
+            "# TYPE llm_latency_p50 gauge",
+            f'llm_latency_p50 {metrics["latency_p50_ms"]:.2f}',
+            "",
+            "# HELP llm_latency_p95 Latency p95 in milliseconds",
+            "# TYPE llm_latency_p95 gauge",
+            f'llm_latency_p95 {metrics["latency_p95_ms"]:.2f}',
+            "",
+            "# HELP llm_latency_p99 Latency p99 in milliseconds",
+            "# TYPE llm_latency_p99 gauge",
+            f'llm_latency_p99 {metrics["latency_p99_ms"]:.2f}',
+            "",
+            "# HELP llm_throughput Requests per second",
+            "# TYPE llm_throughput gauge",
+            f'llm_throughput {metrics["throughput_rps"]:.2f}',
+            "",
+            "# HELP llm_cost_total Total cost in USD",
+            "# TYPE llm_cost_total counter",
+            f'llm_cost_total {metrics["cost_total_usd"]:.4f}',
+        ]
+        
+        return "\n".join(lines)</code></pre>
+<hr>
+<h2>🧮 La Matemática de la Confiabilidad</h2>
+<p>Vamos a hablar de algo que la mayoría de los equipos de ML ignoran: los números detrás de la confiabilidad. Porque en producción, los números importan.</p>
+<h3>MTBF y MTTR: Las Métricas que Definen tu Sistema</h3>
+<p>$$MTBF = \frac{\text{Tiempo total de operación}}{\text{Número de fallas}}$$</p>
+<p>$$MTTR = \frac{\text{Tiempo total de reparación}}{\text{Número de reparaciones}}$$</p>
+<h3>Disponibilidad del Sistema</h3>
+<p>$$A = \frac{MTBF}{MTBF + MTTR}$$</p>
+<p><strong>Ejemplo práctico:</strong></p>
 <ul>
-<li><strong>Clarity</strong>: Instrucciones claras y especificas</li>
-<li><strong>Context</strong>: Dar suficiente informacion</li>
-<li><strong>Format</strong>: Especificar output deseado</li>
-<li><strong>Constraints</strong>: Limites y restricciones</li>
+<li>Si tu sistema tiene un MTBF de 720 horas (30 días) y un MTTR de 1 hora</li>
+<li>$$A = \frac{720}{720 + 1} = 0.9986 = 99.86\%$$</li>
+<li>Eso son aproximadamente 1.2 horas de downtime al mes</li>
 </ul>
+<h3>Relación Entre Número de Réplicas y Disponibilidad</h3>
+<p>$$A_{total} = 1 - (1 - A_{single})^n$$</p>
+<p>Donde $n$ es el número de réplicas independientes:</p>
+<ul>
+<li>1 réplica: 99.0% → 87.6 horas de downtime/mes</li>
+<li>2 réplicas: 99.99% → 4.4 horas de downtime/mes</li>
+<li>3 réplicas: 99.999% → 26 minutos de downtime/mes</li>
+</ul>
+<blockquote>
+<p>"En producción, la diferencia entre 99% y 99.9% de disponibilidad son 8 horas de downtime al mes. Esa diferencia tiene precio."</p>
+</blockquote>
 <hr>
-<h2>📐 Core Techniques</h2>
-<pre><code class="language-python"># Tecnicas de prompt engineering
-TECHNIQUES = {
-    "zero_shot": "Sin ejemplos, solo instruccion",
-    "few_shot": "Con ejemplos de como hacerlo",
-    "chain_of_thought": "Pedir razonamiento step-by-step",
-    "cot_few_shot": "Few-shot + razonamiento",
-    "system_prompt": "Instrucciones de alto nivel",
-    "role_prompting": "Asignar un rol (ej. 'eres un律师')"
-}
+<h2>⚠️ Los 3 Errores Críticos en LLM Production Systems</h2>
+<h3>Error #1: No Diseñar para Producción Desde elInicio</h3>
+<p><strong>El problema:</strong> La mayoría de los equipos construyen su LLM system como si fuera un script de Jupyter. Pegan el API key, hacen unas llamadas, funcionan en pruebas, y deployan. Pero cuando el tráfico real llega, el sistema no aguanta.</p>
+<p>Los problemas específicos incluyen:</p>
+<ul>
+<li>Sin timeouts — si el modelo no responde, la request cuelga indefinidamente</li>
+<li>Sin circuit breakers — cuando el modelo falla, todas las requests fallan</li>
+<li>Sin rate limiting — un spike de tráfico tumba el servicio</li>
+<li>Sin graceful degradation — cuando el LLM está down, todo está down</li>
+</ul>
+<p><strong>El fix:</strong></p>
+<pre><code class="language-python">"""
+Production LLM Client con todos los patrones necesarios.
+"""
 
-# Zero-shot example
-ZERO_SHOT = """Clasifica el sentimiento:
-Input: Me encanta este producto!
-Sentimiento:"""
+import asyncio
+from typing import Optional
+import httpx
+from circuit_breaker import CircuitBreaker
 
-# Few-shot example
-FEW_SHOT = """Clasifica el sentimiento:
 
-Input: Me encanta este producto!
-Sentimiento: Positivo
+class ProductionLLMClient:
+    """
+    Cliente LLM production-ready con:
+    - Timeouts configurables
+    - Circuit breaker
+    - Retry con exponential backoff
+    - Rate limiting
+    - Graceful degradation
+    """
+    
+    def __init__(
+        self,
+        api_key: str,
+        base_url: str,
+        timeout_ms: int = 30000,
+        max_retries: int = 3,
+        circuit_breaker_threshold: int = 5,
+        rate_limit_rpm: int = 60,
+    ):
+        self.api_key = api_key
+        self.base_url = base_url
+        self.timeout_ms = timeout_ms
+        self.max_retries = max_retries
+        
+        # Circuit breaker para manejar fallas
+        self.circuit_breaker = CircuitBreaker(
+            failure_threshold=circuit_breaker_threshold,
+            recovery_timeout=60,
+            name="llm_client"
+        )
+        
+        # Rate limiting
+        self.rate_limit_rpm = rate_limit_rpm
+        self.request_timestamps: deque = deque(maxlen=rate_limit_rpm)
+        
+        # HTTP client con timeouts
+        self.client = httpx.AsyncClient(
+            timeout=httpx.Timeout(timeout_ms / 1000),
+            headers={"Authorization": f"Bearer {api_key}"}
+        )
+        
+        # Fallback responses cuando el modelo falla
+        self.fallback_responses = {
+            "error": "Estamos experimentando alta demanda. Por favor intenta de nuevo en unos minutos.",
+            "degraded": "El sistema está operando en modo degradado. Los resultados pueden tardar más de lo normal."
+        }
+    
+    async def generate(
+        self,
+        prompt: str,
+        model: str = "gpt-4o",
+        use_fallback: bool = True
+    ) -> Response:
+        """
+        Generate con todos los patterns de producción.
+        """
+        # 1. Rate limiting check
+        if not self._check_rate_limit():
+            return Response(
+                request_id=generate_request_id(),
+                content=self.fallback_responses["degraded"],
+                model=model,
+                tokens_used=0,
+                latency_ms=0,
+                timestamp=datetime.now(),
+                success=False,
+                error="rate_limit_exceeded"
+            )
+        
+        # 2. Retry loop con exponential backoff
+        last_error = None
+        for attempt in range(self.max_retries):
+            try:
+                # Circuit breaker check
+                response = await self.circuit_breaker.call(
+                    self._call_llm_api,
+                    prompt,
+                    model
+                )
+                return response
+                
+            except CircuitBreakerOpenError:
+                # Nointentar, return fallback inmediatamente
+                if use_fallback:
+                    return self._fallback_response(model, "circuit_breaker_open")
+                raise
+                
+            except httpx.TimeoutException as e:
+                last_error = e
+                if attempt < self.max_retries - 1:
+                    wait_time = 2 ** attempt  # Exponential backoff
+                    await asyncio.sleep(wait_time)
+                continue
+                
+            except httpx.HTTPStatusError as e:
+                last_error = e
+                if e.response.status_code >= 500:
+                    # Error del servidor, retry tiene sentido
+                    if attempt < self.max_retries - 1:
+                        await asyncio.sleep(2 ** attempt)
+                    continue
+                else:
+                    # Error del cliente (4xx), no retry
+                    raise
+        
+        # Si llegamos aquí, todos los retries fallaron
+        if use_fallback:
+            return self._fallback_response(model, str(last_error))
+        raise last_error
+    
+    async def _call_llm_api(self, prompt: str, model: str) -> Response:
+        """Llama al API del LLM."""
+        start = datetime.now()
+        
+        response = await self.client.post(
+            f"{self.base_url}/chat/completions",
+            json={
+                "model": model,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.7,
+                "max_tokens": 2048
+            }
+        )
+        response.raise_for_status()
+        
+        data = response.json()
+        latency = (datetime.now() - start).total_seconds() * 1000
+        
+        return Response(
+            request_id=generate_request_id(),
+            content=data["choices"][0]["message"]["content"],
+            model=model,
+            tokens_used=data["usage"]["total_tokens"],
+            latency_ms=latency,
+            timestamp=datetime.now(),
+            success=True
+        )
+    
+    def _fallback_response(self, model: str, error: str) -> Response:
+        """Genera una respuesta de fallback cuando el sistema falla."""
+        return Response(
+            request_id=generate_request_id(),
+            content=self.fallback_responses["error"],
+            model=model,
+            tokens_used=0,
+            latency_ms=0,
+            timestamp=datetime.now(),
+            success=False,
+            error=error
+        )
+    
+    def _check_rate_limit(self) -> bool:
+        """Verifica si estamos dentro del rate limit."""
+        now = datetime.now()
+        cutoff = now - timedelta(minutes=1)
+        
+        # Limpiar timestamps viejos
+        while self.request_timestamps and self.request_timestamps[0] < cutoff:
+            self.request_timestamps.popleft()
+        
+        return len(self.request_timestamps) < self.rate_limit_rpm</code></pre>
+<h3>Error #2: No Monitorear el Sistema</h3>
+<p><strong>El problema:</strong> No tienes visibilidad de lo que está pasando. No sabes si el modelo está respondiendo más lento de lo normal, si el error rate está subiendo, o si estás gastando 10 veces más de lo que esperabas.</p>
+<p><strong>El fix:</strong></p>
+<pre><code class="language-python">"""
+Dashboard de monitoreo en tiempo real.
+"""
 
-Input: Es terrible, no lo recomiendo
-Sentimiento: Negativo
+class LLMProductionDashboard:
+    """
+    Dashboard que muestra en tiempo real la salud del sistema.
+    """
+    
+    def __init__(self, metrics_collector: LLMPrometheusMetrics):
+        self.metrics = metrics_collector
+    
+    def render(self) -> str:
+        """Renderiza el estado actual del sistema."""
+        m = self.metrics.get_metrics()
+        
+        # Determinar estado del sistema
+        if m["error_rate"] > 0.1:
+            state = "🔴 CRÍTICO"
+            state_color = "red"
+        elif m["error_rate"] > 0.05:
+            state = "🟡 DEGRADADO"
+            state_color = "yellow"
+        elif m["latency_p95_ms"] > 5000:
+            state = "🟡 LENTO"
+            state_color = "yellow"
+        else:
+            state = "🟢 SALUDABLE"
+            state_color = "green"
+        
+        return f"""
+╔══════════════════════════════════════════════════════════╗
+║           LLM PRODUCTION SYSTEM MONITOR                  ║
+╠══════════════════════════════════════════════════════════╣
+║  Estado: {state:50}║
+╠══════════════════════════════════════════════════════════╣
+║  Requests Totales:    {m['request_count']:>10}                       ║
+║  Requests Exitosos:  {m['request_count'] - m['error_count']:>10}                       ║
+║  Requests Fallidos:  {m['error_count']:>10}                       ║
+║  Error Rate:         {m['error_rate'] * 100:>9.2f}%                       ║
+╠══════════════════════════════════════════════════════════╣
+║  LATENCIA                                             ║
+║  P50: {m['latency_p50_ms']:>8.0f} ms                                    ║
+║  P95: {m['latency_p95_ms']:>8.0f} ms                                    ║
+║  P99: {m['latency_p99_ms']:>8.0f} ms                                    ║
+╠══════════════════════════════════════════════════════════╣
+║  COSTOS                                               ║
+║  Tokens Totales:      {m['total_tokens']:>10,}                       ║
+║  Costo Total:         ${m['cost_total_usd']:>9.4f}                       ║
+║  Costo/Request:       ${m['cost_per_request_usd']:>9.4f}                       ║
+╠══════════════════════════════════════════════════════════╣
+║  THROUGHPUT                                           ║
+║  Requests/seg:        {m['throughput_rps']:>10.2f}                       ║
+╚══════════════════════════════════════════════════════════╝
+        """
+    
+    def check_alerts(self) -> List[str]:
+        """Verifica si hay alertas que disparar."""
+        alerts = []
+        m = self.metrics.get_metrics()
+        
+        if m["error_rate"] > 0.1:
+            alerts.append(f"🚨 ALERTA: Error rate crítico ({m['error_rate']*100:.2f}%)")
+        
+        if m["latency_p95_ms"] > 10000:
+            alerts.append(f"⚠️ ALERTA: Latencia p95 muy alta ({m['latency_p95_ms']:.0f}ms)")
+        
+        if m["cost_per_request_usd"] > 0.10:
+            alerts.append(f"💰 ALERTA: Costo por request elevado (${m['cost_per_request_usd']:.4f})")
+        
+        return alerts</code></pre>
+<h3>Error #3: No Manejar las Fallas Gritacios</h3>
+<p><strong>El problema:</strong> Cuando algo falla, falla completo. No hay retry, no hay fallback, no hay nada. El usuario se queda viendo una pantalla de error o, peor, la request se pierde en el limbo.</p>
+<p><strong>El fix:</strong></p>
+<pre><code class="language-python">"""
+Error Handler centralizado para LLM Production.
+"""
 
-Input: Esta bien, nada especial
-Sentimiento:"""</code></pre>
+from typing import Optional, Callable
+from dataclasses import dataclass
+from datetime import datetime
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+class LLMError(Exception):
+    """Excepción base para errores de LLM."""
+    pass
+
+
+class ModelTimeoutError(LLMError):
+    """El modelo tardó demasiado en responder."""
+    pass
+
+
+class ModelRateLimitError(LLMError):
+    """El modelo está rate limited."""
+    pass
+
+
+class ModelContextLengthError(LLMError):
+    """El prompt excede el context window del modelo."""
+    pass
+
+
+class ModelAPIError(LLMError):
+    """Error retornado por el API del modelo."""
+    pass
+
+
+class ModelUnavailableError(LLMError):
+    """El modelo no está disponible."""
+    pass
+
+
+@dataclass
+class ErrorPolicy:
+    """
+    Política de manejo de errores.
+    
+    Define qué hacer cuando ocurre cada tipo de error.
+    """
+    max_retries: int
+    retry_delay_seconds: float
+    fallback_enabled: bool
+    fallback_response: str
+    alert_on_failure: bool
+
+
+class ProductionErrorHandler:
+    """
+    Manejador centralizado de errores con políticas configurables.
+    
+    Cada tipo de error tiene una política específica que define:
+    - Cuántas veces reintentar
+    - Cuánto esperar entre reintentos
+    - Si usar fallback
+    - Si disparar alertas
+    """
+    
+    ERROR_POLICIES = {
+        ModelTimeoutError: ErrorPolicy(
+            max_retries=3,
+            retry_delay_seconds=2.0,
+            fallback_enabled=True,
+            fallback_response="La solicitud está tardando más de lo normal. Por favor intenta de nuevo.",
+            alert_on_failure=True
+        ),
+        ModelRateLimitError: ErrorPolicy(
+            max_retries=5,
+            retry_delay_seconds=10.0,
+            fallback_enabled=True,
+            fallback_response="Estamos experimentando alta demanda. Por favor espera un momento.",
+            alert_on_failure=True
+        ),
+        ModelContextLengthError: ErrorPolicy(
+            max_retries=0,
+            retry_delay_seconds=0,
+            fallback_enabled=False,
+            fallback_response="El mensaje es demasiado largo. Por favor reducelo.",
+            alert_on_failure=False
+        ),
+        ModelAPIError: ErrorPolicy(
+            max_retries=3,
+            retry_delay_seconds=5.0,
+            fallback_enabled=True,
+            fallback_response="Hubo un error procesando tu solicitud. Por favor intenta de nuevo.",
+            alert_on_failure=True
+        ),
+        ModelUnavailableError: ErrorPolicy(
+            max_retries=10,
+            retry_delay_seconds=30.0,
+            fallback_enabled=True,
+            fallback_response="El servicio está temporalmente unavailable. Estamos trabajando en resolverlo.",
+            alert_on_failure=True
+        ),
+    }
+    
+    def __init__(self, alert_callback: Optional[Callable] = None):
+        self.alert_callback = alert_callback
+        self.error_log: list = []
+    
+    async def handle(
+        self,
+        error: Exception,
+        operation: Callable,
+        *args,
+        **kwargs
+    ):
+        """
+        Maneja un error usando la política apropiada.
+        """
+        error_type = type(error)
+        policy = self.ERROR_POLICIES.get(
+            error_type,
+            ErrorPolicy(
+                max_retries=1,
+                retry_delay_seconds=1.0,
+                fallback_enabled=True,
+                fallback_response="Ocurrió un error inesperado. Por favor intenta de nuevo.",
+                alert_on_failure=True
+            )
+        )
+        
+        # Log del error
+        self._log_error(error_type, error, policy)
+        
+        # Alertar si es necesario
+        if policy.alert_on_failure and self.alert_callback:
+            self.alert_callback(error_type.__name__, str(error))
+        
+        # Reintentar si hay policy para ello
+        last_error = error
+        for attempt in range(policy.max_retries):
+            if attempt > 0:
+                await self._sleep(policy.retry_delay_seconds * (2 ** (attempt - 1)))
+            
+            try:
+                return await operation(*args, **kwargs)
+            except Exception as e:
+                last_error = e
+                continue
+        
+        # Si todos los reintentos fallaron, usar fallback
+        if policy.fallback_enabled:
+            logger.warning(
+                f"All retries exhausted for {error_type.__name__}, "
+                f"returning fallback response"
+            )
+            return policy.fallback_response
+        
+        # Si no hay fallback, lanzar la excepción
+        raise last_error
+    
+    def _log_error(self, error_type: type, error: Exception, policy: ErrorPolicy):
+        """Logea el error para debugging."""
+        entry = {
+            "timestamp": datetime.now().isoformat(),
+            "error_type": error_type.__name__,
+            "message": str(error),
+            "max_retries": policy.max_retries,
+            "fallback_enabled": policy.fallback_enabled
+        }
+        self.error_log.append(entry)
+        logger.error(f"LLM Error: {entry}")
+    
+    async def _sleep(self, seconds: float):
+        """Sleep asincrónico."""
+        import asyncio
+        await asyncio.sleep(seconds)</code></pre>
 <hr>
-<h2>🚀 Best Practices</h2>
-<pre><code class="language-python">PROMPT_TIPS = [
-    "Be specific and explicit",
-    "Break complex tasks into steps",
-    "Use delimiters for structure",
-    "Specify format of output",
-    "Include examples when ambiguous",
-    "Ask for reasoning when complex"
-]</code></pre>
-<hr>
-<h2>⚠️ Errores Comunes</h2>
-<h3>Error 1: Prompts VagOS</h3>
-<p><strong>El problema</strong>: "Haz algo cool" no resulta en nada util.</p>
-<p><strong>La solucion</strong>: Ser especifico sobre que y como.</p>
-<hr>
-<p><em>Eso es todo! Nos vemos en el Dia 360.</em></p>
+<h2>📋 Resumen y Cierre Colombiano</h2>
+<p>Y ahí lo tienen, parcero. Día 359 y hemos cubierto los fundamentos de construir LLM systems que no te van a dejar plantado en producción:</p>
+<ul>
+<li><strong>Arquitectura con Circuit Breakers:</strong> El sistema no se cae cuando una parte falla — corta el tráfico problemático y sigue funcionando.</li>
+<li><strong>Monitoreo Completo:</strong> Si no mides, no puedes mejorar. Latencia, error rate, costo — todo importa en producción.</li>
+<li><strong>Manejo de Errores:</strong> Los errores van a pasar. La diferencia entre un sistema que sobrevive y uno que se cae es cómo manejas esas fallas.</li>
+</ul>
+<p>La matemática no miente: con 3 réplicas y circuit breakers, puedes pasar de 99% a 99.999% de disponibilidad. Eso es la diferencia entre dormir tranquilo o que te llamen a las 3 de la mañana.</p>
+<p>Mañana en el Día 360 vamos a la segunda parte: cómo escalar estos sistemas cuando el tráfico crece, cómo optimizar costos, y cómo tener planes de backup para cuando todo falla. Eso sí que no se lo pierdan, dove.</p>
+<p>Hasta la próxima, !Pureza! ☕🇨🇴</p>
   </article>
-
   <script>
     document.getElementById('themeToggle').addEventListener('click', function() {
       const html = document.documentElement;
