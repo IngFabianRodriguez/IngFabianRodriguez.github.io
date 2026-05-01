@@ -118,587 +118,370 @@ nav {
   </header>
 
   <article class="article-body">
-    <h2>💸 Cost Optimization para LLMs</h2>
-    <p>Hagale pues, parcero. Día 268 y hoy hablamos de algo que me ha quitado el sueño: <strong>Cost Optimization para LLMs</strong>. Porque aquí en Colombia sabemos del valor del peso — y si estás pagando de más sin saberlo, tenemos que arreglar eso. Aquí aprenderás a medir, rastrear y reducir tu spend en LLM inference. 💰</p>
+    <h2>🔍 Interpretability: Entendiendo Qué Piensa el LLM</h2>
+    <p>Hagale pues, parcero. Día 268 y hoy hablamos de algo que me fascina: <strong>Interpretability</strong>. Porque si no podemos entender qué está pasando dentro del modelo, cómo sabemos si está pensando bien? Aquí aprenderás las técnicas para abrir la caja negra y ver qué hay adentro. 🧠</p>
 
     <hr>
-    <h2>🎯 La Matemática del Costo</h2>
-    <p>Antes de optimizar, hay que entender cómo se calcula el costo:</p>
-
-    <p><strong>Costo Total = (Tokens Input × Costo por Token Input) + (Tokens Output × Costo por Token Output)</strong></p>
-
-    <p>Ejemplo con GPT-4o:</p>
+    <h2>🤔 Por Qué Importa la Interpretability?</h2>
+    <p>Los LLMs tienen miles de millones de parámetros. Cuando produces una respuesta, no es fácil explicar:</p>
     <ul>
-      <li>Input: $5.00 / 1M tokens</li>
-      <li>Output: $15.00 / 1M tokens</li>
-      <li>Un chat típico de 1000 tokens input + 500 tokens output = $0.005 + $0.0075 = <strong>$0.0125 por request</strong></li>
+      <li>Por qué eligió esa palabra y no otra</li>
+      <li>Qué partes del contexto influyeron en la respuesta</li>
+      <li>Si el modelo está "mintiendo" o confundiendo conceptos</li>
     </ul>
 
-    <blockquote>
-      <p>💡 <em>Si tienes 100K requests diarios, eso es $1,250/día = $37,500/mes. Una optimización del 30% te ahorra $11,250/mes.</em></p>
-    </blockquote>
-
-    <p>Para modelos auto-alojados:</p>
-    <p><strong>Costo por Token = (Costo GPU-hora / Tokens procesados por hora)</strong></p>
-
-    <p>Una A100 a $2/hora procesa ~10K tokens/segundo en batch:</p>
-    <p>= 10,000 × 3600 = 36M tokens/hora</p>
-    <p>= $2 / 36M = <strong>$0.000055 por 1K tokens</strong></p>
+    <p>La interpretability nos ayuda a:</p>
+    <ul>
+      <li><strong>Debuggear</strong>: Encontrar por qué el modelo falla</li>
+      <li><strong>Confiar</strong>: Verificar que el modelo usa el razonamiento correcto</li>
+      <li><strong>Mejorar</strong>: Identificar qué cambiar para arreglar comportamientos</li>
+      <li><strong>Alinear</strong>: Asegurar que el modelo hace lo que queremos</li>
+    </ul>
 
     <hr>
-    <h2>📊 Cost Tracking: Midiendo el Gasto</h2>
-    <p>El error #1 es no saber cuánto gastas por request. Vamos a implementar tracking:</p>
+    <h2>📊 Niveles de Interpretability</h2>
 
-    <pre><code class="language-python">from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Optional, Dict
-import hashlib
-import json
+    <h3>Nivel 1: Attention Visualization</h3>
+    <p>Podemos visualizar qué partes del input el modelo está "mirando" cuando produce cada token:</p>
 
-@dataclass
-class CostRecord:
-    """Registro de costo para una request."""
-    request_id: str
-    timestamp: str
-    model: str
-    prompt_tokens: int
-    completion_tokens: int
-    cost_usd: float
-    cache_hit: bool = False
-    metadata: Dict = field(default_factory=dict)
+    <pre><code class="language-python">import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer
+import matplotlib.pyplot as plt
+import seaborn as sns
 
-class CostTracker:
-    """Tracker de costos para LLM inference."""
+def visualize_attention(model, tokenizer, prompt, layer_idx=0, head_idx=0):
+    """
+    Visualiza los patterns de attention para un prompt dado.
+    """
+    # Tokenizar
+    inputs = tokenizer(prompt, return_tensors="pt")
 
-    def __init__(self, model_costs: Dict[str, Dict[str, float]]):
-        """
-        model_costs: {
-            "gpt-4o": {"input_per_1k": 0.005, "output_per_1k": 0.015},
-            "gpt-3.5-turbo": {"input_per_1k": 0.0005, "output_per_1k": 0.0015},
-            "llama-2-70b": {"per_1k_tokens": 0.00007},  # costo por 1K tokens (ambos)
-        }
-        """
-        self.model_costs = model_costs
-        self.records: list[CostRecord] = []
-
-    def calculate_cost(
-        self,
-        model: str,
-        prompt_tokens: int,
-        completion_tokens: int,
-        cache_hit: bool = False
-    ) -> float:
-        """Calcula el costo en USD."""
-        if cache_hit:
-            # Cache hit tiene descuento (OpenAI cobra 10% para cached tokens)
-            return 0.0
-
-        costs = self.model_costs.get(model, {})
-        if "input_per_1k" in costs:
-            # Modelo con costos separados de input/output
-            input_cost = (prompt_tokens / 1000) * costs["input_per_1k"]
-            output_cost = (completion_tokens / 1000) * costs["output_per_1k"]
-            return input_cost + output_cost
-        elif "per_1k_tokens" in costs:
-            # Costo uniforme por token
-            total_tokens = prompt_tokens + completion_tokens
-            return (total_tokens / 1000) * costs["per_1k_tokens"]
-        else:
-            return 0.0
-
-    def log_request(
-        self,
-        model: str,
-        prompt_tokens: int,
-        completion_tokens: int,
-        cache_hit: bool = False,
-        metadata: Optional[Dict] = None
-    ) -> CostRecord:
-        """Registra una request y su costo."""
-        cost = self.calculate_cost(model, prompt_tokens, completion_tokens, cache_hit)
-
-        record = CostRecord(
-            request_id=hashlib.md5(f"{datetime.now()}{prompt_tokens}".encode()).hexdigest()[:12],
-            timestamp=datetime.now().isoformat(),
-            model=model,
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-            cost_usd=cost,
-            cache_hit=cache_hit,
-            metadata=metadata or {}
+    # Hacer forward pass y capturar attention weights
+    with torch.no_grad():
+        outputs = model(
+            **inputs,
+            output_attentions=True  # Importante: capturar attention weights
         )
 
-        self.records.append(record)
-        return record
+    # attentions tiene forma (num_layers, batch, num_heads, seq_len, seq_len)
+    attentions = outputs.attentions
 
-    def summary(self) -> Dict:
-        """Resumen de costos."""
-        if not self.records:
-            return {"total_cost": 0, "total_requests": 0}
+    # Obtener attention para una capa y head específicos
+    attn_matrix = attentions[layer_idx][0, head_idx].numpy()
 
-        total = sum(r.cost_usd for r in self.records)
-        cache_hits = sum(1 for r in self.records if r.cache_hit)
-        by_model = {}
-        for r in self.records:
-            by_model[r.model] = by_model.get(r.model, 0) + r.cost_usd
+    # Crear visualización
+    tokens = tokenizer.convert_ids_to_tokens(inputs["input_ids"][0])
 
-        return {
-            "total_cost_usd": round(total, 4),
-            "total_requests": len(self.records),
-            "cache_hit_rate": round(cache_hits / len(self.records) * 100, 1),
-            "cost_by_model": {k: round(v, 4) for k, v in by_model.items()},
-            "avg_cost_per_request": round(total / len(self.records), 6)
-        }
+    plt.figure(figsize=(12, 10))
+    sns.heatmap(
+        attn_matrix,
+        xticklabels=tokens,
+        yticklabels=tokens,
+        cmap="viridis",
+        cbar=True
+    )
+    plt.title(f"Attention Layer {layer_idx}, Head {head_idx}")
+    plt.xlabel("Key Tokens")
+    plt.ylabel("Query Tokens")
+    plt.tight_layout()
+    plt.show()
 
-    def export_csv(self, filepath: str):
-        """Exporta a CSV para análisis."""
-        import csv
-        with open(filepath, "w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=[
-                "request_id", "timestamp", "model", "prompt_tokens",
-                "completion_tokens", "cost_usd", "cache_hit"
-            ])
-            writer.writeheader()
-            for r in self.records:
-                writer.writerow({
-                    "request_id": r.request_id,
-                    "timestamp": r.timestamp,
-                    "model": r.model,
-                    "prompt_tokens": r.prompt_tokens,
-                    "completion_tokens": r.completion_tokens,
-                    "cost_usd": r.cost_usd,
-                    "cache_hit": r.cache_hit
-                })
+    return attentions
 
 # Uso
-tracker = CostTracker({
-    "gpt-4o": {"input_per_1k": 0.005, "output_per_1k": 0.015},
-    "gpt-3.5-turbo": {"input_per_1k": 0.0005, "output_per_1k": 0.0015},
-    "llama-2-70b": {"per_1k_tokens": 0.00007},
-})
+model_name = "gpt2"  # or any other model
+model = AutoModelForCausalLM.from_pretrained(model_name)
+tokenizer = AutoTokenizer.from_pretrained(model_name)
 
-# Registrar request
-record = tracker.log_request(
-    model="gpt-4o",
-    prompt_tokens=500,
-    completion_tokens=200,
-    metadata={"user_id": "user_123", "endpoint": "/chat"}
-)
+prompt = "El machine learning es una rama de la inteligencia artificial que"
+visualize_attention(model, tokenizer, prompt, layer_idx=5, head_idx=2)</code></pre>
 
-print(f"Costo: ${record.cost_usd:.4f}")
-print(tracker.summary())</code></pre>
+    <h3>Nivel 2: Probing / Feature Extraction</h3>
+    <p>Entrenar clasificadores lineales para detectar si ciertas features están presentes en las representaciones:</p>
 
-    <hr>
-    <h2>🔀 Model Routing: Ahorra 60% con Inteligencia</h2>
-    <p>No toda request necesita GPT-4. Clasifica y enruta:</p>
-
-    <pre><code class="language-python">from enum import Enum
-from typing import Literal
-
-class TaskComplexity(Enum):
-    SIMPLE = "simple"      # Preguntas cortas, respuestas cortas
-    MEDIUM = "medium"      # Análisis moderado, código estándar
-    COMPLEX = "complex"    # Razonamiento profundo, contexto largo
-
-class ModelRouter:
-    """Router inteligente de requests a modelos apropiados."""
-
-    def __init__(self, tracker: CostTracker):
-        self.tracker = tracker
-        # Modelo pequeño: rápido y barato
-        self.small_model = "gpt-3.5-turbo"
-        # Modelo grande: caro pero poderoso
-        self.large_model = "gpt-4o"
-        # Umbrales
-        self.simple_max_tokens = 50
-        self.medium_max_tokens = 300
-
-    def classify_task(
-        self,
-        prompt: str,
-        max_response_tokens: int = 100
-    ) -> TaskComplexity:
-        """Clasifica la complejidad de la tarea."""
-        # Señales de tarea simple
-        simple_indicators = [
-            len(prompt) < 50,
-            max_response_tokens < self.simple_max_tokens,
-            any(kw in prompt.lower() for kw in ["que es", "define", "dime la hora"]),
-        ]
-
-        # Señales de tarea compleja
-        complex_indicators = [
-            len(prompt) > 500,
-            max_response_tokens > self.medium_max_tokens,
-            any(kw in prompt.lower() for kw in ["analiza", "compara", "explica en profundidad"]),
-            "código" in prompt.lower() and "complejo" in prompt.lower(),
-        ]
-
-        if sum(simple_indicators) >= 2 and not any(complex_indicators):
-            return TaskComplexity.SIMPLE
-        elif any(complex_indicators):
-            return TaskComplexity.COMPLEX
-        else:
-            return TaskComplexity.MEDIUM
-
-    def route(
-        self,
-        prompt: str,
-        max_response_tokens: int = 100,
-        force_model: Optional[str] = None
-    ) -> Literal["gpt-3.5-turbo", "gpt-4o"]:
-        """Determina qué modelo usar."""
-        if force_model:
-            return force_model
-
-        complexity = self.classify_task(prompt, max_response_tokens)
-
-        if complexity == TaskComplexity.SIMPLE:
-            return self.small_model
-        elif complexity == TaskComplexity.COMPLEX:
-            return self.large_model
-        else:
-            # Medium: depende del presupuesto
-            return self.small_model  # Por defecto el barato
-
-    def execute_with_routing(
-        self,
-        prompt: str,
-        max_response_tokens: int = 100,
-        client=None  # OpenAI client
-    ) -> Dict:
-        """Ejecuta request con routing inteligente."""
-        model = self.route(prompt, max_response_tokens)
-
-        # Simular llamada
-        # response = client.chat.completions.create(
-        #     model=model,
-        #     messages=[{"role": "user", "content": prompt}],
-        #     max_tokens=max_response_tokens
-        # )
-
-        # Registrar costo
-        record = self.tracker.log_request(
-            model=model,
-            prompt_tokens=len(prompt) // 4,  # Estimación
-            completion_tokens=max_response_tokens // 4,
-            metadata={"complexity": self.classify_task(prompt, max_response_tokens).value}
-        )
-
-        return {
-            "model_used": model,
-            "cost": record.cost_usd,
-            "routing_savings": record.cost_usd * 0.6 if model == self.small_model else 0
-        }
-
-# Usage
-router = ModelRouter(tracker)
-
-# Tareas simples van a modelo barato
-result = router.execute_with_routing(
-    prompt="Que es Python?",
-    max_response_tokens=50
-)
-print(f"Modelo: {result['model_used']}, Costo: ${result['cost']:.6f}")  # gpt-3.5-turbo
-
-# Tareas complejas van a modelo grande
-result = router.execute_with_routing(
-    prompt="Analiza el impacto de la IA en la economía global, considerando factores históricos, tecnológicos y sociales, con datos específicos.",
-    max_response_tokens=1000
-)
-print(f"Modelo: {result['model_used']}, Costo: ${result['cost']:.6f}")  # gpt-4o
-
-# Savings acumulado
-print(f"Ahorro por routing: ${sum(r['routing_savings'] for r in [result]):.2f}")</code></pre>
-
-    <hr>
-    <h2>💾 Semantic Caching: 30% de Requests Son Duplicados</h2>
-    <p>El 30% de las requests son idénticas o muy similares. Cachealas:</p>
-
-    <pre><code class="language-python">import hashlib
-from typing import Optional, Dict, List
+    <pre><code class="language-python">import torch
+import torch.nn as nn
+from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import train_test_split
 import numpy as np
 
-class SemanticCache:
-    """Cache semántico para requests LLM."""
+class ProbingClassifier:
+    """
+    Probing: entrenar un clasificador lineal para ver qué información
+    está codificada en las representaciones de un modelo.
+    """
 
-    def __init__(self, similarity_threshold: float = 0.95, embedding_model=None):
-        """
-        similarity_threshold: 0.0-1.0, qué tan similar debe ser para considerarse hit
-        embedding_model: modelo para generar embeddings (e.g., sentence-transformers)
-        """
-        self.similarity_threshold = similarity_threshold
-        self.embedding_model = embedding_model
-        self.cache: Dict[str, Dict] = {}
-        self.embedding_model = embedding_model
+    def __init__(self, model, tokenizer, hidden_dim):
+        self.model = model
+        self.tokenizer = tokenizer
+        self.hidden_dim = hidden_dim
+        self.probe = LogisticRegression(max_iter=1000)
 
-    def _get_embedding(self, text: str) -> np.ndarray:
-        """Genera embedding para el texto."""
-        if self.embedding_model:
-            return self.embedding_model.encode(text)
+    def extract_representations(self, texts):
+        """Extrae las últimas hidden states para una lista de textos."""
+        representations = []
+
+        for text in texts:
+            inputs = self.tokenizer(text, return_tensors="pt", truncation=True, max_length=128)
+
+            with torch.no_grad():
+                outputs = self.model(**inputs, output_hidden_states=True)
+                # Usar la última capa oculta
+                hidden_state = outputs.hidden_states[-1][0, -1, :].numpy()
+                representations.append(hidden_state)
+
+        return np.array(representations)
+
+    def train_probe(self, texts, labels):
+        """
+        Entrena un clasificador lineal para predecir 'labels' desde las representaciones.
+        Si el clasificador puede predecir bien, la información está en las representaciones.
+        """
+        X = self.extract_representations(texts)
+        y = np.array(labels)
+
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.2, random_state=42
+        )
+
+        self.probe.fit(X_train, y_train)
+        train_acc = self.probe.score(X_train, y_train)
+        test_acc = self.probe.score(X_test, y_test)
+
+        return {
+            "train_accuracy": train_acc,
+            "test_accuracy": test_acc,
+            "probe_coef": self.probe.coef_
+        }
+
+# Ejemplo: detectar si una oración es positiva o negativa
+texts = [
+    "Me encanta este producto, es increíble!",
+    "Qué decepcionante, no lo recomiendo",
+    "El servicio fue excelente",
+    "Una experiencia terrible",
+    # ... más ejemplos
+]
+labels = [1, 0, 1, 0]  # 1=positivo, 0=negativo
+
+probe_results = probe.train_probe(texts, labels)
+print(f"Train accuracy: {probe_results['train_accuracy']:.2f}")
+print(f"Test accuracy: {probe_results['test_accuracy']:.2f}")
+# Accuracy alta = la información está en las representaciones</code></pre>
+
+    <h3>Nivel 3: Circuit-Level Interpretability</h3>
+    <p>Identificar qué circuitos (subgrafos de la red) implementan comportamientos específicos:</p>
+
+    <pre><code class="language-python">class CircuitFinder:
+    """
+    Encuentra circuitos neuronales que implementan comportamientos específicos.
+    Basado en el trabajo de Anthropic/EleutherAI.
+    """
+
+    def __init__(self, model):
+        self.model = model
+        self.circuits = {}
+
+    def ablate_circuit(self, nodes_to_remove, prompt, correct_answer):
+        """
+        Remueve nodos específicos y mide el impacto en el output.
+        Si el output cambia mucho, esos nodos eran parte del circuito.
+        """
+        # Hacer forward pass normal
+        normal_output = self.model.generate(prompt)
+
+        # Hacer forward pass con nodos removidos
+        ablated_output = self.model.generate_with_ablation(
+            prompt,
+            nodes_to_remove
+        )
+
+        # Medir diferencia
+        impact = self.compute_output_difference(normal_output, ablated_output)
+        return impact
+
+    def find_circuit_for_task(self, prompt, answer, max_nodes=20):
+        """
+        Encuentra qué nodos son necesarios para producir la respuesta correcta.
+        Usa iterative ablation.
+        """
+        nodes = self.get_all_nodes()
+        important_nodes = []
+
+        remaining_nodes = set(nodes)
+
+        for _ in range(max_nodes):
+            best_node = None
+            best_impact = 0
+
+            for node in remaining_nodes:
+                impact = self.ablate_circuit(
+                    important_nodes + [node],
+                    prompt,
+                    answer
+                )
+
+                if impact > best_impact:
+                    best_impact = impact
+                    best_node = node
+
+            if best_node:
+                important_nodes.append(best_node)
+                remaining_nodes.remove(best_node)
+
+        self.circuits[(prompt, answer)] = important_nodes
+        return important_nodes
+
+    def compute_output_difference(self, output1, output2):
+        """Mide diferencia entre dos outputs."""
+        # Usar log probabilities difference
+        return abs(output1.logprob - output2.logprob)
+
+# Uso
+circuit_finder = CircuitFinder(model)
+prompt = "If you have 3 apples and you eat 1, how many do you have?"
+answer = "2"
+
+circuit = circuit_finder.find_circuit_for_task(prompt, answer)
+print(f"Circuit nodes: {circuit}")</code></pre>
+
+    <hr>
+    <h2>🔬 Técnicas Avanzadas</h2>
+
+    <h3>1. Activation Patching / Causal Tracing</h3>
+    <p>Identificar qué posiciones en el contexto contribuyen a la respuesta:</p>
+
+    <pre><code class="language-python">def causal_tracing(model, tokenizer, prompt, correct_token_id):
+    """
+    Causal tracing: identificar qué tokens del input causan el output.
+    """
+
+    # Tokenizar
+    inputs = tokenizer(prompt, return_tensors="pt")
+    seq_len = inputs["input_ids"].shape[1]
+
+    # Forward pass normal para obtener baseline
+    with torch.no_grad():
+        baseline_logits = model(**inputs).logits[0, -1]
+        baseline_pred = baseline_logits.argmax().item()
+
+    results = []
+
+    # Para cada posición, medir el impacto de "cortar" su conexión
+    for position in range(seq_len):
+        # Crear una versión con el estado oculto en esta posición puesto a cero
+        # (o a un valor baseline)
+        patched_inputs = inputs.copy()
+
+        # Alternativa: cambiar el token en esta posición por [MASK]
+        # y ver cómo afecta el prediction
+        patched_inputs["input_ids"][0, position] = tokenizer.mask_token_id
+
+        with torch.no_grad():
+            patched_logits = model(**patched_inputs).logits[0, -1]
+            patched_pred = patched_logits.argmax().item()
+
+        # Si cambió la predicción, esta posición era importante
+        if patched_pred != baseline_pred:
+            importance = "HIGH"
         else:
-            # Fallback: hash simple (no semántico, pero funciona)
-            return np.array([hash(text) % 1000])
+            # Medir cuánto cambió la probabilidad del token correcto
+            baseline_prob = torch.softmax(baseline_logits, dim=-1)[correct_token_id]
+            patched_prob = torch.softmax(patched_logits, dim=-1)[correct_token_id]
+            importance = abs((baseline_prob - patched_prob).item())
 
-    def _cosine_similarity(self, a: np.ndarray, b: np.ndarray) -> float:
-        """Calcula similitud coseno entre dos vectores."""
-        return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b)))
+        results.append({
+            "position": position,
+            "token": tokenizer.decode(inputs["input_ids"][0, position]),
+            "importance": importance,
+            "prediction_changed": patched_pred != baseline_pred
+        })
 
-    def _compute_hash(self, text: str) -> str:
-        """Compute a hash key for exact match."""
-        return hashlib.sha256(text.encode()).hexdigest()[:16]
-
-    def get(self, prompt: str, max_response_tokens: Optional[int] = None) -> Optional[str]:
-        """Busca en cache. Retorna respuesta si hay hit, None si miss."""
-        exact_key = self._compute_hash(prompt)
-
-        # 1. Buscar por hash exacto primero
-        if exact_key in self.cache:
-            entry = self.cache[exact_key]
-            if max_response_tokens is None or entry.get("max_tokens") == max_response_tokens:
-                entry["hits"] += 1
-                entry["last_accessed"] = "now"
-                return entry["response"]
-
-        # 2. Buscar por similitud semántica
-        if self.embedding_model:
-            prompt_embedding = self._get_embedding(prompt)
-
-            best_match = None
-            best_similarity = 0
-
-            for key, entry in self.cache.items():
-                if "embedding" in entry:
-                    similarity = self._cosine_similarity(prompt_embedding, entry["embedding"])
-                    if similarity > best_similarity and similarity >= self.similarity_threshold:
-                        best_similarity = similarity
-                        best_match = (key, entry)
-
-            if best_match:
-                key, entry = best_match
-                entry["hits"] += 1
-                entry["last_accessed"] = "now"
-                return entry["response"]
-
-        return None
-
-    def put(
-        self,
-        prompt: str,
-        response: str,
-        max_response_tokens: Optional[int] = None,
-        metadata: Optional[Dict] = None
-    ):
-        """Guarda en cache."""
-        key = self._compute_hash(prompt)
-
-        embedding = None
-        if self.embedding_model:
-            embedding = self._get_embedding(prompt)
-
-        self.cache[key] = {
-            "prompt": prompt,
-            "response": response,
-            "max_tokens": max_response_tokens,
-            "hits": 0,
-            "created_at": "now",
-            "last_accessed": "now",
-            "embedding": embedding,
-            "metadata": metadata or {}
-        }
-
-    def stats(self) -> Dict:
-        """Estadísticas del cache."""
-        total_hits = sum(e["hits"] for e in self.cache.values())
-        total_requests = total_hits + len(self.cache)  # hits + misses (estimado)
-
-        return {
-            "cache_size": len(self.cache),
-            "total_hits": total_hits,
-            "hit_rate": round(total_hits / total_requests * 100, 1) if total_requests > 0 else 0,
-            "estimated_savings_usd": round(total_hits * 0.005, 2)  # Asumiendo $0.005 por request
-        }
+    # Ordenar por importancia
+    results.sort(key=lambda x: x["importance"], reverse=True)
+    return results
 
 # Uso
-from sentence_transformers import SentenceTransformer
+prompt = "The capital of France is"
+results = causal_tracing(model, tokenizer, prompt, correct_token_id=tokenizer.encode(" Paris")[0])
+print("Most important tokens:")
+for r in results[:5]:
+    print(f"  {r['token']}: {r['importance']}")</code></pre>
 
-embedder = SentenceTransformer('all-MiniLM-L6-v2')
-cache = SemanticCache(similarity_threshold=0.92, embedding_model=embedder)
+    <h3>2. Sparse Autoencoders para Features</h3>
+    <p>Los SAEs permiten descomponer las activaciones en features interpretables:</p>
 
-# Primera vez: cache miss
-prompt = "Explica qué es machine learning en términos simples"
-cached_response = cache.get(prompt)
+    <pre><code class="language-python">class SparseAutoencoder(nn.Module):
+    """
+    Sparse Autoencoder para descomponer activaciones en features.
+    Paper: Towards Monosemanticity (Anthropic, 2023)
+    """
 
-if not cached_response:
-    # response = call_llm(prompt)
-    response = "Machine learning es una rama de la IA que permite a las máquinas aprender de datos..."
-    cache.put(prompt, response, max_response_tokens=100)
+    def __init__(self, d_model, d_hidden):
+        super().__init__()
+        self.encoder = nn.Linear(d_model, d_hidden, bias=True)
+        self.decoder = nn.Linear(d_hidden, d_model, bias=True)
+        self.d_hidden = d_hidden
 
-    print("Cache MISS - guardando respuesta")
-else:
-    print(f"Cache HIT - respuesta: {cached_response}")
+    def forward(self, x):
+        # Activaciones sparsity mediante ReLU
+        hidden = torch.relu(self.encoder(x))
+        reconstruction = self.decoder(hidden)
+        return reconstruction, hidden
 
-# Ver estadísticas
-print(cache.stats())
-# {'cache_size': 1, 'total_hits': 0, 'hit_rate': 0.0, 'estimated_savings_usd': 0.0}</code></pre>
+    def fit(self, activations, lr=1e-3, epochs=1000):
+        """Entrena el SAE en un conjunto de activaciones."""
+        optimizer = torch.optim.Adam(self.parameters(), lr=lr)
+        losses = []
 
-    <hr>
-    <h2>⚖️ Cuantización: Mismo Modelo, Menor Costo</h2>
-    <p>Reduce el costo de auto-alojamiento con cuantización:</p>
+        for epoch in range(epochs):
+            self.train()
+            batch = torch.tensor(activations, dtype=torch.float32)
 
-    <pre><code class="language-python"># De 70B float16 (140GB) a 8-bit (70GB) - media GPU en vez de 2
-# De 70B float16 a 4-bit (35GB) - una sola GPU
+            recon, hidden = self(batch)
+            loss = nn.functional.mse_loss(recon, batch) + 0.01 * hidden.abs().mean()
 
-from transformers import AutoModelForCausalLM, BitsAndBytesConfig
-import torch
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
 
-# Cuantización 8-bit
-model_8bit = AutoModelForCausalLM.from_pretrained(
-    "meta-llama/Llama-2-70b-hf",
-    quantization_config=BitsAndBytesConfig(
-        load_in_8bit=True,
-        llm_int8_threshold=6.0,  # Umbral para outlier activation
-        llm_int8_skip_modules=["lm_head"],
-    ),
-    device_map="auto"
-)
+            losses.append(loss.item())
 
-# Cuantización 4-bit (más agresiva, más ahorro)
-model_4bit = AutoModelForCausalLM.from_pretrained(
-    "meta-llama/Llama-2-70b-hf",
-    quantization_config=BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_compute_dtype=torch.float16,
-        bnb_4bit_use_double_quant=True,
-        bnb_4bit_quant_type="nf4"  # Normal Float 4-bit
-    ),
-    device_map="auto"
-)
+            if epoch % 100 == 0:
+                print(f"Epoch {epoch}, Loss: {loss.item():.4f}, Active features: {hidden.sum(dim=-1).mean():.1f}")
 
-# El resultado: puedes correr 70B en UNA A100 de 80GB en vez de 2
-# Costo: de ~$4/hora (2 GPUs) a ~$2/hora (1 GPU) = 50% ahorro</code></pre>
-
-    <hr>
-    <h2>⚠️ Los 3 Errores Clásicos (y sus fixes)</h2>
-
-    <h3>Error 1: No trackear costo por request</h3>
-    <p><strong>Síntoma</strong>: "Somos $50K/mes" sin saber en qué. No hay visibilidad de qué endpoints, usuarios o features son los más costosos.</p>
-    <p><strong>Fix</strong>: Implementa CostTracker desde día 1. Etiqueta cada request con metadata útil.</p>
-    <pre><code class="language-python"># Muestra por endpoint
-costs_by_endpoint = {}
-for record in tracker.records:
-    endpoint = record.metadata.get("endpoint", "unknown")
-    costs_by_endpoint[endpoint] = costs_by_endpoint.get(endpoint, 0) + record.cost_usd
-
-for endpoint, cost in sorted(costs_by_endpoint.items(), key=lambda x: -x[1]):
-    print(f"{endpoint}: ${cost:.2f}")</code></pre>
-
-    <h3>Error 2: Usar el mismo modelo para todo</h3>
-    <p><strong>Síntoma</strong>: GPT-4 para "¿Qué hora es?" y para "Análisis financiero completo". Estás quemando dinero.</p>
-    <p><strong>Fix</strong>: Implementa model routing. 60% de requests pueden ir a modelo más barato.</p>
-
-    <blockquote>
-      <p>💡 <em>En producción real, típicamente: 50-60% tareas simples (gpt-3.5), 30-40% medium (gpt-4), 5-10% complex (gpt-4 con contexto largo). Routing automático puede reducir tu factura 40-60%.</em></p>
-    </blockquote>
-
-    <h3>Error 3: No usar caching</h3>
-    <p><strong>Síntoma</strong>: El mismo "¿Cómo reseteo mi contraseña?" 500 veces al día. Cada una cuesta $0.01. Eso es $5/día = $150/mes en requests idénticas.</p>
-    <p><strong>Fix</strong>: Implementa semantic caching con embeddings. 30%+ hit rate es normal.</p>
-    <pre><code class="language-python"># Antes: sin cache
-for user_query in user_queries:
-    response = call_llm(user_query)  # $0.01 cada vez
-    total_cost += 0.01
-
-# Después: con cache
-cache = SemanticCache(embedding_model=embedder)
-for user_query in user_queries:
-    cached = cache.get(user_query)
-    if cached:
-        response = cached
-        savings += 0.01  # Lo que te ahorraste
-    else:
-        response = call_llm(user_query)
-        cache.put(user_query, response)
-
-print(f"Cache hit rate: {cache.stats()['hit_rate']}%")
-print(f"Ahorro total: ${savings:.2f}")</code></pre>
-
-    <hr>
-    <h2>📈 Cost Dashboard</h2>
-    <pre><code class="language-python"># Dashboard para monitorear costos en producción
-from datetime import datetime, timedelta
-
-class CostDashboard:
-    def __init__(self, tracker: CostTracker):
-        self.tracker = tracker
-
-    def daily_summary(self, days: int = 7) -> Dict:
-        """Resumen de costos por día."""
-        # Agrupar por día
-        daily = {}
-        for record in self.tracker.records:
-            day = record.timestamp[:10]  # YYYY-MM-DD
-            if day not in daily:
-                daily[day] = {"cost": 0, "requests": 0, "cache_hits": 0}
-            daily[day]["cost"] += record.cost_usd
-            daily[day]["requests"] += 1
-            if record.cache_hit:
-                daily[day]["cache_hits"] += 1
-
-        return {
-            day: {
-                "cost_usd": round(data["cost"], 2),
-                "requests": data["requests"],
-                "cache_hits": data["cache_hits"],
-                "cache_rate": round(data["cache_hits"] / data["requests"] * 100, 1)
-            }
-            for day, data in sorted(daily.items())
-        }
-
-    def optimization_potential(self) -> Dict:
-        """Calcula potencial de optimización."""
-        summary = self.tracker.summary()
-        current_cost = summary["total_cost_usd"]
-
-        # Estimaciones de ahorro
-        routing_savings = current_cost * 0.4  # Routing puede ahorrar 40%
-        cache_savings = current_cost * 0.25  # Cache puede ahorrar 25%
-
-        return {
-            "current_cost": current_cost,
-            "with_routing": current_cost - routing_savings,
-            "with_cache": current_cost - cache_savings,
-            "with_both": current_cost - (routing_savings + cache_savings),
-            "monthly_projection": current_cost * 30,
-            "monthly_with_optimizations": (current_cost - routing_savings - cache_savings) * 30
-        }
+        return losses
 
 # Uso
-dashboard = CostDashboard(tracker)
+# activations: matrix de shape (num_samples, d_model)
+# Extraídas de un modelo
+sae = SparseAutoencoder(d_model=768, d_hidden=4 * 768)
+losses = sae.fit(activations)
+print(f"Features descubiertas: {sae.count_active_features()}")</code></pre>
 
-print("=== Resumen Diario ===")
-for day, data in dashboard.daily_summary().items():
-    print(f"{day}: ${data['cost_usd']} ({data['requests']} requests, {data['cache_rate']}% cache)")
-
-print("\n=== Potencial de Optimización ===")
-opt = dashboard.optimization_projection()
-print(f"Costo actual (mes): ${opt['monthly_projection']:.2f}")
-print(f"Con routing + cache: ${opt['monthly_with_optimizations']:.2f}")
-print(f"Ahorro potencial: ${opt['monthly_projection'] - opt['monthly_with_optimizations']:.2f}/mes")</code></pre>
+    <hr>
+    <h2>⚠️ Limitaciones</h2>
+    <ul>
+      <li><strong>Escala:</strong> Los modelos grandes tienen millones de features, imposible etiquetar todas</li>
+      <li><strong>Polysemanticity:</strong> Una neurona puede responder a múltiples conceptos</li>
+      <li><strong>Circles within circles:</strong> Las features forman jerarquías complejas</li>
+      <li><strong>Costo computacional:</strong> Hacer tracing en modelos grandes es caro</li>
+    </ul>
 
     <hr>
     <h2>🏁 Resumen</h2>
-    <p>Así que ahí lo tienes, parcero. Cost optimization para LLMs:</p>
+    <p>Interpretability es clave para entender y confiar en LLMs:</p>
     <ul>
-      <li><strong>Trackea todo</strong>: Sin datos estás ciega, no sabes dónde está el gasto</li>
-      <li><strong>Model routing</strong>: 60% de requests pueden ir a modelos más baratos</li>
-      <li><strong>Semantic caching</strong>: 30%+ de requests son duplicadas — cachealas</li>
-      <li><strong>Cuantización</strong>: 50% ahorro en infraestructura con 4-bit</li>
+      <li><strong>Attention visualization</strong>: Ve a qué mira el modelo</li>
+      <li><strong>Probing classifiers</strong>: Detecta si ciertas features están presentes</li>
+      <li><strong>Circuit-level analysis</strong>: Identifica qué nodos implementan comportamientos</li>
+      <li><strong>Causal tracing</strong>: Determina qué tokens del input causan el output</li>
+      <li><strong>Sparse autoencoders</strong>: Descompone activaciones en features interpretables</li>
     </ul>
 
-    <p>La próxima vez que veas tu factura de OpenAI o tu costo de GPU, ya sabes qué hacer: medir, rutear, cachear, cuantizar. Con método, no con prayers. 💰</p>
+    <p>Mañana en el Día 269 hablaremos de <strong>Mechanistic Interpretability</strong> — cómo desmontar redes neuronales capa por capa para entender su funcionamiento interno. 🔬</p>
 
-    <p><em>Eso es todo por hoy! Día 269 viene mañana — stay tuned!</em></p>
+    <p><em>Stay curious, parcero! 🔍</em></p>
   </article>
 
   <script>
