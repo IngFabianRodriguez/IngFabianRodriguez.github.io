@@ -118,8 +118,471 @@ nav {
   </header>
 
   <article class="article-body">
-    <h1>Semantic Segmentation - Pixel A Pixel</h1>
-<p>Content for day 279 coming soon.</p>
+<h2>El 80% compara modelos mal y el 20% lo hace bien</h2>
+
+<p>En Colombia tenemos un dicho: "el que no sabe comparar, termina comprando立ees". Y en el mundo de los LLMs, eso es exactamente lo que pasa. El 80% de los equipos comparan modelos mirando el número de parámetros, el precio por token, o simplemente lo que dice el paper original. El 20% que sabe lo que hace, usa benchmarking sistemático con statistical significance, benchmarks diseñados para su tarea específica, y protocolos que evitan que el hype les venda humo.</p>
+
+<p>Hoy vamos a aprender a ser del 20%. Vas a salir de este artículo sabiendo qué benchmarks importan de verdad, cómo diseñar tu propio benchmark cuando los existentes no aplican, cómo correr comparaciones que sean válidas estadísticamente, y cómo reportar resultados de forma que otros puedan reproducir lo que hiciste.</p>
+
+<h2>Por qué el benchmarking de LLMs es diferente</h2>
+
+<p>Con modelos de ML tradicionales (clasificación de imágenes, detección de fraudees), el benchmarking es relativamente directo: tienes un dataset de test fijo, una métrica clara (accuracy, F1, AUC), y puedes comparar modelos con confianza. Con LLMs, todo es más complicated porque:</p>
+
+<ul>
+<li><strong>La tarea es amorphous</strong>: un LLM puede hacer traducción, resumen, código, razonamiento matemático, conversación, y mil cosas más — cada una con dinámicas diferentes</li>
+<li><strong>El prompt es parte del modelo</strong>: el mismo modelo con diferentes prompts produce resultados dramáticamente diferentes, así que "GPT-4" no es un punto de referencia válido sin especificar el prompt</li>
+<li><strong>Los benchmarks se saturan</strong>: modelos recientes obtienen 90%+ en MMLU, lo que significa que el benchmark ya no distingue entre modelos</li>
+<li><strong>La respuesta es generated, no predicted</strong>: no hay un "label correcto" único — la calidad de una respuesta es subjetiva en muchos casos</li>
+</ul>
+
+<p>Estas diferencias hacen que el benchmarking de LLMs requiera un enfoque más riguroso y multidimensional que el que usamos para modelos tradicionales.</p>
+
+<h2>Los benchmarks que importan de verdad</h2>
+
+<p>No todos los benchmarks son iguales. Algunos miden exactamente lo que necesitas, otros miden cualquier cosa menos lo que te importa, y muchos ya fueron comprometidos por data contamination tan severamente que sus resultados son inútiles.</p>
+
+<h3>MMLU (Massive Multitask Language Understanding)</h3>
+
+<p>MMLU es el benchmark más citado para medir conocimiento general de un LLM. Consiste en 57 materias diferentes (física, historia, derecho, medicina, etc.) con preguntas de opción múltiple. La idea es simple: si el modelo sabe de verdad, responde bien across domains.</p>
+
+<p>El problema es que MMLU está saturado. Modelos actuales como GPT-4o, Claude 3.5, y Gemini 1.5 obtienen scores sobre 85-90%, lo que significa que el benchmark ya no puede distinguirlos. Además, hay evidencia sólida de que mucho del training data de estos modelos incluye preguntas de MMLU, así que los scores están inflated.</p>
+
+<p><strong>Cuándo usar MMLU</strong>: Para modelos pequeños (< 10B parámetros) donde todavía hay variabilidad. No para comparar modelos frontier.</p>
+
+<h3>GSM8K (Grade School Math 8K)</h3>
+
+<p>GSM8K son 8,000 problemas de matemáticas de primaria. Parece sencillo, pero requiere razonamiento de múltiples pasos, y la barrera entre modelos que saben y no saben reasoning es muy clara aquí.</p>
+
+<p>La math es importante porque los problemas de matemáticas requieren una cadena de inferencia donde cada paso depende del anterior. Un error temprano arruina todo. Esto prueba si el modelo realmente "razona" o solo pattern-matches contra respuestas conocidas.</p>
+
+<p><strong>Cuándo usar GSM8K</strong>: Para evaluar capacidad de razonamiento matemático step-by-step. Muy relevante si tu aplicación incluye cálculos o análisis numérico.</p>
+
+<h3>HumanEval (Code Generation)</h3>
+
+<p>HumanEval consiste en 164 problemas de programación con funciones Python y tests unitarios asociados. El modelo genera una función y se verifica si pasa los tests. Es uno de los benchmarks más limpios porque tiene ground truth objective.</p>
+
+<p>Pass@1 mide si el modelo resuelve el problema en el primer intento. Pass@10 o Pass@100 miden después de múltiples intentos. Para aplicaciones de code generation reales, Pass@1 importa más porque el usuario espera una respuesta correcta inmediatamente.</p>
+
+<p><strong>Cuándo usar HumanEval</strong>: Para evaluar código. Ojo: ya hay contamination seria aquí también. Usa HumanEval+ o MBPP que son versiones más recientes y menos contaminadas.</p>
+
+<h3>HELM (Holistic Evaluation of Language Models)</h3>
+
+<p>HELM es diferente: no es un solo benchmark sino una evaluación holística que corre un modelo a través de múltiples benchmarks (70+) y reporta resultados para cada scenario. Fue creado por Percy Liang y Stanford para ser más systematic y transparente.</p>
+
+<p>Lo valioso de HELM es que te da una visión multidimensional: no solo accuracy sino también fairness, robustness, efficiency. Un modelo puede ser excelente en reasoning pero mediocre en generación de código, y HELM te muestra eso.</p>
+
+<p><strong>Cuándo usar HELM</strong>: Para evaluación comprehensiva antes de decidir qué modelo usar. Es más costoso (corre muchos benchmarks) pero te da una picture completa.</p>
+
+<h2>Cómo diseñar tu propio benchmark</h2>
+
+<p>A veces los benchmarks existentes no miden lo que tú necesitas. Quizás tu aplicación es análisis financiero en español, o resumen de contratos legales, o generación de prompts para un dominio específico. En esos casos, necesitas diseñar tu propio benchmark.</p>
+
+<h3>Step 1: Define el task y la metric</h3>
+
+<p>Sé específico. "Midiendo calidad de resumen" no es suficiente. Define:</p>
+
+<ul>
+<li><strong>Input domain</strong>: qué tipo de documentos? (artículos científicos, noticias, reportes financieros)</li>
+<li><strong>Output format</strong>: resumen de cuántos tokens? Abstractivo o extractivo?</li>
+<li><strong>Evaluation metric</strong>: cómo mides calidad? ROUGE contra resúmenes humanos? Prefersencia humana? Tarea downstream como click-through rate?</li>
+</ul>
+
+<p>Para muchas tareas, una combinación de métricas automáticas (ROUGE, BERTScore) + preferencias humanas (A/B testing con labelers) es lo más robusto.</p>
+
+<h3>Step 2: Curate un test set representative</h3>
+
+<p>El test set debe ser representative de lo que verás en producción, no de lo que encontraste en internet fácil de scrapeear. Esto es crítico y la mayoría lo hace mal:</p>
+
+<ul>
+<li><strong>Evita data leakage</strong>: si estás evaluando resumen de noticias, no entrenes con artículos de la misma época que tus datos de test</li>
+<li><strong>Diversifica</strong>: cubre edge cases, casos difíciles, y variaciones del input distribution</li>
+<li><strong>Tamaño mínimo</strong>: para significance estadística necesitas al menos 100 ejemplos. 300+ es mejor. Si tienes menos, los intervalos de confianza serán enormes</li>
+</ul>
+
+<h3>Step 3: Establece un baseline y un human ceiling</h3>
+
+<p>Un benchmark sin comparaciones no dice nada. Incluye:</p>
+<ul>
+<li><strong>Random baseline</strong>: qué performance obtienes con respuestas aleatorias? Establece el floor</li>
+<li><strong>Current production model</strong>: tu modelo actual en producción como reference point</li>
+<li><strong>Human ceiling</strong>: cómo performan humanos en la misma tarea? Esto establece el upper bound</li>
+</ul>
+
+<h2>Statistical significance: la parte que el 90% ignora</h2>
+
+<p>Aquí es donde la mayoría de los benchmarks fallan. Corren un par de ejemplos, ven que el modelo A obtiene 85% y el modelo B obtiene 83%, y concluyen que A es mejor. Error. Con 20 ejemplos, esa diferencia de 2% no es statistically significant — podría ser random noise.</p>
+
+<h3>La matemática</h3>
+
+<p>Para comparar dos proportions (porcentajes de acierto), usa un two-proportion z-test. La estadística z es:</p>
+
+<p>$$z = \\frac{p_1 - p_2}{\\sqrt{p(1-p)(\\frac{1}{n_1} + \\frac{1}{n_2})}}$$</p>
+
+<p>Donde $p_1$ y $p_2$ son las proportions de acierto de cada modelo, $n_1$ y $n_2$ son los tamaños de muestra, y $p$ es la pooled proportion:</p>
+
+<p>$$p = \\frac{x_1 + x_2}{n_1 + n_2}$$</p>
+
+<p>Un resultado es estadísticamente significativo (al nivel $\\alpha = 0.05$) si $|z| > 1.96$. Para $\\alpha = 0.01$, necesitas $|z| > 2.58$.</p>
+
+<p>Además del z-test, reporta siempre el confidence interval de la diferencia:</p>
+
+<p>$$\\text{CI}_{95\\%} = (p_1 - p_2) \\pm 1.96 \\cdot \\sqrt{\\frac{p_1(1-p_1)}{n_1} + \\frac{p_2(1-p_2)}{n_2}}$$</p>
+
+<h3>Sample size calculation</h3>
+
+<p>Antes de correr tu benchmark, calcula cuántos ejemplos necesitas para detectar el effect size que te importa:</p>
+
+<p>$$n = \\frac{2(Z_{\\alpha/2} + Z_{\\beta})^2 \\cdot p(1-p)}{\\delta^2}$$</p>
+
+<p>Donde $\\delta$ es la mínima diferencia que quieres detectar, $Z_{\\alpha/2} = 1.96$ para $\\alpha = 0.05$, y $Z_{\\beta} = 0.84$ para power del 80%.</p>
+
+<p>Si quieres detectar una diferencia de 5% (digamos, 80% vs 85%) con 80% power, necesitas aproximadamente 500 ejemplos por grupo. Si la diferencia mínima que te importa es 10%, necesitas ~125 ejemplos.</p>
+
+<h2>Framework de benchmarking</h2>
+
+<pre><code>import json
+import time
+import random
+import numpy as np
+from dataclasses import dataclass, field
+from typing import List, Dict, Optional, Callable, Any
+from collections import defaultdict
+import scipy.stats as stats
+
+@dataclass
+class BenchmarkResult:
+    """Resultado de una evaluación individual."""
+    model_name: str
+    task_name: str
+    metric_name: str
+    score: float
+    confidence_interval_95: tuple[float, float]
+    sample_size: int
+    latency_ms: Optional[float] = None
+    cost_per_1k_tokens: Optional[float] = None
+
+    def is_significantly_better_than(self, other: 'BenchmarkResult') -> bool:
+        """Test estadístico para diferencia significativa."""
+        if self.metric_name != other.metric_name:
+            raise ValueError("No se pueden comparar métricas diferentes")
+        
+        # Two-proportion z-test
+        n1, n2 = self.sample_size, other.sample_size
+        p1, p2 = self.score, other.score
+        
+        # Pooled proportion
+        p_pooled = (p1 * n1 + p2 * n2) / (n1 + n2)
+        
+        if p_pooled * (1 - p_pooled) * (1/n1 + 1/n2) == 0:
+            return abs(p1 - p2) > 0.01
+        
+        z = (p1 - p2) / np.sqrt(p_pooled * (1 - p_pooled) * (1/n1 + 1/n2))
+        
+        # Two-tailed test at alpha = 0.05
+        return abs(z) > 1.96
+
+    def to_dict(self) -> dict:
+        return {
+            'model': self.model_name,
+            'task': self.task_name,
+            'metric': self.metric_name,
+            'score': f"{self.score:.4f}",
+            'ci_95': f"[{self.confidence_interval_95[0]:.4f}, {self.confidence_interval_95[1]:.4f}]",
+            'n': self.sample_size,
+            'latency_ms': f"{self.latency_ms:.2f}" if self.latency_ms else None,
+            'cost_per_1k': f"{self.cost_per_1k_tokens:.4f}" if self.cost_per_1k_tokens else None
+        }
+
+
+class LLMBenchmarkRunner:
+    """
+    Framework para benchmarking sistemático de LLMs.
+    Asegura comparaciones justas con statistical significance.
+    """
+    
+    def __init__(
+        self,
+        models: List[str],
+        tasks: Dict[str, Callable],
+        num_samples: int = 300,
+        temperature: float = 0.0,
+        seed: int = 42
+    ):
+        self.models = models
+        self.tasks = tasks  # {task_name: task_evaluator}
+        self.num_samples = num_samples
+        self.temperature = temperature
+        self.seed = seed
+        self.results: Dict[str, List[BenchmarkResult]] = defaultdict(list)
+    
+    def run_single_evaluation(
+        self,
+        model: str,
+        task_name: str,
+        task_fn: Callable,
+        progress_callback: Optional[Callable] = None
+    ) -> BenchmarkResult:
+        """
+        Corre una evaluación completa de un modelo en una tarea.
+        Retorna resultado con confidence intervals.
+        """
+        np.random.seed(self.seed)
+        random.seed(self.seed)
+        
+        scores = []
+        latencies = []
+        
+        # Generate test samples
+        test_samples = task_fn.get_test_samples(self.num_samples)
+        
+        for i, sample in enumerate(test_samples):
+            start = time.perf_counter()
+            
+            # Run inference
+            response = task_fn.run_inference(model, sample, temperature=self.temperature)
+            
+            latency = (time.perf_counter() - start) * 1000  # ms
+            latencies.append(latency)
+            
+            # Evaluate
+            score = task_fn.evaluate(response, sample)
+            scores.append(score)
+            
+            if progress_callback:
+                progress_callback(i + 1, self.num_samples)
+        
+        # Calculate statistics
+        mean_score = np.mean(scores)
+        std_error = np.std(scores) / np.sqrt(len(scores))
+        
+        # 95% CI using standard error
+        ci_lower = mean_score - 1.96 * std_error
+        ci_upper = mean_score + 1.96 * std_error
+        
+        # Mean latency
+        mean_latency = np.mean(latencies)
+        
+        return BenchmarkResult(
+            model_name=model,
+            task_name=task_name,
+            metric_name=task_fn.metric_name,
+            score=mean_score,
+            confidence_interval_95=(max(0, ci_lower), min(1, ci_upper)),
+            sample_size=len(scores),
+            latency_ms=mean_latency
+        )
+    
+    def run_full_benchmark(
+        self,
+        progress_callback: Optional[Callable] = None
+    ) -> Dict[str, List[BenchmarkResult]]:
+        """
+        Corre el benchmark completo sobre todos los modelos y tareas.
+        """
+        total_runs = len(self.models) * len(self.tasks)
+        current_run = 0
+        
+        for model in self.models:
+            for task_name, task_fn in self.tasks.items():
+                result = self.run_single_evaluation(
+                    model, task_name, task_fn,
+                    progress_callback=lambda c, t: progress_callback(
+                        current_run * 100 // total_runs + c * 100 // (total_runs * t)
+                    ) if progress_callback else None
+                )
+                self.results[model].append(result)
+                current_run += 1
+        
+        return self.results
+    
+    def compare_models(
+        self,
+        task_name: str,
+        alpha: float = 0.05
+    ) -> List[Dict[str, Any]]:
+        """
+        Compara todos los modelos en una tarea específica.
+        Retorna rankings con significancia estadística.
+        """
+        # Recolectar resultados de esta tarea
+        task_results = {}
+        for model, results in self.results.items():
+            for r in results:
+                if r.task_name == task_name:
+                    task_results[model] = r
+                    break
+        
+        # Generar pairwise comparisons
+        models = list(task_results.keys())
+        comparisons = []
+        
+        for i in range(len(models)):
+            for j in range(i + 1, len(models)):
+                m1, m2 = models[i], models[j]
+                r1, r2 = task_results[m1], task_results[m2]
+                
+                z = (r1.score - r2.score) / np.sqrt(
+                    r1.score * (1 - r1.score) / r1.sample_size +
+                    r2.score * (1 - r2.score) / r2.sample_size
+                )
+                
+                p_value = 2 * (1 - stats.norm.cdf(abs(z)))
+                
+                winner = m1 if r1.score > r2.score else m2
+                is_significant = p_value < alpha
+                
+                comparisons.append({
+                    'model_1': m1,
+                    'model_2': m2,
+                    'score_1': r1.score,
+                    'score_2': r2.score,
+                    'diff': r1.score - r2.score,
+                    'z_statistic': z,
+                    'p_value': p_value,
+                    'significant': is_significant,
+                    'winner': winner if is_significant else None
+                })
+        
+        return comparisons
+    
+    def generate_report(self) -> str:
+        """Genera un report de texto de los resultados."""
+        lines = ["# LLM Benchmark Report", "=" * 50, ""]
+        
+        for model, results in self.results.items():
+            lines.append(f"\n## {model}")
+            lines.append("-" * 40)
+            
+            for r in results:
+                lines.append(f"\n### {r.task_name} ({r.metric_name})")
+                lines.append(f"Score: {r.score:.4f}")
+                lines.append(f"CI 95%: [{r.confidence_interval_95[0]:.4f}, {r.confidence_interval_95[1]:.4f}]")
+                lines.append(f"Sample size: {r.sample_size}")
+                if r.latency_ms:
+                    lines.append(f"Latency: {r.latency_ms:.2f}ms")
+        
+        return "\n".join(lines)
+
+
+class TaskEvaluator:
+    """Clase base para evaluar una tarea específica."""
+    
+    def __init__(self, metric_name: str):
+        self.metric_name = metric_name
+    
+    def get_test_samples(self, num_samples: int) -> List[Any]:
+        raise NotImplementedError
+    
+    def run_inference(
+        self, 
+        model: str, 
+        sample: Any, 
+        temperature: float
+    ) -> str:
+        raise NotImplementedError
+    
+    def evaluate(self, response: str, sample: Any) -> float:
+        """Retorna 1.0 si la respuesta es correcta, 0.0 si no."""
+        raise NotImplementedError
+
+
+def run_mmlu_benchmark(
+    model_api: str,
+    subjects: List[str] = None,
+    num_samples_per_subject: int = 100
+) -> Dict[str, BenchmarkResult]:
+    """
+    Benchmark específico para MMLU.
+    """
+    if subjects is None:
+        subjects = ['high_school_mathematics', 'college_physics', 
+                    'jurisprudence', 'clinical_knowledge']
+    
+    results = {}
+    
+    for subject in subjects:
+        # Load MMLU data
+        test_data = load_mmlu_subject(subject)
+        
+        correct = 0
+        total = 0
+        
+        for item in test_data[:num_samples_per_subject]:
+            prompt = build_mmlu_prompt(item)
+            response = call_model(model_api, prompt)
+            answer = extract_answer(response)
+            
+            if answer == item['answer']:
+                correct += 1
+            total += 1
+        
+        score = correct / total
+        
+        results[subject] = BenchmarkResult(
+            model_name=model_api,
+            task_name=f"MMLU-{subject}",
+            metric_name="accuracy",
+            score=score,
+            confidence_interval_95=(
+                score - 1.96 * np.sqrt(score * (1 - score) / total),
+                score + 1.96 * np.sqrt(score * (1 - score) / total)
+            ),
+            sample_size=total
+        )
+    
+    return results</code></pre>
+
+<h2>Los 3 errores más comunes</h2>
+
+<h3>Error 1: Comparar modelos con prompts diferentes y condiciones diferentes</h3>
+
+<p><strong>El error:</strong> "GPT-4 obtiene 92% en MMLU y Gemini obtiene 85%, así que GPT-4 es mejor". Pero ¿usaron el mismo prompt? ¿La misma temperatura? ¿El mismo número de shots? Probablemente no. Cambiar el prompt puede mover el score de un modelo 10-20% sin cambiar nada del modelo mismo.</p>
+
+<p><strong>La solución:</strong> Fija las condiciones experimentales antes de empezar. Documenta:</p>
+
+<ul>
+<li>Prompt exacto usado (incluyendo system prompt)</li>
+<li>Temperature y top-p</li>
+<li>Número de few-shot examples</li>
+<li>Modo de parsing de respuesta (regex, first letter, etc.)</li>
+<li>Semilla aleatoria si hay elementos estocásticos</li>
+</ul>
+
+<p>Usa el framework de arriba que fuerza estas condiciones fijas a través de todo el benchmark.</p>
+
+<h3>Error 2: Confiar en benchmark results sin verificar</h3>
+
+<p><strong>El error:</strong> Un vendor te dice "somos 95% en HumanEval" y tú asumes que eso significa que su modelo genera buen código. Pero:</p>
+
+<ul>
+<li>Pueden haber hecho fine-tuning específico para HumanEval</li>
+<li>El benchmark puede estar contaminado con training data</li>
+<li>La métrica puede no capturar lo que te importa (legibilidad, mantenibilidad, security)</li>
+</ul>
+
+<p><strong>La solución:</strong> Siempre corre tu propia evaluación en una muestra de tu data real. Los benchmarks externos son directional, no conclusive. Si el benchmark dice que el modelo es bueno, pero tu experiencia con él en producción es mediocre, confía en tu experiencia.</p>
+
+<h3>Error 3: No considerar que los benchmarks se saturan</h3>
+
+<p><strong>El error:</strong> Seguir usando MMLU para comparar GPT-4 vs Claude 3.5 cuando ambos obtienen 88%+. A esa altura, el benchmark ya no los distingue — cualquier diferencia dentro del margen de error es ruido. Pero el equipo sigue tercamente comparándolos con MMLU y reportando "diferencias significativas" de 0.3%.</p>
+
+<p><strong>La solución:</strong> Monitorea la saturation de tus benchmarks. Si el top performer consistently supera 90%, es hora de cambiar a un benchmark más difícil o a una tarea específica que sí discrimine entre modelos. Para modelos frontier, usa benchmarks más difíciles como ARC-Challenge, ou MATH (no GSM8K), o tareas específicas de tu dominio.</p>
+
+<h2>Resumen: cómo ser del 20% que hace benchmarking bien</h2>
+
+<ul>
+<li><strong>Usa múltiples benchmarks</strong>: no te bases en uno solo. Un modelo puede ser excelente en math pero mediocre en código. Mide dimensiones múltiples</li>
+<li><strong>Diseña tu propio benchmark</strong> si los existentes no miden tu tarea. Test set representative, ground truth clara, sample size suficiente</li>
+<li><strong>Reporta intervalos de confianza</strong>, no solo promedios. Un 85% sin CI no dice nada</li>
+<li><strong>Calcula sample size antes</strong>: sabe cuántos ejemplos necesitas para detectar la diferencia que te importa</li>
+<li><strong>Fija prompts y condiciones</strong>: documenta todo para que otros puedan reproducir</li>
+<li><strong>Monitorea saturación</strong>: cuando todos los modelos superan 90%, el benchmark dejó de ser útil para discriminarlos</li>
+<li><strong>Verifica con tu propia data</strong>: los benchmarks externos son directional, no gospel</li>
+</ul>
+
+<p>El benchmarking riguroso es lo que separa la ingeniería de la charlatanería en ML. Con las herramientas y el enfoque de hoy, ya tienes lo necesario para tomar decisiones basadas en evidencia y no en hype.</p>
+
+<p><em>Nos vemos en el día 280.在那里，我们会谈论 system design para aplicaciones con LLMs en producción. Eso sí que es donde se separa el grano de la paja.</em></p>
   </article>
 
   <script>
