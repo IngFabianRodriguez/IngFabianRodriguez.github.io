@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="Face Recognition - Reconocimiento Facial | #365DaysOfAI por Fabian Rodriguez">
-  <title>Face Recognition - Reconocimiento Facial | #365DaysOfAI</title>
+  <meta name="description" content="LLM Observability - Tracing, Logging y Debugging para aplicaciones LLM | #365DaysOfAI por Fabian Rodriguez">
+  <title>LLM Observability - Tracing y Debugging | #365DaysOfAI</title>
   
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
@@ -110,16 +110,716 @@ nav {
 
   <header class="article-hero">
     <div class="day-badge">Dia 281 / 365 &nbsp;·&nbsp; #365DaysOfAI</div>
-    <h1 class="article-title">Face Recognition - Reconocimiento Facial</h1>
+    <h1 class="article-title">LLM Observability — El 80% Debuguea a Ciegas, El 20% Observa</h1>
     <div class="article-meta">
       <time class="article-date">08 de octubre de 2026</time>
-      <div class="tags"><span class="tag">face-recognition</span><span class="tag">facenet</span><span class="tag">dlib</span><span class="tag">biometrics</span></div>
+      <div class="tags"><span class="tag">observability</span><span class="tag">opentelemetry</span><span class="tag">tracing</span><span class="tag">debugging</span><span class="tag">llm</span></div>
     </div>
   </header>
 
   <article class="article-body">
-    <h1>Face Recognition - Reconocimiento Facial</h1>
-<p>Content for day 281 coming soon.</p>
+    <h2>Intro: El Debug Ciego</h2>
+
+<p>Mañana me desperté en Bogotá, me prepare un tinto grande y me sente a revisar los logs de producción. Me encontre con esto:</p>
+
+<pre><code>ERROR: Invalid response at 2026-10-08T14:23:11Z
+ERROR: Unexpected token at 2026-10-08T14:23:45Z
+ERROR: Timeout at 2026-10-08T14:24:02Z</code></pre>
+
+<p>Solo eso. Sin contexto, sin trace del request, sin saber qué prompt generó el error. Así vive el 80% de los equipos que trabajan con LLMs: debugueando en la oscuridad, como conductor sin luces en la noche bogotana.</p>
+
+<p>Hoy vamos a cambiar eso. Vamos a construir un framework de observabilidad completo para aplicaciones LLM.</p>
+
+<h2>La Matematica del LLM Observability</h2>
+
+<p>Antes de escribir codigo, necesitamos entender qué estamos midiendo. La observabilidad en sistemas LLM se divide en tres pilares:</p>
+
+<h3>1. Tracing — El Camino del Request</h3>
+
+<p>Un trace es la representacion completa de un request desde que entra hasta que sale. Formalmente:</p>
+
+<p>Dado un request <code>R</code>, su trace <code>T(R)</code> se define como la secuencia:</p>
+
+<p><code>T(R) = {span_0, span_1, ..., span_n}</code></p>
+
+<p>Donde cada <code>span_i</code> representa una unidad de trabajo con:</p>
+<ul>
+<li><code>start_time</code>: Timestamp de inicio</li>
+<li><code>end_time</code>: Timestamp de fin</li>
+<li><code>parent_id</code>: Referencia al span padre (para construir el arbol)</li>
+<li><code>attributes</code>: Metadatos del span</li>
+</ul>
+
+<h3>2. Logging — El Registro de Eventos</h3>
+
+<p>Un log es un evento discreto en el tiempo. Para LLMs, los eventos relevantes son:</p>
+
+<pre><code>L = {
+  timestamp: t,
+  type: "prompt" | "completion" | "error",
+  input: {...},
+  output: {...},
+  metrics: {
+    latency_ms: Δt,
+    tokens_used: n,
+    cost: c
+  }
+}</code></pre>
+
+<h3>3. Metrics — Las Mediciones Agregadas</h3>
+
+<p>Las metricas son agregaciones sobre múltiples requests:</p>
+
+<ul>
+<li><strong>Latencia p50, p95, p99</strong>: La distribucion del tiempo de respuesta</li>
+<li><strong>Token throughput</strong>: Tokens procesados por segundo</li>
+<li><strong>Error rate</strong>: Proporcion de requests con errores</li>
+<li><strong>Cost per request</strong>: Costo promedio por llamada</li>
+</ul>
+
+<h2>Codigo: OpenTelemetry para LLMs</h2>
+
+<p>Vamos a implementar un framework completo de observabilidad. El stack:</p>
+
+<ul>
+<li><strong>OpenTelemetry</strong>: Estandar de observabilidad, vendor-agnostic</li>
+<li><strong>OTLP Exporter</strong>: Envio de trazas a un backend (Jaeger, Tempo, etc)</li>
+<li><strong>Custom LLM instrumentation</strong>: Wrapper sobre cualquier LLM API</li>
+</ul>
+
+<h3>1. El Instrumentation Module</h3>
+
+<pre><code>"""
+LLM Observability Framework con OpenTelemetry
+==============================================
+Framework completo para observar, traceary debuguear
+aplicaciones LLM en produccion.
+"""
+
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.semconv.resource import ResourceAttributes
+from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+from opentelemetry.trace import Status, StatusCode
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Optional, Dict, Any, List
+from enum import Enum
+import json
+import time
+
+
+class LLMCallType(Enum):
+    PROMPT = "prompt"
+    COMPLETION = "completion"
+    ERROR = "error"
+    RETRY = "retry"
+
+
+@dataclass
+class LLMSpanAttributes:
+    """Atributos específicos para spans de LLM"""
+    model: str
+    provider: str
+    temperature: float
+    max_tokens: int
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    latency_ms: float = 0.0
+    cost_usd: float = 0.0
+    user_id: Optional[str] = None
+    session_id: Optional[str] = None
+    request_id: Optional[str] = None
+
+
+@dataclass
+class LLMLogEntry:
+    """Estructura para logs de LLM"""
+    timestamp: datetime
+    call_type: LLMCallType
+    model: str
+    prompt: str
+    response: Optional[str]
+    latency_ms: float
+    tokens_used: int
+    cost_usd: float
+    error: Optional[str] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "timestamp": self.timestamp.isoformat(),
+            "call_type": self.call_type.value,
+            "model": self.model,
+            "prompt": self.prompt[:500] + "..." if len(self.prompt) > 500 else self.prompt,
+            "response": self.response[:500] + "..." if self.response and len(self.response) > 500 else self.response,
+            "latency_ms": self.latency_ms,
+            "tokens_used": self.tokens_used,
+            "cost_usd": self.cost_usd,
+            "error": self.error,
+            "metadata": self.metadata
+        }
+
+
+class LLMObserver:
+    """
+    Observador central para aplicaciones LLM.
+    Provee tracing, logging y metricas.
+    """
+
+    def __init__(
+        self,
+        service_name: str,
+        otlp_endpoint: str = "http://localhost:4317",
+        export_traces: bool = True,
+        export_logs: bool = True
+    ):
+        self.service_name = service_name
+        self.logs: List[LLMLogEntry] = []
+
+        if export_traces:
+            self._setup_tracing(otlp_endpoint)
+
+        self.tracer = trace.get_tracer(service_name)
+
+    def _setup_tracing(self, otlp_endpoint: str):
+        """Configura OpenTelemetry con exportador OTLP"""
+        resource = Resource.create({
+            ResourceAttributes.SERVICE_NAME: self.service_name,
+            ResourceAttributes.SERVICE_VERSION: "1.0.0",
+        })
+
+        provider = TracerProvider(resource=resource)
+
+        # Exportador OTLP para Jaeger/Tempo/Grafana
+        otlp_exporter = OTLPSpanExporter(endpoint=otlp_endpoint)
+        provider.add_span_processor(BatchSpanProcessor(otlp_exporter))
+
+        trace.set_tracer_provider(provider)
+
+    def trace_llm_call(
+        self,
+        model: str,
+        provider: str,
+        prompt: str,
+        temperature: float = 0.7,
+        max_tokens: int = 1000,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None
+    ):
+        """
+        Decorador/Context manager para tracear llamadas LLM.
+        Uso como context manager para requests individuales.
+        """
+        return LLMCallContext(
+            observer=self,
+            model=model,
+            provider=provider,
+            prompt=prompt,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            user_id=user_id,
+            session_id=session_id
+        )
+
+    def log(self, entry: LLMLogEntry):
+        """Registra un evento en el log local"""
+        self.logs.append(entry)
+
+        # En produccion, enviar a tu sistema de logs (Loki, ELK, etc)
+        log_line = json.dumps(entry.to_dict())
+        print(f"[LLM] {entry.call_type.value.upper()}: {log_line}")
+
+    def get_logs(self, limit: int = 100) -> List[Dict[str, Any]]:
+        """Retorna los últimos logs"""
+        return [log.to_dict() for log in self.logs[-limit:]]
+
+    def get_span_attributes(self, span) -> LLMSpanAttributes:
+        """Extrae atributos de un span activo"""
+        attr = span.attributes
+        return LLMSpanAttributes(
+            model=attr.get("llm.model", "unknown"),
+            provider=attr.get("llm.provider", "unknown"),
+            temperature=attr.get("llm.temperature", 0.0),
+            max_tokens=attr.get("llm.max_tokens", 0),
+            prompt_tokens=attr.get("llm.prompt_tokens", 0),
+            completion_tokens=attr.get("llm.completion_tokens", 0),
+            total_tokens=attr.get("llm.total_tokens", 0),
+            latency_ms=attr.get("llm.latency_ms", 0.0),
+            cost_usd=attr.get("llm.cost_usd", 0.0),
+            user_id=attr.get("user.id"),
+            session_id=attr.get("session.id"),
+            request_id=attr.get("request.id")
+        )
+
+
+class LLMCallContext:
+    """Context manager para una llamada LLM individual"""
+
+    def __init__(
+        self,
+        observer: LLMObserver,
+        model: str,
+        provider: str,
+        prompt: str,
+        temperature: float,
+        max_tokens: int,
+        user_id: Optional[str],
+        session_id: Optional[str]
+    ):
+        self.observer = observer
+        self.model = model
+        self.provider = provider
+        self.prompt = prompt
+        self.temperature = temperature
+        self.max_tokens = max_tokens
+        self.user_id = user_id
+        self.session_id = session_id
+        self.start_time: float = 0.0
+        self.end_time: float = 0.0
+        self.span: Optional[trace.Span] = None
+        self.response: Optional[str] = None
+        self.error: Optional[str] = None
+
+    def __enter__(self):
+        self.start_time = time.perf_counter()
+
+        # Crear span con atributos
+        self.span = self.observer.tracer.start_span(
+            f"llm.{self.model}",
+            kind=trace.SpanKind.CLIENT
+        )
+
+        self.span.set_attribute("llm.model", self.model)
+        self.span.set_attribute("llm.provider", self.provider)
+        self.span.set_attribute("llm.temperature", self.temperature)
+        self.span.set_attribute("llm.max_tokens", self.max_tokens)
+        self.span.set_attribute("llm.prompt_length", len(self.prompt))
+
+        if self.user_id:
+            self.span.set_attribute("user.id", self.user_id)
+        if self.session_id:
+            self.span.set_attribute("session.id", self.session_id)
+
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.end_time = time.perf_counter()
+        latency_ms = (self.end_time - self.start_time) * 1000
+
+        if self.span:
+            self.span.set_attribute("llm.latency_ms", latency_ms)
+
+            if self.response:
+                self.span.set_attribute("llm.response_length", len(self.response))
+
+            if exc_val:
+                self.span.set_status(Status(StatusCode.ERROR, str(exc_val)))
+                self.span.record_exception(exc_val)
+                self.error = str(exc_val)
+            else:
+                self.span.set_status(Status(StatusCode.OK))
+
+            self.span.end()
+
+        # Calcular metricas
+        tokens_used = len(self.prompt.split()) + (len(self.response.split()) if self.response else 0)
+        cost_usd = self._estimate_cost(tokens_used)
+
+        # Registrar log
+        log_entry = LLMLogEntry(
+            timestamp=datetime.utcnow(),
+            call_type=LLMCallType.ERROR if self.error else LLMCallType.COMPLETION,
+            model=self.model,
+            prompt=self.prompt,
+            response=self.response,
+            latency_ms=latency_ms,
+            tokens_used=tokens_used,
+            cost_usd=cost_usd,
+            error=self.error,
+            metadata={
+                "provider": self.provider,
+                "temperature": self.temperature,
+                "max_tokens": self.max_tokens
+            }
+        )
+
+        self.observer.log(log_entry)
+
+        return False  # No suprimir excepciones
+
+    def _estimate_cost(self, tokens: int) -> float:
+        """Estimacion simple de costo (ajusta segun provider)"""
+        # Pricing ejemplo: $0.002 por 1K tokens
+        return (tokens / 1000) * 0.002
+
+    def set_response(self, response: str, prompt_tokens: int = 0, completion_tokens: int = 0):
+        """Registra la respuesta del LLM"""
+        self.response = response
+
+        if self.span:
+            self.span.set_attribute("llm.prompt_tokens", prompt_tokens)
+            self.span.set_attribute("llm.completion_tokens", completion_tokens)
+            self.span.set_attribute("llm.total_tokens", prompt_tokens + completion_tokens)
+
+            # Actualizar costo si tenemos pricing real
+            cost = self._calculate_real_cost(prompt_tokens, completion_tokens)
+            self.span.set_attribute("llm.cost_usd", cost)
+
+    def _calculate_real_cost(self, prompt_tokens: int, completion_tokens: int) -> float:
+        """Calcula costo real basado en pricing del provider"""
+        # Ejemplo para GPT-4o
+        prompt_cost_per_1k = 0.0025
+        completion_cost_per_1k = 0.01
+
+        return (prompt_tokens / 1000) * prompt_cost_per_1k + \
+               (completion_tokens / 1000) * completion_cost_per_1k</code></pre>
+
+<h3>2. Uso del Framework</h3>
+
+<pre><code>"""
+Ejemplo de uso del LLM Observer
+================================
+Cómo integrar observabilidad en tu aplicacion LLM.
+"""
+
+from llm_observer import LLMObserver, LLMCallContext
+import openai
+
+
+# Inicializar observer
+observer = LLMObserver(
+    service_name="mi-chatbot",
+    otlp_endpoint="http://jaeger:4317"  # Tu backend de tracing
+)
+
+
+def chat_with_observability(user_message: str, user_id: str):
+    """
+    Chat completo con observabilidad.
+    Cada llamada queda traceada con todos sus detalles.
+    """
+
+    with observer.trace_llm_call(
+        model="gpt-4o",
+        provider="openai",
+        prompt=user_message,
+        temperature=0.7,
+        max_tokens=1000,
+        user_id=user_id,
+        session_id="session-123"
+    ) as call:
+        # Llamada al LLM
+        response = openai.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": user_message}],
+            temperature=0.7,
+            max_tokens=1000
+        )
+
+        # Registrar respuesta
+        call.set_response(
+            response=response.choices[0].message.content,
+            prompt_tokens=response.usage.prompt_tokens,
+            completion_tokens=response.usage.completion_tokens
+        )
+
+        return response.choices[0].message.content
+
+
+# Traceo de un request completo
+def process_user_request(request: dict):
+    """Procesa request de usuario con tracing completo"""
+
+    with observer.trace_llm_call(
+        model="gpt-4o-mini",
+        provider="openai",
+        prompt=request["query"],
+        user_id=request["user_id"],
+        session_id=request["session_id"]
+    ) as call:
+        # 1. Transformar input
+        transformed = transform_prompt(request["query"])
+
+        # 2. Llamar LLM
+        response = call_llm(transformed)
+
+        # 3. Post-procesar
+        result = parse_response(response)
+
+        call.set_response(response)
+
+        return result</code></pre>
+
+<h3>3. Logging Detallado de Prompts y Responses</h3>
+
+<pre><code>"""
+Sistema de Logging Profundo para LLMs
+======================================
+Permite reconstruir cualquier conversacion para debugging.
+"""
+
+from llm_observer import LLMObserver, LLMLogEntry, LLMCallType
+from datetime import datetime
+import json
+from pathlib import Path
+
+
+class DeepLLMLogger:
+    """
+    Logger profundo que guarda prompts y responses completos.
+    Ideal para debugging y reproduce issues.
+    """
+
+    def __init__(self, log_dir: str = "./llm_logs"):
+        self.log_dir = Path(log_dir)
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+        self.current_file = self._get_log_file()
+
+    def _get_log_file(self) -> Path:
+        """Obtiene el archivo de log del dia actual"""
+        today = datetime.now().strftime("%Y-%m-%d")
+        return self.log_dir / f"llm_logs_{today}.jsonl"
+
+    def log_prompt(self, prompt: str, model: str, metadata: dict):
+        """Registra un prompt con todo su contexto"""
+        entry = {
+            "type": "prompt",
+            "timestamp": datetime.now().isoformat(),
+            "model": model,
+            "prompt": prompt,
+            "metadata": metadata
+        }
+
+        with open(self.current_file, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+
+    def log_response(self, prompt: str, response: str, model: str, latency_ms: float):
+        """Registra response completo para reproduccion"""
+        entry = {
+            "type": "response",
+            "timestamp": datetime.now().isoformat(),
+            "model": model,
+            "prompt": prompt,  # Crucial: guardar prompt junto con response
+            "response": response,
+            "latency_ms": latency_ms
+        }
+
+        with open(self.current_file, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+
+    def reproduce_issue(self, query_prompt: str, limit: int = 10):
+        """
+        Encuentra prompts similares para debugging.
+        Si tienes un error, busca el prompt que lo origino.
+        """
+        matches = []
+
+        with open(self.current_file, "r") as f:
+            for line in f:
+                entry = json.loads(line)
+                if query_prompt.lower() in entry.get("prompt", "").lower():
+                    matches.append(entry)
+
+                if len(matches) >= limit:
+                    break
+
+        return matches
+
+    def export_session(self, session_id: str):
+        """Exporta todos los logs de una sesion para debugging"""
+        session_logs = []
+
+        with open(self.current_file, "r") as f:
+            for line in f:
+                entry = json.loads(line)
+                if entry.get("metadata", {}).get("session_id") == session_id:
+                    session_logs.append(entry)
+
+        return session_logs
+
+
+# Uso
+deep_logger = DeepLLMLogger("./llm_logs")
+
+# En cada llamada LLM
+deep_logger.log_prompt(
+    prompt="Cual es la capital de Francia?",
+    model="gpt-4o",
+    metadata={"user_id": "123", "session_id": "abc"}
+)
+
+# ... llamada LLM ...
+
+deep_logger.log_response(
+    prompt="Cual es la capital de Francia?",
+    response="La capital de Francia es Paris.",
+    model="gpt-4o",
+    latency_ms=245.3
+)
+
+# Debug: encontrar todos los logs relacionados con un issue
+related_logs = deep_logger.reproduce_issue("capital de Francia")</code></pre>
+
+<h2>Los 3 Errores y sus Soluciones</h2>
+
+<h3>Error 1: No Tener Observabilidad — Debug Ciego</h3>
+
+<p><strong>El Error:</strong></p>
+
+<p>El equipo de Juan deployo un chatbot de atención al cliente. Un dia, los usuarios comenzaron a reportar que el bot daba respuestas totalmente incorrectas. Juan no tenía idea de qué prompts causaban el problema. Paso 3 dias buscando el bug manualmente.</p>
+
+<p>Sin observabilidad, tu LLM es una caja negra. Cuando algo sale mal, estas apagando luces con los ojos vendados.</p>
+
+<p><strong>La Solucion:</strong></p>
+
+<pre><code># Antes: Codigo sin observabilidad
+def call_llm(prompt):
+    response = openai.ChatCompletion.create(
+        model="gpt-4o",
+        messages=[{"role": "user", "content": prompt}]
+    )
+    return response.choices[0].message.content
+
+# Despues: Con observabilidad completa
+def call_llm_observed(prompt, user_id, session_id):
+    with observer.trace_llm_call(
+        model="gpt-4o",
+        provider="openai",
+        prompt=prompt,
+        user_id=user_id,
+        session_id=session_id
+    ) as call:
+        response = openai.ChatCompletion.create(...)
+        call.set_response(response.choices[0].message.content)
+        return response.choices[0].message.content</code></pre>
+
+<p>Ahora cada request tiene su trace. Si algo falla, filtras por error trace y encuentras exactamente qué prompt y contexto lo causo.</p>
+
+<h3>Error 2: No Guardar Prompts y Responses — Imposible Reproducir</h3>
+
+<p><strong>El Error:</strong></p>
+
+<p>El equipo de Maria implemento logging basico: solo guardaban si el request fue exitoso o no. Un dia, un usuario reporto que el bot le dio instrucciones peligrosas. Maria queria reproducir el issue pero solo tenía:</p>
+
+<pre><code>2026-10-08 14:23:11 SUCCESS
+2026-10-08 14:25:33 SUCCESS
+2026-10-08 14:27:45 ERROR: timeout</code></pre>
+
+<p>Sin el prompt no hay forma de reproducir. Sin el response no hay evidencia. El logging incompleto es tan util como no tener logging.</p>
+
+<p><strong>La Solucion:</strong></p>
+
+<pre><code># Logging completo: prompt + response + contexto
+deep_logger.log_response(
+    prompt="Como puedohackear una cuenta?",
+    response="No puedo ayudarte con eso. Es unethical e ilegal.",
+    model="gpt-4o",
+    latency_ms=312.4,
+    metadata={
+        "user_id": user_id,
+        "session_id": session_id,
+        "filters_triggered": ["harmful_content"]
+    }
+)</code></pre>
+
+<p>Ahora puedes:</p>
+<ul>
+<li>Buscar por texto del prompt</li>
+<li>Ver todos los intentos similares</li>
+<li>Reproducir el escenario exacto</li>
+<li>Entrenar modelos de evaluacion con datos reales</li>
+</ul>
+
+<h3>Error 3: No Tener Tracing — No Sabes Donde Falla el Sistema</h3>
+
+<p><strong>El Error:</strong></p>
+
+<p>El sistema de Camilo tiene 5 pasos: preprocessing → LLM → postprocessing → validation → response. Un dia, todo falla. Camilo REVISA CADA PASO MANUALMENTE. Perdio 4 horas descubriendo que el postprocessing tenía un bug en el parsing de JSON.</p>
+
+<p>Sin tracing distribuido, cada microservicio es un silo. No hay visibilidad del flujo completo.</p>
+
+<p><strong>La Solucion:</strong></p>
+
+<pre><code># Tracing distribuido: ves el flujo completo
+def full_pipeline(user_message: str, user_id: str):
+    with tracer.start_as_current_span("user_request") as parent_span:
+        parent_span.set_attribute("user.id", user_id)
+
+        # Span 1: Preprocessing
+        with tracer.start_as_current_span("preprocessing") as span:
+            cleaned = preprocess(user_message)
+            span.set_attribute("input.length", len(user_message))
+            span.set_attribute("output.length", len(cleaned))
+
+        # Span 2: LLM Call (automatico con instrumentation)
+        with observer.trace_llm_call(model="gpt-4o", prompt=cleaned) as call:
+            response = call_llm(cleaned)
+            call.set_response(response)
+
+        # Span 3: Postprocessing
+        with tracer.start_as_current_span("postprocessing") as span:
+            parsed = postprocess(response)
+            span.set_attribute("parse.success", parsed is not None)
+
+        # Span 4: Validation
+        with tracer.start_as_current_span("validation") as span:
+            validated = validate(parsed)
+            span.set_attribute("validation.passed", validated)
+
+        return validated</code></pre>
+
+<p>En Jaeger o Grafana Tempo ves el waterfall completo:</p>
+<pre><code>user_request (1.2s)
+├── preprocessing (45ms)
+├── llm.gpt-4o (890ms)
+├── postprocessing (120ms)
+└── validation (15ms)</code></pre>
+
+<p>Instantaneamente ves que LLM es el cuello de botella (890ms) y puedes optimizarr.</p>
+
+<h2>Resumen</h2>
+
+<p>Hoy cubrimos:</p>
+
+<ul>
+<li><strong>La matemática del observability</strong>: traces, logs, metrics y cómo se relacionan</li>
+<li><strong>Framework completo con OpenTelemetry</strong>: tracing de llamadas LLM con atributos ricos</li>
+<li><strong>Deep logging</strong>: guardar prompts y responses para reproduccion</li>
+<li><strong>3 errores comunes</strong> y sus soluciones con codigo production-ready</li>
+</ul>
+
+<h3>Fórmulas Clave</h3>
+
+<p><strong>Costo por request:</strong></p>
+
+<p><code>Costo = (prompt_tokens / 1000) × C_p + (completion_tokens / 1000) × C_c</code></p>
+
+<p>Donde <code>C_p</code> es costo por 1K tokens de prompt y <code>C_c</code> es costo por 1K tokens de completion.</p>
+
+<p><strong>Latencia total del pipeline:</strong></p>
+
+<p><code>Latencia_total = t_preprocess + t_llm + t_postprocess + t_validation</code></p>
+
+<p><strong>Error rate:</strong></p>
+
+<p><code>Error_rate = (requests_con_error / total_requests) × 100</code></p>
+
+<h2>Cierre Colombiano</h2>
+
+<p>Mira, en Colombia dicen que "el que no tiene deнган, tiene deьмар". El 80% de los equipos LLM no tiene observabilidad y vive apagando fires a las justas. El 20% que si la tiene, puede debuguear en minutos lo que otros debuguean en dias.</p>
+
+<p>Hoy te deje un framework completo. OpenTelemetry es vendor-agnostic, puedes usar Jaeger, Grafana Tempo, o lo que tengas. Lo importante es que EMPIECES A OBSERVAR. No sigas el ejemplo del que solo ve errores en los logs sin contexto.</p>
+
+<p>Aprovecha que estas a tiempo. Instala el tracing hoy, antes de que te toque debugear tu primer production issue a las 3 de la mañana.</p>
+
+<p>Nos vemos manana en el dia 282, donde vamos a hablar de como estructurar tu workflow de desarrollo LLM para no perder semanas en iteraciones inutiles.</p>
+
+<p><em>— Fabian Rodriguez, @IngFabianRodriguez</em></p>
+<p><em>#365DaysOfAI #LLMObservability #OpenTelemetry #Debugging</em></p>
   </article>
 
   <script>
