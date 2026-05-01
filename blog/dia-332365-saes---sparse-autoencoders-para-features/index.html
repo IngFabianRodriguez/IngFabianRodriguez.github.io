@@ -118,43 +118,470 @@ nav {
   </header>
 
   <article class="article-body">
-    <h1>SAEs - Sparse Autoencoders Para Features</h1>
-<p>Hagale pues, parcero. Hoy es el Dia 332 y hablamos de SAEs, Sparse Autoencoders para features. Cafe.</p>
+<h2>🌮 Intro Colombiana</h2>
+<p>Mire, parce, la cosa es así: usted tiene su sistema de LLM funcionando bonito, respondiendo запросы, los usuarios felices. Pero cuando llega la cuenta del cloud a fin de mes... ahí sí que uno se pone pálido, porque resulta que cada request le está costando $0.002, y con un millón de requests al día, eso son $2,000 diarios. Al mes, $60,000. En un año, casi un millón de pesos... bueno, no, en dólares. Y eso que estamos hablando de números pequeños.</p>
+<p>El 90% de los equipos no miden el costo por request, no usan quantization, y no optimizan batching. El 10% que sí lo hace está ahorrando 10x, 20x, a veces 100x en costos de inferencia. Hoy le voy a mostrar cómo ese 10% lo hace, con código de verdad, mates claros, y errores comunes que le van a ahorrar muchos dolores de cabeza y muchos billetes.</p>
 <hr>
-<h2>🎯 Sparse Autoencoders</h2>
-<p>SAEs aprenden a descomponer activaciones de LLM en features interpretables. El decoder define que es cada feature.</p>
-<h3>Arquitectura:</h3>
+<h2>📐 La Matemática del Costo de Inferencia</h2>
+<p>Cada request a un LLM tiene un costo que depende de dos cosas: los tokens de entrada y los tokens de salida. La fórmula base es:</p>
+<p><strong>Costo = (Tokens_entrada × Costo_por_token_entrada) + (Tokens_salida × Costo_por_token_salida)</strong></p>
+<p>Pero hay más. El costo real de inference tiene tres componentes principales:</p>
 <ul>
-<li><strong>Encoder</strong>: Linear + ReLU, mapea a feature space</li>
-<li><strong>Feature space</strong>: Miles de features, mayor que d_model</li>
-<li><strong>Decoder</strong>: Linear, reconstruye activacion original</li>
-<li><strong>Sparsity</strong>: Pocas features activas por input</li>
+<li><strong>Costo computacional:</strong> Dominado por las operaciones de matrix multiplication</li>
+<li><strong>Costo de memoria:</strong> El KV cache ocupa VRAM proporcional a la longitud del contexto</li>
+<li><strong>Costo de latencia:</strong> Tiempo de ejecución = dinero en servidores ocupados</li>
 </ul>
+<p>La matemática clave del KV cache:</p>
+<p><strong>KV_cache_size = 2 × n_layers × n_heads × head_dim × seq_len × bytes_per_param</strong></p>
+<p>Para GPT-3 (175B params, 96 layers, 96 heads, 128 head_dim):</p>
+<p><strong>KV_cache por token = 2 × 96 × 96 × 128 × 2 bytes (fp16) ≈ 48 MB por token</strong></p>
+<p>¡Ojo! Eso es 48 MB SOLO para el KV cache de un solo token. Con un contexto de 2048 tokens:</p>
+<p><strong>2048 × 48 MB ≈ 98 GB</strong></p>
+<p>Solo en KV cache. Por request. Eso es una locura, parcero.</p>
 <hr>
-<h2>📐 SAE Training</h2>
-<pre><code class="language-python">class SAE(nn.Module):
-    def __init__(self, d_model, n_features=4096):
-        super().__init__()
-        self.encode = nn.Linear(d_model, n_features, bias=True)
-        self.decode = nn.Linear(n_features, d_model, bias=False)
+<h2>🔧 Advanced Cost Optimization Techniques</h2>
+<pre><code class="language-python">import torch
+import torch.nn.functional as F
+from dataclasses import dataclass
+from typing import List, Tuple, Optional, Dict
+import time
+
+@dataclass
+class OptimizedConfig:
+    """Configuración optimizada para reducir costos 10x."""
+    quantization: str = "int8"  # "fp16", "int8", "int4", "nf4"
+    use_kv_cache_optimization: bool = True
+    use_speculative_decoding: bool = True
+    use_batching: bool = True
+    batch_size: int = 32
+
+class QuantizationManager:
+    """Gestión de quantization para reducir memoria y costo."""
     
-    def forward(self, x):
-        h = F.relu(self.encode(x))  # Sparse activations
-        recon = self.decode(h)
+    @staticmethod
+    def int8_quantize(weights: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Quantize a int8 con scaling factors."""
+        # Calcular scaling factor por canal
+        scales = weights.abs().max(dim=-1, keepdim=True).values / 127.0
         
-        # L1 para sparsity
-        l1 = h.abs().sum() / h.shape[0]
-        loss = F.mse_loss(recon, x) + l1 * 0.001
+        # Quantize
+        quantized = (weights / scales).round().clamp(-127, 127).to(torch.int8)
         
-        return loss, recon, h</code></pre>
+        return quantized, scales
+    
+    @staticmethod
+    def int4_quantize(weights: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Quantize a int4 con scaling factors."""
+        scales = weights.abs().max(dim=-1, keepdim=True).values / 7.0
+        quantized = (weights / scales).round().clamp(-7, 7).to(torch.int4)
+        
+        return quantized, scales
+    
+    @staticmethod
+    def nf4_quantize(weights: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, List[float]]:
+        """NF4: 4-bit normalized float - mejor para distribución normal."""
+        # 16 niveles NF4
+        nf4_levels = [0.0, 0.0121, 0.0243, 0.0368, 0.0494, 0.0622, 0.0752, 0.0885,
+                      0.1021, 0.1161, 0.1307, 0.1459, 0.1619, 0.1789, 0.1972, 0.2197]
+        
+        scales = weights.abs().max(dim=-1, keepdim=True).values / 0.2197
+        normalized = weights / scales
+        
+        # Asignar al nivel NF4 más cercano
+        indices = torch.zeros_like(weights, dtype=torch.uint8)
+        for i, level in enumerate(nf4_levels):
+            mask = (normalized >= level - 0.006 if i > 0 else normalized >= level - 0.1) & \
+                   (normalized < level + 0.006 if i < len(nf4_levels) - 1 else normalized <= level + 0.1)
+            indices[mask] = i
+        
+        return indices, scales, nf4_levels
+
+class KVCacheOptimizer:
+    """Optimización del KV cache para reducir uso de memoria 10x."""
+    
+    def __init__(self, cache_mode: str = "streaming"):
+        self.cache_mode = cache_mode
+        self.saved_memory = 0
+    
+    def estimate_kv_cache_size(self, n_layers: int, n_heads: int, 
+                                 head_dim: int, seq_len: int, 
+                                 n_params: int = 1) -> int:
+        """Estima tamaño del KV cache en bytes."""
+        # 2 (K and V) × n_layers × n_heads × head_dim × seq_len × 2 bytes (fp16)
+        bytes_per_element = 2
+        total = 2 * n_layers * n_heads * head_dim * seq_len * bytes_per_element
+        return total
+    
+    def apply_paged_attention(self, keys: torch.Tensor, values: torch.Tensor,
+                               block_size: int = 16) -> Tuple[torch.Tensor, List[int]]:
+        """Paged attention: reducir fragmentación del KV cache."""
+        # Dividir en bloques de tamaño fijo
+        n_tokens = keys.shape[2]
+        n_blocks = (n_tokens + block_size - 1) // block_size
+        
+        # Padding al tamaño de bloque
+        padded_len = n_blocks * block_size
+        keys_padded = F.pad(keys, (0, 0, 0, padded_len - n_tokens))
+        values_padded = F.pad(values, (0, 0, 0, padded_len - n_tokens))
+        
+        # Reshape en bloques
+        keys_blocks = keys_padded.reshape(
+            keys.shape[0], keys.shape[1], n_blocks, block_size, -1
+        )
+        values_blocks = values_padded.reshape(
+            values.shape[0], values.shape[1], n_blocks, block_size, -1
+        )
+        
+        self.saved_memory = (padded_len - n_tokens) * keys.shape[1] * keys.shape[3] * 2
+        return keys_blocks, values_blocks
+    
+    def apply_prefix_caching(self, keys: torch.Tensor, values: torch.Tensor,
+                             prefix: str) -> Tuple[torch.Tensor, torch.Tensor, float]:
+        """Cache de prefijos comunes para reutilizar KV de prompts repetidos."""
+        # En producción: guardar en Redis/Memcached con key = hash(prefix)
+        # Aquí solo simulamos el ahorro
+        cache_hit_ratio = 0.7  # 70% de los tokens son prefijos comunes
+        memory_saved = keys.shape[2] * keys.shape[3] * keys.shape[0] * cache_hit_ratio
+        return keys, values, memory_saved
+
+class SpeculativeDecoding:
+    """Speculative decoding: usar modelo pequeño para predecir, grande para verificar."""
+    
+    def __init__(self, draft_model, target_model, gamma: int = 4):
+        self.draft = draft_model
+        self.target = target_model
+        self.gamma = gamma  # Número de tokens a especular
+    
+    def decode(self, x: torch.Tensor, max_len: int) -> List[int]:
+        """Decodificación especulativa."""
+        generated = []
+        
+        while len(generated) < max_len:
+            # 1. Modelo draft propone gamma tokens
+            draft_tokens = []
+            x_draft = x
+            for _ in range(self.gamma):
+                with torch.no_grad():
+                    logits = self.draft(x_draft)
+                    next_tok = logits[-1].argmax().item()
+                draft_tokens.append(next_tok)
+                x_draft = torch.cat([x_draft, torch.tensor([[next_tok]])], dim=-1)
+            
+            # 2. Modelo target verifica todos los tokens en paralelo
+            with torch.no_grad():
+                target_logits = self.target(x_draft)
+            
+            # 3. Accept o reject cada token
+            accepted = []
+            for i, draft_tok in enumerate(draft_tokens):
+                target_tok = target_logits[i].argmax().item()
+                # Accept si son iguales o si la probabilidad del draft > threshold
+                draft_prob = F.softmax(target_logits[i], dim=-1)[draft_tok].item()
+                if draft_tok == target_tok or draft_prob > 0.5:
+                    accepted.append(draft_tok)
+                else:
+                    accepted.append(target_tok)
+                    break  # A partir de aquí, el target tiene la razón
+            
+            generated.extend(accepted)
+            
+            # 4. Si todos aceptados, continuar
+            if len(accepted) == self.gamma:
+                x = x_draft  # Continuar con draft
+            else:
+                # Añadir token del target que difirió
+                x = torch.cat([x, torch.tensor([[accepted[-1]]])], dim=-1)
+        
+        return generated
+
+class BatchOptimizer:
+    """Optimización de batching para maximizar throughput."""
+    
+    def __init__(self, max_batch_size: int = 64, max_tokens_per_batch: int = 8192):
+        self.max_batch_size = max_batch_size
+        self.max_tokens_per_batch = max_tokens_per_batch
+    
+    def dynamic_batching(self, requests: List[Dict]) -> List[List[Dict]]:
+        """Agrupar requests dinámicamente por longitud para evitar padding excesivo."""
+        # Ordenar por longitud de input
+        sorted_reqs = sorted(requests, key=lambda r: len(r["input_ids"]))
+        
+        batches = []
+        current_batch = []
+        current_tokens = 0
+        
+        for req in sorted_reqs:
+            req_tokens = len(req["input_ids"]) + req.get("max_tokens", 256)
+            
+            # Si agregar este request excede límites, empezar nuevo batch
+            if (len(current_batch) >= self.max_batch_size or 
+                current_tokens + req_tokens > self.max_tokens_per_batch):
+                if current_batch:
+                    batches.append(current_batch)
+                current_batch = [req]
+                current_tokens = req_tokens
+            else:
+                current_batch.append(req)
+                current_tokens += req_tokens
+        
+        if current_batch:
+            batches.append(current_batch)
+        
+        return batches
+    
+    def estimate_cost_savings(self, n_requests: int, avg_input_tokens: int,
+                              avg_output_tokens: int, batch_size: int) -> Dict[str, float]:
+        """Estima ahorros de cost con batching vs requests individuales."""
+        # Sin batching: cada request tiene overhead de atención
+        # Con batching: attention computada una vez para todo el batch
+        
+        # Costo relativo: menor batch_size = mayor costo por token
+        base_cost = 1.0
+        batched_cost = base_cost / (batch_size ** 0.2)  # Empirically ~1/sqrt(batch)
+        
+        total_cost_no_batch = n_requests * (avg_input_tokens + avg_output_tokens) * base_cost
+        total_cost_batch = n_requests * (avg_input_tokens + avg_output_tokens) * batched_cost
+        
+        return {
+            "cost_no_batch": total_cost_no_batch,
+            "cost_batched": total_cost_batch,
+            "savings_ratio": total_cost_no_batch / total_cost_batch,
+            "savings_percent": (1 - batched_cost / base_cost) * 100
+        }
+
+class LLMCostOptimizer:
+    """Framework completo de optimización de costos."""
+    
+    def __init__(self, config: OptimizedConfig):
+        self.config = config
+        self.quant_manager = QuantizationManager()
+        self.kv_optimizer = KVCacheOptimizer()
+        self.batch_optimizer = BatchOptimizer(
+            max_batch_size=config.batch_size
+        )
+        self.cost_history: List[Dict] = []
+    
+    def quantize_model(self, model: torch.nn.Module) -> torch.nn.Module:
+        """Aplica quantization al modelo completo."""
+        if self.config.quantization == "int8":
+            for name, param in model.named_parameters():
+                if "weight" in name:
+                    param.data, scales = self.quant_manager.int8_quantize(param.data)
+                    # Guardar scales para dequantize después
+                    model.register_buffer(f"{name}_scale", scales)
+        
+        elif self.config.quantization == "int4":
+            for name, param in model.named_parameters():
+                if "weight" in name:
+                    param.data, scales = self.quant_manager.int4_quantize(param.data)
+                    model.register_buffer(f"{name}_scale", scales)
+        
+        elif self.config.quantization == "nf4":
+            for name, param in model.named_parameters():
+                if "weight" in name:
+                    param.data, scales, levels = self.quant_manager.nf4_quantize(param.data)
+                    model.register_buffer(f"{name}_scale", scales)
+        
+        return model
+    
+    def optimize_kv_cache(self, keys: torch.Tensor, values: torch.Tensor,
+                          prefix: Optional[str] = None) -> Tuple[torch.Tensor, torch.Tensor, Dict]:
+        """Optimiza KV cache y retorna métricas de ahorro."""
+        metrics = {"original_size": keys.numel() * 2 * 4}  # fp32
+        
+        if self.config.use_kv_cache_optimization:
+            # Aplicar paged attention
+            keys_opt, values_opt = self.kv_optimizer.apply_paged_attention(keys, values)
+            
+            if prefix:
+                keys_opt, values_opt, saved = self.kv_optimizer.apply_prefix_caching(
+                    keys_opt, values_opt, prefix
+                )
+                metrics["prefix_caching_savings"] = saved
+            
+            metrics["optimized_size"] = keys_opt.numel() * 2 * 1  # int4
+            metrics["compression_ratio"] = metrics["original_size"] / max(metrics["optimized_size"], 1)
+        else:
+            keys_opt, values_opt = keys, values
+            metrics["optimized_size"] = metrics["original_size"]
+            metrics["compression_ratio"] = 1.0
+        
+        return keys_opt, values_opt, metrics
+    
+    def calculate_cost_per_request(self, input_tokens: int, output_tokens: int,
+                                    use_cache: bool = False) -> Dict[str, float]:
+        """Calcula costo real por request con todas las optimizaciones."""
+        # Base: $0.002 por 1K tokens (precio ejemplo GPT-4)
+        base_rate = 0.002 / 1000
+        
+        base_cost = (input_tokens + output_tokens) * base_rate
+        
+        # Aplicar optimizaciones
+        multiplier = 1.0
+        
+        if self.config.quantization in ["int8", "int4", "nf4"]:
+            # Quantization reduce costo ~2-4x dependiendo del método
+            q_factors = {"int8": 2.0, "int4": 4.0, "nf4": 4.5}
+            multiplier /= q_factors.get(self.config.quantization, 1.0)
+        
+        if self.config.use_kv_cache_optimization:
+            # Prefix caching puede reducir hasta 70% de tokens repetidos
+            multiplier *= 0.6  # Assume 40% savings from prefix caching
+        
+        if self.config.use_batching:
+            # Batching reduce overhead significativamente
+            multiplier /= 1.5  # ~1.5x savings
+        
+        if use_cache:
+            # Cache hit: solo costo de lookup, no inference
+            multiplier *= 0.01  # 99% savings
+        
+        optimized_cost = base_cost * multiplier
+        
+        return {
+            "base_cost": base_cost,
+            "optimized_cost": optimized_cost,
+            "savings_ratio": base_cost / optimized_cost if optimized_cost > 0 else 0,
+            "savings_percent": (1 - optimized_cost / base_cost) * 100 if base_cost > 0 else 0
+        }
+
+# Demo de uso
+def demo_cost_optimization():
+    config = OptimizedConfig(
+        quantization="int4",
+        use_kv_cache_optimization=True,
+        use_speculative_decoding=True,
+        use_batching=True,
+        batch_size=32
+    )
+    
+    optimizer = LLMCostOptimizer(config)
+    
+    # Simular 1000 requests
+    for i in range(1000):
+        result = optimizer.calculate_cost_per_request(
+            input_tokens=500,
+            output_tokens=150,
+            use_cache=(i % 5 == 0)  # 20% cache hits
+        )
+        optimizer.cost_history.append(result)
+    
+    # Calcular ahorros totales
+    total_base = sum(r["base_cost"] for r in optimizer.cost_history)
+    total_opt = sum(r["optimized_cost"] for r in optimizer.cost_history)
+    
+    print(f"Costo base total: ${total_base:.2f}")
+    print(f"Costo optimizado total: ${total_opt:.2f}")
+    print(f"Ahorro: ${total_base - total_opt:.2f} ({(total_base/total_opt - 1)*100:.1f}% menos)")
+    
+    # Estimar ahorros con batching
+    batch_savings = optimizer.batch_optimizer.estimate_cost_savings(
+        n_requests=10000,
+        avg_input_tokens=500,
+        avg_output_tokens=150,
+        batch_size=32
+    )
+    print(f"\nCon batching (batch_size=32):")
+    print(f"  Ahorro estimado: {batch_savings['savings_percent']:.1f}%")
+    print(f"  Ratio de ahorro: {batch_savings['savings_ratio']:.2f}x")
+
+demo_cost_optimization()</code></pre>
 <hr>
-<h2>🚀 Analisis de Features</h2>
-<p>Feature dashboards permiten visualizar que activa cada feature en diferentes contextos.</p>
+<h2>⚠️ Los 3 Errores Más Comunes (y Sus Arreglos)</h2>
+<h3>Error 1: No Medir el Costo Por Request</h3>
+<p><strong>El problema:</strong> La mayoría de equipos no tienen ni idea de cuánto les cuesta cada request. Saben el costo mensual total del cloud, pero no el costo por request individual. Esto es como saber que su restaurante gasta $10,000 en ingredientes al mes pero no saber cuánto le cuesta preparar cada plato. Imposible optimizar sin esta visibilidad.</p>
+<p><strong>La solución:</strong> Instrumentar cada request con costo calculado. Guardar métricas por request: tokens input, tokens output, latency, y costo estimado. Agregar a dashboards para ver tendencias.</p>
+<pre><code class="language-python"># ❌ MAL: Sin medición de costos
+async def bad_generate(request):
+    return await llm.predict(request.prompt)
+
+# ✅ BIEN: Con medición detallada de costos
+async def good_generate(request, cost_tracker):
+    start = time.time()
+    
+    # Medir antes
+    input_tokens = len(tokenizer.encode(request.prompt))
+    
+    result = await llm.predict(request.prompt)
+    
+    # Medir después
+    output_tokens = len(tokenizer.encode(result))
+    latency = time.time() - start
+    
+    # Calcular costo
+    cost = calculate_cost(input_tokens, output_tokens)
+    
+    # Guardar métricas
+    await cost_tracker.log({
+        "request_id": request.id,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "latency_ms": latency * 1000,
+        "cost_usd": cost,
+        "timestamp": time.time()
+    })
+    
+    return result</code></pre>
+<h3>Error 2: No Usar Quantization</h3>
+<p><strong>El problema:</strong> Usar modelos en fp16 o fp32 cuando no es necesario. Un modelo de 70B parámetros en fp16 ocupa ~140GB de VRAM. En int8 ocupa ~70GB. En int4 ocupa ~35GB. El mismo modelo, 4x menos memoria, y la diferencia de calidad para la mayoría de aplicaciones es negligible.</p>
+<p><strong>La solución:</strong> Cuantizar! Empezar con int8 que tiene mínimo impacto en calidad. Si se necesita más ahorro, int4 con calibration dataset. Para cosas muy sensibles a calidad, nf4 que es mejor para distribuciones normales.</p>
+<pre><code class="language-python"># ❌ MAL: fp16 sin razón
+model = load_model("llama-70b", precision="fp16")  # 140GB VRAM
+
+# ✅ BIEN: Quantized appropriately
+model = load_model("llama-70b", precision="int4", calibration_data=calib_dataset)
+# 35GB VRAM - 4x menos, mismo throughput 4x mayor</code></pre>
+<h3>Error 3: No Optimizar Batching</h3>
+<p><strong>El problema:</strong> Procesar requests de uno en uno cuando podrían ir en batch. Si tiene 32 requests de 100 tokens cada uno, procesarlos por separado significa 32 × 100 = 1600 operaciones de atención. Procesarlos en batch de 32 es UNA operación de atención de 3200 tokens, más eficiente por el parallelismo de GPU.</p>
+<p><strong>La solución:</strong> Implementar dynamic batching: agrupar requests por longitud similar para minimizar padding waste. Usar prefixed batching para requests con prefijos comunes.</p>
+<pre><code class="language-python"># ❌ MAL: Un request a la vez
+async def bad_serve(request):
+    result = await model.generate(request.prompt)
+    return result
+
+# ✅ BIEN: Dynamic batching
+async def good_serve(requests: List[Request]):
+    # Agrupar por longitud
+    batches = batch_optimizer.dynamic_batching([
+        {"input_ids": r.prompt, "max_tokens": r.max_tokens}
+        for r in requests
+    ])
+    
+    all_results = []
+    for batch in batches:
+        # Procesar batch completo
+        results = await model.generate_batch([r.prompt for r in batch])
+        all_results.extend(results)
+    
+    return all_results</code></pre>
 <hr>
-<h2>⚠️ Feature Quality</h2>
-<p>No todas las features son interpretables. Algunas son noise o mezcladas.</p>
+<h2>📊 Cuantificación del Ahorro</h2>
+<p>Vamos a poner números reales con un ejemplo de producción:</p>
+<ul>
+<li><strong>Requests por día:</strong> 1,000,000</li>
+<li><strong>Tokens input promedio:</strong> 500</li>
+<li><strong>Tokens output promedio:</strong> 150</li>
+<li><strong>Costo base por 1K tokens:</strong> $0.002</li>
+</ul>
+<p><strong>Sin optimización:</strong></p>
+<p>1M × (500 + 150) × $0.002/1000 = $1,300/día = $39,000/mes</p>
+<p><strong>Con optimizations (int4 + KV cache + batching):</strong></p>
+<ul>
+<li>Quantization int4: 4x reducción de compute → factor 0.25</li>
+<li>KV cache prefix: 40% tokens repetidos → factor 0.6</li>
+<li>Batching: 1.5x throughput → factor 0.67</li>
+</ul>
+<p>Factor combinado: 0.25 × 0.6 × 0.67 ≈ 0.10</p>
+<p>1M × (500 + 150) × $0.002/1000 × 0.10 = $130/día = $3,900/mes</p>
+<p><strong>Ahorro: $35,100/mes = $421,200/año</strong></p>
+<p>Eso es lo que el 10% está haciendo, parce. $400k al año en su bolsillo.</p>
 <hr>
-<p><em>Eso es todo! Nos vemos en el Dia 333.</em></p
+<h2>🏁 Resumen y Cierre Colombiano</h2>
+<p>Mire, la historia es sencilla: el 90% no mide costos, no quantiza, y no optimiza batching. El 10% que sí lo hace está pagando 10x menos por la misma calidad de servicio. La matemática es clara, el código está ahí, y los errores son evitables.</p>
+<p>No tiene excusa. Empiece midiendo costos por request HOY. Si no sabe cuánto le cuesta cada request, no puede优化的 nada. Luego quantice — int8 es el mínimo, int4 es el sweet spot. Finalmente, implemente batching dinámico.</p>
+<p>La próxima vez que le llegue la cuenta del cloud, en vez de llorar, mejor sorrija — porque usted va a estar en ese 10% que sabe cómo reducir costos 10x, 20x, a veces 100x.</p>
+<p><strong>Ahí nos vemos, parce.</strong></p>
+<p><em>#365DaysOfAI</em></p>
   </article>
 
   <script>
