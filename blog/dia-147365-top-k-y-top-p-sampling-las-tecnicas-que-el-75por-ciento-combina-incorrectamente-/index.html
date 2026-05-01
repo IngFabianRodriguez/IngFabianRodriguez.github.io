@@ -102,25 +102,26 @@ nav {
 <p>Hola, parcero. Llegamos al Día 147 y hoy vamos con un tema que veo mal implementado en el 75% de los proyectos que me llegan a revisar: Top-k y Top-p (Nucleus) Sampling. Esto no es theory pesada sin código — vamos ameterlo profundo con implementaciones reales en PyTorch, los errores que producen basura en producción, y cómo evitarlos. Acompañame.</p>
 
 <hr>
-<h2>📐 Fundamentos Teóricos</h2>
+<h2>Fundamentos Teóricos</h2>
 
-<p>Cuando un LLM genera texto, produce un <em>logit</em> por cada token del vocabulario. Ese logit pasa por un softmax y se convierte en distribución de probabilidad <code>P(vocab)</code>. <em>Pure sampling</em> simplemente muestrea de esa distribución — y ahí es donde empiezan los problemas.</p>
+<p>Cuando un LLM genera texto, produce un <strong>logit</strong> por cada token del vocabulario. Ese logit pasa por un softmax y se convierte en distribución de probabilidad <strong>P(vocab)</strong>. <strong>Pure sampling</strong> simplemente muestrea de esa distribución — y ahí es donde empiezan los problemas.</p>
 
 <p>En una distribución peaked (alta confianza del modelo), el token correcto tiene probabilidad 0.7+ y el segundo 0.15. Muestrear puro podría darle al segundo un 15% de oportunidad, generando texto coherent en la superficie pero semánticamente errado. En una distribución plana (baja confianza), muestrar puro puede producir texto aleatorio porque todos los tokens tienen probabilidad similar.</p>
 
-<p><strong>Top-k Sampling</strong> resuelve esto truncando: solo consideramos los <code>k</code> tokens con mayor probabilidad y redistribuimos la masa entre ellos. Si <code>k=50</code>, solo los 50 tokens más probables participan en el muestreo.</p>
+<p><strong>Top-k Sampling</strong> resuelve esto truncando: solo consideramos los <strong>k</strong> tokens con mayor probabilidad y redistribuimos la masa entre ellos. Si <strong>k=50</strong>, solo los 50 tokens más probables participan en el muestreo.</p>
 
-<p><strong>Top-p (Nucleus) Sampling</strong> es más elegante: en lugar de固定的 <code>k</code>, selecciona el smallest subset de tokens cuya probabilidad acumulada cubra al menos <code>p</code>. Con <code>p=0.9</code>, si los top 3 tokens tienen probabilidad acumulada 0.87 y los top 4 llegan a 0.93, entonces nucleus = top 4. Se adapta dinámicamente a la forma de la distribución.</p>
+<p><strong>Top-p (Nucleus) Sampling</strong> es más elegante: en lugar de fijo <strong>k</strong>, selecciona el smallest subset de tokens cuya probabilidad acumulada cubra al menos <strong>p</strong>. Con <strong>p=0.9</strong>, si los top 3 tokens tienen probabilidad acumulada 0.87 y los top 4 llegan a 0.93, entonces nucleus = top 4. Se adapta dinámicamente a la forma de la distribución.</p>
 
 <p>La fórmula matemática del nucleus:</p>
-<div class="katex-display">S = min{ n : \sum_{i=1}^{n} P_i \geq p }</div>
 
-<p>donde <code>P_i</code> son las probabilidades ordenadas de mayor a menor.</p>
+<p>$$S = \min\{ n : \sum_{i=1}^{n} P_i \geq p \}$$</p>
 
-<p><strong>El error más común:</strong> usar top_k y top_p simultáneamente sin entender que NO se suman. En HuggingFace Transformers, cuando pones <code>top_k=50</code> y <code>top_p=0.9</code>, el modelo aplica primero top-p (filtra al nucleus) y luego top-k (queda con los k mayores del nucleus). No es una operación doble — es una cadena. La mayoría cree que está haciendo algo más restrictivo de lo que realmente hace.</p>
+<p>donde <strong>P_i</strong> son las probabilidades ordenadas de mayor a menor.</p>
+
+<p><strong>El error más común:</strong> usar top_k y top_p simultáneamente sin entender que NO se suman. En HuggingFace Transformers, cuando pones <strong>top_k=50</strong> y <strong>top_p=0.9</strong>, el modelo aplica primero top-p (filtra al nucleus) y luego top-k (queda con los k mayores del nucleus). No es una operación doble — es una cadena. La mayoría cree que está haciendo algo más restrictivo de lo que realmente hace.</p>
 
 <hr>
-<h2>💻 Implementación Práctica en PyTorch</h2>
+<h2>Implementación Práctica en PyTorch</h2>
 
 <pre><code class="language-python">import torch
 import torch.nn.functional as F
@@ -254,18 +255,18 @@ if __name__ == "__main__":
         print(f"  {method}: {entropy:.4f}")
 </code></pre>
 
-<p>Ejecutando <code>effect_of_k_values</code> con la distribución peaked revela algo interesante: con <code>k=5</code> casi siempre selecciona el token dominante, mientras que con <code>k=50</code> permite que los segundos y terceros tokens aparezcan más frecuentemente. En la distribución plana, <code>k=5</code> todavía produce muchos tokens repetidos porque solo hay ~5 tokens con probabilidad significativa.</p>
+<p>Ejecutando <strong>effect_of_k_values</strong> con la distribución peaked revela algo interesante: con <strong>k=5</strong> casi siempre selecciona el token dominante, mientras que con <strong>k=50</strong> permite que los segundos y terceros tokens aparezcan más frecuentemente. En la distribución plana, <strong>k=5</strong> todavía produce muchos tokens repetidos porque solo hay ~5 tokens con probabilidad significativa.</p>
 
 <hr>
-<h2>🚨 Los 3 Errores Más Frecuentes</h2>
+<h2>Los 3 Errores Más Frecuentes</h2>
 
-<h3>❌ Error 1: Usar top_k fijo sin considerar la peakedness de la distribución</h3>
+<h3>Error 1: Usar top_k fijo sin considerar la peakedness de la distribución</h3>
 
-<p>Este es el error más sutil. Si tienes un modelo que en ciertas situaciones produce distribuciones muy peaked (alta confianza, e.g., cuando está seguro de la respuesta) y en otras produces distribuciones planas (baja confianza, e.g., en tareas ambiguas), usar <code>k=50</code> fijo es suboptimal:</p>
+<p>Este es el error más sutil. Si tienes un modelo que en ciertas situaciones produce distribuciones muy peaked (alta confianza) y en otras produce distribuciones planas (baja confianza, en tareas ambiguas), usar <strong>k=50</strong> fijo es suboptimal:</p>
 
 <ul>
-<li>En distribución peaked: <code>k=50</code> incluye muchos tokens con probabilidad ~0.0001 que no deberían participar nunca</li>
-<li>En distribución plana: <code>k=50</code> es restrictivo y puede excluir el token correcto si está en posición 60</li>
+<li>En distribución peaked: <strong>k=50</strong> incluye muchos tokens con probabilidad ~0.0001 que no deberían participar nunca</li>
+<li>En distribución plana: <strong>k=50</strong> es restrictivo y puede excluir el token correcto si está en posición 60</li>
 </ul>
 
 <p><strong>Fix:</strong> Usar k adaptativo basado en la entropía de la distribución:</p>
@@ -285,24 +286,24 @@ if __name__ == "__main__":
     return top_k_sampling(logits, k=k)
 </code></pre>
 
-<h3>❌ Error 2: top_p con p=0.9 — "el 90% no es tan diverso como crees"</h3>
+<h3>Error 2: top_p con p=0.9 — "el 90% no es tan diverso como crees"</h3>
 
-<p>Muchos tutorials recomiendan <code>top_p=0.9</code> como默认值. Pero en la práctica, <code>p=0.9</code> cubre solo los 3-5 tokens más probables en distribuciones típicas de LLMs. Esto causa falta de diversidad en tareas creativas y genera texto repetitivo.</p>
+<p>Muchos tutorials recomiendan <strong>top_p=0.9</strong> como valor por defecto. Pero en la práctica, <strong>p=0.9</strong> cubre solo los 3-5 tokens más probables en distribuciones típicas de LLMs. Esto causa falta de diversidad en tareas creativas y genera texto repetitivo.</p>
 
-<p><strong>Fix:</strong> Usar <code>p=0.95</code> o incluso <code>p=0.99</code> para tareas creativas. Solo usar <code>p=0.9</code> cuando necesitas output muy determinístico (typewriting, código estructurado).</p>
+<p><strong>Fix:</strong> Usar <strong>p=0.95</strong> o incluso <strong>p=0.99</strong> para tareas creativas. Solo usar <strong>p=0.9</strong> cuando necesitas output muy determinístico (typewriting, código estructurado).</p>
 
-<h3>❌ Error 3: Creer que top_k + top_p se suman</h3>
+<h3>Error 3: Creer que top_k + top_p se suman</h3>
 
-<p>El error más frecuente en GitHub issues y forums. La gente hace <code>top_k=50, top_p=0.9</code> creyendo que está tomando los 50 tokens más probables Y luego filtrando los que cubren el 90% de probabilidad. En realidad:</p>
+<p>El error más frecuente en GitHub issues y forums. La gente hace <strong>top_k=50, top_p=0.9</strong> creyendo que está tomando los 50 tokens más probables Y luego filtrando los que cubren el 90% de probabilidad. En realidad:</p>
 
-<ol>
+<ul>
 <li>Primero se aplica top-p: nucleus = tokens que cubren 90% de masa</li>
 <li>Luego se aplica top-k: de ese nucleus, se queda con los k mayores</li>
-</ol>
+</ul>
 
-<p>Si el nucleus ya tiene solo 10 tokens y pones <code>k=50</code>, el k no tiene efecto. Si el nucleus tiene 200 tokens y pones <code>k=50</code>, el k sí filtra.</p>
+<p>Si el nucleus ya tiene solo 10 tokens y pones <strong>k=50</strong>, el k no tiene efecto. Si el nucleus tiene 200 tokens y pones <strong>k=50</strong>, el k sí filtra.</p>
 
-<p><strong>Fix:</strong> Entender la cadena: <code>top_k_and_top_p = apply_top_p_then_top_k(logits, k, p)</code>. Si quieres control más fino, implementa tu propia combinación donde el orden importe:</p>
+<p><strong>Fix:</strong> Entender la cadena: <strong>top_k_and_top_p = apply_top_p_then_top_k(logits, k, p)</strong>. Si quieres control más fino, implementa tu propia combinación donde el orden importe:</p>
 
 <pre><code class="language-python">def smart_combined(logits, k=None, p=None):
     """Combina top-k y top-p de forma consciente."""
@@ -335,12 +336,12 @@ if __name__ == "__main__":
 </code></pre>
 
 <hr>
-<h2>✅ Resumen y Recomendaciones</h2>
+<h2>Resumen y Recomendaciones</h2>
 
 <ul>
-<li><strong>Tareas creativas (storytelling, brainstorming):</strong> <code>top_p=0.95</code> o <code>top_p=0.99</code>. Mayor diversidad.</li>
-<li><strong>Tareas de razonamiento/código:</strong> <code>top_k=20-50</code> o <code>top_p=0.90</code>. Balance entre diversidad y coherencia.</li>
-<li><strong>Tareas de clasificación:</strong> Greedy (<code>temperature=0</code>) o <code>top_k=1</code>. Máxima precisión.</li>
+<li><strong>Tareas creativas (storytelling, brainstorming):</strong> <strong>top_p=0.95</strong> o <strong>top_p=0.99</strong>. Mayor diversidad.</li>
+<li><strong>Tareas de razonamiento/código:</strong> <strong>top_k=20-50</strong> o <strong>top_p=0.90</strong>. Balance entre diversidad y coherencia.</li>
+<li><strong>Tareas de clasificación:</strong> Greedy (<strong>temperature=0</strong>) o <strong>top_k=1</strong>. Máxima precisión.</li>
 <li><strong>Usa k adaptativo</strong> cuando la confianza del modelo varía entre inputs.</li>
 <li><strong>Recuerda:</strong> top_k y top_p NO se suman — se encadenan. Entiende cuál opera primero.</li>
 </ul>
