@@ -118,288 +118,214 @@ nav {
   </header>
 
   <article class="article-body">
-<h2Evaluation Harness — El Framework Que El 80% Usa Sin Saber Que Existe</h2>
+<h2>Por Que La Latencia Importa</h2>
 
-<p>Pues resulta, parcero, que estaba yo en una reunión el mes pasado donde un equipo de ML presentaba sus "resultados" de evaluación de un LLM. Sacaron una tabla comparando su modelo contra GPT-4 en MMLU y todo el mundo quedó esperando. Hasta que pregunté: "¿Cómo hicieron la evaluación?" — y boom, silencio. Resulta que habían probado el modelo "a ojo", preguntándole 20 cosas y conclusionando. Eso no es evaluación, eso es almuerzo de malucos.</p>
+<p>Imagina que tienes un chatbot que tarda 30 segundos en responder. El usuario ya se fue hace 20 segundos. La latencia no es solo un numero — es la diferencia entre una experiencia usable y una que el usuario abandona.</p>
 
-<p>Por eso hoy hablamos de <strong>lm-evaluation-harness</strong>: el framework que el 80% de la gente que evalúa LLMs no conoce o no sabe usar bien. Y créeme, sin una evaluación sistemática, estás volando ciegazo.</p>
+<p>Los LLMs son inherentemente lentos. Generar texto token por token significa esperar la inferencia de red neuronal para cada token. Un response de 500 tokens puede tomar 10-30 segundos en un modelo grande. Eso es una eternidad en terminos de UX.</p>
 
-<h2>¿Por Qué Necesitas Un Evaluation Harness?</h2>
+<p>Pero hay tecnicas para hacer esto mas rapido sin perder calidad. Hoy las exploramos.</p>
 
-<p>Imagina que tienes dos modelos: <code>modelo_A</code> y <code>modelo_B</code>. Quieres saber cuál es mejor para tu aplicación de análisis financiero en español. ¿Qué hace la mayoría? Le hace 10 preguntas a cada uno y ya. Error fatal.</p>
+<h2>Arquitectura De Inference</h2>
 
-<p>Un evaluation harness como lm-evaluation-harness te permite:</p>
-
-<ul>
-<li><strong>Evaluar de manera reproducible</strong>: Exact same conditions para todos los modelos</li>
-<li><strong>Correr benchmarks estandarizados</strong>: MMLU, GSM8K, HumanEval, TruthfulQA</li>
-<li><strong>Custom tasks</strong>: Evaluar dominio específico con tus propios datasets</li>
-<li><strong>Resultados comparables</strong>: Numbers que puedes publicar y replicar</li>
-</ul>
-
-<h2>Los Benchmarks Que Tienes Que Conocer</h2>
-
-<h3>MMLU — Massive Multitask Language Understanding</h3>
-
-<p>57 tareas diferentes: ciencia, historia, derecho, medicina. Mide conocimiento general. La fórmula del score:</p>
-
-<p>$$\text{Accuracy} = \frac{\text{Respuestas Correctas}}{\text{Total de Preguntas}} \times 100\%$$</p>
-
-<p>Un modelo random logra ~25% en opciones múltiples (4 choices). GPT-4 anda por ~86%. Si tu modelo está por debajo de random, algo está mal.</p>
-
-<h3>GSM8K — Grade School Math 8K</h3>
-
-<p>8,500 problemas de matemáticas de primaria. No es triviales — requieren multi-step reasoning. Mide capacidad de razonamiento matemático.</p>
-
-<p>$$\text{GSM8K Accuracy} = \frac{\text{Problemas Resueltos Correctamente}}{8,500} \times 100\%$$</p>
-
-<p>La dificultad está en que el modelo no solo tiene que dar la respuesta final — tiene que mostrar el paso a paso. Un error en el paso 3 descarta todo.</p>
-
-<h3>HumanEval — Code Generation</h3>
-
-<p>164 problemas de programación en Python. Mide ability to generate correct code. Cada problema incluye:</p>
+<p>Antes de optimizar, hay que entender como funciona la inference en LLMs:</p>
 
 <ul>
-<li>Docstring con especificación</li>
-<li>Firma de la función</li>
-<li>Cuerpo de la función (vacío)</li>
+<li><strong>Prefill phase</strong>: El prompt se procesa en paralelo — es rapido</li>
+<li><strong>Decode phase</strong>: Los tokens se generan uno por uno — es lento</li>
+<li><strong>Total time</strong> = prefill + (tokens_generados * tiempo_por_token)</li>
 </ul>
 
-<p>El modelo tiene que completar el cuerpo. Se ejecuta contra tests unitarios:</p>
+<p>La mayoria del tiempo se va en el decode phase. Ahi es donde tenemos queFocus.</p>
 
-<p>$$\text{Pass@K} = 1 - \frac{\binom{n - c}{k}}{\binom{n}{k}}$$</p>
+<h2>KV Cache — Cache Para Atention</h2>
 
-<p>Donde <code>n</code> = total de problemas, <code>c</code> = correctos, <code>k</code> = número de intentos. Pass@1 es el estándar.</p>
+<p>Cada vez que generas un token, el modelo recalcula los key-value vectors para TODOS los tokens anteriores. Eso es O(n) por token, o O(n^2) para toda la generacion. El KV cache evita recalcularlos.</p>
 
-<h3>TruthfulQA — Truthfulness</h3>
+<h3>Como Funciona</h3>
 
-<p>817 preguntas donde humanos frecuentemente dan respuestas incorrectas. Mide si el modelo repite desinformación o responde honestamente. Este benchmark es tricky porque:</p>
+<p>La atencion multi-head calcula:</p>
+
+<p>$$\text{Attention}(Q, K, V) = \text{softmax}\left(\frac{QK^T}{\sqrt{d_k}}\right)V$$</p>
+
+<p>Donde K y V son los mismos para tokens anteriores. Si los cacheamos:</p>
 
 <ul>
-<li>Un modelo que siempre dice "no sé" sería muy truthful pero inútil</li>
-<li>La métrica equilibra truthfulness vs informativeness</li>
+<li>Primera generacion: calculo completo</li>
+<li>Tokens siguientes: solo calcular Q para el nuevo token + usar cached K,V</li>
 </ul>
 
-<h2>Usando lm-evaluation-harness</h2>
+<h3>Implementacion</h3>
 
-<h3>Instalación</h3>
-
-<pre><code class="language-bash">pip install lm-evaluation-harness
-# o desde source:
-git clone https://github.com/EleutherAI/lm-evaluation-harness
-cd lm-evaluation-harness
-pip install -e .</code></pre>
-
-<h3>Evaluación Básica — CLI</h3>
-
-<pre><code class="language-bash"># Evaluar modelo en MMLU
-lm_eval \
-  --model hf \
-  --model_args pretrained=mistralai/Mistral-7B-v0.1 \
-  --tasks mmlu \
-  --device cuda:0 \
-  --batch_size 8
-
-# Múltiples benchmarks de una vez
-lm_eval \
-  --model hf \
-  --model_args pretrained=meta-llama/Llama-2-7b \
-  --tasks mmlu,gsm8k,truthfulqa_mc \
-  --device cuda:0 \
-  --batch_size 4</code></pre>
-
-<h3>Output — Cómo Leer Los Resultados</h3>
-
-<pre><code class="language-json">{
-  "results": {
-    "mmlu": {
-      "acc": 0.6942,
-      "acc_stderr": 0.0046
-    },
-    "gsm8k": {
-      "acc": 0.4123,
-      "acc_stderr": 0.0156
-    }
-  },
-  "config": {
-    "model": "mistralai/Mistral-7B-v0.1",
-    "num_fewshot": 5
-  }
-}</code></pre>
-
-<p><code>acc</code> es el accuracy principal. <code>acc_stderr</code> es el standard error — valores debajo de 0.01 son buenos, significa que la evaluación es estable.</p>
-
-<h2>Creando Custom Tasks</h2>
-
-<p>Aquí es donde la cosa se pone interesante. Los benchmarks genéricos no cubren tu dominio específico. Para un sistema médico, necesitas evaluar en español médico. Para código empresarial, necesitas tus propias pruebas.</p>
-
-<h3>Estructura de una Custom Task</h3>
-
-<pre><code class="language-yaml"># tasks/medical-qa-es.yaml
-task: medical_qa_es
-dataset_path: tu/medical-qa-spanish
-dataset_name: null
-output_type: multiple_choice
-test_split: test
-num_fewshot: 5
-
-training_split: null
-dataset_kwargs:
-  trust_remote_code: true
-
-# Formato de cada ejemplo:
-# {"question": "...", "choices": ["A", "B", "C", "D"], "gold": 2}
-# gold = índice de la respuesta correcta
-
-doc_to_text: "{{question}}"
-doc_to_choice: "{{choices}}"
-doc_to_target: "{{gold}}"</code></pre>
-
-<h3>Cargar y Usar la Task</h3>
-
-<pre><code class="language-python">from lm_eval.api.registry import ALL_TASKS
-from lm_eval.api.tasks import TaskManager
-
-# Cargar task manager con tasks personalizadas
-tm = TaskManager(["tasks/", "custom_tasks/"])
-
-# O desde CLI con task específica
-lm_eval \
-  --model hf \
-  --model_args pretrained=models/tu-modelo-medico \
-  --tasks medical_qa_es \
-  --device cuda:0 \
-  --batch_size 8</code></pre>
-
-<h3>Python API — Para Más Control</h3>
-
-<pre><code class="language-python">from lm_eval import evaluate, make_task
-from lm_eval.api.model import LM
-
-class CustomLM(LM):
-    def __init__(self, model_path):
-        # Tu implementación de inference
-        self.model = load_model(model_path)
+<pre><code class="language-python">class KVCache:
+    def __init__(self):
+        self.k_cache = []
+        self.v_cache = []
     
-    def generate_until(self, requests):
-        # Lógica de generación
-        return [self._generate(req) for req in requests]
+    def update(self, k, v):
+        self.k_cache.append(k)
+        self.v_cache.append(v)
+        return torch.cat(self.k_cache, dim=2), torch.cat(self.v_cache, dim=2)
     
-    def loglikelihood(self, requests):
-        # Para tareas de elección múltiple
-        return self._compute_logprobs(requests)
+    def get(self):
+        return torch.cat(self.k_cache, dim=2), torch.cat(self.v_cache, dim=2)
 
-# Crear task desde YAML
-task = make_task("tasks/medical-qa-es.yaml")
+# En el forward pass
+if use_cache:
+    k, v = cache.update(k, v)
+    # Usa k, v cacheados en lugar de recalcular
+    attn_output = attention(q, k, v)
+else:
+    # Calculo completo sin cache
+    attn_output = attention(q, k, v)</code></pre>
 
-# Evaluar
-results = evaluate(
-    model=CustomLM("models/medical-llm"),
-    tasks=[task],
-    num_fewshot=5,
-    limit=100  # Para testing rápido
-)</code></pre>
+<h2>Batch Processing — Procesando Multiples Requests</h2>
 
-<h2>Errores Comunes — Los Tres Pecados Capitales</h2>
+<p>Si tienes 100 usuarios esperando respuestas, no los process uno por uno. El batching permite procesar multiples sequences en paralelo en la misma forward pass.</p>
 
-<h3>Error 1: Evaluar Modelos "A Mano" — Sin Harness</h3>
+<h3>Batching Estatico vs Dinamico</h3>
 
-<p><strong>El problema</strong>: Le preguntas 20 cosas al modelo, decides que "suena mejor" y publications resultados. Esto no es evaluación — es intuición disfrazada de data.</p>
+<p><strong>Batching estatico</strong>: Agrupa requests con longitud fija. Simple pero ineficiente si hayvariacion en longitud.</p>
 
-<p>Los issues:</p>
-<ul>
-<li>No reproducible — mañana puedes dar score diferente</li>
-<li>Bias de confirmación — tiendes a recordar los casos que te gustaron</li>
-<li>No comparable — ¿cómo comparas con otros modelos?</li>
-<li>Sample size ridículamente pequeño — 20 samples vs 14,000 de MMLU</li>
-</ul>
+<p><strong>Batching dinamico</strong>: Agrupa requests segun llegan, pero espera a que todos terminen antes de devolver. Mejor utilizacion de GPU.</p>
 
-<p><strong>El fix</strong>: Usa lm-evaluation-harness. Siempre. Aunque sea para evaluation interna. Los beneficios:</p>
+<pre><code class="language-python"># Ejemplo conceptual de batching
+requests = [
+    ("Que es Python?", max_tokens=100),
+    ("Explica ML", max_tokens=200),
+    ("Historia de AI", max_tokens=150),
+]
 
-<pre><code class="language-bash"># Es tan simple como esto
-lm_eval \
-  --model hf \
-  --model_args pretrained=models/tu-modelo \
-  --tasks mmlu,gsm8k,hellaswag \
-  --device cuda:0 \
-  --batch_size 16</code></pre>
+# Padding para igualar longitudes
+batch = pad_sequences([r.prompt for r in requests])
 
-<h3>Error 2: Confiar Ciegamente En Benchmark Results Ajenos</h3>
+# Forward pass unico para todos
+outputs = model(batch)
 
-<p><strong>El problema</strong>: Ves que "modelo_X logra 72% en MMLU" en un paper y lo asumes verdadero sin verificar. Mal, muy mal.</p>
+# Extraer respuestas individuales
+responses = [extract_response(o, r.max_tokens) for o, r in zip(outputs, requests)]</code></pre>
 
-<p>Los benchmarks se pueden manipulatear:</p>
+<h2>Quantization — Modelos Mas Livianos</h2>
 
-<ul>
-<li><strong>Contaminación de datos</strong>: El modelo fue entrenado en preguntas similares</li>
-<li><strong>Evals diferentes</strong>: Algunos usan 5-shot, otros 0-shot — no son comparables</li>
-<li><strong>Metric gaming</strong>: Técnica de prompting para optimizar el benchmark sin mejorar el modelo real</li>
-<li><strong>Hardware diferente</strong>: Los resultados Reported vs lo que tú medirás</li>
-</ul>
+<p>FP32 = 4 bytes por parametro. FP16 = 2 bytes. INT8 = 1 byte. Quantization reduce precision numerica para memory y compute mas rapidos.</p>
 
-<p><strong>El fix</strong>: Siempre que puedas, replica la evaluación tú mismo. Si el paper no especifica exactamente la configuración, tenés desconfianza.</p>
-
-<pre><code class="language-bash"># Verifica con lm-evaluation-harness
-# Usa exactamente la misma config que el paper reporta
-lm_eval \
-  --model hf \
-  --model_args pretrained=modelo_X \
-  --tasks mmlu \
-  --num_fewshot 5 \
-  --device cuda:0</code></pre>
-
-<p>Si no puedes replicar, al menos valida con un subset de tu dominio. Un paper que reporta 90% en MMLU pero no puede responder 3 preguntas de tu dominio específico tiene un problema.</p>
-
-<h3>Error 3: Solo Usar Benchmarks Populares — Sin Coverage de Dominio</h3>
-
-<p><strong>El problema</strong>: MMLU, GSM8K, HumanEval — todos el mundo usa estos. Pero son benchmarks en inglés, hechos por gringos, para modelos entrenados en internet en general.</p>
-
-<p>Si tu aplicación es:</p>
+<h3>GPTQ vs AWQ vs bitsandbytes</h3>
 
 <ul>
-<li>Chatbot de soporte en español colombiano → MMLU no te dice nada</li>
-<li>Sistema de análisis financiero → GSM8K no es relevante</li>
-<li>Generador de código empresarial → HumanEval mide Python básico, no tu stack</li>
+<li><strong>GPTQ</strong>: Post-training quantization, bueno para 4-bit</li>
+<li><strong>AWQ</strong>: Activation-aware, mejor calidad</li>
+<li><strong>bitsandbytes</strong>: Facil de usar, integrado en HuggingFace</li>
 </ul>
 
-<p>Estás optimizando para benchmarks que no importan.</p>
+<pre><code class="language-python"># bitsandbytes quantization
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
-<p><strong>El fix</strong>: Crea tu propio evaluation harness con tasks de tu dominio. No tiene que ser complejo:</p>
+quantization_config = BitsAndBytesConfig(
+    load_in_8bit=True,
+    llm_int8_threshold=6.0
+)
 
-<pre><code class="language-yaml"># tasks/finance-sentiment-es.yaml
-task: finance_sentiment_es
-dataset_path: my/finance-sentiment-spanish
-output_type: multiple_choice
+model = AutoModelForCausalLM.from_pretrained(
+    "meta-llama/Llama-2-7b",
+    quantization_config=quantization_config,
+    device_map="auto"
+)
 
-doc_to_text: "Clasifica el sentimiento: {{text}}"
-doc_to_choice: ["positivo", "negativo", "neutral"]
-doc_to_target: "{{label}}"</code></pre>
+# 7B params: 7B * 1 byte = 7GB (vs 14GB FP16)</code></pre>
 
-<p>Y luego:</p>
+<h2>Speculative Decoding — Draft + Verify</h2>
 
-<pre><code class="language-bash"># Evalúa en tu benchmark específico
-lm_eval \
-  --model hf \
-  --model_args pretrained=models/tu-modelo \
-  --tasks finance_sentiment_es \
-  --num_fewshot 3</code></pre>
+<p>Idea: Un modelo pequeno (draft) genera varios tokens rapidamente, luego el modelo grande los verifica en paralelo. Si el draft acerto, ganas tiempo. Si fallo, el modelo grande toma el control.</p>
 
-<h2>Resumen y Cierre</h2>
+<p>$$\text{Speedup} = \frac{t_{\text{large}}}{t_{\text{draft}} \cdot \alpha + t_{\text{verify}} \cdot (1-\alpha)}$$</p>
 
-<p>lm-evaluation-harness no es solo para researchers. Es para cualquiera que necesite saber si su LLM realmente funciona bien — de manera reproducible y justifiable.</p>
+<p>Donde alpha es la tasa de aceptacion del draft.</p>
 
-<p>Hoy aprendimos:</p>
+<pre><code class="language-python">def speculative_decode(draft_model, target_model, prompt, gamma=4):
+    draft_tokens = draft_model.generate(prompt, max_new_tokens=gamma)
+    target_logits = target_model(draft_tokens)
+    
+    # Verificar cada token del draft
+    accepted = []
+    for i in range(gamma):
+        draft_token = draft_tokens[-(gamma-i)]
+        target_token = sample(target_logits[-(gamma-i)])
+        
+        if draft_token == target_token:
+            accepted.append(draft_token)
+        else:
+            # Fallo - el target toma el control
+            break
+    
+    return accepted
+
+# Speedup tipico: 2-3x con draft de 7B y target de 70B</code></pre>
+
+<h2>Continuous Batching —-Maximizando GPU Utilization</h2>
+
+<p>El problema con static/dynamic batching: cuando un request largo termina, toda la batch espera a los cortos. Continuous batching permite que nuevos requests entren a la batch en cuanto hay espacio.</p>
+
+<pre><code class="language-python">class ContinuousBatcher:
+    def __init__(self, model, max_batch_size=32):
+        self.model = model
+        self.max_batch_size = max_batch_size
+        self.waiting = []
+        self.running = []
+    
+    def add_request(self, request):
+        self.waiting.append(request)
+    
+    def step(self):
+        # Liberar slots de requests completados
+        self.running = [r for r in self.running if not r.is_done()]
+        
+        # Agregar nuevos requests hasta llenar batch
+        while len(self.running) < self.max_batch_size and self.waiting:
+            self.running.append(self.waiting.pop(0))
+        
+        if self.running:
+            # Procesar batch
+            outputs = self.model.forward([r.tokens for r in self.running])
+            for r, output in zip(self.running, outputs):
+                r.add_output(output)</code></pre>
+
+<h2>Pruning — Eliminando Neuronas Innecesarias</h2>
+
+<p>No todas las neuronas son iguales. Algunas tienen poca influencia en el output. Pruning las elimina:</p>
 
 <ul>
-<li><strong>Benchmarks estandarizados</strong> — MMLU, GSM8K, HumanEval, TruthfulQA tienen usos y limitaciones</li>
-<li><strong>Cómo usar el CLI</strong> — una línea para evaluar cualquier modelo</li>
-<li><strong>Custom tasks</strong> — YAML + Python API para tu dominio específico</li>
-<li><strong>Los tres errores fatales</strong> — evaluación a mano, confiar ciegamente, y solo benchmarks populares</li>
+<li><strong>Magnitude pruning</strong>: Elimina pesos pequenos</li>
+<li><strong>Movement pruning</strong>: Elimina durante fine-tuning</li>
+<li><strong>Sparse attention</strong>: Hace atention sparse, ignorando conexiones debiles</li>
 </ul>
 
-<p>La próxima vez que veas una tabla comparando LLMs, preguntá primero: "¿Cómo fue la evaluación?" Si la respuesta no incluye lm-evaluation-harness o algo similar, tomá esos números con pinzas.</p>
+<pre><code class="language-python">import torch.nn.utils as nn_utils
 
-<p>Y bueno, parcero, eso es todo por hoy. Mañana seguimos con guardrails y validación de outputs — porque de nada sirve un modelo buenísimo si te devuelve JSON malformed a cada rato. ¡Hágale pues!</p>
+# Magnitude pruning global
+def prune_weights(model, sparsity=0.3):
+    for name, param in model.named_parameters():
+        if 'weight' in name:
+            # Calcular threshold como el percentile de magnitud
+            threshold = torch.quantile(torch.abs(param), sparsity)
+            mask = torch.abs(param) > threshold
+            param.data *= mask.float()</code></pre>
+
+<h2>Resumen Y Cierre</h2>
+
+<p>La latencia en LLMs es un problema complejo con multiples soluciones:</p>
+
+<ul>
+<li><strong>KV Cache</strong>: Evita recalcular atention para tokens previos</li>
+<li><strong>Batching</strong>: Procesa multiples requests en paralelo</li>
+<li><strong>Quantization</strong>: Modelos mas pequenos con menos precision</li>
+<li><strong>Speculative Decoding</strong>: Draft pequeno + verificacion rapida</li>
+<li><strong>Continuous Batching</strong>: GPU utilization maxima</li>
+<li><strong>Pruning</strong>: Elimina pesos innecesarios</li>
+</ul>
+
+<p>La combinacion de estas tecnicas puede reducir latency de 30s a 3s — 10x mas rapido. Y eso es la diferencia entre un producto usable y uno que nadie usa.</p>
+
+<p>Mañana hablamos de cost optimization — como hacer todo esto sin hipotecar tu startup. ¡Hagale pues!</p>
   </article>
 
   <script>

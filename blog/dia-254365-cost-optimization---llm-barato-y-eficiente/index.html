@@ -118,449 +118,265 @@ nav {
   </header>
 
   <article class="article-body">
-<h2>Guardrails y Output Validation — El Escudo Que Tu Sistema Necesita</h2>
+<h2>Por Que El Costo De LLMs Es Un Problema</h2>
 
-<p>Muy bien, ahí vamos de nuevo, parcero. Día 254 y hoy le metemos miedo al asunto: ¿qué pasa cuando un LLM te devuelve cualquier cosa? Porque eso pasa más de lo que crees. Le pedís un JSON, te devuelve un texto libre. Le pedís un email, te devuelve un número de teléfono. Le pedís algo seguro, te devuelve datos sensibles. El LLM no sabe qué es correcto — solo sabe qué parece probable.</p>
-
-<p>Ahí entran los <strong>guardrails</strong> y la <strong>output validation</strong>: el escudo entre el modelo y el usuario. Sin esto, tienes una caja negra incontrolable. Con esto, tienes un sistema predecible y seguro.</p>
-
-<h2>¿Por Qué Necesitas Output Validation?</h2>
-
-<p>Piénsalo así: el LLM genera tokens secuencia por secuencia. Cada token es estadísticamente probable dado el anterior. No hay noción de "formato correcto" — solo hay "esto parece que viene después de lo anterior".</p>
-
-<p>El resultado: JSON malformed, respuestas fuera de formato, datos sensibles filtrados, inyecciones de prompt exitosas. A menos que alguien valide lo que sale.</p>
-
-<p>Un buen sistema de validation te da:</p>
+<p>GPT-4 cuesta $0.03 por 1000 tokens de input y $0.06 por 1000 tokens de output. Eso suena poco hasta que haces las matematicas:</p>
 
 <ul>
-<li><strong>Structured output garantizado</strong>: Siempre retorna el formato esperado</li>
-<li><strong>Content filtering</strong>: Bloquea contenido peligroso o sensible</li>
-<li><strong>Type safety</strong>: Campos con tipos correctos, ranges válidos</li>
-<li><strong>Fallos elegantes</strong>: Cuando falla, falla bien</li>
+<li>1000 chats diarios con 500 tokens input + 300 tokens output</li>
+<li>= 500,000 input tokens + 300,000 output tokens</li>
+<li>= $15 + $18 = $33/dia</li>
+<li>= $990/mes</li>
+<li>= $11,880/año</li>
 </ul>
 
-<h2>Pydantic — El Estándar Para Structured Output</h2>
+<p>Y eso es solo UN chatbot con volumen bajo. Si tienes 10,000 usuarios activos? $120,000/año. Esto no escala.</p>
 
-<p>Pydantic no es solo para APIs. Para LLMs es una bendición porque define exactamente qué esperas y valida automáticamente.</p>
+<h2>Strategias De Cost Optimization</h2>
 
-<h3>Modelo Base con Pydantic</h3>
+<h3>1. Eleccion De Modelo Appropriate</h3>
 
-<pre><code class="language-python">from pydantic import BaseModel, Field, field_validator
-from typing import Optional, List
-
-class Persona(BaseModel):
-    nombre: str = Field(..., min_length=1, max_length=100)
-    edad: int = Field(..., ge=0, le=120)
-    email: Optional[str] = None
-    tags: List[str] = Field(default_factory=list, max_length=10)
-    
-    @field_validator('email')
-    @classmethod
-    def email_valido(cls, v):
-        if v is not None and '@' not in v:
-            raise ValueError('Email inválido')
-        return v
-    
-    @field_validator('nombre')
-    @classmethod
-    def nombre_no_vacio(cls, v):
-        if not v or not v.strip():
-            raise ValueError('Nombre no puede estar vacío')
-        return v.strip()</code></pre>
-
-<h3>Validación Manual</h3>
-
-<pre><code class="language-python">def validar_persona(data: dict) -> Persona | None:
-    try:
-        return Persona(**data)
-    except ValidationError as e:
-        print(f"Error de validación: {e}")
-        return None
-
-# Uso
-resultado = validar_persona({"nombre": "Fabian", "edad": 30})
-# Persona(nombre='Fabian', edad=30, email=None, tags=[])
-
-resultado_malo = validar_persona({"nombre": "", "edad": -5})
-# Error de validación: 2 validation errors</code></pre>
-
-<h2>Outlines y Guidance — Forced Structured Generation</h2>
-
-<p>Pydantic valida después de generar. Pero a veces querés que el modelo NUNCA se desvíe del formato. Para eso existen <code>outlines</code> y <code>guidance</code>: constrain el generation space directamente.</p>
-
-<h3>Outlines — Guided Generation</h3>
-
-<pre><code class="language-python">from outlines import models, generate, parse
-
-# Definir estructura con regex
-model = models.openai("gpt-4")
-
-@parse
-def email_extractor(text: str) -> Persona:
-    """Extrae información de persona del texto"""
-    # El modelo SOLO puede generar JSON que valide contra Persona
-    return parse(text, Persona)
-
-# El regex guía la generación — el modelo no puede salirse del formato
-result = email_extractor("""
-    Me llamo Carlos Martinez, tengo 45 años 
-    y mi correo es carlos@gmail.com
-""")
-# Persona(nombre='Carlos Martinez', edad=45, email='carlos@gmail.com', tags=[])</code></pre>
-
-<h3>Outlines con JSON Schema</h3>
-
-<pre><code class="language-python">import outlines
-
-# Generar directamente desde JSON Schema
-schema = """
-{
-  "type": "object",
-  "properties": {
-    "sentiment": {"type": "string", "enum": ["positive", "negative", "neutral"]},
-    "score": {"type": "number", "minimum": 0, "maximum": 1},
-    "justification": {"type": "string", "maxLength": 200}
-  },
-  "required": ["sentiment", "score"]
-}
-"""
-
-model = models.transformers("mistralai/Mistral-7B-Instruct")
-
-generator = outlines.generate.json(model, schema)
-
-response = generator("El producto es mediocre, ni bueno ni malo")
-
-# response ya es un dict validado contra el schema
-# {"sentiment": "neutral", "score": 0.5, "justification": "..."}</code></pre>
-
-<h3>Guidance — Control Fine-grained</h3>
-
-<pre><code class="language-python">import guidance
-
-@guidance
-def extract_article_data(llm):
-    # El template guía exactamente qué generar
-    result = llm("""
-    {{#system}}Eres un extractor de datos.{{/system}}
-    {{#user}}
-    Título: {{title}}
-    Contenido: {{content}}
-    {{/user}}
-    
-    {{#assistant}}
-    {
-        "titulo": "{{gen 'titulo' stop='"'}}",
-        "resumen": "{{gen 'resumen' stop='"'}}",
-        "categoria": "{{select 'categoria' options=academico,tecnologia,cultura}}",
-        "palabras_clave": "{{gen 'palabras' stop='"'}}"
-    }
-    {{/assistant}}
-    """)
-    return result
-
-# Uso
-result = extract_article_data(llm, title="AI en 2026", content="...")
-print(result['titulo'])
-print(result['categoria'])  # Solo una de las 3 opciones</code></pre>
-
-<h2>Regex Validation — Cuando Es Simple</h2>
-
-<p>No todo necesita Pydantic. Para cosas simples, regex es rápido y efectivo.</p>
-
-<pre><code class="language-python">import re
-from typing import Optional
-
-def validar_email(email: str) -> bool:
-    """Valida formato básico de email"""
-    pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
-    return bool(re.match(pattern, email))
-
-def validar_telefono_co(telefono: str) -> bool:
-    """Valida formato de teléfono colombiano"""
-    # Acepta: +57 300 123 4567, 3001234567, 300 123 4567
-    pattern = r'^(\+57)?[\s]?[0-9]{3}[\s]?[0-9]{3}[\s]?[0-9]{4}$'
-    return bool(re.match(pattern, telefono.replace(' ', '')))
-
-def validar_cedula(cedula: str) -> bool:
-    """Valida cédula colombiana (6-10 dígitos)"""
-    pattern = r'^[0-9]{6,10}$'
-    return bool(re.match(pattern, cedula))
-
-def validar_y_extraer_json(texto: str) -> Optional[dict]:
-    """Extrae y valida JSON de texto mixto"""
-    # Buscar {...} en el texto
-    match = re.search(r'\{[^{}]*\}', texto, re.DOTALL)
-    if not match:
-        return None
-    
-    import json
-    try:
-        return json.loads(match.group())
-    except json.JSONDecodeError:
-        return None</code></pre>
-
-<h2>Content Filtering — Bloqueando lo Peligroso</h2>
-
-<p>Más allá del formato, necesitas filtrar contenido. Un LLM puede:</p>
+<p>No todo necesita GPT-4. Para muchas tareas, modelos mas pequenos funcionan igual de bien:</p>
 
 <ul>
-<li>Filtrar datos personales (PII)</li>
-<li>Bloquear contenido adulto</li>
-<li>Prevenir inyecciones de prompt</li>
-<li>Detectar hate speech</li>
+<li><strong>GPT-4</strong>: $0.03/1K input — tareas complejas de razonamiento</li>
+<li><strong>GPT-3.5</strong>: $0.0015/1K input — 20x mas barato, okay para tareas simples</li>
+<li><strong>Claude Haiku</strong>: $0.00025/1K input — 120x mas barato, rapido y efectivo</li>
 </ul>
 
-<pre><code class="language-python">import re
+<p>La regla: usa el modelo mas barato que cumpla con tus requisitos de calidad.</p>
 
-class ContentFilter:
+<h3>2. Prompt Compression</h3>
+
+<p>Si reduces tu prompt de 1000 tokens a 500, reduces tu costo en 50%. Teknik:</p>
+
+<pre><code class="language-python">def compress_prompt(prompt, target_tokens=500):
+    """Comprimir prompt manteniendo informacion clave"""
+    # Extraer instruccion principal
+    instruction = extract_main_instruction(prompt)
+    
+    # Mantener solo ejemplos relevantes (few-shot)
+    examples = compress_examples(get_examples(prompt), target_tokens)
+    
+    # Reconstruir prompt comprimido
+    compressed = f"{instruction}\n\nExamples:\n{examples}"
+    return compressed
+
+# Uso
+original_cost = calculate_cost(1000)  # $0.03
+compressed_cost = calculate_cost(500)  # $0.015
+# 50% de ahorro</code></pre>
+
+<h3>3. Caching De Respuestas</h3>
+
+<p>Requests identicos o similares no necesitan inference repetida. Cachea:</p>
+
+<pre><code class="language-python">import hashlib
+from functools import lru_cache
+
+class ResponseCache:
+    def __init__(self, max_size=10000):
+        self.cache = {}
+        self.max_size = max_size
+    
+    def get_key(self, prompt, model="gpt-4"):
+        # Hash del prompt para key
+        return hashlib.sha256(f"{model}:{prompt}".encode()).hexdigest()
+    
+    def get(self, prompt, model="gpt-4"):
+        key = self.get_key(prompt, model)
+        return self.cache.get(key)
+    
+    def set(self, prompt, response, model="gpt-4"):
+        if len(self.cache) >= self.max_size:
+            # Evict oldest
+            oldest = next(iter(self.cache))
+            del self.cache[oldest]
+        
+        key = self.get_key(prompt, model)
+        self.cache[key] = response
+
+# Hit rate del 30% = 30% menos inference = 30% menos costo</code></pre>
+
+<h3>4. Semantic Caching</h3>
+
+<p>Caching exacto tiene bajo hit rate. Semantic caching encuentra requests similares:</p>
+
+<pre><code class="language-python">from sentence_transformers import SentenceTransformer
+import numpy as np
+
+class SemanticCache:
+    def __init__(self, threshold=0.95):
+        self.embedder = SentenceTransformer('all-MiniLM-L6-v2')
+        self.cache = {}  # embedding -> response
+        self.threshold = threshold
+    
+    def find_similar(self, prompt):
+        embedding = self.embedder.encode(prompt)
+        
+        for cached_emb, (response, cached_prompt) in self.cache.items():
+            similarity = np.dot(embedding, cached_emb)
+            if similarity > self.threshold:
+                return response, cached_prompt
+        
+        return None, None
+    
+    def get_or_compute(self, prompt, llm_fn):
+        response, cached_prompt = self.find_similar(prompt)
+        
+        if response:
+            # Cache hit!
+            return response, True
+        
+        # Cache miss - compute
+        response = llm_fn(prompt)
+        embedding = self.embedder.encode(prompt)
+        self.cache[embedding.tobytes()] = (response, prompt)
+        
+        return response, False
+
+# Semantic cache puede alcanzar 60-70% hit rate
+# vs 10-15% de exact matching</code></pre>
+
+<h3>5. Model Routing</h3>
+
+<p>Enruta requests al modelo apropiado basado en complejidad:</p>
+
+<pre><code class="language-python">class ModelRouter:
     def __init__(self):
-        # Patterns para PII colombiana
-        self.cc_pattern = re.compile(r'\b[0-9]{6,10}\b')  # Cédula
-        self.phone_pattern = re.compile(r'(\+57)?[0-9]{10}')
-        self.email_pattern = re.compile(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}')
-        
-        # Palabras sensibles para filtrar
-        self.blocked_topics = [' weapon ', ' bomb ', ' hack ', ' exploit ']
+        self.simple_keywords = ['hola', 'gracias', 'ayuda', 'info']
+        self.complex_keywords = ['analiza', 'compara', 'explica por que', 'razona']
     
-    def filter_pii(self, text: str) -> tuple[str, list[str]]:
-        """Reemplaza PII con tokens"""
-        pii_found = []
+    def route(self, prompt):
+        prompt_lower = prompt.lower()
         
-        # Números de cédula (6-10 dígitos seguidos)
-        for match in self.cc_pattern.finditer(text):
-            pii_found.append(f"CC:{match.group()}")
+        # Contar complexity indicators
+        simple_score = sum(1 for kw in self.simple_keywords if kw in prompt_lower)
+        complex_score = sum(1 for kw in self.complex_keywords if kw in prompt_lower)
         
-        # Teléfonos
-        for match in self.phone_pattern.finditer(text):
-            pii_found.append(f"TEL:{match.group()}")
+        # Routing logic
+        if complex_score > simple_score:
+            return "gpt-4"  # Modelo caro para tareas complejas
+        elif simple_score > 0:
+            return "claude-haiku"  # Modelo barato para tareas simples
+        else:
+            return "gpt-3.5"  # Default al balanceado
         
-        # Emails
-        for match in self.email_pattern.finditer(text):
-            pii_found.append(f"EMAIL:{match.group()}")
-        
-        # Reemplazar
-        filtered = self.cc_pattern.sub('[CC]', text)
-        filtered = self.phone_pattern.sub('[TEL]', filtered)
-        filtered = self.email_pattern.sub('[EMAIL]', filtered)
-        
-        return filtered, pii_found
-    
-    def check_blocked(self, text: str) -> bool:
-        """Check si contiene contenido bloqueado"""
-        text_lower = text.lower()
-        return any(topic in text_lower for topic in self.blocked_topics)
-    
-    def sanitize_output(self, text: str) -> str:
-        """Sanitiza output completo"""
-        # 1. Filtrar PII
-        text, pii = self.filter_pii(text)
-        
-        # 2. Verificar bloqueados
-        if self.check_blocked(text):
-            return "[Contenido bloqueado por política de seguridad]"
-        
-        return text
+        # Bonus: ML-based router entrenado con labeled data
+        # Para casos donde keywords no son suficientes
 
-# Uso
-cf = ContentFilter()
-output = "Mi CC es 12345678 y mi tel es +57 300 123 4567"
-clean, pii = cf.filter_pii(output)
-# clean = "Mi CC es [CC] y mi tel es [TEL]"
-# pii = ['CC:12345678', 'TEL:+57 300 123 4567']</code></pre>
+# Ahorro: 70% de requests van a modelos baratos</code></pre>
 
-<h2>Pipeline Completo — De Prompt a Respuesta Validada</h2>
+<h2>Optimizacion De Inference</h2>
 
-<pre><code class="language-python">from pydantic import BaseModel, Field
-from typing import Optional
-import json
+<h3>Quantization Para Costos</h3>
 
-class RespuestaAnalisis(BaseModel):
-    sentimiento: str = Field(..., pattern="^(positivo|negativo|neutral)$")
-    confianza: float = Field(..., ge=0.0, le=1.0)
-    resumen: str = Field(..., min_length=10, max_length=500)
-    entidades: list[str] = Field(default_factory=list, max_length=20)
-
-class ValidationPipeline:
-    def __init__(self, llm):
-        self.llm = llm
-        self.content_filter = ContentFilter()
-    
-    def generate(self, prompt: str, max_retries: int = 3) -> tuple[RespuestaAnalisis | None, str | None]:
-        """Genera y valida output con reintentos"""
-        
-        for intento in range(max_retries):
-            # 1. Generar
-            raw_output = self.llm(prompt)
-            
-            # 2. Filtrar contenido
-            filtered = self.content_filter.sanitize_output(raw_output)
-            
-            # 3. Intentar parsear JSON
-            try:
-                # Extraer JSON del texto
-                json_match = re.search(r'\{[^{}]*"sentimiento"[^{}]*\}', filtered, re.DOTALL)
-                if json_match:
-                    data = json.loads(json_match.group())
-                else:
-                    data = json.loads(filtered)
-                
-                # 4. Validar con Pydantic
-                validated = RespuestaAnalisis(**data)
-                return validated, None
-                
-            except (json.JSONDecodeError, Exception) as e:
-                last_error = str(e)
-                continue
-        
-        return None, f"Failed after {max_retries} retries. Last error: {last_error}"
-
-# Uso
-pipeline = ValidationPipeline(my_llm)
-result, error = pipeline.generate("Analiza: El nuevo modelo de IA es impresionante")
-
-if result:
-    print(f"Sentimiento: {result.sentimiento}")
-    print(f"Confianza: {result.confianza:.2f}")
-else:
-    print(f"Error: {error}")</code></pre>
-
-<h2>Errores Comunes — Los Tres Pecados Capitales</h2>
-
-<h3>Error 1: No Validar Output — "El LLM Sabe Lo Que Hace"</h3>
-
-<p><strong>El problema</strong>: Asumir que porque le pediste JSON, te va a dar JSON válido. O que porque le pediste un email, no va a inventar un número falso.</p>
-
-<p>Los LLMs son generadores de texto probable. No entienden de formatos. No validan. No verifican. Solo predicen siguiente token.</p>
+<p>Modelos quantizados son mas baratos de inference porque:</p>
 
 <ul>
-<li>Le pedís JSON → a veces te da Markdown con código</li>
-<li>Le pedís email válido → a veces te da algo que "parece" email</li>
-<li>Le pedís datos reales → a veces te da datos fabricádos</li>
+<li>Menos memoria = batch size mas grande = mas throughput</li>
+<li>Menos compute = latency menor = menos GPU time</li>
+<li>INT8 vs FP32 = 4x menos memoria, 2-4x speedup</li>
 </ul>
 
-<p><strong>El fix</strong>: SIEMPRE valida. No importa cuánto confíes en el modelo. Usa Pydantic para estructuras, regex para campos simples, y never trust without verification.</p>
+<pre><code class="language-python"># Cuantizacion con bitsandbytes
+from transformers import AutoModelForCausalLM, BitsAndBytesConfig
 
-<pre><code class="language-python"># Mal: confiar ciegamente
-response = llm("Dame un JSON con nombre y edad")
-data = json.loads(response)  # Puede explotar
+quantization_config = BitsAndBytesConfig(
+    load_in_4bit=True,
+    bnb_4bit_compute_dtype="float16",
+    bnb_4bit_use_double_quant=True,
+    bnb_4bit_quant_type="nf4"
+)
 
-# Bien: validar siempre
-response = llm("Dame un JSON con nombre y edad")
-try:
-    data = json.loads(response)
-    persona = Persona(**data)
-    # Usar persona con confianza
-except (json.JSONDecodeError, ValidationError) as e:
-    # Handle gracefully
-    persona = None</code></pre>
+model = AutoModelForCausalLM.from_pretrained(
+    "meta-llama/Llama-2-70b",
+    quantization_config=quantization_config
+)
 
-<h3>Error 2: Validación Demasiado Estricta — "Strict Mode = Frustración"</h3>
+# 70B params: 35GB FP16 -> 10GB INT4
+# Inference cost: ~3.5x menos GPU hours</code></pre>
 
-<p><strong>El problema</strong>: Pones validaciones tan estrictas que rechazas outputs perfectamente válidos. El modelo genera "positive" pero tú esperabas "positivo". Rechazas todo.</p>
+<h3> batching Para Throughput</h3>
 
-<p>Esto causa:</p>
+<pre><code class="language-python">class OptimizedBatcher:
+    def __init__(self, model, max_batch=32):
+        self.model = model
+        self.max_batch = max_batch
+    
+    def process_batch(self, requests):
+        # Padding eficiente
+        inputs = pad_sequence([r.prompt for r in requests])
+        
+        # Una sola inference para toda la batch
+        outputs = self.model(inputs)
+        
+        # Extraer respuestas
+        responses = [self.extract(o, r.max_tokens) 
+                     for o, r in zip(outputs, requests)]
+        
+        return responses
+
+# 32 requests en paralelo vs secuencial = 32x throughput
+# Cost per token = 32x menos</code></pre>
+
+<h2>Cost Monitoring</h2>
+
+<p>No puedes optimizar lo que no mides. Implementa tracking desde el primer dia:</p>
+
+<pre><code class="language-python">class CostTracker:
+    def __init__(self):
+        self.total_input_tokens = 0
+        self.total_output_tokens = 0
+        self.costs = defaultdict(float)
+        self.model_prices = {
+            "gpt-4": {"input": 0.03, "output": 0.06},
+            "gpt-3.5": {"input": 0.0015, "output": 0.002},
+            "claude-haiku": {"input": 0.00025, "output": 0.00125},
+        }
+    
+    def log_request(self, model, input_tokens, output_tokens):
+        self.total_input_tokens += input_tokens
+        self.total_output_tokens += output_tokens
+        
+        price = self.model_prices[model]
+        cost = (input_tokens / 1000 * price["input"] + 
+                output_tokens / 1000 * price["output"])
+        
+        self.costs[model] += cost
+    
+    def get_total_cost(self):
+        return sum(self.costs.values())
+    
+    def get_cost_by_model(self):
+        return dict(self.costs)
+    
+    def report(self):
+        print(f"Total Cost: ${self.get_total_cost():.2f}")
+        print(f"Input Tokens: {self.total_input_tokens:,}")
+        print(f"Output Tokens: {self.total_output_tokens:,}")
+        print("\nCost by Model:")
+        for model, cost in self.get_cost_by_model().items():
+            print(f"  {model}: ${cost:.2f}")</code></pre>
+
+<h2>Resumen Y Cierre</h2>
+
+<p>Cost optimization para LLMs no es magia — es ingenieria aplicada:</p>
 
 <ul>
-<li>Loop infinitos de reintentos</li>
-<li>Usuario recibe errores raros</li>
-<li>Frustración en debugging</li>
-<li>El modelo aprende a "hacking" de tu validación</li>
+<li><strong>Model selection</strong>: Usa el mas barato que cumpla requisitos</li>
+<li><strong>Prompt compression</strong>: Menos tokens = menos dinero</li>
+<li><strong>Caching</strong>: No repitas inference para requests similares</li>
+<li><strong>Semantic caching</strong>: 60-70% hit rate con embedding similarity</li>
+<li><strong>Model routing</strong>: 70% de requests a modelos baratos</li>
+<li><strong>Quantization</strong>: 3-4x menos GPU hours</li>
+<li><strong>Batching</strong>: 32x mas throughput</li>
+<li><strong>Monitoring</strong>: Mide todo para optimizar todo</li>
 </ul>
 
-<p><strong>El fix</strong>: Balance. Tenés validación estricta para lo crítico (tipos, ranges, PII), pero flexibilidad para lo secundario (capitalización, sinónimos, espacios extra).</p>
+<p>Una startup bien optimizada puede reducir sus costos de LLM en 80-90% sin sacrificar calidad. Eso es la diferencia entre un modelo de negocio viable y uno que se quema cash.</p>
 
-<pre><code class="language-python">from pydantic import BaseModel, field_validator
-
-class Busqueda(BaseModel):
-    query: str
-    tipo: str
-    
-    @field_validator('tipo')
-    @classmethod
-    def tipo_flexible(cls, v):
-        # Aceptar variaciones
-        v_lower = v.lower().strip()
-        if v_lower in ['producto', 'productos', 'items']:
-            return 'producto'
-        if v_lower in ['servicio', 'servicios']:
-            return 'servicio'
-        if v_lower in ['todo', 'todos', 'general']:
-            return 'general'
-        return v_lower  # Fallback al valor original
-
-# Uso
-b1 = Busqueda(query="laptop", tipo="producto")     # OK
-b2 = Busqueda(query="laptop", tipo="PRODUCTOS")    # OK - normalizado
-b3 = Busqueda(query="laptop", tipo="cosas")        # OK - fallback</code></pre>
-
-<h3>Error 3: Sin Fallback — "Cuando Falla, Falla Feo"</h3>
-
-<p><strong>El problema</strong>: Validation fails → exception → tu API returns 500 → usuario ve error feo → todos pérdan.</p>
-
-<p>La mayoría de sistemas asumen que la validación siempre va a pasar. No tienen plan B.</p>
-
-<p><strong>El fix</strong>: Siempre tener fallback. El usuario nunca debería ver un traceback. Ocurra lo que ocurra, el sistema responde de manera útil.</p>
-
-<pre><code class="language-python">def generar_respuesta(prompt: str) -> dict:
-    """Pipeline completo con fallback"""
-    
-    # Fallback chain
-    estrategias = [
-        # Estrategia 1: Structured output con Outlines
-        lambda: generar_con_outlines(prompt),
-        # Estrategia 2: JSON forzado con few-shot
-        lambda: generar_json_manual(prompt),
-        # Estrategia 3: Texto libre (fallback final)
-        lambda: generar_texto_libre(prompt),
-    ]
-    
-    for i, estrategia in enumerate(estrategias):
-        try:
-            result = estrategia()
-            if result is not None:
-                return {
-                    "success": True,
-                    "data": result,
-                    "strategy": i + 1
-                }
-        except Exception as e:
-            continue
-    
-    # Si todo falla: respuesta de error graceful
-    return {
-        "success": False,
-        "data": None,
-        "error": "No se pudo generar respuesta válida. Por favor intenta de nuevo.",
-        "strategy": 0
-    }
-
-# El usuario NUNCA ve un 500
-response = generar_respuesta(prompt)
-if response["success"]:
-    return JsonResponse(response["data"])
-else:
-    # Respuesta amigable, no traceback
-    return JsonResponse({"error": response["error"]})</code></pre>
-
-<h2>Resumen y Cierre</h2>
-
-<p>Guardrails y output validation no son opcionales. Son lo que separa un sistema que funciona en producción de un prototype que a veces trabaja y a veces no.</p>
-
-<p>Hoy aprendimos:</p>
-
-<ul>
-<li><strong>Pydantic</strong> — Define qué esperás, valida automáticamente</li>
-<li><strong>Outlines y Guidance</strong> — Guía el modelo antes de generar</li>
-<li><strong>Regex validation</strong> — Rápido para campos simples</li>
-<li><strong>Content filtering</strong> — Bloquea PII y contenido peligroso</li>
-<li><strong>Pipeline completo</strong> — De prompt a respuesta validada</li>
-<li><strong>Los tres errores fatales</strong> — No validar, estrictéz extrema, y sin fallback</li>
-</ul>
-
-<p>La próxima vez que un LLM te devuelva "NaN" en un campo de edad, o un JSON con un comma faltante, o una respuesta completamente fuera de formato... ahí vas a saber que faltó validation. Y ahora sabés cómo arreglárlo.</p>
-
-<p>Mañana empezamos día 255 y cerramos esta semana con broche de oro. ¡Hágale pues, que esto apenas empieza!</p>
+<p>Eso es todo por hoy, parcero. Mañana cerramos la semana fuerte. ¡Hagale pues!</p>
   </article>
 
   <script>
