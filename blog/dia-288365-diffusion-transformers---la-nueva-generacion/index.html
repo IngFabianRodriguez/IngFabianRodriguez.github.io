@@ -118,8 +118,601 @@ nav {
   </header>
 
   <article class="article-body">
-    <h1>Diffusion Transformers - La Nueva Generacion</h1>
-<p>Content for day 288 coming soon.</p>
+<h2>Intro</h2>
+<p>Mañana vas a empezar un proyecto nuevo con LLMs. ¿Qué haces? Copias código de un tutorial de 2023, inventas tu propia estructura de directorios, creas clases que nadie más va a entender, y cuando el proyecto crece, descubres que cambiar el modelo de OpenAI a Anthropic te toma dos semanas de refactoring porque todo está acoplado al cliente de OpenAI. Así funciona el 75% del código de LLM que existe: cada equipo reinventa la wheel, mal, y paga el precio cuando el producto evoluciona.</p>
+
+<p>El 25% que no reinventa usa patterns probados. No son más inteligentes — simplemente aprendieron de los errores de otros o tenían un buen mentor. Hoy voy a mostrarte los patterns de arquitectura que realmente funcionan para construir aplicaciones de LLM mantenibles, testeables, y que no te van a hacer llorar cuando toque cambiar de proveedor.</p>
+
+<h2>Por qué la arquitectura importa con LLMs</h2>
+
+<p>Con APIs tradicionales, la arquitectura es importante pero no crítica. Cambias una dependencia, reescribes dos funciones, san. Con LLMs, el problema es diferente por tres razones:</p>
+
+<ul>
+<li><strong>El proveedor es externo</strong>: API keys, rate limits, cambios de pricing, modelos que se deprecated — todo esto afecta tu código</li>
+<li><strong>El comportamiento es probabilístico</strong>:.testing es difícil porque no hay respuestas correctas fixed</li>
+<li><strong>Los costos escalan con uso</strong>: arquitectura mala = costos descontrolados</li>
+</ul>
+
+<p>La pregunta no es si tu código funciona hoy. Es si vas a poder cambiar el modelo, agregar caching, o desplegar en producción sin reescribir todo desde cero. Los patterns que vamos a ver responden exactamente a esas necesidades.</p>
+
+<h2>Pattern 1: Provider Abstraction (Dependency Injection)</h2>
+
+<p>El pattern más básico pero más importante. Nunca ates tu lógica de negocio al cliente de un proveedor específico. Usa una interfaz abstracta que puedas implementar con cualquier proveedor.</p>
+
+<pre><code>from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from typing import Optional, Generator
+import os
+
+
+@dataclass
+class LLMResponse:
+    content: str
+    model: str
+    tokens_used: int
+    cost_usd: float
+    raw_response: dict  # para debugging y auditoria
+
+
+class LLMProvider(ABC):
+    """Interfaz abstracta para todos los proveedores de LLM."""
+
+    @abstractmethod
+    def generate(
+        self,
+        prompt: str,
+        system_prompt: Optional[str] = None,
+        temperature: float = 0.7,
+        max_tokens: int = 1000,
+        **kwargs,
+    ) -> LLMResponse:
+        """Genera una respuesta de texto."""
+        pass
+
+    @abstractmethod
+    def generate_stream(
+        self,
+        prompt: str,
+        system_prompt: Optional[str] = None,
+        temperature: float = 0.7,
+        max_tokens: int = 1000,
+        **kwargs,
+    ) -> Generator[str, None, None]:
+        """Genera una respuesta en streaming."""
+        pass
+
+    @abstractmethod
+    def count_tokens(self, text: str) -> int:
+        """Cuenta tokens aproximados para el prompt."""
+        pass
+
+
+class OpenAIProvider(LLMProvider):
+    def __init__(self, api_key: Optional[str] = None, model: str = "gpt-4o"):
+        from openai import OpenAI
+        self.client = OpenAI(api_key=api_key or os.environ.get("OPENAI_API_KEY"))
+        self.model = model
+
+    def generate(self, prompt: str, system_prompt: Optional[str] = None, **kwargs) -> LLMResponse:
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=messages,
+            **kwargs,
+        )
+
+        usage = response.usage
+        content = response.choices[0].message.content
+
+        return LLMResponse(
+            content=content,
+            model=self.model,
+            tokens_used=usage.total_tokens,
+            cost_usd=self._calculate_cost(usage.prompt_tokens, usage.completion_tokens),
+            raw_response=response.model_dump(),
+        )
+
+    def generate_stream(self, prompt: str, system_prompt: Optional[str] = None, **kwargs) -> Generator[str, None, None]:
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+
+        stream = self.client.chat.completions.create(
+            model=self.model,
+            messages=messages,
+            stream=True,
+            **kwargs,
+        )
+
+        for chunk in stream:
+            if chunk.choices[0].delta.content:
+                yield chunk.choices[0].delta.content
+
+    def count_tokens(self, text: str) -> int:
+        # Aproximación burda: 4 caracteres por token en promedio
+        return len(text) // 4
+
+    def _calculate_cost(self, input_tokens: int, output_tokens: int) -> float:
+        # Precios de ejemplo para GPT-4o
+        return (input_tokens / 1_000_000) * 5.0 + (output_tokens / 1_000_000) * 15.0
+
+
+class AnthropicProvider(LLMProvider):
+    def __init__(self, api_key: Optional[str] = None, model: str = "claude-3-5-sonnet-20241022"):
+        import anthropic
+        self.client = anthropic.Anthropic(api_key=api_key or os.environ.get("ANTHROPIC_API_KEY"))
+        self.model = model
+
+    def generate(self, prompt: str, system_prompt: Optional[str] = None, **kwargs) -> LLMResponse:
+        response = self.client.messages.create(
+            model=self.model,
+            max_tokens=kwargs.get("max_tokens", 1024),
+            system=system_prompt or "",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=kwargs.get("temperature", 0.7),
+        )
+
+        content = response.content[0].text
+
+        return LLMResponse(
+            content=content,
+            model=self.model,
+            tokens_used=response.usage.input_tokens + response.usage.output_tokens,
+            cost_usd=self._calculate_cost(response.usage.input_tokens, response.usage.output_tokens),
+            raw_response=response.model_dump(),
+        )
+
+    def generate_stream(self, prompt: str, system_prompt: Optional[str] = None, **kwargs) -> Generator[str, None, None]:
+        with self.client.messages.stream(
+            model=self.model,
+            max_tokens=kwargs.get("max_tokens", 1024),
+            system=system_prompt or "",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=kwargs.get("temperature", 0.7),
+        ) as stream:
+            for text in stream.text_stream:
+                yield text
+
+    def count_tokens(self, text: str) -> int:
+        return len(text) // 4
+
+    def _calculate_cost(self, input_tokens: int, output_tokens: int) -> float:
+        # Precios de ejemplo para Claude 3.5 Sonnet
+        return (input_tokens / 1_000_000) * 3.0 + (output_tokens / 1_000_000) * 15.0
+
+
+class LocalProvider(LLMProvider):
+    """Para modelos locales via Ollama, LM Studio, etc."""
+    def __init__(self, base_url: str = "http://localhost:11434", model: str = "llama3"):
+        self.base_url = base_url
+        self.model = model
+
+    def generate(self, prompt: str, system_prompt: Optional[str] = None, **kwargs) -> LLMResponse:
+        import urllib.request
+        import json
+
+        payload = {
+            "model": self.model,
+            "prompt": f"{system_prompt}\n{prompt}" if system_prompt else prompt,
+            "stream": False,
+        }
+
+        data = json.dumps(payload).encode()
+        req = urllib.request.Request(
+            f"{self.base_url}/api/generate",
+            data=data,
+            headers={"Content-Type": "application/json"},
+        )
+
+        with urllib.request.urlopen(req) as response:
+            result = json.loads(response.read())
+
+        return LLMResponse(
+            content=result["response"],
+            model=self.model,
+            tokens_used=result.get("eval_count", 0) + result.get("prompt_eval_count", 0),
+            cost_usd=0.0,  # costo marginal en local
+            raw_response=result,
+        )
+
+    def generate_stream(self, prompt: str, system_prompt: Optional[str] = None, **kwargs) -> Generator[str, None, None]:
+        import urllib.request
+        import json
+
+        payload = {
+            "model": self.model,
+            "prompt": f"{system_prompt}\n{prompt}" if system_prompt else prompt,
+            "stream": True,
+        }
+
+        data = json.dumps(payload).encode()
+        req = urllib.request.Request(
+            f"{self.base_url}/api/generate",
+            data=data,
+            headers={"Content-Type": "application/json"},
+        )
+
+        with urllib.request.urlopen(req) as response:
+            for line in response:
+                if line:
+                    chunk = json.loads(line)
+                    if chunk.get("response"):
+                        yield chunk["response"]
+
+    def count_tokens(self, text: str) -> int:
+        return len(text) // 4
+</code></pre>
+
+<h2>Pattern 2: Service Layer con Chain of Responsibility</h2>
+
+<p>Separa la lógica de negocio en pasos independientes que se pueden recombinar. No todo es un solo prompt — muchas veces necesitas validación, enrichment, formateo, y fallback. Encadenar todo en un solo método es el camino al infierno del debugging.</p>
+
+<pre><code>from typing import Optional, Callable, Any
+from dataclasses import dataclass
+
+
+@dataclass
+class PipelineContext:
+    """Contexto compartido entre pasos del pipeline."""
+    original_input: str
+    current_output: Any = None
+    errors: list[str] = []
+    metadata: dict = {}
+    provider_name: str = "openai"
+
+
+PipelineStep = Callable[[PipelineContext], PipelineContext]
+
+
+class LLMPipeline:
+    def __init__(self, provider: LLMProvider, steps: list[PipelineStep] = None):
+        self.provider = provider
+        self.steps = steps or []
+
+    def add_step(self, step: PipelineStep) -> "LLMPipeline":
+        self.steps.append(step)
+        return self
+
+    def execute(self, input_text: str, system_prompt: Optional[str] = None) -> PipelineContext:
+        ctx = PipelineContext(original_input=input_text)
+
+        for step in self.steps:
+            ctx = step(ctx)
+            if ctx.errors and ctx.errors[-1] == "STOP_PIPELINE":
+                break
+
+        if ctx.current_output is None:
+            ctx.current_output = self.provider.generate(
+                prompt=input_text,
+                system_prompt=system_prompt,
+            )
+
+        return ctx
+
+
+# Steps preconstruidos
+def validation_step(allowed_patterns: list[str] = None, blocked_patterns: list[str] = None) -> PipelineStep:
+    def step(ctx: PipelineContext) -> PipelineContext:
+        text = ctx.current_output if ctx.current_output else ctx.original_input
+        if allowed_patterns and not any(p in text for p in allowed_patterns):
+            ctx.errors.append("Validation failed: output doesn't match allowed patterns")
+        if blocked_patterns and any(p in text for p in blocked_patterns):
+            ctx.errors.append("STOP_PIPELINE")
+            ctx.errors.append("Validation failed: blocked pattern detected")
+        return ctx
+    return step
+
+
+def retry_step(max_retries: int = 3, expected_model: str = None) -> PipelineStep:
+    def step(ctx: PipelineContext) -> PipelineContext:
+        if ctx.errors:
+            for attempt in range(max_retries):
+                ctx.errors.append(f"Retry attempt {attempt + 1}")
+                # Reintentar generacion
+                if ctx.current_output is None:
+                    continue
+                # Logica de retry segun tipo de error
+        return ctx
+    return step
+
+
+def format_step(output_format: str = "markdown") -> PipelineStep:
+    def step(ctx: PipelineContext) -> PipelineContext:
+        if ctx.current_output and isinstance(ctx.current_output, LLMResponse):
+            # Formatear segun el formato solicitado
+            if output_format == "json":
+                import json
+                # Intentar extraer JSON de la respuesta
+                content = ctx.current_output.content
+                if "```json" in content:
+                    content = content.split("```json")[1].split("```")[0]
+                try:
+                    ctx.metadata["formatted_output"] = json.loads(content)
+                except:
+                    ctx.errors.append("Format error: could not parse JSON")
+        return ctx
+    return step
+</code></pre>
+
+<h2>Pattern 3: Testability con Mocks y Specs</h2>
+
+<p>El problema más grande con testing de código de LLM es que cada llamada cuesta dinero y tiene resultados no determinísticos. La solución: abstraction + mocks que implementan la misma interfaz pero con respuestas controladas.</p>
+
+<pre><code>class MockProvider(LLMProvider):
+    """Provider mock para testing y desarrollo."""
+
+    def __init__(self, responses: dict[str, LLMResponse] = None, delay: float = 0):
+        self.responses = responses or {}
+        self.call_history: list[dict] = []
+        self.delay = delay
+
+    def generate(self, prompt: str, system_prompt: Optional[str] = None, **kwargs) -> LLMResponse:
+        import time
+        if self.delay:
+            time.sleep(self.delay)
+
+        self.call_history.append({
+            "prompt": prompt,
+            "system_prompt": system_prompt,
+            "kwargs": kwargs,
+        })
+
+        # Buscar respuesta predefinida para este prompt
+        for key, response in self.responses.items():
+            if key in prompt.lower():
+                return response
+
+        # Respuesta por defecto
+        return LLMResponse(
+            content=f"Mock response for: {prompt[:50]}...",
+            model="mock-gpt-4",
+            tokens_used=len(prompt.split()) * 2,
+            cost_usd=0.0,
+            raw_response={},
+        )
+
+    def generate_stream(self, prompt: str, system_prompt: Optional[str] = None, **kwargs) -> Generator[str, None, None]:
+        response = self.generate(prompt, system_prompt, **kwargs)
+        for word in response.content.split():
+            yield word + " "
+
+    def count_tokens(self, text: str) -> int:
+        return len(text.split())
+
+
+# Ejemplo de test
+def test_classification_pipeline():
+    # Setup
+    mock_provider = MockProvider(responses={
+        "urgent": LLMResponse(
+            content="priority: high",
+            model="mock",
+            tokens_used=10,
+            cost_usd=0.0,
+            raw_response={},
+        ),
+        "normal": LLMResponse(
+            content="priority: low",
+            model="mock",
+            tokens_used=10,
+            cost_usd=0.0,
+            raw_response={},
+        ),
+    })
+
+    pipeline = LLMPipeline(
+        provider=mock_provider,
+        steps=[
+            validation_step(blocked_patterns=["hack", "injection"]),
+            format_step(output_format="json"),
+        ],
+    )
+
+    # Execute
+    ctx = pipeline.execute("This is urgent: system failing")
+
+    # Assert
+    assert "high" in ctx.metadata.get("formatted_output", {}).get("priority", "")
+    assert len(mock_provider.call_history) == 1
+
+    print("Test passed!")
+</code></pre>
+
+<h2>Pattern 4: Observabilidad con Decorators</h2>
+
+<p>Finalmente, cuando tienes múltiples proveedores y pipelines, necesitas saber qué está pasando en producción. Un decorator de logging/observabilidad que envuelve cualquier llamada a tu provider.</p>
+
+<pre><code>import functools
+import time
+from typing import TypeVar, ParamSpec
+
+P = ParamSpec("P")
+T = TypeVar("T")
+
+
+def with_observability(
+    tracker: "CostTracker" = None,
+    log_fn: callable = print,
+):
+    def decorator(func: callable) -> callable:
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            start = time.time()
+            model = "unknown"
+            try:
+                result = func(*args, **kwargs)
+                elapsed = time.time() - start
+
+                # Extraer info del provider si es un provider method
+                if hasattr(args[0], "model"):
+                    model = args[0].model
+
+                # Loguear
+                log_fn({
+                    "function": func.__name__,
+                    "model": model,
+                    "elapsed_ms": round(elapsed * 1000, 2),
+                    "success": True,
+                })
+
+                # Trackear costo si hay tracker
+                if tracker and isinstance(result, LLMResponse):
+                    tracker.log_call(
+                        operation_type=OperationType.INFERENCE,
+                        model=model,
+                        tokens_input=result.tokens_used // 2,
+                        tokens_output=result.tokens_used // 2,
+                        metadata={"elapsed_ms": elapsed * 1000},
+                    )
+
+                return result
+
+            except Exception as e:
+                elapsed = time.time() - start
+                log_fn({
+                    "function": func.__name__,
+                    "model": model,
+                    "elapsed_ms": round(elapsed * 1000, 2),
+                    "success": False,
+                    "error": str(e),
+                })
+                raise
+
+        return wrapper
+    return decorator
+
+
+class ObservableProvider(LLMProvider):
+    """Wraps any provider con observabilidad."""
+    def __init__(self, wrapped: LLMProvider, tracker: CostTracker = None):
+        self._wrapped = wrapped
+        self._tracker = tracker
+
+    def _wrap_method(self, method_name: str):
+        original = getattr(self._wrapped, method_name)
+        wrapped = with_observability(tracker=self._tracker)(original)
+        return wrapped
+
+    @property
+    def generate(self):
+        return self._wrap_method("generate")
+
+    @property
+    def generate_stream(self):
+        return self._wrap_method("generate_stream")
+
+    def count_tokens(self, text: str) -> int:
+        return self._wrapped.count_tokens(text)
+</code></pre>
+
+<h2>3 errores comunes y sus soluciones</h2>
+
+<h3>Error 1: Reinventar la wheel con cada proyecto</h3>
+
+<p>Cada equipo nuevo que empieza con LLMs hace lo mismo: busca en YouTube cómo hacer un chatbot con LangChain, copia el código del tutorial, y cuando necesita algo diferente, modifica directamente en el código del tutorial sin entender qué está pasando. Después de 6 meses tienen 3,000 líneas de código spaghetti que nadie más puede entender y que no pueden debuggear.</p>
+
+<p><strong>Fix:</strong> Antes de escribir código, busca libraries que ya implementen los patterns que necesitas. LangChain, LlamaIndex, Haystack — todas tienen problemas, pero también resuelven problemas comunes que tú no deberías resolver. Si ninguna library te sirve para algo específico, al menos usa los patterns (Provider Abstraction, Pipeline) que puedes importar y recombinar.</p>
+
+<pre><code># Mal: código spaghetti
+response = openai.ChatCompletion.create(
+    model="gpt-4",
+    messages=[{"role": "user", "content": prompt}]
+)
+result = response.choices[0].message.content
+
+# Bien: abstraction desde el inicio
+provider = OpenAIProvider(model="gpt-4o")
+response = provider.generate(prompt=prompt, system_prompt="Eres un asistente útil.")
+result = response.content
+
+# Cambio de proveedor en 1 línea cuando sea necesario
+provider = AnthropicProvider(model="claude-3-5-sonnet-20241022")
+</code></pre>
+
+<h3>Error 2: No usar patterns probados de la industria</h3>
+
+<p>El segundo error es el otro extremo: usar una library como LangChain sin entender qué patterns implementa. Coges LangChain porque "todo el mundo lo usa", y terminas con una abstracción que no entiendes, que tiene bugs que no sabes cómo debuggear, y que cuando necesitas algo personalizado te toma más tiempo que si hubieras empezado from scratch.</p>
+
+<p><strong>Fix:</strong> Entiende los patterns antes de usar las tools. Lee la documentación de arquitectura de LangChain. Entiende qué es un Chain, un Agent, un Tool. No uses algo que no puedas explicar en 30 segundos. Si no puedes explicar por qué tu RAG pipeline usa un SemanticChunker en vez de un TokenChunker, no has terminado de diseñar.</p>
+
+<pre><code># Mal: usar LangChain sin entender
+from langchain.chat_models import ChatOpenAI
+from langchain.prompts import PromptTemplate
+chain = PromptTemplate.from_template("...") | ChatOpenAI()
+result = chain.invoke({})
+
+# Bien: entender qué estás haciendo
+# Un Chain es simplemente una composición de funciones:
+# input -> prompt_template -> llm -> output_parser -> result
+# No necesitas LangChain para esto:
+def simple_chain(provider: LLMProvider, prompt_template: str) -> callable:
+    def execute(input_data: dict) -> str:
+        prompt = prompt_template.format(**input_data)
+        return provider.generate(prompt).content
+    return execute
+
+chain = simple_chain(provider, "Responde en español: {question}")
+result = chain({"question": "¿Qué es Python?"})
+</code></pre>
+
+<h3>Error 3: Tight coupling que hace el código difícil de cambiar</h3>
+
+<p>Este es el problema arquitectónico más común. Acoplas todo a un proveedor específico, a un modelo específico, o a una configuración específica. Cuando algo cambia — y siempre cambia — estás reescribiendo código en 20 lugares diferentes.</p>
+
+<p><strong>Fix:</strong> Aplica los tres patterns anteriores:</p>
+
+<ul>
+<li><strong>Provider Abstraction</strong>: cualquier cambio de proveedor = cambiar 1 línea</li>
+<li><strong>Pipeline Steps</strong>: recombinar lógica sin reescribir</li>
+<li><strong>Observable Wrappers</strong>: cambiar logging/tracking sin tocar lógica de negocio</li>
+</ul>
+
+<pre><code># Mal: tight coupling por todas partes
+class MiChatbot:
+    def __init__(self):
+        self.client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+        self.model = "gpt-4"
+
+    def responder(self, pregunta):
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[{"role": "user", "content": pregunta}]
+        )
+        return response.choices[0].message.content
+
+# Bien: dependency injection
+class MiChatbot:
+    def __init__(self, provider: LLMProvider, pipeline: LLMPipeline = None):
+        self.provider = provider
+        self.pipeline = pipeline or LLMPipeline(provider)
+
+    def responder(self, pregunta):
+        return self.pipeline.execute(pregunta).current_output.content
+
+# Cambio de proveedor = cambiar 1 línea en el entry point
+provider = AnthropicProvider(model="claude-3-5-sonnet")
+bot = MiChatbot(provider=provider)
+</code></pre>
+
+<h2>Resumen y cierre</h2>
+
+<p>La arquitectura de aplicaciones LLM no es opcional ni decorativa. Es lo que determina si puedes cambiar de proveedor sin reescribir todo, si puedes agregar caching sin romper tests, si puedes desplegar en producción sin surprises. Los cuatro patterns que vimos hoy son la base:</p>
+
+<ul>
+<li><strong>Provider Abstraction</strong>: tu lógica de negocio no sabe ni le importa si usas OpenAI, Anthropic, o un modelo local</li>
+<li><strong>Pipeline con Steps</strong>: recombinas lógica como Legos, no como spaghetti</li>
+<li><strong>Testability con Mocks</strong>: tests que no cuestan dinero ni dan resultados aleatorios</li>
+<li><strong>Observabilidad con Decorators</strong>: sabes qué está pasando en producción sin meter print statements</li>
+</ul>
+
+<p>La próxima vez que start un proyecto nuevo con LLMs, no copy código de tutoriales. Empieza con la arquitectura. Define tus interfaces, tus providers, tus pipelines. El código de negocio viene después. Porque como dicen por ahí: "architecture matters, but only until you have to change something". Y con LLMs, siempre tienes que estar cambiando algo.</p>
+
+<p>En Bogotá decíamos: "zapatero a sus zapatos". Que cada cosa ocupe su lugar, y que el lugar de cada cosa esté bien definido desde el principio. Así cuando toque cambiar de modelo, de proveedor, o de requisitos, el cambio es quirúrgico y no es remodelar la casa completa.</p>
   </article>
 
   <script>
