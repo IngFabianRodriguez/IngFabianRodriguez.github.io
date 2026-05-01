@@ -118,51 +118,392 @@ nav {
   </header>
 
   <article class="article-body">
-    <h1>ReAct - Razonamiento y Accion Combinados</h1>
-<p>Hagale pues, parcero. Dia 259 y hoy hablamos de ReAct: combinar razonamiento y accion en agentes. El patron fundamental. Cafe.</p>
-<hr>
-<h2>🎯 ReAct</h2>
-<p>ReAct = Reasoning + Action. Un framework donde el agente:</p>
+<h2>☕ Intro</h2>
+<p>Hagale pues, parcero. Hoy es el Día 259 y voy a hablarte de algo que el 70% de los practitioners de RAG NO usan: <strong>Knowledge Graphs</strong> (grafos de conocimiento). Si tienes datos con relaciones — personas, empresas, productos, conexiones — y estás metiendo todo en un vector store plano, estás dejando el 70% de la performance sobre la mesa. Dejala，短<span id="mttsp">局部变量</span> oKey takeaway: sin KG, tu RAG es medio RAG.</p>
+<p>En Bogotá hay empresas que procesan documentos legales con RAG plano y se quejan de que "no funciona bien". El problema no es el modelo. Es que meten 10 años de contratos en chunks sin estructura y esperan que el embedding capture que "Juan Pérez" aparece en 500 documentos distintos pero es la misma persona. Spoiler: no lo captura.</p>
+<h2>🔎 ¿Qué es un Knowledge Graph?</h2>
+<p>Un Knowledge Graph es una red de <strong>nodos</strong> (entidades) y <strong>aristas</strong> (relaciones). En lugar de guardar texto plano, guardas:</p>
 <ul>
-<li><strong>Think</strong>: Razona sobre la situacion actual</li>
-<li><strong>Act</strong>: Toma una accion</li>
-<li><strong>Observe</strong>: Ve el resultado de su accion</li>
-<li><strong>Reason</strong>: Razona sobre el nuevo estado</li>
+<li><strong>Entidades</strong>: personas, lugares, organizaciones, conceptos</li>
+<li><strong>Relaciones</strong>: "trabaja en", "fundó", "ubicado en", "compite con"</li>
+<li><strong>Propiedades</strong>: atributos de cada entidad</li>
 </ul>
-<hr>
-<h2>📐 ReAct Loop</h2>
-<pre><code class="language-python">def react_loop(agent, task):
-    thought = agent.think(task)
-    print(f"Thought: {thought}")
-    
-    while not task.complete:
-        action = agent.act(thought)
-        print(f"Action: {action}")
-        
-        observation = agent.observe(action)
-        print(f"Observed: {observation}")
-        
-        thought = agent.reason(task, observation)
-    
-    return agent.final_answer()</code></pre>
-<hr>
-<h2>🚀 Prompting ReAct</h2>
-<pre><code class="language-python">react_prompt = """Resuelve el problema siguiendo el formato:
+<p>Matemáticamente:</p>
+<p><strong>G = (V, E)</strong> donde V = vertices (entidades), E = aristas (relaciones)</p>
+<p>En un KG para NLP, cada nodo tiene un embedding. Las aristas también pueden tener embeddings. La query no es solo "buscar texto similar" — es <strong>recorrer el grafo</strong> siguiendo relaciones.</p>
+<h2>🏗️ Construyendo un Knowledge Graph desde Texto</h2>
+<p>El pipeline completo tiene 4 etapas:</p>
+<h3>Paso 1: Entity Extraction con LLM</h3>
+<pre><code class="language-python">import re
+from typing import List, Dict, Tuple
 
-Thought: [tu razonamiento sobre que hacer]
-Action: [la accion a tomar]
-Observation: [el resultado de la accion]
-... (repetir hasta resolver)
+# Usamos un LLM para extraer entidades y relaciones
+# Esto es la base del knowledge graph
 
-Problema: {problem}
-"""</code></pre>
-<hr>
-<h2>⚠️ Errores Comunes</h2>
-<h3>Error 1: Loop Infinito</h3>
-<p><strong>El problema</strong>: El agente se queda en circulos.</p>
-<p><strong>La solucion</strong>: Limite de iteraciones y memoria de acciones pasadas.</p>
-<hr>
-<p><em>Eso es todo! Nos vemos en el Dia 260.</em></p>
+ENTITY_TYPES = ["PERSON", "ORGANIZATION", "LOCATION", "PRODUCT", "EVENT", "DATE"]
+RELATION_TYPES = ["works_for", "founded_by", "located_in", "competes_with", "acquired_by"]
+
+def extract_entities_with_llm(text: str, llm) -> List[Dict]:
+    """
+    Extrae entidades y relaciones usando un LLM.
+    Cada entidad tiene: name, type, mentions (posiciones en texto)
+    """
+    prompt = f"""Extrae todas las entidades y relaciones del siguiente texto.
+    
+    Entidades a buscar: {', '.join(ENTITY_TYPES)}
+    Relaciones a buscar: {', '.join(RELATION_TYPES)}
+    
+    Texto: {text}
+    
+    Devuelve un JSON con:
+    - entities: lista de {{name, type, description}}
+    - relations: lista de {{from, to, type}}
+    """
+    
+    response = llm.complete(prompt)
+    return parse_llm_response(response)
+
+def extract_entities_simple(text: str) -> List[Dict]:
+    """
+    Alternativa sin LLM: NER rule-based
+    Útil para datos estructurados o cuando no tienes acceso a un LLM.
+    """
+    entities = []
+    
+    # Patrones comunes para texto en español
+    patterns = {
+        "PERSON": r"\b[A-Z][a-záéíóúñ]+ [A-Z][a-záéíóúñ]+\b",
+        "ORGANIZATION": r"\b[A-Z][a-záéíóúñ]*(?: SA|SAS|LTDA|SRL|Corp|Inc)\b",
+        "LOCATION": r"\b[A-Z][a-záéíóúñ]+,?\s+[A-Z][a-záéíóúñ]+\b",
+        "DATE": r"\b\d{1,2}/\d{1,2}/\d{2,4}\b|\b\d{4}-\d{2}-\d{2}\b"
+    }
+    
+    for entity_type, pattern in patterns.items():
+        matches = re.finditer(pattern, text)
+        for match in matches:
+            entities.append({
+                "name": match.group(),
+                "type": entity_type,
+                "span": match.span()
+            })
+    
+    return entities
+
+# Demo
+sample_text = """
+Juan Pérez fundó TechCorp en 2020 junto con María García.
+TechCorp compite con DataSystems y fue adquirida por GlobalTech en 2023.
+La oficina principal está ubicada en Bogotá, Colombia.
+"""
+
+print("Entidades extraídas:")
+entities = extract_entities_simple(sample_text)
+for e in entities:
+    print(f"  {e['type']}: {e['name']}")</code></pre>
+<h3>Paso 2: Deduplicación de Entidades (CRÍTICO)</h3>
+<pre><code class="language-python">from collections import defaultdict
+
+def deduplicate_entities(entities: List[Dict], similarity_threshold: float = 0.85) -> List[Dict]:
+    """
+    ERROR COMÚN #2: No hacer deduplicación.
+    
+    Si "Juan Pérez" aparece en 500 documentos, terminas con
+    500 nodos duplicados. Tu KG se vuelve inútil.
+    
+    La solución: clustering por similitud + canonicalización.
+    """
+    # Si no tienes embeddings, usa string matching
+    name_to_canonical = {}
+    entity_clusters = defaultdict(list)
+    
+    for entity in entities:
+        name = entity["name"].lower().strip()
+        
+        # Buscar si ya existe un canonical similar
+        found = False
+        for canonical_name in name_to_canonical:
+            if levenshtein_similarity(name, canonical_name) > similarity_threshold:
+                entity_clusters[canonical_name].append(entity)
+                found = True
+                break
+        
+        if not found:
+            name_to_canonical[name] = name
+            entity_clusters[name].append(entity)
+    
+    # Crear entidades canonical (una por cluster)
+    canonical_entities = []
+    for canonical_name, cluster in entity_clusters.items():
+        # Usar la forma más completa/larga como canonical
+        canonical = max(cluster, key=lambda e: len(e.get("name", "")))
+        canonical["cluster_size"] = len(cluster)
+        canonical["mentions"] = [e.get("span", (0,0)) for e in cluster]
+        canonical_entities.append(canonical)
+    
+    return canonical_entities
+
+def levenshtein_similarity(s1: str, s2: str) -> float:
+    """Similitud basada en distancia de edición."""
+    if len(s1) == 0 and len(s2) == 0:
+        return 1.0
+    
+    len1, len2 = len(s1), len(s2)
+    dp = [[0] * (len2 + 1) for _ in range(len1 + 1)]
+    
+    for i in range(len1 + 1):
+        dp[i][0] = i
+    for j in range(len2 + 1):
+        dp[0][j] = j
+    
+    for i in range(1, len1 + 1):
+        for j in range(1, len2 + 1):
+            cost = 0 if s1[i-1] == s2[j-1] else 1
+            dp[i][j] = min(dp[i-1][j] + 1, dp[i][j-1] + 1, dp[i-1][j-1] + cost)
+    
+    max_len = max(len1, len2)
+    return 1 - dp[len1][len2] / max_len
+
+# Demo deduplicación
+entities = [
+    {"name": "Juan Pérez"},
+    {"name": "juan perez"},
+    {"name": "Juan Perez"},
+    {"name": "María García"},
+    {"name": "Maria Garcia"},
+]
+
+deduplicated = deduplicate_entities(entities)
+print(f"Original: {len(entities)} entidades")
+print(f"Deduplicadas: {len(deduplicated)} entidades")
+for e in deduplicated:
+    print(f"  {e['name']} (cluster size: {e.get('cluster_size', 1)})")</code></pre>
+<h3>Paso 3: Construir el Grafo (Neo4j o NetworkX)</h3>
+<pre><code class="language-python"># Opción A: NetworkX (en memoria, más simple)
+import networkx as nx
+
+def build_graph_networkx(entities: List[Dict], relations: List[Dict]) -> nx.DiGraph:
+    """Construye un grafo directed con NetworkX."""
+    G = nx.DiGraph()
+    
+    # Añadir nodos con atributos
+    for entity in entities:
+        G.add_node(
+            entity["name"],
+            type=entity["type"],
+            description=entity.get("description", ""),
+            cluster_size=entity.get("cluster_size", 1)
+        )
+    
+    # Añadir aristas con tipos de relación
+    for relation in relations:
+        G.add_edge(
+            relation["from"],
+            relation["to"],
+            relation_type=relation["type"]
+        )
+    
+    return G
+
+# Opción B: Neo4j (para producción)
+"""
+# Instala py2neo: pip install py2neo
+from py2neo import Graph, Node, Relationship
+
+def build_graph_neo4j(entities: List[Dict], relations: List[Dict], uri: str, user: str, password: str):
+    graph = Graph(uri, auth=(user, password))
+    
+    # Limpiar grafo existente
+    graph.delete_all()
+    
+    # Crear nodos
+    for entity in entities:
+        node = Node(
+            entity["type"],
+            name=entity["name"],
+            description=entity.get("description", ""),
+            cluster_size=entity.get("cluster_size", 1)
+        )
+        graph.create(node)
+    
+    # Crear relaciones
+    for relation in relations:
+        query = f"""
+        MATCH (a {{name: '{relation["from"]}'}})
+        MATCH (b {{name: '{relation["to"]}'}})
+        CREATE (a)-[r:{relation["type"].upper()}]->(b)
+        """
+        graph.run(query)
+    
+    return graph
+"""
+
+# Demo
+entities = [
+    {"name": "Juan Pérez", "type": "PERSON"},
+    {"name": "TechCorp", "type": "ORGANIZATION"},
+    {"name": "María García", "type": "PERSON"},
+]
+relations = [
+    {"from": "Juan Pérez", "to": "TechCorp", "type": "founded_by"},
+    {"from": "María García", "to": "TechCorp", "type": "works_for"},
+]
+
+G = build_graph_networkx(entities, relations)
+print(f"Grafo: {G.number_of_nodes()} nodos, {G.number_of_edges()} aristas")
+print(f"Tipos de relación: {nx.get_edge_attributes(G, 'relation_type')}")</code></pre>
+<h3>Paso 4: Query del Grafo para Contexto</h3>
+<pre><code class="language-python">def query_graph_for_context(G: nx.DiGraph, query: str, max_depth: int = 3) -> List[Dict]:
+    """
+    ERROR COMÚN #3: No entender el costo de traversal.
+    
+    Hacer BFS/DFS sin límite puede ser O(V+E) — catastrófico
+    en grafos grandes. Siempre limita la profundidad.
+    
+    Esta función extrae contexto relevante para una query.
+    """
+    # Extraer entidades de la query
+    query_entities = extract_entities_simple(query)
+    
+    context_nodes = set()
+    context_edges = []
+    
+    for q_entity in query_entities:
+        # Buscar nodo más similar en el grafo
+        for node in G.nodes():
+            if levenshtein_similarity(q_entity["name"].lower(), node.lower()) > 0.7:
+                # Traversal limitado por profundidad
+                for neighbor in nx.single_source_shortest_path_length(G, node, max_depth):
+                    context_nodes.add(neighbor)
+                    # Obtener aristas del nodo
+                    for u, v, data in G.edges(data=True):
+                        if u == neighbor or v == neighbor:
+                            context_edges.append({"from": u, "to": v, **data})
+                break  # Solo el match más cercano
+    
+    return {
+        "nodes": [{"name": n, **G.nodes[n]} for n in context_nodes],
+        "edges": context_edges
+    }
+
+def query_kg_cypher(kg, query: str) -> List[Dict]:
+    """
+    Query KG con Cypher (para Neo4j).
+    Ejemplo: encontrar todas las personas en TechCorp.
+    """
+    cypher_query = """
+    MATCH (p:Person)-[r]-(c:Organization {name: $org})
+    RETURN p.name AS person, type(r) AS relationship, c.name AS company
+    ORDER BY p.name
+    """
+    results = kg.run(cypher_query, org=query)
+    return [dict(record) for record in results]
+
+# Demo
+context = query_graph_for_context(G, "Quién fundó TechCorp?")
+print(f"Contexto extraído: {len(context['nodes'])} nodos, {len(context['edges'])} aristas")
+for node in context["nodes"]:
+    print(f"  {node['name']} ({node.get('type', 'unknown')})")</code></pre>
+<h2>🔗 Integrando Knowledge Graph con RAG</h2>
+<pre><code class="language-python">class KnowledgeGraphRAG:
+    """
+    RAG mejorado con Knowledge Graph.
+    
+    El flujo:
+    1. Query entra → extraer entidades
+    2. Buscar en KG → obtener contexto estructurado
+    3. Buscar en vector store → obtener chunks similares
+    4. Combinar ambos contextos → generar respuesta
+    """
+    
+    def __init__(self, vector_store, graph: nx.DiGraph, llm):
+        self.vector_store = vector_store
+        self.graph = graph
+        self.llm = llm
+    
+    def retrieve(self, query: str, top_k: int = 5) -> str:
+        # 1. Contexto del Knowledge Graph
+        kg_context = query_graph_for_context(self.graph, query, max_depth=2)
+        
+        # 2. Contexto vectorial
+        vector_results = self.vector_store.similarity_search(query, k=top_k)
+        
+        # 3. Combinar contextos
+        combined_context = self._build_context(kg_context, vector_results)
+        
+        return combined_context
+    
+    def _build_context(self, kg_context: Dict, vector_results: List, max_chars: int = 4000) -> str:
+        """Combina contexto del KG y vector store de forma inteligente."""
+        context_parts = []
+        char_count = 0
+        
+        # Primero: contexto estructurado del KG (más confiable)
+        for node in kg_context["nodes"]:
+            node_text = f"{node['name']} ({node.get('type', 'entity')})"
+            if char_count + len(node_text) < max_chars * 0.4:  # KG max 40%
+                context_parts.append(node_text)
+                char_count += len(node_text)
+        
+        # Segundo: chunks del vector store
+        for result in vector_results:
+            result_text = f"\n\n{result.page_content}"
+            if char_count + len(result_text) < max_chars:
+                context_parts.append(result_text)
+                char_count += len(result_text)
+            else:
+                break
+        
+        return "\n".join(context_parts)
+    
+    def answer(self, query: str) -> str:
+        context = self.retrieve(query)
+        
+        prompt = f"""Basándote en el siguiente contexto, responde la pregunta.
+        
+        Contexto:
+        {context}
+        
+        Pregunta: {query}
+        
+        Respuesta:"""
+        
+        return self.llm.complete(prompt)
+
+# Uso
+# kg_rag = KnowledgeGraphRAG(vector_store, G, llm)
+# answer = kg_rag.answer("Quién trabajó en TechCorp según los documentos?")
+# print(answer)</code></pre>
+<h2>📊 La Matemática del KG en RAG</h2>
+<p>¿Por qué funciona mejor? Porque el embedding vectorial tiene limitaciones:</p>
+<p><strong>Problema del embedding plano:</strong></p>
+<p> dado un chunk c y una query q, la similitud coseno es:</p>
+<p><code>sim(c, q) = cos(θ) = (c · q) / (||c|| ||q||)</code></p>
+<p>Esto NO captura relaciones transitivas. Si "A relación B" y "B relación C", embeddings planos no capturan que "A tiene relación transitiva con C".</p>
+<p><strong>Con Knowledge Graph:</strong></p>
+<p>Puedes hacer traversal de relaciones:</p>
+<p><code>reachable(A, C) = ∃ path: A →* C a través de relaciones</code></p>
+<p>Esto captura conocimiento que no existe en ningún chunk individual.</p>
+<h2>⚠️ Los 3 Errores Fatales</h2>
+<h3>Error 1: No usar KG cuando los datos TIENEN relaciones</h3>
+<p><strong>El problema:</strong> En datos empresariales (contratos, documentos legales, carpetas de RRHH), las relaciones son el dato más valioso. "Quién firma", "quién autorizó", "quién tiene relación jerárquica con quién". Un vector store plano pierde todo esto.</p>
+<p><strong>La solución:</strong> Analiza tu dominio primero. Si hay entidades que se repiten con relaciones, usa KG.</p>
+<h3>Error 2: Construir el KG sin deduplicación</h3>
+<p><strong>El problema:</strong> Sin deduplicación, el mismo "Juan Pérez" se convierte en 500 nodos. Tu KG crece sin control y las queries devuelven basura. En un caso real con 10K documentos legales, esto puede generar 50K+ nodos duplicados.</p>
+<p><strong>La solución:</strong> Implementa deduplicación desde el día 1. Usa embeddings o distance de Levenshtein para canonicalizar.</p>
+<h3>Error 3: Query del graph sin entender traversal cost</h3>
+<p><strong>El problema:</strong> Un BFS sin límite en un grafo grande puede ser O(V+E). Si tienes 1M de nodos y haces traversal sin depth limit, tu RAG se vuelve más lento que hacer la query directo al LLM.</p>
+<p><strong>La solución:</strong> Siempre limita max_depth. En producción, usa índices de grafo (apróximate neighbors) en lugar de traversal completo.</p>
+<h2>✅ Resumen</h2>
+<p>Hagale pues, parcero. Lo esencial del día:</p>
+<ul>
+<li>Knowledge Graph = nodos (entidades) + aristas (relaciones). No es opcional cuando tus datos tienen estructura relacional.</li>
+<li>El pipeline: <strong>extract → deduplicate → build → query</strong>. Cada paso importa.</li>
+<li>Deduplicación = diferencia entre un KG útil y uno inútil.</li>
+<li>Traversal cost = siempre limita profundidad o te mueres de timeout.</li>
+<li>KG + RAG = contexto estructurado + chunks vectoriales. 100x mejor que RAG plano.</li>
+</ul>
+<p>El 70% que no usa KG está dejando性能 sobre la mesa.短的<span id="mttsp">局部变量</span> oKey takeaway: si tus datos tienen relaciones, usa KG o estás desperdiciando tu RAG.</p>
+<p><em>Eso es todo por hoy. Nos vemos en el Día 260. 🇨🇴</em></p>
   </article>
 
   <script>
