@@ -110,17 +110,754 @@ nav {
 
   <header class="article-hero">
     <div class="day-badge">Dia 284 / 365 &nbsp;·&nbsp; #365DaysOfAI</div>
-    <h1 class="article-title">Video Understanding - Frames Y Temporalidad</h1>
+    <h1 class="article-title">LLM Evaluation Metrics — Que el 85% Confunde y Que el 15% Entiende Para Medir Calidad</h1>
     <div class="article-meta">
       <time class="article-date">11 de octubre de 2026</time>
-      <div class="tags"><span class="tag">video</span><span class="tag">temporal</span><span class="tag">action-recognition</span><span class="tag">computer-vision</span></div>
+      <div class="tags"><span class="tag">llm</span><span class="tag">evaluation</span><span class="tag">bleu</span><span class="tag">rouge</span><span class="tag">bertscore</span></div>
     </div>
   </header>
 
   <article class="article-body">
-    <h1>Video Understanding - Frames Y Temporalidad</h1>
-<p>Content for day 284 coming soon.</p>
-  </article>
+<h2>Métricas de Evaluación: El Problema de Medir Qualité</h2>
+
+<p>Mano, hoy vamos a hablar de algo que el 85% de la gente que trabaja con LLMs no entiende bien: <strong>cómo demonios medir si tu modelo está funcionando bien o no</strong>. Y no, no es simplemente preguntar "¿te parece bien?" y ya.</p>
+
+<p>En Colombia decimos que "lo que no se mide, no se mejora". Y en el mundo de los LLMs, esto es más cierto que nunca. Si no sabes qué métricas usar, estás básicamente volando a ciegas cuando decides si tu modelo mejoró o empeoró después de un cambio.</p>
+
+<h2>Por Qué Una Sola Métrica No Es Suficiente</h2>
+
+<p>El error más común es decir "vamos a usar BLEU score" y punto. Error fatal. <strong>Cada métrica tiene limitaciones</strong>, y si solo usas una, estás ignorando aspectos importantes de la calidad. Necesitas un portfolio de métricas que se complementen.</p>
+
+<p>Vamos a ver las métricas más importantes y cómo implementarlas, incluyendo cómo diseñar las tuyas propias cuando las existentes no sirven.</p>
+
+<h2>BLEU Score: El Clásico de NLP</h2>
+
+<h3>Qué Es y Cómo Funciona</h3>
+
+<p>BLEU (Bilingual Evaluation Understudy) fue propuesto por Google en 2002 para evaluar traducciones automáticas. Mide la <strong>precisión de n-gramas</strong> entre el texto generado y referencias humanas.</p>
+
+<p>La fórmula básica de precisión de n-gramas:</p>
+
+<p><code>Precision_n = (n-gramas en común con refs) / (total de n-gramas en output)</code></p>
+
+<p>BLEU usa precisión modificada con penalización por brevedad (brevity penalty):</p>
+
+<p><code>BLEU = BP * exp(sum_{n=1 to N} w_n * log(precision_n))</code></p>
+
+<p>Donde <code>BP = min(1, |output| / |ref_más_cercana|)</code></p>
+
+<pre><code class="language-python">from collections import Counter
+import math
+
+def modified_precision(candidate: str, reference: str, n: int) -> float:
+    """
+    Calcula precisión modificada para n-gramas.
+    Cuenta cuántas veces aparece cada n-grama en el candidato
+    vs. el máximo que aparece en cualquier referencia.
+    """
+    cand_ngrams = Counter(ngrams(candidate, n))
+    ref_ngrams = Counter(ngrams(reference, n))
+    
+    numerator = 0
+    denominator = 0
+    
+    for ngram, count in cand_ngrams.items():
+        numerator += min(count, ref_ngrams.get(ngram, 0))
+        denominator += count
+    
+    return numerator / denominator if denominator > 0 else 0
+
+def ngrams(text: str, n: int):
+    """Genera n-gramas de un texto."""
+    tokens = text.split()
+    return tuple(tokens[i:i+n] for i in range(len(tokens) - n + 1))
+
+def brevity_penalty(candidate: str, reference: str) -> float:
+    """
+    Penaliza outputs más cortos que la referencia.
+    Si el candidato es más largo, no hay penalización.
+    """
+    c_len = len(candidate.split())
+    r_len = len(reference.split())
+    
+    if c_len > r_len:
+        return 1.0
+    elif c_len == 0:
+        return 0.0
+    else:
+        return math.exp(1 - r_len / c_len)
+
+def bleu_score(candidate: str, reference: str, weights=(0.25, 0.25, 0.25, 0.25)) -> float:
+    """
+    Calcula BLEU score con pesos para 1-gram a 4-gram.
+    Por defecto usa pesos uniformes.
+    """
+    precisions = []
+    for i, w in enumerate(weights, 1):
+        if i > 4:
+            break
+        p = modified_precision(candidate, reference, i)
+        precisions.append(p)
+    
+    # Si alguna precisión es 0, BLEU es 0
+    if any(p == 0 for p in precisions):
+        return 0.0
+    
+    log_precisions = [math.log(p) for p in precisions]
+    geometric_mean = math.exp(sum(w * lp for w, lp in zip(weights, log_precisions)))
+    bp = brevity_penalty(candidate, reference)
+    
+    return geometric_mean * bp
+
+# Ejemplo de uso
+ref = "El gato está sentado sobre la mesa."
+cand = "El gato está en la mesa."
+
+print(f"BLEU: {bleu_score(cand, ref):.4f}")
+</code></pre>
+
+<h3>Limitaciones de BLEU</h3>
+
+<ul>
+<li><strong>No captura semántica</strong>: "El perro persigue al gato" y "El gato es perseguido por el perro" tienen BLEU bajo pero son semánticamente equivalentes</li>
+<li><strong>Sensible a tokens exactos</strong>: variaciones de puntuación o mayúsculas afectan el score</li>
+<li><strong>No funciona bien para generación creativa</strong>: traduce bien pero mal para resúmenes o chat</li>
+</ul>
+
+<h2>ROUGE Score: Recall-Oriented</h2>
+
+<h3>Qué Es y Por Qué Importa</h3>
+
+<p>ROUGE (Recall-Oriented Understudy for Gisting Evaluation) mide <strong>recall</strong>: qué tanto del texto de referencia aparece en el output generado. A diferencia de BLEU que mide precisión.</p>
+
+<p>Las variantes principales:</p>
+
+<ul>
+<li><strong>ROUGE-N</strong>: overlap de n-gramas (similar a BLEU pero recall)</li>
+<li><strong>ROUGE-L</strong>: longest common subsequence</li>
+<li><strong>ROUGE-S</strong>: skip-bigram co-occurrence</li>
+</ul>
+
+<pre><code class="language-python">def rouge_n(candidate: str, reference: str, n: int = 1) -> float:
+    """
+    ROUGE-N: fracción de n-gramas de referencia que aparecen en candidato.
+    Mide recall, no precisión.
+    """
+    cand_ngrams = Counter(ngrams(candidate, n))
+    ref_ngrams = Counter(ngrams(reference, n))
+    
+    overlap = sum(min(cand_ngrams.get(ng, 0), ref_ngrams[ng]) for ng in ref_ngrams)
+    total_ref = sum(ref_ngrams.values())
+    
+    return overlap / total_ref if total_ref > 0 else 0.0
+
+def lcs_length(s1: str, s2: str) -> int:
+    """Longest common subsequence - algorithm."""
+    m, n = len(s1), len(s2)
+    dp = [[0] * (n + 1) for _ in range(m + 1)]
+    
+    for i in range(1, m + 1):
+        for j in range(1, n + 1):
+            if s1[i-1] == s2[j-1]:
+                dp[i][j] = dp[i-1][j-1] + 1
+            else:
+                dp[i][j] = max(dp[i-1][j], dp[i][j-1])
+    
+    return dp[m][n]
+
+def rouge_l(candidate: str, reference: str) -> float:
+    """
+    ROUGE-L: longest common subsequence ratio.
+    Captura estructura de secuencias.
+    """
+    ref_tokens = reference.split()
+    cand_tokens = candidate.split()
+    
+    lcs = lcs_length(ref_tokens, cand_tokens)
+    
+    return (2 * lcs) / (len(ref_tokens) + len(cand_tokens)) if (len(ref_tokens) + len(cand_tokens)) > 0 else 0.0
+
+def rouge_s(candidate: str, reference: str) -> float:
+    """
+    ROUGE-S: skip-bigram co-occurrence.
+    Permite gaps entre palabras (ordén parcial).
+    """
+    def skip_bigrams(tokens):
+        return [(tokens[i], tokens[j]) for i in range(len(tokens)) for j in range(i+1, len(tokens))]
+    
+    cand_sb = set(skip_bigrams(candidate.split()))
+    ref_sb = set(skip_bigrams(reference.split()))
+    
+    overlap = len(cand_sb & ref_sb)
+    total_ref = len(ref_sb)
+    
+    return overlap / total_ref if total_ref > 0 else 0.0
+
+# Ejemplo de uso
+ref = "El gato está sentado sobre la mesa."
+cand = "El gato está en la mesa."
+
+print(f"ROUGE-1: {rouge_n(cand, ref, 1):.4f}")
+print(f"ROUGE-2: {rouge_n(cand, ref, 2):.4f}")
+print(f"ROUGE-L: {rouge_l(cand, ref):.4f}")
+print(f"ROUGE-S: {rouge_s(cand, ref):.4f}")
+</code></pre>
+
+<h2>METEOR: La Evolución de BLEU</h2>
+
+<p>METEOR (Metric for Evaluation of Translation with Explicit ORdering) aborda varias limitaciones de BLEU:</p>
+
+<ul>
+<li><strong>Usa sinónimos</strong> via WordNet</li>
+<li><strong>Alignment más flexible</strong>: permite mappings no contiguos</li>
+<li><strong>Combina precisión y recall</strong></li>
+</ul>
+
+<pre><code class="language-python"># Versión simplificada de METEOR
+# La versión completa usa WordNet para sinónimos y stemming
+
+def meteor_score(candidate: str, reference: str, stemming: bool = False) -> float:
+    """
+    METEOR simplificado: combinación de precisión y recall con alignment.
+    """
+    cand_tokens = candidate.lower().split()
+    ref_tokens = reference.lower().split()
+    
+    # Alignment con tolerancia a reordenamiento
+    aligned = []
+    ref_used = [False] * len(ref_tokens)
+    cand_used = [False] * len(cand_tokens)
+    
+    # Unigrams alignment (greedy, mejor match primero)
+    for c_idx, c_tok in enumerate(cand_tokens):
+        best_match = None
+        best_r_idx = None
+        for r_idx, r_tok in enumerate(ref_tokens):
+            if not ref_used[r_idx]:
+                if c_tok == r_tok:  # Match exacto
+                    best_match = c_tok
+                    best_r_idx = r_idx
+                    break
+        if best_match:
+            aligned.append((c_tok, r_idx))
+            cand_used[c_idx] = True
+            ref_used[r_idx] = True
+    
+    # Calcular precisión y recall
+    matches = len(aligned)
+    precision = matches / len(cand_tokens) if cand_tokens else 0
+    recall = matches / len(ref_tokens) if ref_tokens else 0
+    
+    if precision + recall == 0:
+        return 0.0
+    
+    f_mean = 10 * precision * recall / (recall + 25 * precision)
+    
+    # Penalty por fragmentación (how jumbled the alignment is)
+    penalty = 0.5 * (len(aligned) / len(cand_used)) ** 3 if aligned else 0
+    
+    return f_mean * (1 - penalty)
+
+# Ejemplo
+print(f"METEOR: {meteor_score(cand, ref):.4f}")
+</code></pre>
+
+<h2>BERTScore: La Revolución Contextual</h2>
+
+<h3>Por Qué Es Diferente</h3>
+
+<p>BLEU y ROUGE usan coincidencia literal de tokens. <strong>BERTScore usa embeddings contextuales</strong> de BERT para capturar significado, no solo texto exacto. Esto resuelve el mayor problema de las métricas tradicionales.</p>
+
+<p>BERTScore calcula similaridad coseno entre cada token del candidato y su mejor matching token en la referencia:</p>
+
+<p><code>BERTScore = cos(embed(cand_i), embed(ref_j))</code></p>
+
+<pre><code class="language-python"># Versión conceptual de BERTScore
+# En producción usar: pip install bert-score
+
+import numpy as np
+
+def bert_score_simplified(candidate: str, reference: str, embeddings: dict) -> dict:
+    """
+    BERTScore simplificado usando embeddings pre-computados.
+    En producción, usaríamos BERT real para embeddings contextuales.
+    
+    Args:
+        candidate: texto generado
+        reference: texto de referencia
+        embeddings: dict de word -> embedding vector
+    """
+    cand_tokens = candidate.lower().split()
+    ref_tokens = reference.lower().split()
+    
+    # Obtener embeddings (silently skip OOV)
+    cand_embs = [embeddings.get(t) for t in cand_tokens if t in embeddings]
+    ref_embs = [embeddings.get(t) for t in ref_tokens if t in embeddings]
+    
+    if not cand_embs or not ref_embs:
+        return {"precision": 0.0, "recall": 0.0, "f1": 0.0}
+    
+    # Para cada token del candidato, encontrar el max similarity en referencia
+    def max_sim_cosine(emb, ref_embs):
+        max_sim = 0
+        for ref_emb in ref_embs:
+            sim = np.dot(emb, ref_emb) / (np.linalg.norm(emb) * np.linalg.norm(ref_emb) + 1e-9)
+            max_sim = max(max_sim, sim)
+        return max_sim
+    
+    # Precision: avg max similarity para tokens del candidato
+    precisions = [max_sim_cosine(e, ref_embs) for e in cand_embs]
+    precision = np.mean(precisions)
+    
+    # Recall: avg max similarity para tokens de la referencia
+    recalls = [max_sim_cosine(e, cand_embs) for e in ref_embs]
+    recall = np.mean(recalls)
+    
+    f1 = 2 * precision * recall / (precision + recall + 1e-9)
+    
+    return {"precision": precision, "recall": recall, "f1": f1}
+
+# Ejemplo con embeddings dummy (en producción usar BERT real)
+# Los vectores deben ser pre-entrenados y contextualizados
+dummy_embeddings = {
+    "el": np.array([0.1, 0.2, 0.3]),
+    "gato": np.array([0.4, 0.5, 0.6]),
+    "está": np.array([0.7, 0.8, 0.9]),
+    "sentado": np.array([0.2, 0.3, 0.4]),
+    "sobre": np.array([0.5, 0.6, 0.7]),
+    "la": np.array([0.8, 0.9, 0.1]),
+    "mesa": np.array([0.3, 0.4, 0.5]),
+    "en": np.array([0.6, 0.7, 0.8]),
+}
+
+ref = "El gato está sentado sobre la mesa"
+cand = "El gato está en la mesa"
+
+result = bert_score_simplified(cand, ref, dummy_embeddings)
+print(f"BERTScore (simplified): {result}")
+</code></pre>
+
+<h3>Instalación Real de BERTScore</h3>
+
+<pre><code class="language-bash"># Instalar bert-score
+pip install bert-score
+
+# Uso en Python
+from bert_score import score
+
+candidates = ["El gato está en la mesa"]
+references = ["El gato está sentado sobre la mesa"]
+
+P, R, F1 = score(candidates, references, lang="es", verbose=True)
+print(f"BERTScore F1: {F1.mean():.4f}")
+</code></pre>
+
+<h2>Evaluation Framework Completo</h2>
+
+<p>Ahora que conoces las métricas principales, vamos a construir un <strong>evaluation framework</strong> que combine todas ellas y sea fácil de extender.</p>
+
+<pre><code class="language-python">from dataclasses import dataclass, field
+from typing import List, Dict, Callable, Optional
+import json
+
+@dataclass
+class EvaluationResult:
+    """Resultado de una evaluación individual."""
+    metric_name: str
+    score: float
+    details: Optional[dict] = None
+
+@dataclass
+class EvaluationReport:
+    """Reporte completo de evaluación de un modelo."""
+    model_name: str
+    timestamp: str
+    results: List[EvaluationResult] = field(default_factory=list)
+    
+    def get_metric(self, name: str) -> Optional[float]:
+        for r in self.results:
+            if r.metric_name == name:
+                return r.score
+        return None
+    
+    def summary(self) -> dict:
+        return {r.metric_name: r.score for r in self.results}
+
+class EvaluationFramework:
+    """
+    Framework completo para evaluar outputs de LLMs.
+    Combina múltiples métricas y permite extensión fácil.
+    """
+    
+    def __init__(self, name: str = "default"):
+        self.name = name
+        self.metrics: Dict[str, Callable] = {}
+        self._register_default_metrics()
+    
+    def _register_default_metrics(self):
+        """Registra las métricas por defecto."""
+        self.register_metric("bleu", lambda c, r: bleu_score(c, r))
+        self.register_metric("rouge_1", lambda c, r: rouge_n(c, r, 1))
+        self.register_metric("rouge_2", lambda c, r: rouge_n(c, r, 2))
+        self.register_metric("rouge_l", lambda c, r: rouge_l(c, r))
+        self.register_metric("meteor", lambda c, r: meteor_score(c, r))
+    
+    def register_metric(self, name: str, fn: Callable[[str, str], float]):
+        """Registra una nueva métrica al framework."""
+        self.metrics[name] = fn
+    
+    def evaluate(
+        self,
+        candidate: str,
+        reference: str,
+        model_name: str = "model"
+    ) -> EvaluationReport:
+        """Evalúa un candidato contra una referencia con todas las métricas."""
+        from datetime import datetime
+        
+        results = []
+        for metric_name, metric_fn in self.metrics.items():
+            try:
+                score = metric_fn(candidate, reference)
+                results.append(EvaluationResult(
+                    metric_name=metric_name,
+                    score=round(score, 4)
+                ))
+            except Exception as e:
+                results.append(EvaluationResult(
+                    metric_name=metric_name,
+                    score=0.0,
+                    details={"error": str(e)}
+                ))
+        
+        return EvaluationReport(
+            model_name=model_name,
+            timestamp=datetime.now().isoformat(),
+            results=results
+        )
+    
+    def evaluate_dataset(
+        self,
+        dataset: List[Dict[str, str]],
+        model_fn: Callable[[str], str],
+        model_name: str = "model"
+    ) -> Dict[str, float]:
+        """
+        Evalúa un modelo sobre un dataset completo.
+        Promedia los scores de todas las métricas.
+        """
+        all_scores: Dict[str, List[float]] = {}
+        
+        for item in dataset:
+            candidate = model_fn(item["input"])
+            reference = item["reference"]
+            
+            report = self.evaluate(candidate, reference, model_name)
+            
+            for result in report.results:
+                if result.metric_name not in all_scores:
+                    all_scores[result.metric_name] = []
+                all_scores[result.metric_name].append(result.score)
+        
+        # Promediar
+        return {name: sum(scores) / len(scores) for name, scores in all_scores.items()}
+
+# Ejemplo de uso completo
+def demo_evaluation_framework():
+    # Dataset de ejemplo
+    dataset = [
+        {
+            "input": "¿Cuál es la capital de Francia?",
+            "reference": "La capital de Francia es París."
+        },
+        {
+            "input": "Explica la fotosíntesis",
+            "reference": "La fotosíntesis es el proceso por el cual las plantas convierten luz solar en energía."
+        },
+    ]
+    
+    # Modelo a evaluar (mock)
+    def my_model(prompt):
+        if "Francia" in prompt:
+            return "París es la capital de Francia."
+        if "fotosíntesis" in prompt:
+            return "Las plantas usan luz solar para crear energía."
+        return "No sé."
+    
+    # Framework
+    framework = EvaluationFramework("mi-framework")
+    
+    # Agregar métrica custom si quieres
+    def custom_accuracy(pred: str, ref: str) -> float:
+        """Métrica simple: 1.0 si el output contiene la info clave de la ref."""
+        ref_lower = ref.lower()
+        # Extraer "palabras de contenido" (más de 4 chars)
+        content_words = [w for w in ref_lower.split() if len(w) > 4]
+        matches = sum(1 for w in content_words if w in pred.lower())
+        return matches / len(content_words) if content_words else 0.0
+    
+    framework.register_metric("content_coverage", custom_accuracy)
+    
+    # Evaluar dataset completo
+    avg_scores = framework.evaluate_dataset(dataset, my_model)
+    
+    print("=== Resultados Promedio ===")
+    for metric, score in avg_scores.items():
+        print(f"{metric}: {score:.4f}")
+
+demo_evaluation_framework()
+</code></pre>
+
+<h2>Métricas Custom Para Tu Dominio</h2>
+
+<p>A veces las métricas existentes no capturan lo que te importa. En esos casos, necesitas diseñar tu propia métrica. Aquí van ejemplos de métricas custom por dominio.</p>
+
+<pre><code class="language-python"># ===========================================
+# MÉTRICAS CUSTOM POR DOMINIO
+# ===========================================
+
+class DomainSpecificMetrics:
+    """Colección de métricas específicas para diferentes dominios."""
+    
+    @staticmethod
+    def code_execution_accuracy(code_output: str, expected_output: str) -> float:
+        """
+        Para tareas de generación de código:
+        verifica que el output contiene el resultado esperado.
+        """
+        return 1.0 if expected_output in code_output else 0.0
+    
+    @staticmethod
+    def factual_consistency_ner(prediction: str, reference: str) -> float:
+        """
+        Para generación factual:
+        extrae Named Entities y verifica que coincidan.
+        """
+        # En producción usar spaCy o similar para NER
+        def extract_mock_entities(text):
+            # Mock NER - solo para demostración
+            words = text.split()
+            return set(w for w in words if w[0].isupper() and len(w) > 2)
+        
+        pred_ents = extract_mock_entities(prediction)
+        ref_ents = extract_mock_entities(reference)
+        
+        if not ref_ents:
+            return 1.0
+        
+        return len(pred_ents & ref_ents) / len(ref_ents)
+    
+    @staticmethod
+    def response_length_score(response: str, min_len: int = 50, max_len: int = 500) -> float:
+        """
+        Para chat: penaliza respuestas demasiado cortas o largas.
+        """
+        length = len(response.split())
+        
+        if length < min_len:
+            return length / min_len  # 0.0 a 1.0
+        elif length > max_len:
+            return max(0, 1 - (length - max_len) / max_len)
+        else:
+            return 1.0
+    
+    @staticmethod
+    def safety_score(response: str, forbidden_patterns: List[str]) -> float:
+        """
+        Para safety: verifica que no contenga patrones prohibidos.
+        """
+        response_lower = response.lower()
+        violations = sum(1 for pattern in forbidden_patterns if pattern.lower() in response_lower)
+        
+        return max(0, 1 - violations * 0.25)  # Cada violación resta 0.25
+    
+    @staticmethod
+    def tone_consistency(responses: List[str], target_tone: str = "professional") -> float:
+        """
+        Para consistencia de tono en multi-turn:
+        verifica que todas las respuestas tengan el mismo tono.
+        """
+        # En producción: usar clasificador de tono entrenado
+        # Mock: asumimos todas en el mismo tono si no hay markers de cambio
+        tone_markers = {
+            "professional": ["cordialmente", "atentamente", "es un placer"],
+            "casual": ["che", ["qué onda", "genial", "bueno"],
+        }
+        
+        markers = tone_markers.get(target_tone, [])
+        consistent_count = sum(1 for r in responses if any(m in r.lower() for m in markers))
+        
+        return consistent_count / len(responses) if responses else 0.0
+
+# Ejemplo de uso
+metrics = DomainSpecificMetrics()
+
+print(f"Code accuracy: {metrics.code_execution_accuracy('Output: 42', '42')}")
+print(f"Factual consistency: {metrics.factual_consistency_ner('Paris is capital', 'Paris is capital of France')}")
+print(f"Length score: {metrics.response_length_score('Short')}")
+print(f"Safety score: {metrics.safety_score('Hello world', ['hack', 'exploit'])}")
+</code></pre>
+
+<h2>Los 3 Errores Comunes (y Sus Soluciones)</h2>
+
+<h3>Error 1: Confiar Solo en Una Métrica</h3>
+
+<p><strong>El problema:</strong> "Nuestro modelo tiene BLEU 0.85, está excelente." No. BLEU alto no garantiza calidad. Puedes tener BLEU perfecto con un texto sin sentido y BLEU bajo con una respuesta perfecta pero expresada diferente.</p>
+
+<p><strong>La solución:</strong> Usa múltiples métricas que se complementen. Mínimo: BLEU + ROUGE + una métrica de semantic similarity. Idealmente: un framework como el que construimos arriba con al menos 5 métricas de categorías distintas.</p>
+
+<pre><code class="language-python">def comprehensive_evaluation(candidate: str, reference: str) -> dict:
+    """
+    Evaluación comprehensiva que NO depende de una sola métrica.
+    """
+    return {
+        "bleu": bleu_score(candidate, reference),
+        "rouge_1": rouge_n(candidate, reference, 1),
+        "rouge_2": rouge_n(candidate, reference, 2),
+        "rouge_l": rouge_l(candidate, reference),
+        "meteor": meteor_score(candidate, reference),
+        # NO BERTScore aquí porque necesitamos embeddings reales
+        # pero las demás son computables sin modelo externo
+    }
+</code></pre>
+
+<h3>Error 2: No Entender las Limitaciones de las Métricas Automáticas</h3>
+
+<p><strong>El problema:</strong> Usas BERTScore y asumes que captura todo. No captura. BERTScore no mide si la información es verdadera, solo si es similar contextualment. Un modelo que genera tonterías coherentes tendrá BERTScore alto.</p>
+
+<p><strong>La solución:</strong> Entiende qué mide cada métrica y para qué NO sirve:</p>
+
+<ul>
+<li><strong>BLEU/ROUGE</strong>: no miden semantic, solo texto literal</li>
+<li><strong>BERTScore</strong>: no mide factualidad, solo similitud contextual</li>
+<li><strong>Todas</strong>: no miden si la información es verdadera</li>
+</ul>
+
+<blockquote>
+<p>"Métricas automáticas miden correlación con referencias humanas, no calidad intrínseca. Son un proxy, no la verdad."</p>
+</blockquote>
+
+<h3>Error 3: No Tener Evaluación Humana Para Complementar</h3>
+
+<p><strong>El problema:</strong> Confías 100% en métricas automatizadas y te sorprendes cuando usuarios reportan que el modelo dice puras tonterías con BERTScore 0.9.</p>
+
+<p><strong>La solución:</strong>: Implementa un pipeline de evaluación mixta:</p>
+
+<ul>
+<li><strong>80% de casos</strong>: métricas automatizadas (rápido, barato)</li>
+<li><strong>20% de casos</strong>: evaluación humana (Likert scales, A/B testing)</li>
+<li><strong>定期</strong>: calibración de métricas vs. juicios humanos</li>
+</ul>
+
+<pre><code class="language-python">class HumanEvaluationSampler:
+    """
+    Sistema para muestrear casos para evaluación humana.
+    """
+    
+    def __init__(self, automation_threshold: float = 0.85):
+        self.automation_threshold = automation_threshold
+    
+    def should_human_review(self, metrics: dict) -> bool:
+        """
+        Decide si este caso necesita revisión humana.
+        Si todas las métricas automatizadas están muy altas o muy bajas,
+        lo automatizamos. Los casos dudosos van a humano.
+        """
+        scores = list(metrics.values())
+        avg_score = sum(scores) / len(scores)
+        
+        # Si está en zona gris (0.3 a 0.7), necesita humano
+        if 0.3 <= avg_score <= 0.7:
+            return True
+        
+        # Si todas las métricas concordar (varianza baja), automatizable
+        variance = sum((s - avg_score) ** 2 for s in scores) / len(scores)
+        if variance < 0.01:  # Métricas muy alineadas
+            return False
+        
+        # Alta varianza entre métricas = necesita revisión humana
+        return True
+    
+    def sample_for_calibration(
+        self, 
+        dataset_size: int, 
+        calibration_ratio: float = 0.1
+    ) -> int:
+        """
+        Calcula cuántos casos necesitan calibración humana periódica.
+        """
+        return max(1, int(dataset_size * calibration_ratio))
+</code></pre>
+
+<h2>Matemáticas de las Métricas</h2>
+
+<h3>La Fórmula de BLEU en Detalle</h3>
+
+<p>BLEU se define como:</p>
+
+<p><code>BLEU = BP · exp(Σ w_n · log p_n)</code></p>
+
+<p>Donde:</p>
+<ul>
+<li><code>BP</code> = Brevity Penalty</li>
+<li><code>w_n</code> = pesos (normalmente 0.25 para cada n-grama de 1 a 4)</li>
+<li><code>p_n</code> = precisión modificada para n-gramas</li>
+</ul>
+
+<p>La Brevity Penalty previene preferir outputs cortos artificialmente:</p>
+
+<p><code>BP = 1 if c > r; else exp(1 - r/c)</code></p>
+
+<p>Donde <code>c</code> = longitud del candidato, <code>r</code> = longitud de referencia efectiva.</p>
+
+<h3>BERTScore y Similitud Coseno</h3>
+
+<p>BERTScore usa similitud coseno entre embeddings:</p>
+
+<p><code>cosine(A, B) = (A · B) / (||A|| · ||B||)</code></p>
+
+<p>Para cada token en el candidato, se encuentra el token en la referencia con máxima similitud:</p>
+
+<p><code>R = Σ max_sim(emb_cand[i], emb_ref) / Σ ||emb_ref||</code></p>
+
+<pre><code class="language-python">import numpy as np
+
+def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
+    """Similitud coseno entre dos vectores."""
+    return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-9)
+
+def bertscore_recall(embeddings_candidate: List[np.ndarray], 
+                      embeddings_reference: List[np.ndarray]) -> float:
+    """
+    Recall de BERTScore: qué tanto del reference está cubierto por candidate.
+    Para cada token de referencia, encuentra el token más similar en candidato.
+    """
+    recalls = []
+    for ref_emb in embeddings_reference:
+        similarities = [cosine_similarity(ref_emb, c_emb) for c_emb in embeddings_candidate]
+        recalls.append(max(similarities))
+    
+    return np.mean(recalls)
+</code></pre>
+
+<h2>Resumen y Cierre</h2>
+
+<p>Ahora tienes un arsenal completo para evaluar LLMs:</p>
+
+<ul>
+<li><strong>BLEU</strong>: bueno para traducción literal, no para semántica</li>
+<li><strong>ROUGE</strong>: mejor recall, útil para summarization</li>
+<li><strong>METEOR</strong>: más robusto que BLEU, usa sinónimos</li>
+<li><strong>BERTScore</strong>: el mejor para semantic similarity contextual</li>
+<li><strong>Custom metrics</strong>: diseña los tuyos para tu dominio específico</li>
+</ul>
+
+<p>Y recuerda: <strong>nunca confíes ciegamente en una métrica</strong>. Un buen evaluation framework combina múltiples métricas con evaluación humana periódica.</p>
+
+<p>Mañana en el día 285 seguimos con más. Hasta entonces, no te quedes con una sola métrica, mano.</p>
+
+<p><strong>#365DaysOfAI #LLMEvaluation #Metrics</strong></p>
+</article>
 
   <script>
     document.getElementById('themeToggle').addEventListener('click', function() {
