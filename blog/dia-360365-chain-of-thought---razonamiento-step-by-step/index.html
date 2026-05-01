@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="Chain of Thought - Razonamiento Step by Step | #365DaysOfAI por Fabian Rodriguez">
-  <title>Chain of Thought - Razonamiento Step by Step | #365DaysOfAI</title>
+  <meta name="description" content="LLM Production Systems II - Scaling Production LLM Systems, Load Balancing, Caching, Cost Management | #365DaysOfAI por Fabian Rodriguez">
+  <title>LLM Production Systems II — Escalando sin Morir en el Intento | #365DaysOfAI</title>
   
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
@@ -118,52 +118,1044 @@ nav {
   </header>
 
   <article class="article-body">
-    <h1>Chain of Thought - Razonamiento Step by Step</h1>
-<p>Hagale pues, parcero. Hoy es el Dia 360 y hablamos de Chain of Thought: razonamiento step by step. Cafe.</p>
+<h1>LLM Production Systems II — Escalando sin Morir en el Intento</h1>
+<p>Hagale pues, parcero. Día 360 y hoy le metemos la segunda parte de nuestra serie sobre LLM Production Systems. Si ayer hablamos de arquitectura, monitoreo y manejo de errores, hoy nos enfocamos en algo que va a definir si tu startup o tu proyecto survives cuando el tráfico se dispara: cómo escalar sistemas LLM de manera inteligente, cómo no pagar una fortuna en GPUs, y cómo tener un plan B cuando todo falla.</p>
+<p>Y miren, desde Colombia sabemos bien de eso de escalar con recursos limitados — aquí aprendimos a hacer mucho con poco, y eso mismo aplica para construir sistemas que crezcan sin que el costo se dispara como la inflación. Así que métele coco a este artículo que viene bueno.</p>
 <hr>
-<h2>🎯 Chain of Thought</h2>
-<p>Chain of Thought (CoT) mejora el razonamiento de LLMs:</p>
+<h2>📈 Load Balancing: Repartiendo la Carga Como Dios Manda</h2>
+<p>Cuando tienes múltiples réplicas de tu modelo o múltiples proveedores de LLM, necesitas un load balancer que decida a dónde manda cada request. Pero no cualquier estrategia funciona para LLMs — aquí hay cosas específicas que debes considerar.</p>
+<pre><code class="language-python">"""
+LLM Load Balancer con estrategias específicas para LLMs.
+"""
+
+from dataclasses import dataclass, field
+from typing import List, Dict, Optional, Callable
+from datetime import datetime, timedelta
+from enum import Enum
+import random
+import hashlib
+
+
+class LoadBalancingStrategy(Enum):
+    """Estrategias de load balancing."""
+    ROUND_ROBIN = "round_robin"
+    LEAST_LOADED = "least_loaded"
+    WEIGHTED = "weighted"
+    LATENCY_BASED = "latency_based"
+    CONSISTENT_HASHING = "consistent_hashing"
+    ADAPTIVE = "adaptive"
+
+
+@dataclass
+class ModelReplica:
+    """Una réplica de un modelo LLM."""
+    id: str
+    name: str
+    endpoint: str
+    weight: float = 1.0  # Peso para weighted balancing
+    max_rpm: int = 60  # Requests por minuto permitidos
+    current_load: int = 0
+    avg_latency_ms: float = 0.0
+    error_count: int = 0
+    last_error_time: Optional[datetime] = None
+    is_healthy: bool = True
+    
+    # Pricing del modelo en esta réplica
+    cost_per_1m_input_tokens: float = 5.0
+    cost_per_1m_output_tokens: float = 15.0
+
+
+@dataclass
+class RoutingMetrics:
+    """Métricas de enrutamiento."""
+    requests_sent: int = 0
+    total_latency_ms: float = 0.0
+    errors: int = 0
+    by_replica: Dict[str, int] = field(default_factory=dict)
+
+
+class LLMLoadBalancer:
+    """
+    Load balancer optimizado para sistemas LLM.
+    
+    Características:
+    - Múltiples estrategias de balanceo
+    - Health checks automáticos
+    - Rate limiting por réplica
+    - Enrutamiento inteligente basado en latencia y costo
+    """
+    
+    def __init__(
+        self,
+        strategy: LoadBalancingStrategy = LoadBalancingStrategy.ADAPTIVE,
+        health_check_interval_seconds: int = 30,
+        replica_timeout_ms: int = 5000
+    ):
+        self.strategy = strategy
+        self.health_check_interval = health_check_interval_seconds
+        self.replica_timeout_ms = replica_timeout_ms
+        
+        self.replicas: Dict[str, ModelReplica] = {}
+        self.routing_metrics = RoutingMetrics()
+        self.last_health_check: Optional[datetime] = None
+    
+    def add_replica(self, replica: ModelReplica):
+        """Agrega una réplica al pool."""
+        self.replicas[replica.id] = replica
+        self.routing_metrics.by_replica[replica.id] = 0
+    
+    def remove_replica(self, replica_id: str):
+        """Remueve una réplica del pool."""
+        if replica_id in self.replicas:
+            del self.replicas[replica_id]
+    
+    def select_replica(
+        self,
+        prompt: Optional[str] = None,
+        model_requirements: Optional[Dict] = None
+    ) -> Optional[ModelReplica]:
+        """
+        Selecciona la mejor réplica basado en la estrategia.
+        """
+        # Filtrar réplicas saludables
+        healthy = [r for r in self.replicas.values() if r.is_healthy]
+        
+        if not healthy:
+            return None
+        
+        if self.strategy == LoadBalancingStrategy.ROUND_ROBIN:
+            return self._round_robin(healthy)
+        
+        elif self.strategy == LoadBalancingStrategy.LEAST_LOADED:
+            return self._least_loaded(healthy)
+        
+        elif self.strategy == LoadBalancingStrategy.WEIGHTED:
+            return self._weighted(healthy)
+        
+        elif self.strategy == LoadBalancingStrategy.LATENCY_BASED:
+            return self._latency_based(healthy)
+        
+        elif self.strategy == LoadBalancingStrategy.CONSISTENT_HASHING:
+            return self._consistent_hashing(healthy, prompt)
+        
+        elif self.strategy == LoadBalancingStrategy.ADAPTIVE:
+            return self._adaptive(healthy, model_requirements)
+        
+        return healthy[0]
+    
+    def _round_robin(self, healthy: List[ModelReplica]) -> ModelReplica:
+        """Round robin simple."""
+        return healthy[len(self.routing_metrics.requests_sent) % len(healthy)]
+    
+    def _least_loaded(self, healthy: List[ModelReplica]) -> ModelReplica:
+        """Selecciona la réplica con menos carga actual."""
+        return min(healthy, key=lambda r: r.current_load / r.max_rpm)
+    
+    def _weighted(self, healthy: List[ModelReplica]) -> ModelReplica:
+        """Selecciona basado en weights (para multi-region, etc)."""
+        total_weight = sum(r.weight for r in healthy)
+        r = random.uniform(0, total_weight)
+        cumulative = 0
+        for replica in healthy:
+            cumulative += replica.weight
+            if r <= cumulative:
+                return replica
+        return healthy[-1]
+    
+    def _latency_based(self, healthy: List[ModelReplica]) -> ModelReplica:
+        """Selecciona la réplica con menor latencia promedio."""
+        return min(healthy, key=lambda r: r.avg_latency_ms)
+    
+    def _consistent_hashing(
+        self,
+        healthy: List[ModelReplica],
+        prompt: Optional[str] = None
+    ) -> ModelReplica:
+        """Consistent hashing para same prompt → same replica."""
+        if not prompt:
+            return random.choice(healthy)
+        
+        hash_value = int(hashlib.md5(prompt.encode()).hexdigest(), 16)
+        return healthy[hash_value % len(healthy)]
+    
+    def _adaptive(
+        self,
+        healthy: List[ModelReplica],
+        requirements: Optional[Dict] = None
+    ) -> ModelReplica:
+        """
+        Estrategia adaptativa que considera múltiples factores:
+        - Carga actual
+        - Latencia
+        - Costo
+        - Tipo de request
+        """
+        if not healthy:
+            return None
+        
+        # Calcular score para cada réplica
+        scored = []
+        for replica in healthy:
+            # Factores de scoring
+            load_score = 1 - (replica.current_load / replica.max_rpm)
+            latency_score = 1 / (1 + replica.avg_latency_ms / 1000)
+            
+            # Si hay requisitos de bajo costo, privilegiar réplicas baratas
+            cost_score = 1.0
+            if requirements and requirements.get("optimize_cost"):
+                avg_cost = (replica.cost_per_1m_input_tokens + replica.cost_per_1m_output_tokens) / 2
+                cost_score = 1 / (1 + avg_cost / 10)  # Normalizar
+            
+            # Score compuesto
+            score = (load_score * 0.3 + latency_score * 0.4 + cost_score * 0.3)
+            scored.append((replica, score))
+        
+        # Seleccionar el de mayor score
+        return max(scored, key=lambda x: x[1])[0]
+    
+    def record_request_result(
+        self,
+        replica_id: str,
+        latency_ms: float,
+        success: bool,
+        tokens_used: int
+    ):
+        """Registra el resultado de un request para métricas."""
+        self.routing_metrics.requests_sent += 1
+        self.routing_metrics.total_latency_ms += latency_ms
+        
+        if replica_id in self.replicas:
+            replica = self.replicas[replica_id]
+            
+            # Actualizar métricas de la réplica
+            replica.current_load = max(0, replica.current_load - 1)
+            
+            if success:
+                # Actualizar latencia promedio con exponential moving average
+                if replica.avg_latency_ms == 0:
+                    replica.avg_latency_ms = latency_ms
+                else:
+                    replica.avg_latency_ms = 0.7 * replica.avg_latency_ms + 0.3 * latency_ms
+            else:
+                replica.error_count += 1
+                replica.last_error_time = datetime.now()
+                
+                # Si hay muchos errores, marcar como no saludable
+                if replica.error_count > 10:
+                    replica.is_healthy = False
+    
+    def health_check(self):
+        """Realiza health check de todas las réplicas."""
+        now = datetime.now()
+        
+        for replica in self.replicas.values():
+            # Revivir réplicas que estuvieron en error si pasó suficiente tiempo
+            if not replica.is_healthy:
+                if replica.last_error_time:
+                    if (now - replica.last_error_time).total_seconds() > 120:
+                        replica.is_healthy = True
+                        replica.error_count = 0
+            else:
+                # Verificar si está sobrecargada
+                if replica.current_load >= replica.max_rpm:
+                    replica.is_healthy = False
+        
+        self.last_health_check = now</code></pre>
+<hr>
+<h2>💾 Caching: La Optimización que más Impacto tiene</h2>
+<p>Voy a ser directo con ustedes: si no estás cacheando las respuestas de tus LLMs, estás tirando la mitad de tu dinero a la basura. Y no lo digo yo, lo dicen las matemáticas. En un sistema típico, entre el 30% y el 60% de las requests son idénticas o muy similares. Cachearlas puede reducir tu costo de API en ese porcentaje.</p>
+<pre><code class="language-python">"""
+LLM Response Cache con semantick similarity.
+"""
+
+from dataclasses import dataclass, field
+from typing import Optional, List, Tuple, Dict
+from datetime import datetime, timedelta
+import hashlib
+import json
+
+
+@dataclass
+class CacheEntry:
+    """Una entrada en el cache."""
+    prompt_hash: str
+    prompt: str
+    response: str
+    model: str
+    tokens_used: int
+    created_at: datetime
+    last_accessed: datetime
+    access_count: int = 0
+    ttl_seconds: int = 3600  # Time to live por defecto
+    
+    def is_expired(self) -> bool:
+        return (datetime.now() - self.created_at).total_seconds() > self.ttl_seconds
+    
+    def refresh_access(self):
+        self.last_accessed = datetime.now()
+        self.access_count += 1
+
+
+class SemanticCache:
+    """
+    Cache semántico para respuestas de LLM.
+    
+    A diferencia de un cache exacto, este usa embeddings para
+    encontrar respuestas similares a prompts nuevos. Esto captura
+    variaciones de la misma pregunta que deberían usar la misma respuesta.
+    
+    Componentes:
+    1. Cache exacto (hash del prompt) — rápido, para requests idénticos
+    2. Cache semántico (embeddings) — para requests similares
+    """
+    
+    def __init__(
+        self,
+        exact_cache_size: int = 10000,
+        semantic_cache_size: int = 5000,
+        similarity_threshold: float = 0.95,
+        embedding_model: str = "text-embedding-3-small",
+        default_ttl_seconds: int = 3600
+    ):
+        self.exact_cache_size = exact_cache_size
+        self.semantic_cache_size = semantic_cache_size
+        self.similarity_threshold = similarity_threshold
+        self.embedding_model = embedding_model
+        self.default_ttl_seconds = default_ttl_seconds
+        
+        # Cache exacto: hash → entry
+        self.exact_cache: Dict[str, CacheEntry] = {}
+        
+        # Cache semántico: embedding → entry (usando approximate nearest neighbors)
+        # Para producción usaríamos Chroma, Pinecone o FAISS
+        self.semantic_cache: List[Tuple[List[float], CacheEntry]] = []
+        
+        # Métricas
+        self.hits = 0
+        self.misses = 0
+        self.exact_hits = 0
+        self.semantic_hits = 0
+    
+    def _hash_prompt(self, prompt: str) -> str:
+        """Genera hash del prompt."""
+        return hashlib.sha256(prompt.encode()).hexdigest()
+    
+    def _get_embedding(self, text: str) -> List[float]:
+        """
+        Obtiene embedding para el texto.
+        En producción, esto llamaría al API de embeddings.
+        """
+        # Placeholder: en producción usar OpenAI embeddings API
+        # oSentence Transformers local
+        import hashlib
+        # Simular embedding de dimensionality fija
+        h = hashlib.sha256(text.encode()).digest()
+        return [float(b) / 255.0 for b in h[:32]]
+    
+    def _cosine_similarity(self, a: List[float], b: List[float]) -> float:
+        """Calcula similitud coseno entre dos vectores."""
+        dot = sum(x * y for x, y in zip(a, b))
+        norm_a = sum(x * x for x in a) ** 0.5
+        norm_b = sum(x * x for x in b) ** 0.5
+        return dot / (norm_a * norm_b + 1e-8)
+    
+    def get(
+        self,
+        prompt: str,
+        model: str,
+        temperature: float = 0.7
+    ) -> Optional[str]:
+        """
+        Busca una respuesta en el cache.
+        
+        Retorna la respuesta cacheada si encuentra una coincidencia
+        (exacta o semántica), o None si no hay match.
+        """
+        # 1. Buscar en cache exacto primero
+        prompt_hash = self._hash_prompt(prompt)
+        
+        if prompt_hash in self.exact_cache:
+            entry = self.exact_cache[prompt_hash]
+            
+            # Verificar que no haya expirado y que sea del mismo modelo/config
+            if not entry.is_expired() and entry.model == model:
+                entry.refresh_access()
+                self.hits += 1
+                self.exact_hits += 1
+                return entry.response
+        
+        # 2. Buscar en cache semántico
+        prompt_embedding = self._get_embedding(prompt)
+        
+        best_match: Optional[CacheEntry] = None
+        best_similarity = 0.0
+        
+        for cached_embedding, entry in self.semantic_cache:
+            if entry.model != model:
+                continue
+            if entry.is_expired():
+                continue
+            
+            similarity = self._cosine_similarity(prompt_embedding, cached_embedding)
+            
+            if similarity > self.similarity_threshold and similarity > best_similarity:
+                best_similarity = similarity
+                best_match = entry
+        
+        if best_match:
+            best_match.refresh_access()
+            self.hits += 1
+            self.semantic_hits += 1
+            return best_match.response
+        
+        # 3. No hay match
+        self.misses += 1
+        return None
+    
+    def put(
+        self,
+        prompt: str,
+        response: str,
+        model: str,
+        tokens_used: int,
+        ttl_seconds: Optional[int] = None
+    ):
+        """
+        Guarda una respuesta en el cache.
+        """
+        entry = CacheEntry(
+            prompt_hash=self._hash_prompt(prompt),
+            prompt=prompt,
+            response=response,
+            model=model,
+            tokens_used=tokens_used,
+            created_at=datetime.now(),
+            last_accessed=datetime.now(),
+            ttl_seconds=ttl_seconds or self.default_ttl_seconds
+        )
+        
+        # Guardar en cache exacto
+        self.exact_cache[entry.prompt_hash] = entry
+        
+        # Limpiar cache exacto si está muy grande
+        if len(self.exact_cache) > self.exact_cache_size:
+            # Remover las entradas menos usadas
+            sorted_entries = sorted(
+                self.exact_cache.values(),
+                key=lambda e: e.access_count
+            )
+            for _ in range(len(self.exact_cache) - self.exact_cache_size + 100):
+                if sorted_entries:
+                    entry_to_remove = sorted_entries.pop(0)
+                    del self.exact_cache[entry_to_remove.prompt_hash]
+        
+        # Guardar embedding en cache semántico
+        prompt_embedding = self._get_embedding(prompt)
+        self.semantic_cache.append((prompt_embedding, entry))
+        
+        # Limpiar cache semántico si está muy grande
+        if len(self.semantic_cache) > self.semantic_cache_size:
+            # Remover las entradas menos accedidas
+            sorted_cache = sorted(
+                self.semantic_cache,
+                key=lambda x: x[1].access_count
+            )
+            self.semantic_cache = sorted_cache[-self.semantic_cache_size:]
+    
+    def get_stats(self) -> Dict:
+        """Retorna estadísticas del cache."""
+        total_requests = self.hits + self.misses
+        hit_rate = self.hits / total_requests if total_requests > 0 else 0
+        
+        return {
+            "hits": self.hits,
+            "misses": self.misses,
+            "total_requests": total_requests,
+            "hit_rate": hit_rate,
+            "exact_hits": self.exact_hits,
+            "semantic_hits": self.semantic_hits,
+            "exact_cache_size": len(self.exact_cache),
+            "semantic_cache_size": len(self.semantic_cache)
+        }
+    
+    def clear_expired(self):
+        """Limpia entradas expiradas."""
+        # Limpiar cache exacto
+        expired_keys = [
+            k for k, v in self.exact_cache.items() if v.is_expired()
+        ]
+        for k in expired_keys:
+            del self.exact_cache[k]
+        
+        # Limpiar cache semántico
+        self.semantic_cache = [
+            (emb, entry) for emb, entry in self.semantic_cache
+            if not entry.is_expired()
+        ]</code></pre>
+<hr>
+<h2>🧮 La Matemática del Costo: No Es Lo Mismo 100 Que 10,000 Requests</h2>
+<p>Vamos a hablar plata con plata. El costo de correr LLMs en producción es probablemente tu mayor expense después del equipo. Y aquí es donde muchos equipos se queman — no planifican los costos y terminan con facturas de $50,000 USD al mes que no habían presupuestado.</p>
+<h3>Costo por 1M de Tokens</h3>
+<p>$$C_{total} = C_{input} \times N_{input} + C_{output} \times N_{output}$$</p>
+<p>Donde:</p>
 <ul>
-<li><strong>Explicit reasoning</strong>: Pide que muestre su trabajo</li>
-<li><strong>Step-by-step</strong>: Dividir problema complejo</li>
-<li><strong>Better answers</strong>: Resultados mas precisos</li>
-<li><strong>Debugging</strong>: Ver donde se equivoca</li>
+<li>$C_{input}$ = costo por 1M tokens de input</li>
+<li>$N_{input}$ = millones de tokens de input</li>
+<li>$C_{output}$ = costo por 1M tokens de output</li>
+<li>$N_{output}$ = millones de tokens de output</li>
 </ul>
-<hr>
-<h2>📐 CoT Implementation</h2>
-<pre><code class="language-python"># Standard vs CoT prompting
+<h3>Optimización de Costo por Tier</h3>
+<p>$$\text{Costo Optimizado} = \sum_{i} \text{Modelos}_{i} \times \left(\frac{N_{input\_i}}{1M} \times C_{input\_i} + \frac{N_{output\_i}}{1M} \times C_{output\_i}\right)$$</p>
+<p><strong>Ejemplo numérico:</strong></p>
+<pre><code class="language-python">"""
+Calculadora de costos de LLM con optimizaciones.
+"""
 
-# Standard
-STANDARD = """Q: Juan tiene 5 manzanas, compra 3 mas.
-              Cuantas manzanas tiene?
-A: 8"""
+from dataclasses import dataclass
+from typing import List, Dict, Optional
 
-# Chain of Thought
-COT = """Q: Juan tiene 5 manzanas, compra 3 mas.
-         Cuantas manzanas tiene?
-         
-         Razonamiento:
-         1. Juan empieza con 5 manzanas
-         2. Compra 3 manzanas adicionales
-         3. 5 + 3 = 8
-         
-         A: 8"""</code></pre>
+
+@dataclass
+class ModelPricing:
+    """Pricing de un modelo."""
+    name: str
+    cost_per_1m_input: float
+    cost_per_1m_output: float
+    capability_score: int  # 1-10
+    speed_score: int  # 1-10
+
+
+# Modelos disponibles con su pricing en USD
+MODELS = {
+    "gpt-4o": ModelPricing("GPT-4o", 5.0, 15.0, 10, 7),
+    "gpt-4o-mini": ModelPricing("GPT-4o Mini", 0.15, 0.60, 8, 9),
+    "claude-3-5-sonnet": ModelPricing("Claude 3.5 Sonnet", 3.0, 15.0, 10, 8),
+    "claude-3-5-haiku": ModelPricing("Claude 3.5 Haiku", 0.80, 4.0, 7, 10),
+    "deepseek-v3": ModelPricing("DeepSeek V3", 0.14, 0.28, 9, 7),  # Self-hosted equivalent
+}
+
+
+def calculate_base_cost(
+    model: str,
+    input_tokens: int,
+    output_tokens: int
+) -> float:
+    """Calcula costo base sin optimizaciones."""
+    pricing = MODELS[model]
+    return (
+        (input_tokens / 1_000_000) * pricing.cost_per_1m_input +
+        (output_tokens / 1_000_000) * pricing.cost_per_1m_output
+    )
+
+
+def calculate_optimized_cost(
+    requests: List[Dict],
+    cache_hit_rate: float = 0.0,
+    use_routing: bool = True,
+    use_caching: bool = True
+) -> Dict:
+    """
+    Calcula costo optimizado con todas las estrategias.
+    
+    Args:
+        requests: Lista de dicts con {prompt, input_tokens, output_tokens, complexity}
+        cache_hit_rate: Porcentaje de requests que pegan en cache
+        use_routing: Usar routing inteligente para elegir modelo
+        use_caching: Usar cache de respuestas
+    """
+    total_base_cost = 0
+    total_optimized_cost = 0
+    
+    by_model = {name: {"requests": 0, "input_tokens": 0, "output_tokens": 0, "cost": 0}
+                for name in MODELS}
+    
+    for req in requests:
+        input_tok = req["input_tokens"]
+        output_tok = req["output_tokens"]
+        complexity = req.get("complexity", 5)  # 1-10, 10 = muy complejo
+        
+        # Calcular costo base (siempre con el modelo más capable)
+        base_cost = calculate_base_cost("gpt-4o", input_tok, output_tok)
+        total_base_cost += base_cost
+        
+        # Aplicar optimizaciones
+        if use_caching and cache_hit_rate > 0:
+            # Cache reduce el costo de tokens de output drásticamente
+            cached_output = int(output_tok * cache_hit_rate)
+            actual_output = output_tok - cached_output
+        else:
+            actual_output = output_tok
+        
+        # Routing: elegir modelo apropiado por complejidad
+        if use_routing:
+            if complexity <= 3:
+                model = "claude-3-5-haiku"
+            elif complexity <= 6:
+                model = "gpt-4o-mini"
+            elif complexity <= 8:
+                model = "claude-3-5-sonnet"
+            else:
+                model = "gpt-4o"
+        else:
+            model = "gpt-4o"
+        
+        # Calcular costo optimizado
+        optimized_cost = calculate_base_cost(model, input_tok, actual_output)
+        total_optimized_cost += optimized_cost
+        
+        # Tracking
+        by_model[model]["requests"] += 1
+        by_model[model]["input_tokens"] += input_tok
+        by_model[model]["output_tokens"] += actual_output
+        by_model[model]["cost"] += optimized_cost
+    
+    return {
+        "base_cost": total_base_cost,
+        "optimized_cost": total_optimized_cost,
+        "savings": total_base_cost - total_optimized_cost,
+        "savings_percent": (
+            (total_base_cost - total_optimized_cost) / total_base_cost * 100
+            if total_base_cost > 0 else 0
+        ),
+        "by_model": by_model
+    }
+
+
+# Ejemplo: 100K requests con distribución típica
+example_requests = []
+for _ in range(70_000):
+    # Requests simples (QA simple, clasificaciones)
+    example_requests.append({
+        "input_tokens": 50,
+        "output_tokens": 30,
+        "complexity": 2
+    })
+for _ in range(20_000):
+    # Requests medianos (resúmenes, transformaciones)
+    example_requests.append({
+        "input_tokens": 500,
+        "output_tokens": 200,
+        "complexity": 5
+    })
+for _ in range(8_000):
+    # Requests complejos (análisis, razonamiento)
+    example_requests.append({
+        "input_tokens": 2000,
+        "output_tokens": 500,
+        "complexity": 8
+    })
+for _ in range(2_000):
+    # Requests muy complejos (generación larga, código)
+    example_requests.append({
+        "input_tokens": 5000,
+        "output_tokens": 2000,
+        "complexity": 10
+    })
+
+result = calculate_optimized_cost(
+    example_requests,
+    cache_hit_rate=0.35,
+    use_routing=True
+)
+
+print(f"Costo Base: ${result['base_cost']:.2f}")
+print(f"Costo Optimizado: ${result['optimized_cost']:.2f}")
+print(f"Ahorro: ${result['savings']:.2f} ({result['savings_percent']:.1f}%)")
+print()
+print("Por modelo:")
+for model, data in result['by_model'].items():
+    if data['requests'] > 0:
+        print(f"  {model}: {data['requests']} requests, ${data['cost']:.2f}")</code></pre>
+<blockquote>
+<p>"Un sistema bien optimizado puede reducir costos de LLM en 60-80% sin sacrificar calidad. La clave es: routing inteligente + cache semántico + quantization."</p>
+</blockquote>
 <hr>
-<h2>🚀 CoT Variants</h2>
-<pre><code class="language-python"># Variaciones de CoT
-COT_VARIANTS = {
-    "zero_shot_cot": "Agrega 'Pensemos step by step'",
-    "auto_cot": "Auto genera cadenas de razonamiento",
-    "self_consistency": "Multiples razonamientos, vote",
-    "tree_of_thought": "Explora multiples paths"
+<h2>🔄 Backup Plans: Cuando Todo Falla, Tener un Plan B</h2>
+<p>Y vamos a cerrar con algo que la mayoría ignora: qué pasa cuando tu proveedor principal de LLM se cae. No si, cuando. GPT-4 tuvo un outage de 3 horas hace unos meses. Anthropic también. Google también. Si tu sistema depende 100% de un solo proveedor y ese proveedor se cae, tu producto se cae. Y eso le puede costar a tu empresa miles o millones de dólares.</p>
+<pre><code class="language-python">"""
+Multi-Provider LLM Client con failover automático.
+"""
+
+from dataclasses import dataclass, field
+from typing import List, Optional, Dict, Callable
+from enum import Enum
+from datetime import datetime, timedelta
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+class ProviderStatus(Enum):
+    HEALTHY = "healthy"
+    DEGRADED = "degraded"
+    UNAVAILABLE = "unavailable"
+    UNTESTED = "untested"
+
+
+@dataclass
+class LLMProvider:
+    """Un proveedor de LLM."""
+    name: str
+    client: any  # Cliente API del proveedor
+    priority: int = 1  # 1 = más preferido
+    status: ProviderStatus = ProviderStatus.UNTESTED
+    last_success: Optional[datetime] = None
+    last_failure: Optional[datetime] = None
+    consecutive_failures: int = 0
+    is_primary: bool = False
+    
+    # Capabilities del proveedor
+    supports_streaming: bool = True
+    supports_function_calling: bool = True
+    max_context_tokens: int = 128_000
+    cost_per_1m_input: float = 5.0
+    cost_per_1m_output: float = 15.0
+
+
+class MultiProviderLLMClient:
+    """
+    Cliente LLM con múltiples proveedores y failover automático.
+    
+    Estrategias de failover:
+    1. Failover rápido: si el primario falla, cambiar inmediatamente
+    2. Circuit breaker: no intentar un proveedor que está fallando
+    3. Recovery check: probar proveedores "muertos" periódicamente
+    4. Cascading: intentar en orden de prioridad hasta encontrar uno que funcione
+    """
+    
+    def __init__(
+        self,
+        health_check_interval_seconds: int = 60,
+        failover_threshold: int = 3,
+        recovery_check_interval_seconds: int = 300
+    ):
+        self.providers: Dict[str, LLMProvider] = {}
+        self.health_check_interval = health_check_interval_seconds
+        self.failover_threshold = failover_threshold
+        self.recovery_check_interval = recovery_check_interval_seconds
+        
+        self.current_provider: Optional[LLMProvider] = None
+        self.last_health_check: Optional[datetime] = None
+    
+    def add_provider(self, provider: LLMProvider):
+        """Agrega un proveedor al pool."""
+        self.providers[provider.name] = provider
+        
+        if provider.is_primary or not self.current_provider:
+            self.current_provider = provider
+    
+    def remove_provider(self, name: str):
+        """Remueve un proveedor."""
+        if name in self.providers:
+            del self.providers[name]
+            
+            if self.current_provider and self.current_provider.name == name:
+                self.current_provider = self._select_next_provider()
+    
+    def _select_next_provider(self) -> Optional[LLMProvider]:
+        """Selecciona el siguiente proveedor disponible."""
+        available = [
+            p for p in self.providers.values()
+            if p.status in [ProviderStatus.HEALTHY, ProviderStatus.DEGRADED]
+            and p.consecutive_failures < self.failover_threshold
+        ]
+        
+        if not available:
+            return None
+        
+        # Ordenar por prioridad (menor número = mayor prioridad)
+        return min(available, key=lambda p: p.priority)
+    
+    async def generate(
+        self,
+        prompt: str,
+        model_preference: Optional[str] = None,
+        **kwargs
+    ) -> Dict:
+        """
+        Genera una respuesta intentando proveedores en orden de prioridad.
+        """
+        providers_to_try = []
+        
+        # Si hay preferencia de modelo, intentar ese primero
+        if model_preference:
+            for name, provider in self.providers.items():
+                if model_preference in provider.name and provider.status != ProviderStatus.UNAVAILABLE:
+                    providers_to_try.append(provider)
+        
+        # Luego intentar por prioridad
+        for provider in sorted(
+            [p for p in self.providers.values() if p not in providers_to_try],
+            key=lambda p: p.priority
+        ):
+            if provider.status != ProviderStatus.UNAVAILABLE:
+                providers_to_try.append(provider)
+        
+        last_error = None
+        
+        for provider in providers_to_try:
+            try:
+                response = await self._call_provider(provider, prompt, **kwargs)
+                
+                # Éxito: actualizar estado del proveedor
+                provider.last_success = datetime.now()
+                provider.consecutive_failures = 0
+                if provider.status == ProviderStatus.DEGRADED:
+                    provider.status = ProviderStatus.HEALTHY
+                
+                self.current_provider = provider
+                return response
+                
+            except Exception as e:
+                last_error = e
+                provider.consecutive_failures += 1
+                provider.last_failure = datetime.now()
+                
+                logger.warning(
+                    f"Provider {provider.name} failed: {str(e)}. "
+                    f"Consecutive failures: {provider.consecutive_failures}"
+                )
+                
+                if provider.consecutive_failures >= self.failover_threshold:
+                    provider.status = ProviderStatus.UNAVAILABLE
+                    logger.error(f"Provider {provider.name} marked as UNAVAILABLE")
+                
+                continue
+        
+        # Todos los proveedores fallaron
+        raise AllProvidersFailedError(
+            f"All LLM providers failed. Last error: {last_error}",
+            last_error=last_error
+        )
+    
+    async def _call_provider(
+        self,
+        provider: LLMProvider,
+        prompt: str,
+        **kwargs
+    ) -> Dict:
+        """Llama a un proveedor específico."""
+        # Implementación específica según el cliente del proveedor
+        # Aquí iría la lógica para OpenAI, Anthropic, etc.
+        raise NotImplementedError()
+    
+    def health_check(self) -> Dict[str, ProviderStatus]:
+        """
+        Verifica la salud de todos los proveedores.
+        
+        Para producción, esto haría ping reales a cada API.
+        """
+        now = datetime.now()
+        
+        results = {}
+        for name, provider in self.providers.items():
+            if provider.consecutive_failures >= self.failover_threshold:
+                # Está marcado como unavailable, ver si hay que probar recovery
+                if provider.last_failure:
+                    time_since_failure = (now - provider.last_failure).total_seconds()
+                    
+                    if time_since_failure >= self.recovery_check_interval:
+                        # Probar recovery
+                        provider.status = ProviderStatus.UNTESTED
+                        provider.consecutive_failures = 0
+                        logger.info(f"Testing recovery for provider {name}")
+            
+            results[name] = provider.status
+        
+        self.last_health_check = now
+        return results
+    
+    def get_best_provider(self) -> Optional[LLMProvider]:
+        """Retorna el mejor proveedor disponible."""
+        available = [
+            p for p in self.providers.values()
+            if p.status in [ProviderStatus.HEALTHY, ProviderStatus.DEGRADED]
+            and p.consecutive_failures < self.failover_threshold
+        ]
+        
+        if not available:
+            return None
+        
+        return min(available, key=lambda p: p.priority)
+
+
+class AllProvidersFailedError(Exception):
+    """Error cuando todos los proveedores fallan."""
+    def __init__(self, message, last_error=None):
+        super().__init__(message)
+        self.last_error = last_error
+
+
+# Ejemplo de uso
+async def example():
+    # Crear cliente multi-provider
+    client = MultiProviderLLMClient()
+    
+    # Agregar proveedores
+    client.add_provider(LLMProvider(
+        name="openai-gpt4",
+        client=None,  # OpenAI client real
+        priority=1,
+        is_primary=True,
+        supports_streaming=True,
+        supports_function_calling=True,
+        max_context_tokens=128_000,
+        cost_per_1m_input=5.0,
+        cost_per_1m_output=15.0
+    ))
+    
+    client.add_provider(LLMProvider(
+        name="anthropic-claude",
+        client=None,  # Anthropic client real
+        priority=2,
+        supports_streaming=True,
+        supports_function_calling=True,
+        max_context_tokens=200_000,
+        cost_per_1m_input=3.0,
+        cost_per_1m_output=15.0
+    ))
+    
+    client.add_provider(LLMProvider(
+        name="google-gemini",
+        client=None,  # Google client real
+        priority=3,
+        supports_streaming=True,
+        supports_function_calling=True,
+        max_context_tokens=1_000_000,
+        cost_per_1m_input=1.25,  # varies
+        cost_per_1m_output=5.0
+    ))
+    
+    # Hacer request — si GPT-4 falla, prueba Claude, luego Gemini
+    try:
+        response = await client.generate(
+            "Explica qué es el aprendizaje automático",
+            model_preference="gpt4"
+        )
+        return response
+    except AllProvidersFailedError as e:
+        # TODOS los proveedores fallaron
+        logger.critical(f"CRITICAL: All LLM providers are down: {e}")
+        # Aquí podrías:
+        # - Mandar alerta de pagerduty
+        # - Mostrar mensaje de "servicio temporalmente unavailable"
+        # - Callback a un humano
+        raise</code></pre>
+<hr>
+<h2>⚠️ Los 3 Errores Críticos en Scaling y Costos</h2>
+<h3>Error #1: No Planear para Escalar</h3>
+<p><strong>El problema:</strong> Diseñas tu sistema para 100 users y cuando de pronto tienes 10,000, todo se cae. O peor, el costo se dispara y te quedas sin presupuesto a mitad de mes.</p>
+<p><strong>El fix:</strong></p>
+<ul>
+<li><strong>Horizontal scaling:</strong> Diseña desde el inicio para tener múltiples réplicas</li>
+<li><strong>Auto-scaling rules:</strong> Define métricas claras (CPU, latency, queue depth) para trigger scaling</li>
+<li><strong>Capacity planning:</strong> Calcula cuántos tokens/segundo necesitas servir y a qué costo</li>
+<li><strong>Cost budgeting:</strong> Pon topes de gasto con alertas antes de que te surpresa la factura</li>
+</ul>
+<pre><code class="language-python"># Ejemplo de auto-scaling configurado por métricas
+AUTO_Scaling_RULES = {
+    "scale_up": {
+        "metric": "queue_depth",
+        "threshold": 100,
+        "evaluation_period_seconds": 60,
+        "cooldown_seconds": 300,
+        "scale_factor": 2  # Duplicar réplicas
+    },
+    "scale_down": {
+        "metric": "queue_depth",
+        "threshold": 10,
+        "evaluation_period_seconds": 300,  # Más tiempo para bajar
+        "cooldown_seconds": 600,
+        "scale_factor": 0.5  # Reducir a la mitad
+    },
+    "emergency_scale": {
+        "metric": "error_rate",
+        "threshold": 0.1,  # 10% error rate
+        "evaluation_period_seconds": 30,
+        "cooldown_seconds": 60,
+        "scale_factor": 3  # Triple réplicas inmediatamente
+    }
 }</code></pre>
+<h3>Error #2: No Optimizar Costos</h3>
+<p><strong>El problema:</strong> Usar GPT-4o para clasificar spam (tarea trivial) o usar el modelo más caro para todo cuando un modelo más barato rendiría igual.</p>
+<p><strong>El fix:</strong></p>
+<pre><code class="language-python"># Routing inteligente por complejidad
+def route_request(complexity: int, routing_config: dict) -> str:
+    """
+    Routing basado en complejidad de la tarea.
+    """
+    if complexity <= routing_config["simple_threshold"]:
+        return routing_config["cheap_model"]
+    elif complexity <= routing_config["medium_threshold"]:
+        return routing_config["medium_model"]
+    else:
+        return routing_config["expensive_model"]
+
+# Números reales de ahorro
+ROUTING_CALCULATION = {
+    "tasks": {
+        "simple": {"count": 70000, "pct": 0.70},  # Clasificar, extraer, QA simple
+        "medium": {"count": 20000, "pct": 0.20},  # Resumir, transformar
+        "complex": {"count": 8000, "pct": 0.08},  # Razonar, analizar
+        "very_complex": {"count": 2000, "pct": 0.02}  # Código, generación larga
+    },
+    "model_costs": {
+        "gpt-4o-mini": {"input": 0.15, "output": 0.60, "avg_tokens": 80},
+        "claude-3-5-haiku": {"input": 0.80, "output": 4.0, "avg_tokens": 150},
+        "claude-3-5-sonnet": {"input": 3.0, "output": 15.0, "avg_tokens": 2500},
+        "gpt-4o": {"input": 5.0, "output": 15.0, "avg_tokens": 7000}
+    }
+}
+
+# Savings con routing inteligente: ~65% de ahorro vs usar GPT-4o para todo</code></pre>
+<h3>Error #3: No Tener Backup Plans</h3>
+<p><strong>El problema:</strong> Depender 100% de un solo proveedor. Cuando ese proveedor se cae, tu producto está down y no hay nada que puedas hacer.</p>
+<p><strong>El fix:</strong></p>
+<pre><code class="language-python"># Arquitectura multi-provider con failover
+MULTI_PROVIDER_SETUP = {
+    "primary": {
+        "provider": "openai",
+        "model": "gpt-4o",
+        "priority": 1,
+        "fallback_threshold": 3
+    },
+    "secondary": {
+        "provider": "anthropic", 
+        "model": "claude-3-5-sonnet",
+        "priority": 2,
+        "fallback_threshold": 3
+    },
+    "tertiary": {
+        "provider": "google",
+        "model": "gemini-2.0-flash",
+        "priority": 3,
+        "fallback_threshold": 5  # Más tolerante porque es más barato
+    },
+    "emergency": {
+        # Último recurso: modelo más barato pero disponible
+        "provider": "openai",
+        "model": "gpt-4o-mini",
+        "priority": 10,
+        "max_cost_per_request": 0.01  # No gastar más de 1 centavo por request
+    }
+}
+
+# El failover hierarchy:
+# 1. GPT-4o → si falla 3 veces, marcar como unavailable
+# 2. Claude 3.5 Sonnet → si falla 3 veces, marcar como unavailable
+# 3. Gemini 2.0 Flash → si falla 5 veces, marcar como unavailable
+# 4. GPT-4o Mini (emergency) → último recurso, muy limitado</code></pre>
 <hr>
-<h2>⚠️ Errores Comunes</h2>
-<h3>Error 1: CoT para Todo</h3>
-<p><strong>El problema</strong>: Usar CoT para preguntas simples.</p>
-<p><strong>La solucion</strong>: CoT para problemas complejos de razonamiento.</p>
-<hr>
-<p><em>Eso es todo! Nos vemos en el Dia 361.</em></p>
+<h2>📋 Resumen y Cierre Colombiano</h2>
+<p>Y ahí se los dejo, parcero. Día 360 y cubrimos la segunda parte de LLM Production Systems con todo lo que necesitan para escalar sin perder la camisa:</p>
+<ul>
+<li><strong>Load Balancing Inteligente:</strong> No todo es round-robin. Para LLMs importa la latencia, el costo y la carga. Una buena estrategia de routing puede mejorar throughput en 40%.</li>
+<li><strong>Caching Semántico:</strong> 30-60% de las requests son similares o idénticas. Cachearlas puede reducir tu factura de API a la mitad sin sacrificar calidad.</li>
+<li><strong>Optimización de Costos:</strong> Routing inteligente por complejidad + caching + el modelo correcto para cada tarea = 60-80% de ahorro.</li>
+<li><strong>Backup Plans:</strong> Si no tienes múltiples proveedores y failover automático, cuando tu proveedor se caiga (que se va a caer), tu sistema se cae con él.</li>
+</ul>
+<p>Y miren, desde esta lonja y esta tierra de oportunidades donde uno aprende a estirar el peso, eso mismo aplica aquí: no necesitan GPUs de $100,000 para correr LLMs en producción. Necesitan arquitectura inteligente, caching agresivo, y saber qué modelo usar para cada tarea. Eso es lo que diferencia un equipo que gasta $50K al mes de uno que gasta $10K haciendo básicamente lo mismo.</p>
+<p>Mañana empezamos la última semana de este viaje de 365 días. Vamos a cerrar con broche de oro, dove. ☕🇨🇴</p>
   </article>
 
   <script>
