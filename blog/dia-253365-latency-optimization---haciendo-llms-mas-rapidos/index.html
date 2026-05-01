@@ -118,54 +118,288 @@ nav {
   </header>
 
   <article class="article-body">
-    <h1>Latency Optimization - Haciendo LLMs Mas Rapidos</h1>
-<p>Hagale pues, parcero. Dia 253 y hoy hablamos de latency optimization: como hacer LLMs mas rapidos. Cafe.</p>
-<hr>
-<h2>Latency Optimization</h2>
-<p>Optimizar latencia de LLMs es crucial para buena experiencia de usuario. Desde quantization hasta caching, hay muchas tecnicas para reducir tiempos de respuesta.</p>
-<h3>Tecnicas principales:</h3>
+<h2Evaluation Harness — El Framework Que El 80% Usa Sin Saber Que Existe</h2>
+
+<p>Pues resulta, parcero, que estaba yo en una reunión el mes pasado donde un equipo de ML presentaba sus "resultados" de evaluación de un LLM. Sacaron una tabla comparando su modelo contra GPT-4 en MMLU y todo el mundo quedó esperando. Hasta que pregunté: "¿Cómo hicieron la evaluación?" — y boom, silencio. Resulta que habían probado el modelo "a ojo", preguntándole 20 cosas y conclusionando. Eso no es evaluación, eso es almuerzo de malucos.</p>
+
+<p>Por eso hoy hablamos de <strong>lm-evaluation-harness</strong>: el framework que el 80% de la gente que evalúa LLMs no conoce o no sabe usar bien. Y créeme, sin una evaluación sistemática, estás volando ciegazo.</p>
+
+<h2>¿Por Qué Necesitas Un Evaluation Harness?</h2>
+
+<p>Imagina que tienes dos modelos: <code>modelo_A</code> y <code>modelo_B</code>. Quieres saber cuál es mejor para tu aplicación de análisis financiero en español. ¿Qué hace la mayoría? Le hace 10 preguntas a cada uno y ya. Error fatal.</p>
+
+<p>Un evaluation harness como lm-evaluation-harness te permite:</p>
+
 <ul>
-<li><strong>Quantization</strong>: INT8/INT4 para inference mas rapido</li>
-<li><strong>KV Cache</strong>: Cache de key-values para generacion</li>
-<li><strong>Batch Inference</strong>: Procesar multiples requests juntos</li>
-<li><strong>Speculative Decoding</strong>: Prediccion rapida + verificacion</li>
+<li><strong>Evaluar de manera reproducible</strong>: Exact same conditions para todos los modelos</li>
+<li><strong>Correr benchmarks estandarizados</strong>: MMLU, GSM8K, HumanEval, TruthfulQA</li>
+<li><strong>Custom tasks</strong>: Evaluar dominio específico con tus propios datasets</li>
+<li><strong>Resultados comparables</strong>: Numbers que puedes publicar y replicar</li>
 </ul>
-<hr>
-<h2>Optimizaciones En vLLM</h2>
-<pre><code class="language-python">from vllm import LLM, SamplingParams
 
-# vLLM optimiza automaticamente:
-# - PagedAttention (KV cache eficiente)
-# - Continuous batching
-# - Tensor parallelism
+<h2>Los Benchmarks Que Tienes Que Conocer</h2>
 
-llm = LLM(model="meta-llama/Llama-2-70b-hf",
-          quantization="AWQ",
-          tensor_parallel_size=4)
+<h3>MMLU — Massive Multitask Language Understanding</h3>
 
-params = SamplingParams(temperature=0.8, max_tokens=512)
-outputs = llm.generate(prompts, params)</code></pre>
-<hr>
-<h2>Speculative Decoding</h2>
-<pre><code class="language-python"># Speculative decoding: small model predice, big model verifica
-small_model = load_model("tinyllama")
-big_model = load_model("llama-70b")
+<p>57 tareas diferentes: ciencia, historia, derecho, medicina. Mide conocimiento general. La fórmula del score:</p>
 
-# Small model genera varios tokens
-draft_tokens = small_model.generate(context, n=5)
+<p>$$\text{Accuracy} = \frac{\text{Respuestas Correctas}}{\text{Total de Preguntas}} \times 100\%$$</p>
 
-# Big model verifica en paralelo
-verification = big_model.verify(context, draft_tokens)
+<p>Un modelo random logra ~25% en opciones múltiples (4 choices). GPT-4 anda por ~86%. Si tu modelo está por debajo de random, algo está mal.</p>
 
-# Accept/Reject cada token
-final_tokens = accept_tokens(draft_tokens, verification)</code></pre>
-<hr>
-<h2>Errores Comunes</h2>
-<h3>Error 1: Ignorar First Token Latency</h3>
-<p><strong>El problema</strong>: Solo optimizar throughput, olvidar Time to First Token.</p>
-<p><strong>La solucion</strong>: Prefill eficiente + KV cache optimizado.</p>
-<hr>
-<p><em>Eso es todo! Nos vemos en el Dia 254.</em></p>
+<h3>GSM8K — Grade School Math 8K</h3>
+
+<p>8,500 problemas de matemáticas de primaria. No es triviales — requieren multi-step reasoning. Mide capacidad de razonamiento matemático.</p>
+
+<p>$$\text{GSM8K Accuracy} = \frac{\text{Problemas Resueltos Correctamente}}{8,500} \times 100\%$$</p>
+
+<p>La dificultad está en que el modelo no solo tiene que dar la respuesta final — tiene que mostrar el paso a paso. Un error en el paso 3 descarta todo.</p>
+
+<h3>HumanEval — Code Generation</h3>
+
+<p>164 problemas de programación en Python. Mide ability to generate correct code. Cada problema incluye:</p>
+
+<ul>
+<li>Docstring con especificación</li>
+<li>Firma de la función</li>
+<li>Cuerpo de la función (vacío)</li>
+</ul>
+
+<p>El modelo tiene que completar el cuerpo. Se ejecuta contra tests unitarios:</p>
+
+<p>$$\text{Pass@K} = 1 - \frac{\binom{n - c}{k}}{\binom{n}{k}}$$</p>
+
+<p>Donde <code>n</code> = total de problemas, <code>c</code> = correctos, <code>k</code> = número de intentos. Pass@1 es el estándar.</p>
+
+<h3>TruthfulQA — Truthfulness</h3>
+
+<p>817 preguntas donde humanos frecuentemente dan respuestas incorrectas. Mide si el modelo repite desinformación o responde honestamente. Este benchmark es tricky porque:</p>
+
+<ul>
+<li>Un modelo que siempre dice "no sé" sería muy truthful pero inútil</li>
+<li>La métrica equilibra truthfulness vs informativeness</li>
+</ul>
+
+<h2>Usando lm-evaluation-harness</h2>
+
+<h3>Instalación</h3>
+
+<pre><code class="language-bash">pip install lm-evaluation-harness
+# o desde source:
+git clone https://github.com/EleutherAI/lm-evaluation-harness
+cd lm-evaluation-harness
+pip install -e .</code></pre>
+
+<h3>Evaluación Básica — CLI</h3>
+
+<pre><code class="language-bash"># Evaluar modelo en MMLU
+lm_eval \
+  --model hf \
+  --model_args pretrained=mistralai/Mistral-7B-v0.1 \
+  --tasks mmlu \
+  --device cuda:0 \
+  --batch_size 8
+
+# Múltiples benchmarks de una vez
+lm_eval \
+  --model hf \
+  --model_args pretrained=meta-llama/Llama-2-7b \
+  --tasks mmlu,gsm8k,truthfulqa_mc \
+  --device cuda:0 \
+  --batch_size 4</code></pre>
+
+<h3>Output — Cómo Leer Los Resultados</h3>
+
+<pre><code class="language-json">{
+  "results": {
+    "mmlu": {
+      "acc": 0.6942,
+      "acc_stderr": 0.0046
+    },
+    "gsm8k": {
+      "acc": 0.4123,
+      "acc_stderr": 0.0156
+    }
+  },
+  "config": {
+    "model": "mistralai/Mistral-7B-v0.1",
+    "num_fewshot": 5
+  }
+}</code></pre>
+
+<p><code>acc</code> es el accuracy principal. <code>acc_stderr</code> es el standard error — valores debajo de 0.01 son buenos, significa que la evaluación es estable.</p>
+
+<h2>Creando Custom Tasks</h2>
+
+<p>Aquí es donde la cosa se pone interesante. Los benchmarks genéricos no cubren tu dominio específico. Para un sistema médico, necesitas evaluar en español médico. Para código empresarial, necesitas tus propias pruebas.</p>
+
+<h3>Estructura de una Custom Task</h3>
+
+<pre><code class="language-yaml"># tasks/medical-qa-es.yaml
+task: medical_qa_es
+dataset_path: tu/medical-qa-spanish
+dataset_name: null
+output_type: multiple_choice
+test_split: test
+num_fewshot: 5
+
+training_split: null
+dataset_kwargs:
+  trust_remote_code: true
+
+# Formato de cada ejemplo:
+# {"question": "...", "choices": ["A", "B", "C", "D"], "gold": 2}
+# gold = índice de la respuesta correcta
+
+doc_to_text: "{{question}}"
+doc_to_choice: "{{choices}}"
+doc_to_target: "{{gold}}"</code></pre>
+
+<h3>Cargar y Usar la Task</h3>
+
+<pre><code class="language-python">from lm_eval.api.registry import ALL_TASKS
+from lm_eval.api.tasks import TaskManager
+
+# Cargar task manager con tasks personalizadas
+tm = TaskManager(["tasks/", "custom_tasks/"])
+
+# O desde CLI con task específica
+lm_eval \
+  --model hf \
+  --model_args pretrained=models/tu-modelo-medico \
+  --tasks medical_qa_es \
+  --device cuda:0 \
+  --batch_size 8</code></pre>
+
+<h3>Python API — Para Más Control</h3>
+
+<pre><code class="language-python">from lm_eval import evaluate, make_task
+from lm_eval.api.model import LM
+
+class CustomLM(LM):
+    def __init__(self, model_path):
+        # Tu implementación de inference
+        self.model = load_model(model_path)
+    
+    def generate_until(self, requests):
+        # Lógica de generación
+        return [self._generate(req) for req in requests]
+    
+    def loglikelihood(self, requests):
+        # Para tareas de elección múltiple
+        return self._compute_logprobs(requests)
+
+# Crear task desde YAML
+task = make_task("tasks/medical-qa-es.yaml")
+
+# Evaluar
+results = evaluate(
+    model=CustomLM("models/medical-llm"),
+    tasks=[task],
+    num_fewshot=5,
+    limit=100  # Para testing rápido
+)</code></pre>
+
+<h2>Errores Comunes — Los Tres Pecados Capitales</h2>
+
+<h3>Error 1: Evaluar Modelos "A Mano" — Sin Harness</h3>
+
+<p><strong>El problema</strong>: Le preguntas 20 cosas al modelo, decides que "suena mejor" y publications resultados. Esto no es evaluación — es intuición disfrazada de data.</p>
+
+<p>Los issues:</p>
+<ul>
+<li>No reproducible — mañana puedes dar score diferente</li>
+<li>Bias de confirmación — tiendes a recordar los casos que te gustaron</li>
+<li>No comparable — ¿cómo comparas con otros modelos?</li>
+<li>Sample size ridículamente pequeño — 20 samples vs 14,000 de MMLU</li>
+</ul>
+
+<p><strong>El fix</strong>: Usa lm-evaluation-harness. Siempre. Aunque sea para evaluation interna. Los beneficios:</p>
+
+<pre><code class="language-bash"># Es tan simple como esto
+lm_eval \
+  --model hf \
+  --model_args pretrained=models/tu-modelo \
+  --tasks mmlu,gsm8k,hellaswag \
+  --device cuda:0 \
+  --batch_size 16</code></pre>
+
+<h3>Error 2: Confiar Ciegamente En Benchmark Results Ajenos</h3>
+
+<p><strong>El problema</strong>: Ves que "modelo_X logra 72% en MMLU" en un paper y lo asumes verdadero sin verificar. Mal, muy mal.</p>
+
+<p>Los benchmarks se pueden manipulatear:</p>
+
+<ul>
+<li><strong>Contaminación de datos</strong>: El modelo fue entrenado en preguntas similares</li>
+<li><strong>Evals diferentes</strong>: Algunos usan 5-shot, otros 0-shot — no son comparables</li>
+<li><strong>Metric gaming</strong>: Técnica de prompting para optimizar el benchmark sin mejorar el modelo real</li>
+<li><strong>Hardware diferente</strong>: Los resultados Reported vs lo que tú medirás</li>
+</ul>
+
+<p><strong>El fix</strong>: Siempre que puedas, replica la evaluación tú mismo. Si el paper no especifica exactamente la configuración, tenés desconfianza.</p>
+
+<pre><code class="language-bash"># Verifica con lm-evaluation-harness
+# Usa exactamente la misma config que el paper reporta
+lm_eval \
+  --model hf \
+  --model_args pretrained=modelo_X \
+  --tasks mmlu \
+  --num_fewshot 5 \
+  --device cuda:0</code></pre>
+
+<p>Si no puedes replicar, al menos valida con un subset de tu dominio. Un paper que reporta 90% en MMLU pero no puede responder 3 preguntas de tu dominio específico tiene un problema.</p>
+
+<h3>Error 3: Solo Usar Benchmarks Populares — Sin Coverage de Dominio</h3>
+
+<p><strong>El problema</strong>: MMLU, GSM8K, HumanEval — todos el mundo usa estos. Pero son benchmarks en inglés, hechos por gringos, para modelos entrenados en internet en general.</p>
+
+<p>Si tu aplicación es:</p>
+
+<ul>
+<li>Chatbot de soporte en español colombiano → MMLU no te dice nada</li>
+<li>Sistema de análisis financiero → GSM8K no es relevante</li>
+<li>Generador de código empresarial → HumanEval mide Python básico, no tu stack</li>
+</ul>
+
+<p>Estás optimizando para benchmarks que no importan.</p>
+
+<p><strong>El fix</strong>: Crea tu propio evaluation harness con tasks de tu dominio. No tiene que ser complejo:</p>
+
+<pre><code class="language-yaml"># tasks/finance-sentiment-es.yaml
+task: finance_sentiment_es
+dataset_path: my/finance-sentiment-spanish
+output_type: multiple_choice
+
+doc_to_text: "Clasifica el sentimiento: {{text}}"
+doc_to_choice: ["positivo", "negativo", "neutral"]
+doc_to_target: "{{label}}"</code></pre>
+
+<p>Y luego:</p>
+
+<pre><code class="language-bash"># Evalúa en tu benchmark específico
+lm_eval \
+  --model hf \
+  --model_args pretrained=models/tu-modelo \
+  --tasks finance_sentiment_es \
+  --num_fewshot 3</code></pre>
+
+<h2>Resumen y Cierre</h2>
+
+<p>lm-evaluation-harness no es solo para researchers. Es para cualquiera que necesite saber si su LLM realmente funciona bien — de manera reproducible y justifiable.</p>
+
+<p>Hoy aprendimos:</p>
+
+<ul>
+<li><strong>Benchmarks estandarizados</strong> — MMLU, GSM8K, HumanEval, TruthfulQA tienen usos y limitaciones</li>
+<li><strong>Cómo usar el CLI</strong> — una línea para evaluar cualquier modelo</li>
+<li><strong>Custom tasks</strong> — YAML + Python API para tu dominio específico</li>
+<li><strong>Los tres errores fatales</strong> — evaluación a mano, confiar ciegamente, y solo benchmarks populares</li>
+</ul>
+
+<p>La próxima vez que veas una tabla comparando LLMs, preguntá primero: "¿Cómo fue la evaluación?" Si la respuesta no incluye lm-evaluation-harness o algo similar, tomá esos números con pinzas.</p>
+
+<p>Y bueno, parcero, eso es todo por hoy. Mañana seguimos con guardrails y validación de outputs — porque de nada sirve un modelo buenísimo si te devuelve JSON malformed a cada rato. ¡Hágale pues!</p>
   </article>
 
   <script>
