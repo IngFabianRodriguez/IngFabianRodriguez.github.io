@@ -118,60 +118,702 @@ nav {
   </header>
 
   <article class="article-body">
-    <h1>Safety en Agentes -约束 y Protecciones</h1>
-<p>Hagale pues, parcero. Hoy es el Dia 264 y hablamos de Safety en Agentes: restricciones y protecciones para sistemas autonomos. Dejala.</p>
-<hr>
-<h2>🎯 Safety en Agentes</h2>
-<p>Los agentes autonomos necesitan safeguards:</p>
+<h1>Testing LLMs y Prompt Evaluation</h1>
+<p>Hagale pues, parcero. Así como en Colombia nadie entrega un software sin probar antes (o al menos eso debería pasar), con los LLMs y prompts pasa igual: el 80% no tiene test suite para sus prompts y el 20% que sí la tiene, muchos la usan mal. Hoy es el Día 264 y vamos a aprender cómo testear prompts sistemáticamente, hacer A/B testing, regression testing y construir una prompt test suite como Dios manda. Café en mano, que esto es clave.</p>
+
+<h2>🎯 Por Qué Testing de Prompts Es Crítico</h2>
+<p>Un prompt no es estático. Es código. Y como todo código, necesita:</p>
 <ul>
-<li><strong>Permission System</strong>: Que acciones puede ejecutar</li>
-<li><strong>Human-in-the-loop</strong>: Aprobacion para acciones criticas</li>
-<li><strong>Rollback</strong>: Capacidad de deshacer acciones</li>
+<li><strong>Version control</strong>: Saber qué cambió entre versiones</li>
+<li><strong>Regression testing</strong>: Asegurar que cambios no rompan lo que funcionaba</li>
+<li><strong>Benchmarks reproducibles</strong>: Medir mejora o degradación</li>
 </ul>
-<hr>
-<h2>📐 Safety Architecture</h2>
-<pre><code class="language-python">class SafeAgent:
-    def __init__(self, base_agent):
-        self.agent = base_agent
-        self.permissions = PermissionSet()
-        self.audit_log = []
-    
-    def execute_action(self, action):
-        # Check si esta permitido
-        if not self.permissions.allows(action):
-            return ActionResult(
-                success=False,
-                error="Action not permitted"
+
+<p>La realidad: la mayoría trata los prompts como magia — van ajustando "a ojo" hasta que "funciona bien". Hasta que un día el modelo se actualiza y todo se rompe. Y no hay forma de saber qué falló porque no hay tests.</p>
+
+<h2>📐 Prompt Test Framework</h2>
+<p>La arquitectura correcta tiene tres capas:</p>
+<ol>
+<li><strong>Test Cases</strong>: Ejemplos de input/output esperados</li>
+<li><strong>Evaluation Metrics</strong>: Cómo medir calidad de respuestas</li>
+<li><strong>Automated Runner</strong>: CI/CD que corre tests en cada cambio</li>
+</ol>
+
+<pre><code class="language-python">import json
+import hashlib
+from dataclasses import dataclass, asdict
+from typing import List, Dict, Any, Callable, Optional
+from enum import Enum
+import re
+
+class TestStatus(Enum):
+    PASS = "pass"
+    FAIL = "fail"
+    PARTIAL = "partial"
+    ERROR = "error"
+
+@dataclass
+class TestCase:
+    """Un caso de prueba para un prompt."""
+    id: str
+    name: str
+    prompt_template: str
+    variables: Dict[str, str]
+    expected_output: Optional[str] = None
+    evaluation_criteria: Optional[Dict[str, float]] = None  # e.g., {"contains": 0.8, "sentiment": 0.9}
+
+    def render_prompt(self) -> str:
+        """Renderiza el prompt con las variables."""
+        return self.prompt_template.format(**self.variables)
+
+@dataclass
+class TestResult:
+    """Resultado de evaluar un test case."""
+    test_id: str
+    status: TestStatus
+    actual_output: str
+    expected_output: Optional[str]
+    metrics: Dict[str, float]
+    latency_ms: float
+    error: Optional[str] = None
+
+    def to_dict(self) -> dict:
+        return {
+            "test_id": self.test_id,
+            "status": self.status.value,
+            "metrics": self.metrics,
+            "latency_ms": self.latency_ms,
+            "error": self.error
+        }
+
+class PromptEvaluator:
+    """Framework para evaluar prompts sistemáticamente."""
+
+    def __init__(self, llm_client, scorer: Optional[Callable] = None):
+        self.llm = llm_client
+        self.scorer = scorer or self._default_scorer
+        self.test_history: List[TestResult] = []
+
+    def _default_scorer(self, output: str, criteria: Dict[str, Any]) -> Dict[str, float]:
+        """Scorer por defecto: verifica presencia de keywords y length."""
+        scores = {}
+
+        if "contains" in criteria:
+            keywords = criteria["contains"] if isinstance(criteria["contains"], list) else [criteria["contains"]]
+            matches = sum(1 for kw in keywords if kw.lower() in output.lower())
+            scores["contains_ratio"] = matches / len(keywords) if keywords else 0
+
+        if "min_length" in criteria:
+            scores["length_ok"] = 1.0 if len(output) >= criteria["min_length"] else len(output) / criteria["min_length"]
+
+        if "max_length" in criteria:
+            if len(output) <= criteria["max_length"]:
+                scores["length_ok"] = 1.0
+            else:
+                scores["length_ok"] = max(0, 1 - (len(output) - criteria["max_length"]) / criteria["max_length"])
+
+        if "regex_match" in criteria:
+            pattern = criteria["regex_match"]
+            scores["regex_match"] = 1.0 if re.search(pattern, output) else 0.0
+
+        return scores
+
+    async def run_test(self, test_case: TestCase) -> TestResult:
+        """Ejecuta un test case y retorna el resultado."""
+        import time
+        start = time.time()
+
+        try:
+            prompt = test_case.render_prompt()
+            output = await self.llm.generate(prompt)
+
+            metrics = self.scorer(output, test_case.evaluation_criteria or {})
+
+            # Determinar status
+            all_pass = all(s >= 0.7 for s in metrics.values())
+            any_fail = any(s < 0.5 for s in metrics.values())
+
+            if all_pass:
+                status = TestStatus.PASS
+            elif any_fail:
+                status = TestStatus.FAIL
+            else:
+                status = TestStatus.PARTIAL
+
+            result = TestResult(
+                test_id=test_case.id,
+                status=status,
+                actual_output=output,
+                expected_output=test_case.expected_output,
+                metrics=metrics,
+                latency_ms=(time.time() - start) * 1000
             )
-        
-        # Log para audit
-        self.audit_log.append(action)
-        
-        # Ejecutar con monitoring
-        with self.monitor():
-            result = self.agent.execute(action)
-        
+
+        except Exception as e:
+            result = TestResult(
+                test_id=test_case.id,
+                status=TestStatus.ERROR,
+                actual_output="",
+                expected_output=test_case.expected_output,
+                metrics={},
+                latency_ms=(time.time() - start) * 1000,
+                error=str(e)
+            )
+
+        self.test_history.append(result)
         return result
-    
-    def can_rollback(self, action):
-        return action in self.rollback_actions</code></pre>
-<hr>
-<h2>🚀 Constrains Dinamicos</h2>
-<pre><code class="language-python"># Constrains que cambian basado en contexto
-dynamic_constraints = {
-    "read_only": ["file1.txt", "data.csv"],
-    "no_delete": ["/system", "/important"],
-    "max_cost_usd": 10.00,
-    "max_api_calls": 100,
-    "requires_approval": ["delete", "deploy", "payment"]
-}</code></pre>
-<hr>
-<h2>⚠️ Errores Comunes</h2>
-<h3>Error 1: Safety Posterior</h3>
-<p><strong>El problema</strong>: Agregar safety al final.</p>
-<p><strong>La solucion</strong>: Diseñar con safety desde el principio.</p>
-<hr>
-<p><em>Eso es todo! Nos vemos en el Dia 265.</em></p>
+
+    async def run_test_suite(self, test_cases: List[TestCase], verbose: bool = True) -> Dict[str, Any]:
+        """Ejecuta todos los tests y retorna resumen."""
+        results = []
+        for tc in test_cases:
+            if verbose:
+                print(f"▶️  Ejecutando: {tc.name}")
+            result = await self.run_test(tc)
+            results.append(result)
+
+        # Resumen
+        total = len(results)
+        passed = sum(1 for r in results if r.status == TestStatus.PASS)
+        failed = sum(1 for r in results if r.status == TestStatus.FAIL)
+        partial = sum(1 for r in results if r.status == TestStatus.PARTIAL)
+        errors = sum(1 for r in results if r.status == TestStatus.ERROR)
+
+        summary = {
+            "total": total,
+            "passed": passed,
+            "failed": failed,
+            "partial": partial,
+            "errors": errors,
+            "pass_rate": passed / total if total > 0 else 0,
+            "results": [r.to_dict() for r in results]
+        }
+
+        if verbose:
+            print(f"\n📊 Resumen: {passed}/{total} tests pasados ({summary['pass_rate']:.1%})")
+
+        return summary</code></pre>
+
+<h2>📐 A/B Testing para Prompts</h2>
+<p>No es suficiente decir "este prompt funciona mejor". Necesitás evidencia estadística. A/B testing te permite comparar dos versiones de un prompt con significancia estadística.</p>
+
+<pre><code class="language-python">import numpy as np
+from scipy import stats
+from dataclasses import dataclass
+from typing import List, Tuple
+
+@dataclass
+class ABTestResult:
+    variant_a_results: List[float]
+    variant_b_results: List[float]
+    p_value: float
+    is_significant: bool
+    winner: str
+    confidence_interval: Tuple[float, float]
+    effect_size: float
+
+class ABPromptTester:
+    """Test A/B para comparar variantes de prompts."""
+
+    def __init__(self, significance_level: float = 0.05):
+        self.alpha = significance_level
+
+    def run_ab_test(
+        self,
+        prompt_a: str,
+        prompt_b: str,
+        test_inputs: List[str],
+        scorer_fn: callable,
+        n_iterations: int = 5
+    ) -> ABTestResult:
+        """
+        Corre test A/B entre dos prompts.
+
+        Para cada input, ejecuta ambos prompts múltiples veces
+        para account for variabilidad del LLM.
+        """
+        scores_a = []
+        scores_b = []
+
+        for input_text in test_inputs:
+            for _ in range(n_iterations):
+                output_a = self.call_llm(prompt_a, input_text)
+                output_b = self.call_llm(prompt_b, input_text)
+
+                score_a = scorer_fn(output_a, input_text)
+                score_b = scorer_fn(output_b, input_text)
+
+                scores_a.append(score_a)
+                scores_b.append(score_b)
+
+        # Test estadístico (t-test de dos muestras)
+        t_stat, p_value = stats.ttest_ind(scores_a, scores_b)
+
+        mean_a = np.mean(scores_a)
+        mean_b = np.mean(scores_b)
+
+        # Effect size (Cohen's d)
+        pooled_std = np.sqrt((np.var(scores_a) + np.var(scores_b)) / 2)
+        effect_size = (mean_b - mean_a) / pooled_std if pooled_std > 0 else 0
+
+        # Confidence interval para la diferencia
+        se = pooled_std * np.sqrt(2 / len(scores_a))
+        ci_margin = 1.96 * se
+        ci = (mean_b - mean_a - ci_margin, mean_b - mean_a + ci_margin)
+
+        return ABTestResult(
+            variant_a_results=scores_a,
+            variant_b_results=scores_b,
+            p_value=p_value,
+            is_significant=p_value < self.alpha,
+            winner="B" if mean_b > mean_a and p_value < self.alpha else "A",
+            confidence_interval=ci,
+            effect_size=effect_size
+        )
+
+    def call_llm(self, prompt: str, input_text: str) -> str:
+        """Placeholder para llamada real al LLM."""
+        # En implementación real: await llm.generate(prompt.format(input=input_text))
+        pass
+
+# Uso:
+def quality_scorer(output: str, reference: str) -> float:
+    """Scorer simple: similaridad de contenido."""
+    output_words = set(output.lower().split())
+    ref_words = set(reference.lower().split())
+    if not ref_words:
+        return 0.0
+    return len(output_words & ref_words) / len(ref_words)
+
+tester = ABPromptTester(significance_level=0.05)
+
+prompt_v1 = "Resume el siguiente texto en exactamente 3 oraciones: {input}"
+prompt_v2 = "Lee el siguiente texto y escribe un resumen conciso de máximo 3 oraciones que capture los puntos principales: {input}"
+
+test_inputs = [
+    "La inteligencia artificial está transformando la industria tecnológica...",
+    "Los modelos de lenguaje grande han revolucionado el procesamiento de texto...",
+    "La computación en la nube permite escalar recursos dinámicamente...",
+]
+
+result = tester.run_ab_test(prompt_v1, prompt_v2, test_inputs, quality_scorer)
+
+print(f"🧪 Ganador: Variante {result.winner}")
+print(f"   p-value: {result.p_value:.4f}")
+print(f"   Significativo: {'Sí' if result.is_significant else 'No'}")
+print(f"   Effect size: {result.effect_size:.3f}")
+print(f"   IC 95%: {result.confidence_interval}")</code></pre>
+
+<h2>📐 Regression Testing Automatizado</h2>
+<p>Cada vez que cambiás un prompt, necesitás saber si empeoraste algo que funcionaba. El regression test suite corre automáticamente en CI/CD.</p>
+
+<pre><code class="language-python">import pytest
+import asyncio
+from typing import List
+
+class TestPromptRegression:
+    """Test suite de regresión para prompts en producción."""
+
+    @pytest.fixture
+    def evaluator(self):
+        # Setup: inicializar evaluador con prompt actual
+        from your_app import create_evaluator
+        return create_evaluator()
+
+    @pytest.fixture
+    def regression_cases(self) -> List[TestCase]:
+        """Casos de prueba que NUNCA deben empeorar."""
+        return [
+            TestCase(
+                id="regression_001",
+                name="Saludo profesional",
+                prompt_template="Escribe un correo de saludo profesional para {recipient}",
+                variables={"recipient": "Juan Pérez, director de ventas"},
+                evaluation_criteria={
+                    "contains": ["estimado", "saludos", "atentamente"],
+                    "min_length": 50
+                }
+            ),
+            TestCase(
+                id="regression_002",
+                name="Respuesta a queja",
+                prompt_template="Responde de manera empática a: {complaint}",
+                variables={"complaint": "Mi pedido llegó tarde y dañado"},
+                evaluation_criteria={
+                    "contains": ["lamentamos", "compensación", "próximo pedido"],
+                    "min_length": 100
+                }
+            ),
+            TestCase(
+                id="regression_003",
+                name="Resumen ejecutivo",
+                prompt_template="Resume en 3 puntos clave: {text}",
+                variables={"text": "Las ventas del Q3 crecieron 15% debido a la expansión en Latinoamérica."},
+                evaluation_criteria={
+                    "max_length": 500,
+                    "regex_match": r"\d+%"  # Debe contener algún número
+                }
+            ),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_no_regression(self, evaluator, regression_cases):
+        """Test principal: ningún caso de regresión debe fallar."""
+        # Baseline: resultados esperados basados en la versión que funciona
+        baseline_pass_rate = 0.95  # 95% mínimo
+
+        summary = await evaluator.run_test_suite(regression_cases, verbose=False)
+
+        assert summary["pass_rate"] >= baseline_pass_rate, (
+            f"Regression detected! Pass rate {summary['pass_rate']:.1%} "
+            f"below baseline {baseline_pass_rate:.1%}. "
+            f"Failed tests: {[r['test_id'] for r in summary['results'] if r['status'] != 'pass']}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_latency_acceptable(self, evaluator):
+        """Verifica que la latencia no haya aumentado >20%."""
+        latency_test = TestCase(
+            id="latency_001",
+            name="Latency check",
+            prompt_template="Responde algo simple: {input}",
+            variables={"input": "Hola"},
+            evaluation_criteria={"max_length": 100}
+        )
+
+        result = await evaluator.run_test(latency_test)
+        max_latency_ms = 2000  # 2 segundos máximo
+
+        assert result.latency_ms < max_latency_ms, (
+            f"Latency too high: {result.latency_ms:.0f}ms > {max_latency_ms}ms"
+        )
+
+    @pytest.mark.asyncio
+    async def test_output_consistency(self, evaluator):
+        """Verifica que el mismo input produzca outputs consistentes."""
+        consistency_test = TestCase(
+            id="consistency_001",
+            name="Consistency check",
+            prompt_template="Clasifica: {text}",
+            variables={"text": "Me encanta este producto, es increíble"},
+            evaluation_criteria={"contains": ["positivo", "posith", "good"]}
+        )
+
+        # Corre 5 veces y verifica consistencia
+        results = [await evaluator.run_test(consistency_test) for _ in range(5)]
+        statuses = [r.status for r in results]
+
+        # Al menos 4/5 deben pasar
+        pass_count = sum(1 for s in statuses if s == TestStatus.PASS)
+        assert pass_count >= 4, f"Inconsistent outputs: {pass_count}/5 passed"
+
+# Para correr en CI/CD:
+# pytest tests/prompt_regression.py -v --tb=short
+</code></pre>
+
+<h2>⚠️ Error 1: No Tener Test Suite para Prompts</h2>
+<p><strong>El problema</strong>: Sin tests, los prompts se convierten en tierra de nadie. Cualquiera puede cambiarlos "porque le pareció mejor". No hay forma de saber si un cambio mejoró o empeoró el comportamiento. Cuando algo falla en producción, no hay forma de hacer debug.</p>
+
+<p><strong>La solución</strong>: Crear un test suite desde el día uno. Empezá con 10-20 casos que cubran los escenarios más importantes (happy path, edge cases, inputs problemáticos). Agregá más a medida que encontrés bugs.</p>
+
+<pre><code class="language-python"># Estructura de tests/
+# tests/
+# ├── __init__.py
+# ├── conftest.py           # Fixtures compartidos
+# ├── test_prompts/
+# │   ├── __init__.py
+# │   ├── test_greetings.py      # Prompts de saludo
+# │   ├── test_summaries.py     # Prompts de resumen
+# │   ├── test_classification.py # Prompts de clasificación
+# │   └── regression_tests.py    # Tests que nunca deben fallar
+# └── test_integration.py        # Tests end-to-end
+
+# conftest.py
+import pytest
+
+@pytest.fixture(scope="session")
+def llm_client():
+    """Cliente LLM compartido para todos los tests."""
+    from your_llm_client import LLMClient
+    return LLMClient()
+
+@pytest.fixture(scope="session")
+def evaluator(llm_client):
+    """Evaluador de prompts."""
+    from prompt_evaluator import PromptEvaluator
+    return PromptEvaluator(llm_client)
+</code></pre>
+
+<h2>⚠️ Error 2: Testing con Pocos Ejemplos Sin Entender la Distribución</h2>
+<p><strong>El problema</strong>: Testeas el prompt con 3-5 ejemplos que vos elegís, funciona perfecto, pero en producción con inputs reales empieza a fallar estrepitosamente. Esto pasa porque tus ejemplos no representan la distribución real de inputs.</p>
+
+<p><strong>La solución</strong>: Sampling representativo. Entendé la distribución de tus datos y muestreá proporcionalmente:</p>
+
+<pre><code class="language-python">from collections import Counter
+import random
+
+def create_representative_test_set(real_inputs: List[str], n_samples: int = 100) -> List[str]:
+    """
+    Crea test set que representa la distribución real de inputs.
+
+    Agrupa inputs similares y muestrea proporcionalmente.
+    """
+    # Clustering simple por longitud (proxy de complejidad)
+    buckets = {
+        "short": [],      # < 100 chars
+        "medium": [],     # 100-500 chars
+        "long": [],       # > 500 chars
+    }
+
+    for inp in real_inputs:
+        if len(inp) < 100:
+            buckets["short"].append(inp)
+        elif len(inp) < 500:
+            buckets["medium"].append(inp)
+        else:
+            buckets["long"].append(inp)
+
+    # Distribución observada en producción
+    distribution = {
+        "short": 0.3,
+        "medium": 0.5,
+        "long": 0.2
+    }
+
+    # Muestrear proporcionalmente
+    samples = []
+    for bucket_name, ratio in distribution.items():
+        n_from_bucket = int(n_samples * ratio)
+        bucket_samples = random.sample(
+            buckets[bucket_name],
+            min(n_from_bucket, len(buckets[bucket_name]))
+        )
+        samples.extend(bucket_samples)
+
+    return samples
+
+# Si no tenés datos reales, usá distribuciones known
+# y genera synthetic examples que cubran el espacio
+
+def generate_diverse_test_cases(prompt_type: str, n: int = 100) -> List[Dict]:
+    """Genera casos diversos para un tipo de prompt."""
+    generators = {
+        "customer_complaint": generate_complaint_cases,
+        "support_ticket": generate_support_cases,
+        "review": generate_review_cases,
+    }
+
+    gen = generators.get(prompt_type, generate_generic_cases)
+    return gen(n)
+</code></pre>
+
+<h2>⚠️ Error 3: No Medir Inter-Annotator Agreement</h2>
+<p><strong>El problema</strong>: Usás evaluación humana para medir calidad pero no verificás que los anotadores estén de acuerdo entre sí. Un anotador puede calificar 8/10 y otro 3/10 para el mismo output. ¿A quién creés? Sin agreement, las evaluaciones son ruido.</p>
+
+<p><strong>La solución</strong>: Medir agreement con Krippendorff's alpha o Cohen's kappa. Si el agreement es bajo, los criterios no están claros o los anotadores necesitan más guía.</p>
+
+<pre><code class="language-python">from typing import List, Dict, Tuple
+import numpy as np
+
+def cohens_kappa(annotations_1: List[int], annotations_2: List[int]) -> float:
+    """Calcula Cohen's kappa entre dos anotadores."""
+    n = len(annotations_1)
+    assert n == len(annotations_2)
+
+    # Matriz de confusión
+    categories = sorted(set(annotations_1 + annotations_2))
+    k = len(categories)
+    matrix = np.zeros((k, k))
+
+    for a1, a2 in zip(annotations_1, annotations_2):
+        i, j = categories.index(a1), categories.index(a2)
+        matrix[i, j] += 1
+
+    # Agreement observado
+    po = np.trace(matrix) / n
+
+    # Agreement esperado por azar
+    pe = 0
+    for i in range(k):
+        row_sum = matrix[i, :].sum()
+        col_sum = matrix[:, i].sum()
+        pe += (row_sum * col_sum) / (n * n)
+
+    kappa = (po - pe) / (1 - pe) if pe < 1 else 1.0
+    return kappa
+
+def krippendorffs_alpha(
+    annotations: Dict[str, List[int]],  # annotator_id -> ratings
+    categories: int
+) -> float:
+    """
+    Calcula Krippendorff's alpha para múltiples anotadores.
+
+    categories: número de categorías de rating (e.g., 5 para 1-5)
+    """
+    # Crear matriz de anotaciones: items x annotators
+    items = set()
+    for ann_list in annotations.values():
+        items.update(range(len(ann_list)))
+
+    n_items = len(items)
+    n_annotators = len(annotations)
+
+    # Coincidences matrix
+    coincidence = np.zeros((categories, categories))
+
+    for ann_id, ratings in annotations.items():
+        for i, rating in enumerate(ratings):
+            if i in items:
+                coincidence[rating, rating] += 1
+
+    # Agreements observados
+    Do = np.trace(coincidence) / coincidence.sum()
+
+    # Agreements esperados
+    De = sum(
+        coincidence[i, j] * coincidence[j, i]
+        for i in range(categories)
+        for j in range(categories)
+    ) / (coincidence.sum() ** 2)
+
+    alpha = 1 - (Do / De) if De > 0 else 1.0
+    return alpha
+
+# Uso:
+human_ratings = {
+    "annotator_A": [5, 4, 3, 5, 4],  # Ratings de cada output
+    "annotator_B": [5, 4, 4, 5, 4],
+    "annotator_C": [4, 5, 3, 5, 4],
+}
+
+kappa_AB = cohens_kappa(human_ratings["annotator_A"], human_ratings["annotator_B"])
+kappa_AC = cohens_kappa(human_ratings["annotator_A"], human_ratings["annotator_C"])
+
+print(f"Κ A-B: {kappa_AB:.3f} (Aceptable si > 0.6)")
+print(f"Κ A-C: {kappa_AC:.3f}")
+
+# Inter-annotator agreement general
+alpha = krippendorffs_alpha(human_ratings, categories=5)
+print(f"Krippendorff's α: {alpha:.3f} (Bueno si > 0.8)")
+
+# Si el agreement es bajo, revisar los criterios de anotación
+if alpha < 0.7:
+    print("⚠️ WARNING: Agreement bajo. Revisar guidelines de anotación.")</code></pre>
+
+<h2>📊 Métricas de Evaluación de Prompts</h2>
+<p>Además de tests automatizados, necesitás métricas cuantitativas para comparar versiones de prompts:</p>
+
+<pre><code class="language-python">class PromptMetrics:
+    """Métricas para evaluar calidad de prompts."""
+
+    @staticmethod
+    def similarity_score(output: str, reference: str) -> float:
+        """Similaridad coseno entre output y referencia (usar embeddings)."""
+        # En implementación real: usar sentence-transformers
+        return 0.85
+
+    @staticmethod
+    def keyword_coverage(output: str, required_keywords: List[str]) -> float:
+        """Qué porcentaje de keywords requeridas aparecen en el output."""
+        if not required_keywords:
+            return 1.0
+        present = sum(1 for kw in required_keywords if kw.lower() in output.lower())
+        return present / len(required_keywords)
+
+    @staticmethod
+    def length_ratio(output: str, target_length: Tuple[int, int]) -> float:
+        """Output está dentro del rango de longitud esperado."""
+        length = len(output)
+        min_len, max_len = target_length
+        if min_len <= length <= max_len:
+            return 1.0
+        elif length < min_len:
+            return length / min_len
+        else:
+            return max(0, 1 - (length - max_len) / max_len)
+
+    @staticmethod
+    def toxicity_score(output: str) -> float:
+        """Puntaje de toxicidad (menor es mejor)."""
+        # En implementación real: usar perspective API o modelo de toxicity
+        return 0.05  # 5% de toxicidad
+
+    @staticmethod
+    def format_adherence(output: str, required_format: str) -> float:
+        """Output sigue el formato requerido (JSON, lista, etc.)."""
+        if required_format == "json":
+            import json
+            try:
+                json.loads(output)
+                return 1.0
+            except:
+                return 0.0
+        elif required_format == "list":
+            lines = [l.strip() for l in output.split('\n') if l.strip()]
+            return 1.0 if all('-' in l or l[0].isdigit() for l in lines) else 0.0
+        return 0.5
+
+    def compute_composite_score(
+        self,
+        output: str,
+        reference: str = None,
+        required_keywords: List[str] = None,
+        target_length: Tuple[int, int] = None,
+        required_format: str = None,
+        weights: Dict[str, float] = None
+    ) -> Dict[str, float]:
+        """Compute weighted composite score."""
+        weights = weights or {
+            "similarity": 0.3,
+            "keywords": 0.2,
+            "length": 0.2,
+            "format": 0.15,
+            "toxicity": 0.15
+        }
+
+        scores = {
+            "similarity": self.similarity_score(output, reference) if reference else 1.0,
+            "keywords": self.keyword_coverage(output, required_keywords) if required_keywords else 1.0,
+            "length": self.length_ratio(output, target_length) if target_length else 1.0,
+            "toxicity": 1.0 - self.toxicity_score(output),  # Invertido: menor toxicidad = mayor score
+            "format": self.format_adherence(output, required_format) if required_format else 1.0,
+        }
+
+        composite = sum(scores[k] * weights[k] for k in weights)
+        scores["composite"] = composite
+
+        return scores
+</code></pre>
+
+<h2>📝 Resumen y Cierre</h2>
+<p>Hagale pues, parcero. Testing de prompts no es opcional ni "nice to have" — es tan importante como los tests de código. Lo que aprendimos hoy:</p>
+
+<ul>
+<li><strong>Prompt Test Framework</strong>: Estructura para crear, correr y trackear tests de prompts</li>
+<li><strong>A/B Testing estadístico</strong>: Comparar variantes con confianza estadística</li>
+<li><strong>Regression Testing</strong>: Proteger funcionalidad existente en cada cambio</li>
+<li><strong>Muestreo representativo</strong>: Tests que reflejan la distribución real de inputs</li>
+<li><strong>Inter-annotator agreement</strong>: Verificar que evaluación humana sea confiable</li>
+</ul>
+
+<p>El 80% que salta el testing termina con:</p>
+<ul>
+<li>Prompts que "funcionaban" y de repente no</li>
+<li>No saber qué cambió cuando algo falla</li>
+<li>Clientes insatisfechos con outputs inconsistentes</li>
+</ul>
+
+<p>El 20% que hace testing bien tiene:</p>
+<ul>
+<li>Confianza al hacer cambios</li>
+<li>Rollback rápido si algo falla</li>
+<li>Mejora continua basada en datos, no en intuición</li>
+</ul>
+
+<p>La diferencia entre un prompt funcionando en demo y uno funcionando en producción es el testing. No lo ignorés.</p>
+
+<p>Nos vemos en el Día 265. Chaoman.</p>
   </article>
 
   <script>
