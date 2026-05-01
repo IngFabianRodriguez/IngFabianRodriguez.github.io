@@ -118,57 +118,481 @@ nav {
   </header>
 
   <article class="article-body">
-    <h1>Cursor AI - El IDE Impulsado por LLM</h1>
-<p>Hagale pues, parcero. Dia 351 y hoy hablamos de Cursor AI: el IDE impulsado por LLM. Dejala.</p>
-<hr>
-<h2>🎯 Cursor AI</h2>
-<p>Cursor es un IDE built-for-AI coding:</p>
-<ul>
-<li><strong>AI-first</strong>: Diseñado alrededor de AI</li>
-<li><strong>Composer</strong>: Genera codigo multi-archivo</li>
-<li><strong>Codebase awareness</strong>: Entiende todo el proyecto</li>
-<li><strong>Privacy mode</strong>: Datos no se usan para training</li>
-</ul>
-<hr>
-<h2>📐 Cursor Modes</h2>
-<pre><code class="language-python"># Modos de interaccion en Cursor
-CURSOR_MODES = {
-    "ask": "Preguntar sobre codigo especifico",
-    "edit": "Hacer cambios seleccionados",
-    "compose": "Generar nuevos archivos",
-    "refactor": "Reestructurar codigo existente",
-    "debug": "Ayuda con debugging"
-}
+<p>Bueno pues, ahí vamos parcero! Día 351 de este viaje por la inteligencia artificial. Hoy cerramos el ciclo de artículos avanzados con temas que probablemente el 80% de los equipos忽略了 en producción. Vamos con todo.</p>
 
-# Keyboard shortcuts
-SHORTCUTS = {
-    "cmd+k": "Editar con AI",
-    "cmd+l": "Chat con AI",
-    "cmd+enter": "Accept suggestion",
-    "cmd+shift+l": "Codebase-wide chat"
-}</code></pre>
-<hr>
-<h2>🚀 vs Traditional IDEs</h2>
-<pre><code class="language-python"># Cursor vs VSCode
-COMPARISON = {
-    "cursor": {
-        "ai_integration": "Deep, native",
-        "codebase_context": "Full project awareness",
-        "learning_curve": "Similar to VSCode"
+<h2>🎯 Integration Patterns: Conectando LLMs con el Mundo Real</h2>
+
+<p>Un LLM fuera de contexto es como un参考书 en otro idioma — potencialmente útil pero completamente disconnected de lo que necesitas. Los integration patterns son los bridges que hacen que tu modelo realmente resuelva problemas.</p>
+
+<h3>Retrieval-Augmented Generation (RAG)</h3>
+
+<p>RAG combina la potencia generativa del LLM con información externa retrieval-time. La idea: recuperar documentos relevantes y pasarlos como contexto.</p>
+
+<pre><code class="language-python">"""
+RAG Pipeline completo — del retrieval al generation
+"""
+
+class SimpleRAGPipeline:
+    def __init__(self, llm, vector_store, retriever_config: dict):
+        self.llm = llm
+        self.vector_store = vector_store
+        self.top_k = retriever_config.get("top_k", 5)
+        self.reranker = retriever_config.get("reranker", None)
+        self.rewrite_query = retriever_config.get("rewrite_query", False)
+
+    def retrieve(self, query: str) -> list[Document]:
+        """Recupera documentos relevantes del vector store"""
+        query_embedding = self.llm.embed(query)
+
+        # Búsqueda en espacio vectorial
+        results = self.vector_store.similarity_search(
+            query_embedding,
+            k=self.top_k * 2  # Extra para reranking
+        )
+
+        # Reranking si está configurado
+        if self.reranker:
+            results = self.reranker.rerank(query, results, top_k=self.top_k)
+        else:
+            results = results[:self.top_k]
+
+        return results
+
+    def rewrite_query_if_needed(self, query: str) -> str:
+        """Rewriting de query para mejor retrieval"""
+        if not self.rewrite_query:
+            return query
+
+        prompt = f"""Given the following user query, rewrite it to be
+more effective for semantic search. Focus on key concepts and intent.
+
+Original query: {query}
+
+Rewritten query:"""
+
+        return self.llm.generate(prompt).strip()
+
+    def generate_with_context(
+        self,
+        query: str,
+        system_prompt: str = "You are a helpful AI assistant."
+    ) -> str:
+        """Genera respuesta usando contexto recuperado"""
+        # Rewriting de query
+        search_query = self.rewrite_query_if_needed(query)
+
+        # Retrieval
+        retrieved_docs = self.retrieve(search_query)
+
+        # Construir contexto
+        context = "\n\n".join([
+            f"[Source {i+1}] {doc.content}"
+            for i, doc in enumerate(retrieved_docs)
+        ])
+
+        # Prompt con contexto
+        full_prompt = f"""{system_prompt}
+
+Context from retrieved documents:
+{context}
+
+User question: {query}
+
+Based on the context, answer the question. If the context
+doesn't contain relevant information, say so.
+"""
+        return self.llm.generate(full_prompt)
+
+
+# --- Advanced: Hybrid Search ---
+def hybrid_search(
+    vector_results: list,
+    keyword_results: list,
+    alpha: float = 0.5,
+    max_results: int = 10
+) -> list[tuple[Document, float]]:
+    """
+    Combina búsqueda vectorial + keyword-based (BM25).
+
+    Score final: α × vector_score + (1-α) × bm25_score
+
+    α=0.5: peso igual a ambos métodos
+    α→1: privilegia búsqueda semántica
+    α→0: privilegia búsqueda por keywords
+    """
+    from collections import defaultdict
+
+    doc_scores = defaultdict(float)
+    doc_order = {}
+
+    # Normalizar y combinar scores vectoriales
+    if vector_results:
+        max_vec_score = max(score for _, score in vector_results)
+        for doc, score in vector_results:
+            doc_scores[doc.id] += alpha * (score / max_vec_score)
+            doc_order[doc.id] = doc
+
+    # Normalizar y combinar scores BM25
+    if keyword_results:
+        max_bm25_score = max(score for _, score in keyword_results)
+        for doc, score in keyword_results:
+            doc_scores[doc.id] += (1 - alpha) * (score / max_bm25_score)
+            doc_order[doc.id] = doc
+
+    # Ordenar por score combinado
+    ranked = sorted(
+        [(doc_order[doc_id], score) for doc_id, score in doc_scores.items()],
+        key=lambda x: x[1],
+        reverse=True
+    )
+
+    return ranked[:max_results]</code></pre>
+
+<h3>Chain-of-Thought Prompting</h3>
+
+<p>CoT induces reasoning by asking el modelo para explicitar su reasoning process antes de dar la respuesta final.</p>
+
+<pre><code class="language-python">"""
+Chain-of-Thought implementation con verification
+"""
+
+def chain_of_thought(
+    llm,
+    problem: str,
+    include_verification: bool = True
+) -> dict:
+    """
+    CoT prompting con paso de verificación.
+
+    Returns: {
+        "reasoning_steps": [...],
+        "answer": str,
+        "verification": bool,
+        "confidence": float
+    }
+    """
+
+    cot_prompt = f"""Solve this problem step by step. For each step:
+1. Write what you're thinking
+2. Write what you're doing
+3. Write the intermediate result
+
+Problem: {problem}
+
+Steps:"""
+
+    # Generar reasoning steps
+    raw_response = llm.generate(cot_prompt)
+
+    # Parsear pasos
+    steps = parse_reasoning_steps(raw_response)
+
+    # Extraer respuesta final
+    final_answer = extract_final_answer(steps)
+
+    # Verificación si está habilitada
+    verification = None
+    confidence = 0.5
+
+    if include_verification:
+        verification_prompt = f"""Given the following problem and solution,
+verify if the answer is correct. Also estimate confidence 0-1.
+
+Problem: {problem}
+Proposed answer: {final_answer}
+Reasoning steps: {steps}
+
+Is the answer correct? What is your confidence level?
+Provide a brief explanation.
+"""
+        verification_response = llm.generate(verification_prompt)
+        verification = parse_verification(verification_response)
+        confidence = verification.get("confidence", 0.5)
+
+    return {
+        "reasoning_steps": steps,
+        "answer": final_answer,
+        "verification": verification,
+        "confidence": confidence
+    }
+
+
+def tree_of_thought(llm, problem: str, num_branches: int = 3) -> str:
+    """
+    Tree-of-Thought: explora múltiples paths de reasoning
+    en paralelo and selecciona el mejor.
+    """
+    prompts = [
+        f"""Solve this problem using one specific approach.
+Think carefully about this approach and show your work.
+
+Problem: {problem}
+
+Approach {i+1}:"""
+        for i in range(num_branches)
+    ]
+
+    # Generar en paralelo
+    branch_responses = llm.generate_parallel(prompts)
+
+    # Evaluar y seleccionar mejor
+    evaluation_prompt = f"""Given the problem and these solution approaches,
+select the best one and explain why.
+
+Problem: {problem}
+
+Approaches:
+{chr(10).join([f'Approach {i+1}: {r}' for i, r in enumerate(branch_responses)])}
+
+Best approach and why:"""
+
+    final = llm.generate(evaluation_prompt)
+    return final</code></pre>
+
+<h2>🚀 Deployment Strategies: De Notebook a Producción</h2>
+
+<p>El problema del 90% de los deployments de LLM: treat it like a regular API. Un LLM es probabilístico, latente, y resource-intensive. Necesita una estrategia diferente.</p>
+
+<h3>Deployment Architecture Patterns</h3>
+
+<pre><code class="language-python">"""
+LLM Deployment Patterns — scalability y reliability
+"""
+
+# --- Pattern 1: Gateway con Fallback ---
+class LLMGateway:
+    """
+    Gateway que redirige a múltiples providers con fallback.
+    """
+
+    def __init__(self):
+        self.providers = [
+            {"name": "openai", "client": OpenAIClient(), "priority": 1},
+            {"name": "anthropic", "client": AnthropicClient(), "priority": 2},
+            {"name": "local", "client": LocalLLMClient(), "priority": 3},
+        ]
+        self.current_provider = 0
+
+    def generate(self, prompt: str, **kwargs) -> str:
+        """Intenta providers en orden hasta que uno succeeds"""
+        errors = []
+
+        for provider in self.providers:
+            try:
+                return provider["client"].generate(prompt, **kwargs)
+            except Exception as e:
+                errors.append(f"{provider['name']}: {str(e)}")
+                continue
+
+        # Todos fallaron
+        raise LLMAllProvidersFailedError(errors)
+
+
+# --- Pattern 2: Async con Streaming ---
+import asyncio
+from typing import AsyncGenerator
+
+class StreamingLLM:
+    """LLM con streaming asíncrono para baja latencia percibida"""
+
+    def __init__(self, client):
+        self.client = client
+
+    async def stream_generate(
+        self,
+        prompt: str,
+        model: str = "gpt-4"
+    ) -> AsyncGenerator[str, None]:
+        """Genera tokens asíncronamente mientras llegan"""
+        loop = asyncio.get_event_loop()
+
+        # Wrapper para convertir sync streaming a async
+        def sync_stream():
+            for token in self.client.stream_generate(prompt, model=model):
+                yield token
+
+        # Run blocking generator en thread pool
+        for token in await loop.run_in_executor(None, sync_stream):
+            yield token
+
+
+# --- Pattern 3: Caching Strategy ---
+class SemanticCache:
+    """
+    Cache semántico: guarda prompts similares y sus respuestas.
+    Reduce costo y latencia drásticamente.
+    """
+
+    def __init__(self, embedding_model, vector_db, similarity_threshold: float = 0.95):
+        self.embedding_model = embedding_model
+        self.vector_db = vector_db
+        self.similarity_threshold = similarity_threshold
+
+    def get_cached_response(self, prompt: str) -> tuple[str, float] | None:
+        """Busca en cache. Returns (response, similarity) o None"""
+        embedding = self.embedding_model.encode(prompt)
+
+        results = self.vector_db.similarity_search(embedding, k=1)
+
+        if not results:
+            return None
+
+        cached_prompt, cached_response, similarity = results[0]
+
+        if similarity >= self.similarity_threshold:
+            return cached_response, similarity
+
+        return None
+
+    def store(self, prompt: str, response: str):
+        """Guarda en cache"""
+        embedding = self.embedding_model.encode(prompt)
+        self.vector_db.insert(embedding, prompt, response)
+
+
+# --- Pattern 4: Load Balancing ---
+class LLMLoadBalancer:
+    """
+    Distribuye requests entre múltiples deployments.
+    Considera: latencia actual, rate limits, costo.
+    """
+
+    def __init__(self):
+        self.instances = []
+        self.metrics = {}  # instance_id -> {"latency": [], "requests": int}
+
+    def add_instance(self, instance: dict):
+        self.instances.append(instance)
+        self.metrics[instance["id"]] = {"latency": [], "requests": 0}
+
+    def select_instance(self) -> dict:
+        """
+        Selecciona mejor instancia basado en:
+        - Latencia promedio reciente
+        - Rate limit remaining
+        - Priority/weight
+        """
+        scored = []
+
+        for instance in self.instances:
+            metrics = self.metrics[instance["id"]]
+            avg_latency = sum(metrics["latency"]) / max(len(metrics["latency"]), 1)
+
+            # Score más bajo = mejor
+            # Normaliza: menor latencia y más rate limit = mejor
+            score = avg_latency / instance.get("rate_limit_remaining", 1)
+
+            scored.append((instance, score))
+
+        # Selecciona el de menor score
+        best = min(scored, key=lambda x: x[1])
+        return best[0]
+
+    async def generate(self, prompt: str) -> str:
+        instance = self.select_instance()
+        start = time.time()
+
+        try:
+            response = await instance["client"].generate(prompt)
+            latency = time.time() - start
+
+            # Update metrics
+            self.metrics[instance["id"]]["latency"].append(latency)
+            self.metrics[instance["id"]]["requests"] += 1
+
+            # Mantener solo últimos 100 latency measurements
+            if len(self.metrics[instance["id"]]["latency"]) > 100:
+                self.metrics[instance["id"]]["latency"] = \
+                    self.metrics[instance["id"]]["latency"][-100:]
+
+            return response
+        except Exception as e:
+            # Marcar instance como unavailable temporalmente
+            instance["consecutive_failures"] = instance.get("consecutive_failures", 0) + 1
+            raise</code></pre>
+
+<h3>Key Deployment Formulas</h3>
+
+<p>Metrics que importan en producción:</p>
+
+<p><strong>Time to First Token (TTFT)</strong>:</p>
+<p>$$TTFT = t_{encode} + t_{queue} + t_{first\_token}$$</p>
+
+<p>donde $t_{encode}$ es tiempo de encoding del prompt, $t_{queue}$ espera en cola, y $t_{first\_token}$ primera inferencia.</p>
+
+<p><strong>Throughput efectivo</strong>:</p>
+<p>$$Throughput = \frac{total\_tokens}{t_{total} - t_{TTFT}}$$</p>
+
+<p>**Costo por 1K tokens:**</p>
+<p>$$Costo_{1K} = \frac{precio_{modelo} \times 1000}{tokens\_por\_dollar}$$</p>
+
+<h2>⚠️ Errores Críticos en Deployment</h2>
+
+<h3>Error 1: No Tener Deployment Strategy</h3>
+
+<p><strong>El problema</strong>: Hacer deploy del modelo más grande sin considerar latency, costo, o fallback. En producción, esto significa downtime cuando el provider tiene problemas o cuando el costo se dispara.</p>
+
+<p><strong>La solución</strong>: Implementar gateway con fallback desde día uno. Empezar con el modelo más pequeño que cumpla los requisitos de calidad. Planificar для capacity desde el inicio.</p>
+
+<pre><code class="language-python"># Ejemplo: Strategy desde el inicio
+DEPLOYMENT_STRATEGY = {
+    "tier_1": {  # Producción
+        "model": "gpt-4o-mini",
+        "max_latency_ms": 2000,
+        "fallback_to": "gpt-3.5-turbo"
     },
-    "vscode_copilot": {
-        "ai_integration": "Extension-based",
-        "codebase_context": "Limited",
-        "learning_curve": "Same as VSCode"
+    "tier_2": {  # Fallback
+        "model": "gpt-3.5-turbo",
+        "max_latency_ms": 3000,
+        "fallback_to": "local-llama"
+    },
+    "tier_3": {  # Emergencia
+        "model": "llama-3.1-8b",
+        "max_latency_ms": 5000,
+        "fallback_to": None  # Última instancia
     }
 }</code></pre>
-<hr>
-<h2>⚠️ Errores Comunes</h2>
-<h3>Error 1: Depender Demasiado de AI</h3>
-<p><strong>El problema</strong>: Dejar de aprender fundamentos.</p>
-<p><strong>La solucion</strong>: Usar AI para boost, no reemplazo.</p>
-<hr>
-<p><em>Eso es todo! Nos vemos en el Dia 352.</em></p>
+
+<h3>Error 2: No Integrar Properly</h3>
+
+<p><strong>El problema</strong>: Llamar el LLM sin contexto, sin cache, sin manejo de errores. Esto resulta en respuestas irrelevantes, costos inflados, y crashes en producción.</p>
+
+<p><strong>La solución</strong>: Implementar RAG pipeline, semantic cache, y retry logic. El contexto es king — un LLM sin contexto es inútil.</p>
+
+<pre><code class="language-python"># Integration checklist
+INTEGRATION_CHECKLIST = [
+    "☐ RAG pipeline con hybrid search",
+    "☐ Semantic cache para prompts repetitivos",
+    "☐ Retry con exponential backoff",
+    "☐ Circuit breaker para failures sostenidos",
+    "☐ Monitoring de latencia, costo, y calidad",
+    "☐ A/B testing de prompts",
+    "☐ Fallback chain configurado"
+]</code></pre>
+
+<h3>Error 3: No Follow Best Practices</h3>
+
+<p><strong>El problema</strong>: Tratar LLMs como deterministic APIs. No hacer prompt versioning, no monitorear drift, no tener escalation paths. Esto acumula technical debt que después es cara de pagar.</p>
+
+<p><strong>La solución</strong>: Treat your prompts como código. Versionarlos, testearlos, hacer code review. Monitorear outputs por drift. Tener humanos en el loop para decisiones críticas.</p>
+
+<h2>📊 Resumen de Fórmulas Clave</h2>
+
+<ul>
+<li><strong>RAG hybrid score</strong>: $S_{final} = \alpha \cdot S_{vector} + (1-\alpha) \cdot S_{bm25}$</li>
+<li><strong>TTFT</strong>: $t_{encode} + t_{queue} + t_{first\_token}$</li>
+<li><strong>Throughput</strong>: $\frac{tokens}{t_{total} - t_{TTFT}}$</li>
+<li><strong>Cache hit ratio</strong>: $\frac{cache\_hits}{total\_requests}$</li>
+<li><strong>Effective cost</strong>: $c_{base} \times (1 - hit\_ratio) + c_{cache} \times hit\_ratio$</li>
+</ul>
+
+<h2>🏆 Reflexión de Hoy</h2>
+
+<p>De los 351 artículos que llevamos, los integration patterns y deployment strategies son lo que separa un proyecto de AI de un producto de AI. Puedes tener el mejor modelo, pero si no lo integras bien y no lo deployas correctamente, es solo un experimento costoso.</p>
+
+<p>Mañana llegamos al día 352 y cerramos esta serie de Advanced Topics. Vamos con todo.</p>
+
+<p><em>Nos vemos en el Día 352 — el cierre de este ciclo. ¡Hagámoslo!</em></p>
   </article>
 
   <script>
