@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="Context Window Management - El Arte de Manejar Más de 200K Tokens sin Perder el Hilo y sin Matar tu Wallet | #365DaysOfAI por Fabian Rodriguez">
-  <title>Context Window Management - El Arte de Manejar Más de 200K Tokens | #365DaysOfAI</title>
+  <meta name="description" content="Quantization - Modelos Pequeños y Eficientes | #365DaysOfAI por Fabian Rodriguez">
+  <title>Quantization - Modelos Pequeños y Eficientes | #365DaysOfAI</title>
   
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
@@ -110,285 +110,290 @@ nav {
 
   <header class="article-hero">
     <div class="day-badge">Dia 249 / 365 &nbsp;&middot;&nbsp; #365DaysOfAI</div>
-    <h1 class="article-title">Context Window Management - El Arte de Manejar Más de 200K Tokens sin Perder el Hilo y sin Matar tu Wallet</h1>
+    <h1 class="article-title">Quantization - Modelos Pequeños y Eficientes</h1>
     <div class="article-meta">
       <time class="article-date">06 de septiembre de 2026</time>
-      <div class="tags"><span class="tag">context-window</span><span class="tag">tokens</span><span class="tag">llm</span><span class="tag">optimization</span><span class="tag">caching</span></div>
+      <div class="tags"><span class="tag">quantization</span><span class="tag">optimization</span><span class="tag">llm</span><span class="tag">inference</span><span class="tag">memory</span></div>
     </div>
   </header>
 
   <article class="article-body">
     <h2>Hagale pues, mi gente</h2>
-    <p>Qué más pues, mi gente querida. Aquí andamos en el Día 249 hablando de algo que hoy día es critical: <strong>Context Window Management</strong>. Resulta que los modelos ahora manejan 200K tokens como si nada — GPT-4 Turbo con 128K, Claude con 200K, Gemini hasta con 1M — pero cada token que mandas cuesta plata, y si no sabes manejar eso te puedes disparar la factura sin necesidad.</p>
-    <p>Hoy vamos a aprender cómo截断 (truncar), rerankear, y hacer caching de forma inteligente. El objetivo: no perder el hilo de la conversación y no matar tu wallet en el proceso. Café en mano, que esto vale la pena.</p>
+    <p>Qué más pues, mi gente querida. Aquí andamos en el Día 249 hablando de algo que hoy día es critical para hacer que los modelos grandes funcionen en hardware modesto: <strong>Quantization</strong>. Resulta que tienes un modelo de 70B parámetros y quieres correrlo en tu laptop con 16GB de RAM. ¿Cómo lo haces? Quantization. Eso sí, con cabeza, no como el 80% que pierde el 40% de la precisión sin necesidad.</p>
+    <p>Hoy vamos a ver cómo convertir modelos de 32 bits a 8 bits (o menos) sin perder tanta precisión. El objetivo: que modelos que antes necesitaban GPUs de $30,000 corran en tu celular. Café en mano, que esto está buenísimo.</p>
 
     <hr>
 
-    <h2>El Problema Fundamental</h2>
-    <p>Cada modelo tiene un <strong>context window</strong> máximo: un límite de tokens que puede procesar en una sola llamada. Con 128K tokens estás hablando de aproximadamente 96,000 palabras — más o menos 300 páginas. Suena infinito, pero cuando estás construyendo un sistema de RAG, un chatbot de análisis de documentos, o una aplicación de código que necesita entender múltiples archivos, ese "infinito" se llena rápido.</p>
-    <p>La matemática es clara:</p>
-    <pre><code class="language-python"># Costo por 1M tokens (aproximado GPT-4-Turbo)
-COST_PER_MILLION_INPUT_TOKENS = 10.00  # USD
-COST_PER_MILLION_OUTPUT_TOKENS = 30.00  # USD
+    <h2>El Problema: Modelos Gigantes y Hardware Limitado</h2>
+    <p>Miremos la matemática básica. Un modelo como LLaMA-70B en FP32 (32 bits por peso):</p>
+    <pre><code class="language-python"># Tamaño de un modelo en diferentes precisiones
+def calculate_model_size(params_billions, bits):
+    bytes_per_param = bits / 8
+    total_bytes = params_billions * bytes_per_param * 1_000_000_000
+    total_gb = total_bytes / (1024**3)
+    return total_gb
 
-# Si mandas 100 tokens de contexto irrelevante por request
-# y tienes 10,000 requests/día:
-DESPERDICIO_DIARIO = (100 * 10000) / 1_000_000 * COST_PER_MILLION_INPUT_TOKENS
-print(f"Desperdicio diario: ${DESPERDICIO_DIARIO:.2f}")
-# Output: Desperdicio diario: $10.00/día</parameter></pre>
-    <p>$10/día suena poco, pero son <strong>$300USD/month</strong> en contexto irrelevante. Multiplícalo por 10 aplicaciones y estás hablando de $3000 mensuales en pura basura. Y eso sin contar que contexto irrelevante puede degradar la calidad de las respuestas — el modelo se confunde cuando le metes demasiado ruido.</p>
+# FP32 (32 bits) - Full precision
+print(f"LLaMA-70B FP32: {calculate_model_size(70, 32):.1f} GB")
 
-    <hr>
+# FP16 (16 bits) - Half precision
+print(f"LLaMA-70B FP16: {calculate_model_size(70, 16):.1f} GB")
 
-    <h2>Implicit Caching: El Truco que Todos Ignoran</h2>
-    <p>Aquí viene algo interesante. Modelos como GPT-4 Turbo y Claude implementan <strong>implicit caching</strong> (también llamado <em>KV caching</em> o <em>attention caching</em>). Básicamente: cuando mandas un mensaje que comparte prefijos con mensajes anteriores (como el system prompt), el modelo no recalcula toda la atención — reutiliza los cálculos previos.</p>
-    <p>Esto significa que si tu system prompt pesa 8K tokens, solo lo pagas <strong>una vez</strong>... pero solo si el provider lo implementa bien y si结构的 manejas tus mensajes.</p>
-    <pre><code class="language-python">#杭州市 # Demo de implicit caching con mensajes estructurados
-messages = [
-    {"role": "system", "content": system_prompt},  # 8K tokens - pagado una vez
-    {"role": "user", "content": "Analiza este documento..."},  # 500 tokens
-    {"role": "assistant", "content": "Aquí está el análisis..."},  # 200 tokens
-    {"role": "user", "content": "Ahora compara con este otro..."},  # 500 tokens
-]
-# El context efectivo aquí es ~9.2K tokens
-# Si reusas el mismo system prompt en la siguiente request,
-# el cache hit puede ahorrarte ~8K tokens de cálculo</code></pre>
-    <p>Providers como <strong>OpenAI</strong> con <code>cache_control</code>, <strong>Anthropic</strong> con <code>cache断续</code>, y otros tienen formas de hintear al modelo qué partes del contexto pueden cachearse. Aprende a usarlas.</p>
+# INT8 (8 bits) - Quantized
+print(f"LLaMA-70B INT8: {calculate_model_size(70, 8):.1f} GB")
+
+# INT4 (4 bits) - Highly quantized
+print(f"LLaMA-70B INT4: {calculate_model_size(70, 4):.1f} GB")</code></pre>
+    <p>Output:</p>
+    <pre><code class="language-python">LLaMA-70B FP32: 261.0 GB
+LLaMA-70B FP16: 130.5 GB
+LLaMA-70B INT8: 65.3 GB
+LLaMA-70B INT4: 32.6 GB</code></pre>
+    <p><strong>261 GB en FP32 vs 32.6 GB en INT4</strong>. Puedes pasar de necesitar 4 GPUs A100 (~$30,000) a correrlo en una MacBook con 64GB. Suena obvio cuando lo ves así, pero el 70% de la gente no sabe cómo hacerlo correctamente.</p>
 
     <hr>
 
-    <h2>Conversation Summarization: No Dejes que el Pasado Te Mate</h2>
-    <p>La estrategia más efectiva para conversaciones largas es <strong>resumir periódicamente</strong>. Cada N mensajes (típicamente 10-20), insertas un resumen de toda la conversación hasta ese punto y descartas los mensajes individuales.</p>
-    <pre><code class="language-python">from transformers import pipeline
-import tiktoken
+    <h2>Tipos de Quantization</h2>
+    <p>Básicamente hay dos categorías:</p>
+    <ul>
+      <li><strong>PTQ (Post-Training Quantization)</strong>: Entrenas el modelo normal, luego lo quantizas. Simple, rápido, pero puedes perder precisión.</li>
+      <li><strong>QAT (Quantization-Aware Training)</strong>: Entrenas con la quantización en mente desde el principio. Más complejo, pero mejor preservación de precisión.</li>
+    </ul>
 
-class ConversationManager:
-    def __init__(self, model_name="gpt-3.5-turbo", max_tokens=128_000, compression_ratio=0.3):
-        self.encoding = tiktoken.get_encoding("cl100k_base")
-        self.max_tokens = max_tokens
-        self.compression_ratio = compression_ratio  # 30% del original
-        self.summarizer = pipeline("summarization", model="facebook/bart-large-cnn")
-        self.messages = []
-        self.conversation_summary = ""
+    <h3>PTQ: El Más Común</h3>
+    <p>El 90% de los casos usan PTQ porque es más simple. Hay varios métodos:</p>
+    <pre><code class="language-python">#rough estimation de pérdida de precisión por método
+methods = {
+    "FP32 (baseline)": {"size": "100%", "accuracy": "100%"},
+    "FP16": {"size": "50%", "accuracy": "~100% (generalmente igual)"},
+    "INT8": {"size": "25%", "accuracy": "~95-99%"},
+    "INT4": {"size": "12.5%", "accuracy": "~90-97% (depende del método)"},
+    "NF4 (GPTQ)": {"size": "12.5%", "accuracy": "~96-99% (mejor que INT4)"},
+}
 
-    def count_tokens(self, text: str) -> int:
-        return len(self.encoding.encode(text))
-
-    def should_summarize(self) -> bool:
-        """Verifica si，我们需要 resumir"""
-        total = sum(self.count_tokens(m["content"]) for m in self.messages)
-        # Si vamos al 70% del context window, resumir
-        return total > self.max_tokens * 0.7
-
-    def summarize_old_messages(self, llm_callable) -> None:
-        """Comprime los mensajes viejos en un resumen"""
-        if not self.messages:
-            return
-
-        # Construir texto de todos los mensajes
-        conversation_text = "\n".join([
-            f"{m['role']}: {m['content']}" for m in self.messages
-        ])
-
-        # Llamar al LLM para resumir
-        summary_prompt = f"""Resumir esta conversación de manera concisa,
-        preservando toda la información importante (decisiones, hechos, preferencias del usuario).
-        Longitud objetivo: {int(self.count_tokens(conversation_text) * self.compression_ratio)} tokens.
-
-        Conversación:
-        {conversation_text}
-
-        Resumen:"""
-
-        new_summary = llm_callable(summary_prompt)
-
-        # Guardar resumen y limpiar mensajes
-        self.conversation_summary = new_summary
-        self.messages = []
-
-    def add_message(self, role: str, content: str, llm_callable=None) -> None:
-        self.messages.append({"role": role, "content": content})
-
-        # Verificar si hay que resumir
-        if llm_callable and self.should_summarize():
-            self.summarize_old_messages(llm_callable)
-
-    def get_context(self) -> list:
-        """Retorna el contexto optimizado para el LLM"""
-        context = []
-        if self.conversation_summary:
-            context.append({"role": "system", "content": f"Resumen de conversación previa: {self.conversation_summary}"})
-        context.extend(self.messages)
-        return context</code></pre>
+for method, stats in methods.items():
+    print(f"{method}: {stats['size']} tamaño, {stats['accuracy']} accuracy")</code></pre>
 
     <hr>
 
-    <h2>Reranking: Seleccionando el Contexto Relevante</h2>
-    <p>En sistemas RAG (Retrieval Augmented Generation), cuando tienes 10,000 documentos y solo puedes pasar 8,000 tokens al modelo, necesitas <strong>seleccionar los más relevantes</strong>. Aquí entra el reranking.</p>
-    <p>Básicamente: primero haces retrieval rápido (embedding similarity), obtienes los top-50 resultados, y luego usas un <strong>cross-encoder</strong> más pesado para reordenar y seleccionar los top-10 definitivos.</p>
-    <pre><code class="language-python">from sentence_transformers import CrossEncoder
+    <h2>Cuantización por Grupo vs Global</h2>
+    <p>Aquí es donde la gente se confunde. Tienes dos approaches:</p>
 
-class Reranker:
-    def __init__(self, model_name="cross-encoder/ms-marco-MiniLML-12-v2"):
-        self.reranker = CrossEncoder(model_name)
+    <h3>Quantización por tensor completo</h3>
+    <p>Un solo factor de escala para todo el tensor. Simple pero impreciso porque los valores pueden variar mucho.</p>
+    <pre><code class="language-python"># Naive quantization - un solo scale para todo
+def naive_quantize(tensor, bits=8):
+    # Encontrar el valor máximo absoluto
+    max_val = torch.max(torch.abs(tensor)).item()
+    
+    # Rango de quantización
+    q_min = -(2**(bits-1))
+    q_max = (2**(bits-1)) - 1
+    
+    # Factor de escala global
+    scale = max_val / q_max
+    
+    # Cuantizar
+    quantized = torch.round(tensor / scale).clamp(q_min, q_max)
+    
+    return quantized, scale
 
-    def rerank(self, query: str, documents: list[str], top_k: int = 10) -> list[tuple]:
-        """
-        Rerankea documentos basado en relevancia vs query.
-        Retorna lista de (documento, score) ordenados por relevancia.
-        """
-        # Crear pares query-document para el cross-encoder
-        pairs = [(query, doc) for doc in documents]
+# Problema: si el tensor tiene valores entre -0.001 y 0.001 Y también entre -100 y 100,
+# un solo scale no representa bien ninguno</code></pre>
 
-        # Obtener scores de relevancia
-        scores = self.reranker.predict(pairs)
-
-        # Ordenar por score descendente
-        ranked = sorted(zip(documents, scores), key=lambda x: x[1], reverse=True)
-
-        return ranked[:top_k]
-
-# Uso
-reranker = Reranker()
-docs = [doc.page_content for doc in retrieved_documents]  # top-50 del retrieval inicial
-
-# Rerankear a top-10 definitivos
-relevant_docs = reranker.rerank(user_query, docs, top_k=10)
-
-# Solo estos 10 van al context del LLM
-final_context = "\n\n".join([doc for doc, score in relevant_docs])</code></pre>
-    <p>El math detrás es simple: un embedding model como <code>all-MiniLM-L6-v2</code> es rápido (O(n) con ANN) pero aproximado. El cross-encoder es más lento (O(n log n)) pero usa atención cruzada query-document, así que es mucho más preciso para decidir relevancia real.</p>
-
-    <hr>
-
-    <h2>Token Budgeting: La Estrategia del Sistema</h2>
-    <p>Para optimize costs, necesitas un <strong>token budget</strong> inteligente entre system prompt, user input, y contexto recuperado. La fórmula que uso:</p>
-    <pre><code class="language-python">def calculate_token_budget(
-    max_context: int = 128_000,
-    output_tokens: int = 4_000,
-    user_input_tokens: int = None,
-    safety_margin: float = 0.1
-) -> dict:
+    <h3>Quantización por grupo (per-channel/per-token)</h3>
+    <p>Más preciso porque cada grupo tiene su propio factor de escala.</p>
+    <pre><code class="language-python"># Per-channel quantization para weights
+def per_channel_quantize(tensor, bits=8):
     """
-    Calcula distribución óptima de tokens.
-    max_context: context window del modelo
-    output_tokens: tokens reservados para la respuesta
-    user_input_tokens: si es None, se calcula automáticamente
-    safety_margin: 10% reservado para overhead del tokenizer
+    Un scale por canal (típicamente por columna en layers lineales).
+    Mejora la precisión dramáticamente.
     """
-    available = max_context - output_tokens
-    effective_max = int(available * (1 - safety_margin))
+    q_min = -(2**(bits-1))
+    q_max = (2**(bits-1)) - 1
+    
+    # Un scale por canal (axis=0 para weights [out_features, in_features])
+    scales = tensor.abs().max(dim=1, keepdim=True)[0]
+    scales = scales / q_max
+    
+    # Cuantizar
+    quantized = torch.round(tensor / scales).clamp(q_min, q_max)
+    
+    return quantized, scales
 
-    if user_input_tokens is None:
-        # Sistema optimizado: 15% system, 35% retrieved context, 50% user input
-        budget = {
-            "system": int(effective_max * 0.15),
-            "retrieved_context": int(effective_max * 0.35),
-            "user_input": int(effective_max * 0.50),
-        }
-    else:
-        # User input fijo, lo demás para system + retrieved
-        remaining = effective_max - user_input_tokens
-        system_tokens = int(remaining * 0.30)  # 30% del remaining para system
-        retrieved_tokens = remaining - system_tokens
-        budget = {
-            "system": system_tokens,
-            "retrieved_context": retrieved_tokens,
-            "user_input": user_input_tokens,
-        }
+# Per-token quantization para activaciones
+def per_token_quantize(tensor, bits=8):
+    """
+    Un scale por token (por fila). Común para activaciones en transformers.
+    """
+    q_min = -(2**(bits-1))
+    q_max = (2**(bits-1)) - 1
+    
+    # Un scale por token (por fila, dim=1)
+    scales = tensor.abs().max(dim=1, keepdim=True)[0]
+    scales = scales / q_max
+    
+    quantized = torch.round(tensor / scales).clamp(q_min, q_max)
+    
+    return quantized, scales</code></pre>
 
-    return budget
+    <hr>
 
-# Ejemplo
-budget = calculate_token_budget(max_context=128_000, output_tokens=4_000)
-print(f"Token Budget: {budget}")
-# Output: Token Budget: {'system': 16720, 'retrieved_context': 38787, 'user_input': 55411}</code></pre>
-    <p>Con este budget sabes exactamente cuánto espacio tienes para el system prompt (instrucciones, few-shot examples), para el contexto recuperado (documentos RAG), y para el input del usuario. Si el retrieved context excede el budget, truncas o resúmenes los documentos.</p>
+    <h2>GPTQ: El Estándar Actual para LLMs</h2>
+    <p>GPTQ (Generative Pre-trained Transformer Quantization) es probablemente el método más popular hoy. Usa una técnica inteligente: quantización por columnas con un proceso de "fine-tuning" post-cuantización para minimizar el error.</p>
+    <pre><code class="language-python"># Pseudo-código de GPTQ
+def gptq_quantize(weights, bits=4, per_channel=True):
+    """
+    GPTQ:
+    1. Cuantiza por columnas
+    2. Computa error de reconstrucción
+    3. Ajusta pesos restantes para minimizar error
+    """
+    quantized = []
+    scales = []
+    
+    for col in range(weights.shape[1]):
+        weight_col = weights[:, col]
+        
+        # Cuantizar columna
+        if per_channel:
+            scale = weight_col.abs().max() / (2**(bits-1))
+        else:
+            scale = weights.abs().max() / (2**(bits-1))
+        
+        q_col = torch.round(weight_col / scale).clamp(-(2**(bits-1)), 2**(bits-1)-1)
+        
+        # Computar error
+        error = weight_col - (q_col * scale)
+        
+        # En GPTQ real, propagar este error a columnas no cuantizadas
+        # Y ajustar basado en Hessian para minimizar impacto
+        
+        quantized.append(q_col)
+        scales.append(scale)
+    
+    return torch.stack(quantized, dim=1), torch.stack(scales)</code></pre>
+
+    <hr>
+
+    <h2>GGUF: Quantization para CPUs con llama.cpp</h2>
+    <p>GGUF (formerly GGML) es el formato que usa llama.cpp para quantización eficiente en CPU. Soporta varios levels de quantización:</p>
+    <pre><code class="language-python"># Niveles de quantización GGUF/Q4
+gguf_levels = {
+    "Q4_K_S": {"bits": 4, "description": "4-bit, small (más pequeño, más pérdida)"},
+    "Q4_K_M": {"bits": 4, "description": "4-bit, medium (balance)"},
+    "Q5_K_S": {"bits": 5, "description": "5-bit, small"},
+    "Q5_K_M": {"bits": 5, "description": "5-bit, medium (buen balance)"},
+    "Q8_0": {"bits": 8, "description": "8-bit (casi FP16, poco usado)"},
+}
+
+# Tamaños aproximados para LLaMA-70B
+for level, info in gguf_levels.items():
+    size_gb = (70 * info["bits"]) / 8
+    print(f"{level}: {info['bits']}-bit -> ~{size_gb:.1f} GB")</code></pre>
+    <p><strong>Q4_K_M</strong> es el sweet spot para la mayoría: ~70GB para un 70B model, corre en Macs con 64GB, buena precisión.</p>
+
+    <hr>
+
+    <h2>AWQ: Activation-Aware Quantization</h2>
+    <p>AWQ (Activation-Aware Weight Quantization) es más nuevo y mejores resultados. Ignora el 1% de weights más importantes y solo quantiza el resto:</p>
+    <pre><code class="language-python"># AWQ idea básica
+def awq_quantize(weights, activations, bits=4):
+    """
+    AWQ assumption: algunos pesos son más importantes que otros.
+    Los pesos con alta magnitud de activación asociado son críticos.
+    """
+    # Encontrar pesos importantes (los que interactúan con activaciones grandes)
+    importance = torch.abs(weights) * torch.abs(activations).mean(dim=0)
+    
+    # Identificar top-1% más importantes
+    threshold = torch.quantile(importance.flatten(), 0.99)
+    important_mask = importance >= threshold
+    
+    # Cuantizar solo pesos NO importantes
+    non_important_weights = weights.clone()
+    non_important_weights[important_mask] = 0
+    
+    quantized, scale = per_channel_quantize(non_important_weights, bits)
+    
+    # Guardar los pesos importantes en alta precisión
+    important_weights = weights[important_mask]
+    
+    return quantized, scale, important_weights, important_mask</code></pre>
 
     <hr>
 
     <h2>Errores Comunes y Cómo Evitarlos</h2>
 
-    <h3>Error 1: Meter Todo en el Context "Por Si Acaso"</h3>
-    <p><strong>El problema</strong>: Entras a un chat con 50 documentos PDF, los metes todos en el contexto, y le preguntas "¿cuál es el teléfono de Juan?". El modelo tiene que procesar 200K tokens de contexto para responder una pregunta sobre 1 línea. Estás pagando 200K tokens de input para una respuesta de 5 tokens.</p>
-    <p><strong>La solución</strong>: Usa retrieval inteligente. Solo pasa los documentos chunks más relevantes. Un embedding search rápido + reranking te da los 3-5 documentos relevantes, no los 50. math: si cada chunk es 500 tokens y necesitas 5 chunks = 2,500 tokens vs 200,000. <strong>Ahorro: 98.75%</strong>.</p>
-    <pre><code class="language-python"># MAL: Meter todo
-BAD_prompt = f"""Aquí tienes 50 documentos:
-{doc1}
-{doc2}
-...
-{doc50}
+    <h3>Error 1: Cuantizar Todo a INT4 Sin Distinción</h3>
+    <p><strong>El problema</strong>: Cuantizas el modelo completo a INT4 y esperas que funcione igual. No. Los embeddings, las capas de atención, y las capas finales son más sensibles a quantización. Cuantizarlas agresivamente degrada calidad drásticamente.</p>
+    <p><strong>La solución</strong>: Mezcla precisiones. Mantén capas críticas en INT8 o FP16, quantiza el resto a INT4. Herramientas como AutoGPTQ y bitsandbytes permiten especificar precision por capa.</p>
+    <pre><code class="language-python"># Ejemplo de quantización mixta con bitsandbytes
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
-Pregunta: {question}
-Respuesta:"""
+bnb_config = BitsAndBytesConfig(
+    load_in_4bit=True,
+    bnb_4bit_quant_type="nf4",  # Normal float 4, mejor que INT4
+    bnb_4bit_compute_dtype=torch.float16,
+    bnb_4bit_use_double_quant=True,  # Cuantizar también los scales
+)
 
-# BIEN: Solo chunks relevantes
-relevant_chunks = retrieve_and_rerank(question, all_documents, top_k=5)
-GOOD_prompt = f"""Contexto relevante:
-{relevant_chunks}
+# Mezcla: carga todo en 4-bit pero con NF4 que preserva mejor precisión
+model = AutoModelForCausalLM.from_pretrained(
+    "meta-llama/Llama-2-70b-hf",
+    quantization_config=bnb_config,
+    device_map="auto"
+)</code></pre>
 
-Pregunta: {question}
-Respuesta:"""</code></pre>
+    <h3>Error 2: No Medir Calidad Post-Quantization</h3>
+    <p><strong>El problema</strong>: Cuantizas y deployas sin verificar que la calidad no se degradó. Resulta que tu modelo quantizado da respuestas terriblemente wrong para ciertos casos edge.</p>
+    <p><strong>La solución</strong>: Siempre ejecuta un eval set post-cuantización. Compara perplexity, accuracy en benchmarks, y si puedes, usa LLM como judge para comparar respuestas.</p>
+    <pre><code class="language-python">def evaluate_quantized_model(model, tokenizer, eval_dataset, benchmarks):
+    """
+    Evalúa modelo quantizado vs baseline.
+    """
+    results = {}
+    
+    # Perplexity (mide qué tan "sorprendido" está el modelo de datos reales)
+    ppl = compute_perplexity(model, eval_dataset)
+    results["perplexity"] = ppl
+    
+    # Benchmarks específicos
+    for name, eval_fn in benchmarks.items():
+        accuracy = eval_fn(model)
+        results[name] = accuracy
+    
+    return results
 
-    <h3>Error 2: No Resumir Conversaciones Largas</h3>
-    <p><strong>El problema</strong>: Tienes un chatbot de soporte técnico. Después de 50 mensajes, cada mensaje nuevo viene con los 49 anteriores en el contexto. A los 100 mensajes estás pagando 100x el costo por request.eventually llegas al context window y el sistema se rompe o empieza a truncar mensajes importantes.</p>
-    <p><strong>La solución</strong>: Implementa summarization periódica. Cada 10-15 mensajes, genera un resumen de todo lo anterior y reinicia la lista de mensajes. El resumen preserva las decisiones clave y preferencias del usuario.</p>
-    <pre><code class="language-python"># Antes de summarization:
-# messages[0] = "Hola, quiero comprar un laptop"
-# messages[1] = "Tenemoms Dell XPS 13 y MacBook Air"
-# ... (50 mensajes después)
-# Cada request incluye los 52 mensajes = 52 * ~100 tokens = 5,200 tokens/input
+# Compara antes y después
+baseline_results = evaluate_quantized_model(fp16_model, ...)
+quantized_results = evaluate_quantized_model(int4_model, ...)
 
-# Después de summarization:
-# conversation_summary = "Usuario quiere comprar laptop. Budget $1500 USD.
-# Preferencia: MacBook Air por ecosistema Apple.
-# Última pregunta:是否能 financear a 12 meses?"
+# Si perplexity subió >5% o accuracy cayó >2%, reconsidera la quantización
+degradation = (quantized_results["perplexity"] - baseline_results["perplexity"]) / baseline_results["perplexity"]
+print(f"Degradation: {degradation:.1%}")</code></pre>
 
-# messages = [summary] + [últimos 2-3 mensajes relevantes]
-# Cada request ahora = ~300 tokens/input
-# Ahorro: 94% por request</code></pre>
-
-    <h3>Error 3: No Hacer Budget Entre System e Input</h3>
-    <p><strong>El problema</strong>: El system prompt tiene 15,000 tokens de instrucciones detalladas, few-shot examples, y contexto de la empresa. El usuario pregunta algo simple ("hola") y tu context de 16,000 tokens produce una respuesta de 10 tokens. Estás pagando 16,010 tokens de input para una respuesta de 10 tokens. <strong>Costo: $0.16 por "hola"</strong>.</p>
-    <p><strong>La solución</strong>: Establece budgets fijos. Si el system prompt es grande, considera partirlo: un system prompt base pequeño + instrucciones específicas por task que se añaden solo cuando son necesarias. Usa cache control hints para que el system prompt se cachee y no se reprocese cada vez.</p>
-    <pre><code class="language-python"># MAL: System prompt gigante para todo
-system_prompt_gigante = """
-Eres un asistente de una empresa de 50,000 empleados.
-Tienes acceso a: 12 bases de datos, 8 APIs internas,
-manual de 200 páginas de políticas de la empresa,
-guía de estilo de 50 páginas...
-
-[OTRAS 14,000 PALABRAS]
-"""
-
-# BIEN: System prompt modular
-system_prompt_base = "Eres un asistente helpful. Responde de forma clara y concisa."
-system_prompt_task_specific = {
-    "soporte_tecnico": "Eres agente de soporte técnico. Sigue el manual de troubleshooting...",
-    "ventas": "Eres agente de ventas. Usa el script de ventas y conoce el catálogo...",
-    "rh": "Eres asistente de RH. Maneja solicitudes de vacaciones, payroll, beneficios...",
-}
-
-# El base se cachea. Solo el task-specific se añade cuando aplica.
-current_system = system_prompt_base + system_prompt_task_specific.get(task, "")</code></pre>
+    <h3>Error 3: Ignorar el Sesgo (Bias) en Cuantización</h3>
+    <p><strong>El problema</strong>: La mayoría de implementaciones solo quantizan weights (matrices), pero ignoran bias, LayerNorms, y activaciones. Esto crea inconsistencias numéricas que degradan calidad.</p>
+    <p><strong>La solución</strong>: Usa librerías maduras como bitsandbytes, AutoGPTQ, or llama.cpp que manejan todos los componentes correctamente.</p>
 
     <hr>
 
-    <h2>Resumen: Tu Checklist de Context Window</h2>
+    <h2>Resumen: Tu Checklist de Quantization</h2>
     <ul>
-      <li><strong>Mide antes de enviar</strong>: Cuenta tokens de cada request. Si mandas más de 70% del context window sin necesidad, estás desperdiciando plata.</li>
-      <li><strong>Retrieval inteligente</strong>: No metas todo en el contexto. Usa embedding search + reranking para solo pasar lo relevante.</li>
-      <li><strong>Summariza conversaciones</strong>: Cada 10-20 mensajes, comprime el historial en un resumen estructurado.</li>
-      <li><strong>Budget fijo</strong>: Establece límites claros: X tokens para system, Y para contexto recuperado, Z para input.</li>
-      <li><strong>Usa caching hints</strong>: Si tu provider soporta cache control, úsalo para el system prompt y prefijos repetitivos.</li>
-      <li><strong>Trunca con inteligencia</strong>: Si un documento es muy largo, no lo cortes a la mitad. Extrae los párrafos más relevantes con embedding similarity.</li>
+      <li><strong>Usa NF4 o INT4 con cuidado</strong>: Para LLMs, NF4 (GPTQ) preserva mejor precisión que INT4 vanilla.</li>
+      <li><strong>Per-channel > per-tensor</strong>: Siempre que puedas, usa un factor de escala por canal/columna.</li>
+      <li><strong>Mezcla precisiones</strong>: Capas críticas en INT8/FP16, el resto en INT4.</li>
+      <li><strong>Evalúa post-quantización</strong>: Mide perplexity y accuracy en benchmarks reales.</li>
+      <li><strong>Considera AWQ para casos difíciles</strong>: Si INT4 standard no funciona, AWQ típicamente дает mejores resultados.</li>
+      <li><strong>Usa librerías maduras</strong>: bitsandbytes, AutoGPTQ, llama.cpp — no intentes implementar quantización desde cero.</li>
     </ul>
 
     <hr>
 
     <h2>Cierre</h2>
-    <p>Mañana llegamos al Día 250 y va a estar buenísimo, así que no te lo pierdas. Hablamos de model routing y cascades — la estrategia que el 80% de los developers ignoran y pagan 3 veces más por el mismo rendimiento. Sí, leíste bien: <strong>3x más caro</strong> por no routear bien los requests. Eso sí es tunable.</p>
-    <p>Y aquí la cosa no es complicarse la vida. Es simplemente saber qué mandarle al modelo y cuándo. Un poco de arquitectura, un poco de matemática básica, y puedes correr tus aplicaciones de LLM a una fracción del costo de los que meten todo en el mismo modelo sin pensar.</p>
+    <p>Mañana llegamos al Día 250 y va a estar buenísimo, así que no te lo pierdas. Hablamos de ONNX y modelos portables entre frameworks — porque de nada sirve tener el modelo perfecto si no lo puedes deployar donde necesitas. Spoiler: el 70% de la gente tiene problemas de portabilidad y no sabe que existe ONNX como solución.</p>
+    <p>Y aquí la cosa no es complicarse. Es saber que con 4 bits puedes hacer que un modelo de 70B corra en tu laptop. mathematics simple, impacto enorme.</p>
     <p><em>Nos vemos mañana, parcero. Pa'lante.</em></p>
   </article>
 
