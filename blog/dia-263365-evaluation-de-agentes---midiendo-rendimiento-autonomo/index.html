@@ -118,49 +118,475 @@ nav {
   </header>
 
   <article class="article-body">
-    <h1>Evaluation de Agentes - Midiendo Rendimiento Autonomo</h1>
-<p>Hagale pues, parcero. Dia 263 y hoy hablamos de Evaluation de Agentes: como medir el rendimiento de sistemas autonomos. Cafe.</p>
-<hr>
-<h2>🎯 Evaluacion de Agentes</h2>
-<p>Evaluar agentes es dificil porque:</p>
+<h1>Batch Processing y Queued Systems</h1>
+<p>Hagale pues, parcero. Así como en Bogotá el TransMilenio no deja entrar a todos al mismo tiempo y por eso hay turnos y colas, en sistemas de LLM pasa igual: procesar requests uno por uno es como querer meter toda lauchen variable a la vez por la puerta giratoria del portal. Hoy hablamos de batch processing y queued systems, que el 70% implementa mal y causa latencia y costos innecesarios. Tomá ese café y prestá atención.</p>
+
+<h2>🎯 El Problema: Requests Individuales</h2>
+<p>Imaginate esto: tenés 1000 usuarios mandando prompts a tu API de LLM simultáneamente. ¿Qué hace el 70% de los equipos? Procesa cada request en tiempo real, uno tras otro. El resultado:</p>
 <ul>
-<li><strong>Multi-step</strong>: Hay muchas acciones que pueden ser correctas</li>
-<li><strong>Exploratorio</strong>: El comportamiento varia entre ejecuciones</li>
-<li><strong>Subjetivo</strong>: Cual es la "mejor" accion?</li>
+<li><strong>Latencia altísima</strong>: El usuario espera 30 segundos porque hay cola</li>
+<li><strong>Costos波峰</strong>: Cada request dispara una llamada a la API, sin batching</li>
+<li><strong>Throughput可怜的</strong>: Tal vez 10 requests/minuto cuando podrías hacer 500</li>
 </ul>
-<hr>
-<h2>📐 Metrics de Evaluacion</h2>
-<pre><code class="language-python"># Metrics comunes para agentes
-class AgentMetrics:
-    def calculate_trajectory_metrics(trajectory, reference):
-        return {
-            "success_rate": trajectory.completed / 100,
-            "avg_steps": len(trajectory.steps),
-            "efficiency": trajectory.reward / len(trajectory.steps),
-            "path_length": len(trajectory.steps),
-            "correctness": trajectory.equals(reference)
+<p>La matemática es simple. Si cada request tarda 2 segundos y procesás 1000 requests:</p>
+<ul>
+<li><strong>Sin batching</strong>: 1000 × 2s = 2000 segundos = 33 minutos</li>
+<li><strong>Con batching (batch de 50)</strong>: 1000/50 × 2s = 400 segundos = 6.6 minutos</li>
+</ul>
+<p>Eso es <strong>5x más rápido</strong>, y además pagás menos porque muchas APIs cobran por request, no por tokens procesados en batch.</p>
+
+<h2>📐 Batch Processing con Colas</h2>
+<p>La arquitectura correcta tiene tres componentes:</p>
+<ol>
+<li><strong>API Gateway</strong>: Recibe requests y los encola</li>
+<li><strong>Job Queue</strong>: Redis, RabbitMQ o SQS para gestionar la cola</li>
+<li><strong>Batch Processor</strong>: Consume de la cola, agrupa requests en batches, envía al LLM</li>
+</ol>
+
+<pre><code class="language-python">import redis
+import json
+from typing import List, Dict, Any
+from dataclasses import dataclass, asdict
+import asyncio
+import time
+
+@dataclass
+class LLMRequest:
+    request_id: str
+    prompt: str
+    temperature: float = 0.7
+    max_tokens: int = 1000
+    metadata: Dict[str, Any] = None
+
+class BatchProcessor:
+    """Processor que agrupa requests en batches para optimizar throughput."""
+
+    def __init__(
+        self,
+        redis_url: str = "redis://localhost:6379",
+        batch_size: int = 50,
+        max_wait_ms: int = 500,
+        api_key: str = None
+    ):
+        self.redis = redis.from_url(redis_url)
+        self.batch_size = batch_size
+        self.max_wait_ms = max_wait_ms
+        self.api_key = api_key
+        self.queue_name = "llm:requests:pending"
+        self.dlq_name = "llm:requests:dlq"  # Dead Letter Queue
+
+    def enqueue(self, request: LLMRequest) -> str:
+        """Agrega un request a la cola. Returns request_id."""
+        payload = json.dumps(asdict(request))
+        self.redis.rpush(self.queue_name, payload)
+        return request.request_id
+
+    async def process_batches(self, llm_client):
+        """Loop principal: consume cola, forma batches, procesa."""
+        while True:
+            batch = await self._collect_batch()
+
+            if not batch:
+                await asyncio.sleep(0.1)
+                continue
+
+            try:
+                await self._process_batch(llm_client, batch)
+            except Exception as e:
+                # Failed jobs van a Dead Letter Queue
+                for request in batch:
+                    self.redis.rpush(self.dlq_name, json.dumps({
+                        **asdict(request),
+                        "error": str(e),
+                        "failed_at": time.time()
+                    }))
+
+    async def _collect_batch(self) -> List[LLMRequest]:
+        """Recolecta requests hasta formar batch o vencer timeout."""
+        batch = []
+        deadline = time.time() + (self.max_wait_ms / 1000.0)
+
+        while len(batch) < self.batch_size and time.time() < deadline:
+            # Bloquear por máximo 50ms si no hay nada
+            result = self.redis.blpop(self.queue_name, timeout=50)
+
+            if result:
+                _, payload = result
+                request_data = json.loads(payload)
+                batch.append(LLMRequest(**request_data))
+
+            # Si ya tenemos batch completo, salir
+            if len(batch) >= self.batch_size:
+                break
+
+        return batch
+
+    async def _process_batch(self, llm_client, batch: List[LLMRequest]):
+        """Envía batch al LLM. Optimiza costo y latencia."""
+        # Consolidar prompts para envío en batch
+        prompts = [r.prompt for r in batch]
+
+        # Llamada agrupada al LLM
+        responses = await llm_client.batch_generate(prompts)
+
+        # Desempatar respuestas a cada request
+        for request, response in zip(batch, responses):
+            result_key = f"llm:results:{request.request_id}"
+            self.redis.set(result_key, json.dumps({
+                "response": response,
+                "processed_at": time.time()
+            }))
+            # Notificar que el resultado está listo
+            self.redis.publish(f"llm:notify:{request.request_id}", "done")
+
+        print(f"✅ Batch de {len(batch)} requests procesado en paralelo")</code></pre>
+
+<h2>📐 Redis como Job Queue</h2>
+<p>Redis no es solo caché. Con las estructuras correctas, es un job queue potente. La clave está en usar <code>BLPOP</code> para blocking pops (como esperar en la fila del Éxito) y <code>RPUSH</code> para encolar.</p>
+
+<pre><code class="language-python">class RedisJobQueue:
+    """Cola de jobs con deduplication y priorities."""
+
+    def __init__(self, redis_url: str = "redis://localhost:6379"):
+        self.redis = redis.from_url(redis_url)
+
+    def enqueue(self, job_id: str, payload: dict, priority: int = 0):
+        """
+        Encola job con deduplicación.
+        Si el job_id ya existe y no ha expirado, no se encola de nuevo.
+        """
+        # Check deduplication
+        exists = self.redis.exists(f"job:seen:{job_id}")
+        if exists:
+            print(f"⚠️ Job {job_id} duplicado, ignorando")
+            return False
+
+        # Marcar como visto (expira en 1 hora para permitir re-procesamiento)
+        self.redis.setex(f"job:seen:{job_id}", 3600, "1")
+
+        # Encolar con priority (score menor = más prioritario)
+        if priority > 0:
+            self.redis.zadd("jobs:priority", {json.dumps({"job_id": job_id, **payload}): priority})
+        else:
+            self.redis.rpush("jobs:queue", json.dumps({"job_id": job_id, **payload}))
+
+        return True
+
+    def dequeue(self, timeout: int = 0) -> dict:
+        """Consume el job más prioritario."""
+        # Primero verificar cola prioritaria (ZPOPMIN)
+        result = self.redis.zpopmin("jobs:priority", 1)
+        if result:
+            _, job_data = result[0]
+            return json.loads(job_data)
+
+        # Si no hay prioritarios, usar cola normal
+        if timeout > 0:
+            result = self.redis.blpop("jobs:queue", timeout=timeout)
+            if result:
+                _, job_data = result
+                return json.loads(job_data)
+        else:
+            result = self.redis.lpop("jobs:queue")
+            if result:
+                return json.loads(result)
+
+        return None</code></pre>
+
+<h2>📐 Deduplication: Evitar Doble Procesamiento</h2>
+<p>¿Cuántas veces un usuario presiona "Enviar" dos veces y tu sistema procesa el mismo request dos veces? Deduplication lo previene. La clave: un <code>request_id</code> único basado en hash del contenido.</p>
+
+<pre><code class="language-python">import hashlib
+import time
+
+class Deduplicator:
+    """Sistema de deduplicación con Redis."""
+
+    def __init__(self, redis_client, ttl_seconds: int = 3600):
+        self.redis = redis_client
+        self.ttl = ttl_seconds
+
+    def generate_request_id(self, prompt: str, user_id: str, **kwargs) -> str:
+        """Genera ID único basado en contenido + usuario + timestamp."""
+        content = f"{user_id}:{prompt}:{time.time() // 60}"  # Granularidad de 1 minuto
+        return hashlib.sha256(content.encode()).hexdigest()[:16]
+
+    def is_duplicate(self, request_id: str) -> bool:
+        """Check if request was already processed."""
+        return self.redis.exists(f"dedup:{request_id}")
+
+    def mark_processed(self, request_id: str) -> bool:
+        """
+        Marca request como procesado.
+        Returns True si fue marcado (primer procesamiento).
+        Returns False si ya existía (duplicado).
+        """
+        # SETNX atómico: solo marca si NO existe
+        was_new = self.redis.set(
+            f"dedup:{request_id}",
+            "1",
+            ex=self.ttl,
+            nx=True  # Solo si NO existe
+        )
+        return bool(was_new)
+
+# Uso:
+dedup = Deduplicator(redis_client)
+
+def handle_request(prompt: str, user_id: str):
+    request_id = dedup.generate_request_id(prompt, user_id)
+
+    if not dedup.is_duplicate(request_id):
+        return {"error": "Request duplicado", "request_id": request_id}
+
+    # Procesar...
+    result = process_llm(prompt)
+
+    dedup.mark_processed(request_id)
+    return {"result": result, "request_id": request_id}</code></pre>
+
+<h2>⚠️ Error 1: Procesar Requests Individualmente sin Batching</h2>
+<p><strong>El problema</strong>: Cada request dispara una llamada individual al LLM. Si tenés 1000 requests/hora, son 1000 llamadas. Muchas APIs de LLM cobran por request, no por tokens. Además, la latencia es variable e impredecible.</p>
+
+<p><strong>La solución</strong>: Acumular requests en batches de 10-100 y procesarlos juntos. Los LLMs modernos como GPT-4 y Claude aceptan上下文 de hasta 200k tokens, así que un batch de 50 prompts cortos cabe fácilmente.</p>
+
+<pre><code class="language-python"># ❌ MAL: 1000 llamadas individuales
+for request in all_requests:
+    result = await llm.generate(request.prompt)  # 1000 API calls!
+
+# ✅ BIEN: 20 llamadas de 50 requests cada una
+batches = [all_requests[i:i+50] for i in range(0, len(all_requests), 50)]
+for batch in batches:
+    prompts = [r.prompt for r in batch]
+    results = await llm.batch_generate(prompts)  # Solo 20 API calls!
+</code></pre>
+
+<p>El resultado: <strong>50x menos llamadas a la API</strong>, costos reducidos, y mejor throughput porque el LLM optimiza el procesamiento del contexto compartido.</p>
+
+<h2>⚠️ Error 2: No Tener Dead Letter Queue</h2>
+<p><strong>El problema</strong>: Cuando un job falla (timeout, API error, invalid response), simplemente se pierde. El usuario se queda esperando para siempre y nadie se entera del error. En producción esto es un desastre.</p>
+
+<p><strong>La solución</strong>: Implementar Dead Letter Queue (DLQ). Jobs que fallan van a una cola especial para inspección y reprocesamiento posterior.</p>
+
+<pre><code class="language-python"># ❌ MAL: Errores se pierden en el limbo
+def process_job(job):
+    try:
+        result = llm.generate(job.prompt)
+        save_result(result)
+    except Exception as e:
+        print(f"Error: {e}")  # Se pierde!
+        pass
+
+# ✅ BIEN: DLQ para jobs fallidos
+class DLQProcessor:
+    def __init__(self, redis_client):
+        self.redis = redis_client
+        self.dlq_key = "llm:dlq"
+        self.max_retries = 3
+
+    def move_to_dlq(self, job: dict, error: str):
+        """Envía job fallido a Dead Letter Queue."""
+        dlq_entry = {
+            **job,
+            "error": error,
+            "failed_at": time.time(),
+            "retries": job.get("retries", 0) + 1
         }
-    
-    def human_preference_score(agent_output, human_input):
-        # A/B testing
-        return (a_preferred + b_preferred) / total_comparisons</code></pre>
-<hr>
-<h2>🚀 Benchmarks</h2>
-<pre><code class="language-python"># Benchmarks para agentes
-agent_benchmarks = {
-    "GAIA": "General AI Assistants",
-    "AgentBench": "Multi-domain agent evaluation",
-    "WebArena": "Web-based agents",
-    "MiniWob": "Simple web tasks",
-    "ALFWorld": "Text adventure games"
-}</code></pre>
-<hr>
-<h2>⚠️ Errores Comunes</h2>
-<h3>Error 1: Solo Success Rate</h3>
-<p><strong>El problema</strong>: Un agent puede completar tareas de forma ineficiente.</p>
-<p><strong>La solucion</strong>: Medir eficiencia, seguridad y robustez.</p>
-<hr>
-<p><em>Eso es todo! Nos vemos en el Dia 264.</em></p>
+        self.redis.rpush(self.dlq_key, json.dumps(dlq_entry))
+        print(f"🚨 Job {job['id']} movido a DLQ: {error}")
+
+    def retry_dlq(self):
+        """Reintenta jobs en DLQ que no excedan max_retries."""
+        while True:
+            entry = self.redis.lpop(self.dlq_key)
+            if not entry:
+                break
+
+            job = json.loads(entry)
+            if job["retries"] < self.max_retries:
+                # Reencolar para retry
+                self.redis.rpush("llm:retry_queue", json.dumps(job))
+                print(f"🔄 Job {job['id']} reencolado para retry #{job['retries']}")
+            else:
+                # Descartar o alertar
+                print(f"❌ Job {job['id']} excedió retries, marcar para intervención manual")
+                self.redis.rpush("llm:manual_review", json.dumps(job))
+
+def process_job_safe(job: dict):
+    try:
+        result = llm.generate(job["prompt"])
+        save_result(result)
+    except Exception as e:
+        dlq.move_to_dlq(job, str(e))  # No se pierde!
+</code></pre>
+
+<h2>⚠️ Error 3: No Manejar Idempotencia</h2>
+<p><strong>El problema</strong>: Sin idempotency keys, si un cliente reintenta un request (por timeout, red, etc.), tu sistema procesa el mismo trabajo múltiples veces. Esto causa:</p>
+<ul>
+<li>Respuestas duplicadas al usuario</li>
+<li>Cobros duplicados en la API</li>
+<li>Estados inconsistentes en la base de datos</li>
+</ul>
+
+<p><strong>La solución</strong>: Usar idempotency keys. El cliente envía una key única, el servidor detecta duplicados y retorna el resultado cacheado.</p>
+
+<pre><code class="language-python">class IdempotencyManager:
+    """Manejo de idempotencia para requests LLM."""
+
+    def __init__(self, redis_client, ttl: int = 86400):
+        """
+        ttl: 24 horas por defecto, cubre reintentos normales
+        """
+        self.redis = redis_client
+        self.ttl = ttl
+
+    def get_idempotency_key(self, request: dict) -> str:
+        """Genera key basada en contenido del request."""
+        content = json.dumps(request, sort_keys=True)
+        return hashlib.sha256(content.encode()).hexdigest()
+
+    def check_and_store(self, idempotency_key: str) -> tuple[bool, dict]:
+        """
+        Check if request was already processed.
+        Returns: (is_duplicate, cached_result)
+        """
+        cached = self.redis.get(f"idempotency:{idempotency_key}")
+        if cached:
+            return True, json.loads(cached)
+
+        # Placeholder mientras procesa (previene race conditions)
+        self.redis.setex(
+            f"idempotency:{idempotency_key}",
+            self.ttl,
+            json.dumps({"status": "processing"})
+        )
+        return False, None
+
+    def store_result(self, idempotency_key: str, result: dict):
+        """Almacena resultado para futuras consultas idempotentes."""
+        self.redis.setex(
+            f"idempotency:{idempotency_key}",
+            self.ttl,
+            json.dumps({"status": "done", "result": result})
+        )
+
+# Uso en endpoint
+@app.post("/llm/generate")
+async def generate(request: GenerateRequest, x-idempotency-key: str = None):
+    if x_idempotency_key:
+        is_dup, cached = idempotency.check_and_store({
+            "prompt": request.prompt,
+            "model": request.model
+        })
+        if is_dup:
+            return cached["result"]
+
+    result = await llm.generate(request.prompt)
+
+    if x_idempotency_key:
+        idempotency.store_result(x_idempotency_key, result)
+
+    return result
+</code></pre>
+
+<h2>📐 Escalando con Colas</h2>
+<p>Para alto throughput, la arquitectura de queues permite escalar horizontalmente. Múltiples workers consumen de la misma cola:</p>
+
+<pre><code class="language-python"># docker-compose.yml simplificado
+"""
+version: '3.8'
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    depends_on:
+      - redis
+    environment:
+      - REDIS_URL=redis://redis:6379
+
+  # Múltiples workers que consumen la cola en paralelo
+  worker-1:
+    build: .
+    command: python worker.py
+    depends_on:
+      - redis
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - WORKER_ID=worker-1
+
+  worker-2:
+    build: .
+    command: python worker.py
+    depends_on:
+      - redis
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - WORKER_ID=worker-2
+
+  worker-3:
+    build: .
+    command: python worker.py
+    depends_on:
+      - redis
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - WORKER_ID=worker-3
+"""
+
+# worker.py
+async def worker_loop(worker_id: str, batch_size: int = 50):
+    processor = BatchProcessor()
+    client = LLMClient()
+
+    print(f"🚀 Worker {worker_id} iniciando...")
+
+    while True:
+        try:
+            batch = await processor._collect_batch()
+            if batch:
+                print(f"📦 Worker {worker_id} procesando batch de {len(batch)}")
+                await processor._process_batch(client, batch)
+        except Exception as e:
+            print(f"❌ Worker {worker_id} error: {e}")
+            await asyncio.sleep(5)  # Backoff en caso de error
+</code></pre>
+
+<h2>📊 La Matemática del Batching</h2>
+<p>Veamos por qué el batching es tan importante. Supongamos:</p>
+<ul>
+<li><strong>Costo por request individual</strong>: $0.01 por call a la API</li>
+<li><strong>Costo por batch (50 requests)</strong>: $0.03 por call (3x el costo, pero 50x los requests)</li>
+</ul>
+
+<p>Para 10,000 requests/hora:</p>
+<ul>
+<li><strong>Sin batching</strong>: 10,000 × $0.01 = <strong>$100/hora</strong></li>
+<li><strong>Con batching</strong>: 10,000/50 × $0.03 = <strong>$6/hora</strong></li>
+</ul>
+
+<p><strong>Ahorro: 94%</strong>. Eso sin contar la reducción en latencia y el mejor uso de recursos.</p>
+
+<h2>📝 Resumen y Cierre</h2>
+<p>Hagale pues, parcero. Batch processing y queued systems no son opcional para producción — son必需品. Lo que aprendimos hoy:</p>
+
+<ul>
+<li><strong>Batching multiplica throughput</strong>: 10x-50x más requests procesados por llamada a la API</li>
+<li><strong>Colas dan resiliencia</strong>: Si un worker falla, otro toma la carga</li>
+<li><strong>Deduplication previene procesamiento duplicado</strong>: Usa idempotency keys</li>
+<li><strong>Dead Letter Queue salvaguarda jobs fallidos</strong>: No se pierde trabajo</li>
+</ul>
+
+<p>El 70% que implementa mal estos sistemas termina pagando 10x en costos de API y teniendo usuarios frustrados con latencia. Vos no seas de ese 70%.</p>
+
+<p>El que haya llegado hasta aquí sabe que estas cosas no son magia — son arquitectura. Y como dice por ahí: <em>"En producción no hay atajos, solo deuda técnica que se cobra con intereses"</em>.</p>
+
+<p>Nos vemos en el Día 264. Chaoman.</p>
   </article>
 
   <script>
