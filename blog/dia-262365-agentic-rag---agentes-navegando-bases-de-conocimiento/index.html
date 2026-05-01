@@ -118,327 +118,314 @@ nav {
   </header>
 
   <article class="article-body">
-<h1>Real-Time LLM Processing — El 85% Está Construyendo Esto Ahora</h1>
-<p>Hagale pues, parcero. Día 262 y hoy toca un tema que define el futuro de cómo interactuamos con IA: <strong>Real-Time LLM Processing</strong>. Esto no es solo "hacer streaming del output". No sire. Es arquitectura completa: WebSockets, Server-Sent Events, optimización de latencia, y cómo manejar miles de conexiones concurrentes sin que tu servidor sezca. El 85% de los equipos están construyendo esto ahora mismo — y la mayoría lo está haciendo mal.</p>
+<h2>🎯 Qué Es Agentic RAG?</h2>
+<p>Hagale pues, parcero. Día 262 y hoy toca un tema que está redefiniendo cómo construimos sistemas de recuperación de información: <strong>Agentic RAG</strong>. Esto no es tu RAG tradicional donde recuperas documentos y los pasas a un LLM. No sire. Aquí el agente decide qué buscar, cómo buscarlo, cuándo pedir más información, y cómo navegar bases de conocimiento complejas. El 80% todavía está haciendo RAG básico — esto es lo que viene.</p>
 <hr>
-<h2>🎯 Por Qué Importa el Tiempo Real</h2>
-<p>Piénsalo: cuando un usuario escribe en un chat y ve que el cursor parpadea mientras la IA "piensa"... eso es tiempo real percibido. La fórmula de la experiencia de usuario es:</p>
-<p>$$\text{Perceived Latency} = f(\text{TTFT}, \text{TPS}, \text{UI\_Updates})$$</p>
-<p>Donde:</p>
-<ul>
-<li><strong>TTFT</strong> (Time To First Token): el tiempo hasta el primer token. Debe ser &lt; 1 segundo.</li>
-<li><strong>TPS</strong> (Tokens Per Second): throughput del modelo. Más es mejor.</li>
-<li><strong>UI_Updates</strong>: cómo de suave actualiza el frontend.</li>
-</ul>
-<p>El usuario perdona 5-10 segundos de espera si ve progreso. Pero si no ve nada en 500ms, se va.</p>
+<h2>📐 La Diferencia Entre RAG y Agentic RAG</h2>
+<p>La fórmula que lo resume:</p>
+<p>$$\text{RAG Tradicional} \rightarrow \text{Query} \rightarrow \text{Retrieve} \rightarrow \text{Generate}$$</p>
+<p>$$\text{Agentic RAG} \rightarrow \text{Query} \rightarrow \text{Agent} \rightarrow \text{Plan} \rightarrow \text{Retrieve} \rightarrow \text{Reflect} \rightarrow \text{Generate}$$</p>
+<p>La diferencia clave: el agente puede hacer múltiples pasos de retrieval, re-planificar based on what it finds, y decidir si necesita más información antes de generar.</p>
 <hr>
-<h2>📐 Streaming con FastAPI</h2>
-<p>La forma más limpia de hacer streaming de respuestas de LLM es con <code>StreamingResponse</code> de FastAPI y el patrón ASGI:</p>
-<pre><code class="language-python">from fastapi import FastAPI, Request
-from fastapi.responses import StreamingResponse
-import asyncio
-import json
-from typing import AsyncGenerator
+<h2>🔧 Arquitectura de un Agentic RAG System</h2>
+<p>La arquitectura tiene cuatro componentes principales que trabajan en loop:</p>
+<pre><code class="language-python">from typing import List, Dict, Any, Optional
+from enum import Enum
 
-app = FastAPI()
+class AgentState(Enum):
+    PLANNING = "planning"
+    RETRIEVING = "retrieving"
+    GENERATING = "generating"
+    DONE = "done"
 
-async def generate_streaming_response(
-    prompt: str,
-    model: str = "gpt-4",
-    max_tokens: int = 1000
-) -> AsyncGenerator[str, None]:
-    """Genera respuesta de LLM en streaming token por token."""
+class AgenticRAG:
+    """Sistema Agentic RAG con loop de retrieval-reflect."""
 
-    # Usar la API de OpenAI con stream=True
-    from openai import AsyncOpenAI
-    client = AsyncOpenAI()
+    def __init__(
+        self,
+        retriever: Any,
+        generator: Any,
+        max_retrieval_steps: int = 3,
+        relevance_threshold: float = 0.7
+    ):
+        self.retriever = retriever
+        self.generator = generator
+        self.max_retrieval_steps = max_retrieval_steps
+        self.relevance_threshold = relevance_threshold
+        self.memory = []  # Historial de lo recuperado
 
-    stream = await client.chat.completions.create(
-        model=model,
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=max_tokens,
-        stream=True
-    )
+    def query(self, question: str) -> Dict[str, Any]:
+        """Procesa una query con agentic RAG."""
+        self.memory = []
+        state = AgentState.PLANNING
+        step = 0
 
-    async def token_generator():
-        async for chunk in stream:
-            if chunk.choices[0].delta.content:
-                token = chunk.choices[0].delta.content
-                # Enviar como SSE (Server-Sent Events)
-                data = json.dumps({"token": token, "done": False})
-                yield f"data: {data}\n\n"
-        # Señal de completion
-        yield f"data: {json.dumps({'token': '', 'done': True})}\n\n"
+        # Plan inicial
+        plan = self._create_plan(question)
+        context = ""
 
-    return StreamingResponse(
-        token_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no"  # Para nginx
+        while state != AgentState.DONE and step < self.max_retrieval_steps:
+            if state == AgentState.PLANNING:
+                # Decidir siguientes acciones
+                actions = self._decide_actions(plan, question, context)
+                if not actions:
+                    state = AgentState.GENERATING
+                else:
+                    state = AgentState.RETRIEVING
+
+            elif state == AgentState.RETRIEVING:
+                # Ejecutar retrieval
+                for action in actions:
+                    results = self.retriever.search(
+                        query=action["query"],
+                        top_k=action.get("top_k", 5)
+                    )
+                    self.memory.extend(results)
+
+                    # Evaluar relevancia
+                    if self._evaluate_relevance(results, question) < self.relevance_threshold:
+                        # Necesitamos más información - volver a planning
+                        state = AgentState.PLANNING
+                        plan = self._update_plan(plan, results, question)
+                        break
+                else:
+                    # Todos los resultados fueron relevantes
+                    state = AgentState.GENERATING
+
+            elif state == AgentState.GENERATING:
+                # Generar respuesta con el contexto recuperado
+                context = self._build_context(self.memory)
+                answer = self.generator.generate(
+                    question=question,
+                    context=context
+                )
+                state = AgentState.DONE
+
+            step += 1
+
+        return {
+            "answer": answer,
+            "sources": self.memory,
+            "steps_taken": step
         }
-    )
 
-@app.post("/v1/chat/stream")
-async def chat_stream(request: Request):
-    body = await request.json()
-    prompt = body.get("prompt", "")
-    return await generate_streaming_response(prompt)</code></pre>
+    def _create_plan(self, question: str) -> Dict[str, Any]:
+        """Crea un plan inicial de retrieval."""
+        return {
+            "original_question": question,
+            "sub_questions": self._decompose_question(question),
+            "retrieval_history": []
+        }
+
+    def _decompose_question(self, question: str) -> List[str]:
+        """Descompone pregunta en sub-preguntas más específicas."""
+        # En producción, usar un LLM para esto
+        # Por ahora, heurística simple
+        return [question]  # Fallback: buscar la pregunta original</code></pre>
 <hr>
-<h2>🔌 WebSocket Server para LLM</h2>
-<p>WebSockets son mejores cuando necesitas comunicación bidireccional real — el cliente puede enviar mensajes mientras recibe respuestas:</p>
-<pre><code class="language-python">from fastapi import WebSocket, WebSocketDisconnect
-from fastapi import FastAPI
-import asyncio
-import json
+<h2>🔄 Multi-Step Retrieval con Reflection</h2>
+<p>El loop de retrieval-reflect es lo que hace agentic RAG especial. Después de cada retrieval, el agente reflexiona sobre si tiene suficiente información:</p>
+<pre><code class="language-python">class RetrievalAgent:
+    """Agente que decide qué y cómo recuperar en múltiples pasos."""
 
-app = FastAPI()
+    def __init__(self, retriever, reflector):
+        self.retriever = retriever
+        self.reflector = reflector  # LLM que evalúa si el contexto es suficiente
+        self.retrieval_history = []
 
-class ConnectionManager:
-    """Maneja múltiples conexiones WebSocket concurrentes."""
+    def retrieve_with_reflection(
+        self,
+        question: str,
+        max_steps: int = 3
+    ) -> str:
+        """Retrieval en pasos con auto-evaluación."""
+        context_parts = []
+        current_question = question
 
-    def __init__(self):
-        self.active_connections: dict[str, WebSocket] = {}
+        for step in range(max_steps):
+            # Retrieval
+            results = self.retriever.search(current_question, top_k=5)
+            self.retrieval_history.append({
+                "step": step,
+                "query": current_question,
+                "results": results
+            })
 
-    async def connect(self, websocket: WebSocket, client_id: str):
-        await websocket.accept()
-        self.active_connections[client_id] = websocket
+            # Extraer contenido relevante
+            new_context = "\n".join([r["content"] for r in results])
+            context_parts.append(new_context)
 
-    def disconnect(self, client_id: str):
-        if client_id in self.active_connections:
-            del self.active_connections[client_id]
-
-    async def broadcast(self, message: str, exclude: str = None):
-        """Envía mensaje a todos los clientes excepto uno."""
-        for client_id, ws in self.active_connections.items():
-            if client_id != exclude:
-                try:
-                    await ws.send_text(message)
-                except:
-                    self.disconnect(client_id)
-
-manager = ConnectionManager()
-
-@app.websocket("/ws/llm/{client_id}")
-async def websocket_llm(websocket: WebSocket, client_id: str):
-    await manager.connect(websocket, client_id)
-
-    try:
-        while True:
-            # Recibir prompt del cliente
-            data = await websocket.receive_text()
-            payload = json.loads(data)
-            prompt = payload.get("prompt", "")
-
-            # Crear stream desde el LLM
-            from openai import AsyncOpenAI
-            client = AsyncOpenAI()
-
-            stream = await client.chat.completions.create(
-                model="gpt-4",
-                messages=[{"role": "user", "content": prompt}],
-                stream=True
+            # Reflexión: ¿tenemos suficiente?
+            full_context = "\n\n".join(context_parts)
+            is_sufficient, gap = self.reflector.evaluate(
+                question=question,
+                context=full_context
             )
 
-            async for chunk in stream:
-                if chunk.choices[0].delta.content:
-                    token = chunk.choices[0].delta.content
-                    await websocket.send_text(json.dumps({
-                        "type": "token",
-                        "content": token
-                    }))
-
-            # Completion
-            await websocket.send_text(json.dumps({
-                "type": "done",
-                "content": ""
-            }))
-
-    except WebSocketDisconnect:
-        manager.disconnect(client_id)
-        await manager.broadcast(
-            json.dumps({"type": "system", "content": f"Cliente {client_id} desconectado"}),
-            exclude=client_id
-        )</code></pre>
-<hr>
-<h2>⚡ SSE Endpoint (Alternativa a WebSocket)</h2>
-<p>Server-Sent Events es más simple que WebSocket para comunicación unidireccional (servidor → cliente). Ideal para dashboards, notifications, y streaming de respuestas:</p>
-<pre><code class="language-python">@app.get("/v1/llm/stream-sse")
-async def stream_sse(prompt: str):
-    """Endpoint SSE para streaming de LLM."""
-
-    async def event_generator():
-        from openai import AsyncOpenAI
-        client = AsyncOpenAI()
-
-        stream = await client.chat.completions.create(
-            model="gpt-4",
-            messages=[{"role": "user", "content": prompt}],
-            stream=True
-        )
-
-        async for chunk in stream:
-            if chunk.choices[0].delta.content:
-                token = chunk.choices[0].delta.content
-                yield f"data: {json.dumps({'token': token})}\n\n"
-                await asyncio.sleep(0)  # Yield control back
-
-        yield f"data: {json.dumps({'done': True})}\n\n"
-
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive"
-        }
-    )</code></pre>
-<hr>
-<h2>⚠️ Errores Comunes (y Cómo Evitarlos)</h2>
-<h3>Error 1: No Usar Streaming Cuando la Latencia Percibida Importa</h3>
-<p><strong>El problema</strong>: Esperar a que el LLM termine de generar toda la respuesta antes de enviar nada al cliente. Esto puede significar 10-30 segundos de silencio mientras el usuario ve un spinner.</p>
-<p><strong>La solución</strong>: Implementar streaming desde el primer token. El usuario ve que algo pasa y la percibición de velocidad mejora drásticamente:</p>
-<pre><code class="language-python"># MAL: espera completa
-def generate_sync(prompt: str) -> str:
-    response = openai.ChatCompletion.create(
-        model="gpt-4",
-        messages=[{"role": "user", "content": prompt}]
-    )
-    return response["choices"][0]["message"]["content"]  # Todo junto
-
-# BIEN: streaming desde el primer token
-async def generate_streaming(prompt: str):
-    stream = openai.ChatCompletion.create(
-        model="gpt-4",
-        messages=[{"role": "user", "content": prompt}],
-        stream=True  # Stream=True desde el inicio
-    )
-    for chunk in stream:
-        yield chunk["choices"][0]["delta"]["content"]</code></pre>
-<hr>
-<h3>Error 2: No Manejar Reconexión Graceful en WebSocket</h3>
-<p><strong>El problema</strong>: Cuando el cliente se reconnecta, pierde el estado. O cuando la conexión se cae, el servidor no limpia recursos y quedan zombie connections.</p>
-<p><strong>La solución</strong>: Implementar heartbeat, reconnection logic, y cleanup de recursos:</p>
-<pre><code class="language-python">class RobustWebSocketManager:
-    def __init__(self):
-        self.connections: dict[str, WebSocket] = {}
-        self.heartbeat_interval = 30  # segundos
-
-    async def connect(self, websocket: WebSocket, client_id: str):
-        await websocket.accept()
-        self.connections[client_id] = websocket
-
-        # Iniciar heartbeat para esta conexión
-        asyncio.create_task(self._heartbeat(client_id))
-
-    async def _heartbeat(self, client_id: str):
-        """Envía ping periódicamente para mantener conexión viva."""
-        while client_id in self.connections:
-            try:
-                await asyncio.sleep(self.heartbeat_interval)
-                await self.connections[client_id].send_json({
-                    "type": "ping",
-                    "timestamp": time.time()
-                })
-            except:
-                await self.disconnect(client_id)
+            if is_sufficient:
                 break
 
-    async def disconnect(self, client_id: str):
-        """Limpia recursos al desconectar."""
-        if client_id in self.connections:
-            del self.connections[client_id]
-            # Limpiar cualquier recurso asociado (sessions, buffers, etc.)
+            # No es suficiente - formular query para el gap
+            current_question = gap
 
-    async def reconnect(self, old_client_id: str, websocket: WebSocket):
-        """Maneja reconexión: recupera estado y limpia viejo."""
-        await self.disconnect(old_client_id)
-        await self.connect(websocket, old_client_id)
-        return old_client_id  # Mismo ID, nueva conexión</code></pre>
-<hr>
-<h3>Error 3: Usar Polling Cuando SSE Es Mejor</h3>
-<p><strong>El problema</strong>: El cliente hace requests cada 1-2 segundos ("polling") para ver si hay nuevos datos. Esto genera carga innecesaria en el servidor y latencia artificial.</p>
-<p><strong>La solución</strong>: Usar Server-Sent Events (SSE) para server-to-client push:</p>
-<pre><code class="language-python"># MAL: Polling (genera innecesario tráfico y latencia)
-async def poll_for_updates(client_id: str):
-    while True:
-        response = await client.get("/api/status")
-        if response["has_update"]:
-            return response["data"]
-        await asyncio.sleep(2)  # Poll cada 2 segundos
+        return "\n\n".join(context_parts)
 
-# BIEN: SSE (push real desde servidor)
-@app.get("/api/status/stream")
-async def status_stream(client_id: str):
-    async def event_generator():
-        last_check = 0
-        while True:
-            updates = await check_new_updates(client_id, since=last_check)
-            if updates:
-                yield f"data: {json.dumps({'updates': updates})}\n\n"
-                last_check = time.time()
-            await asyncio.sleep(0)  # No hacer polling, esperar
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
-
-# Comparación de tráfico:
-# Polling: ~30 requests/minuto (aunque no haya datos)
-# SSE: 0 requests/minuto (todo es push desde servidor)</code></pre>
-<hr>
-<h2>🔧 Manejo de Conexiones Concurrentes</h2>
-<p>Cuando tienes miles de usuarios simultáneos, necesitas gérer el throughput:</p>
-<pre><code class="language-python">from contextlib import asynccontextmanager
-import asyncio
-
-class ConcurrencyLimiter:
-    """Limita concurrencia para no saturar el LLM."""
-
-    def __init__(self, max_concurrent: int = 10):
-        self.semaphore = asyncio.Semaphore(max_concurrent)
-        self.active_requests = 0
-
-    @asynccontextmanager
-    async def acquire(self):
-        async with self.semaphore:
-            self.active_requests += 1
-            try:
-                yield
-            finally:
-                self.active_requests -= 1
-
-    def get_stats(self) -> dict:
+    def get_retrieval_stats(self) -> Dict[str, Any]:
+        """Retorna estadísticas del proceso de retrieval."""
         return {
-            "active": self.active_requests,
-            "available": self.semaphore._value,
-            "waiting": len(asyncio.all_tasks()) - self.active_requests
+            "total_steps": len(self.retrieval_history),
+            "queries": [r["query"] for r in self.retrieval_history],
+            "total_docs_retrieved": sum(
+                len(r["results"]) for r in self.retrieval_history
+            )
+        }</code></pre>
+<hr>
+<h2>📊 Routing: Decidir Dónde Buscar</h2>
+<p>Agentic RAG puede路由 a diferentes fuentes o estrategias based on the query:</p>
+<pre><code class="language-python">from typing import Literal
+
+class Router:
+    """Router inteligente que decide dónde y cómo buscar."""
+
+    def __init__(self, vector_stores: Dict[str, Any], kg_client: Any = None):
+        self.stores = vector_stores  # {"docs": store1, "qa": store2, "code": store3}
+        self.kg = kg_client  # Knowledge graph opcional
+        self.route_prompts = {
+            "factual": "Busca información factual en la base de documentos.",
+            "procedural": "Busca pasos o procedimientos en la base de código.",
+            "conceptual": "Busca explicaciones conceptuales en la base de Q&A.",
+            "hybrid": "Combina búsqueda factual y conceptual."
         }
 
-# Rate limiting por cliente
-from collections import defaultdict
-import time
+    def route(self, question: str) -> Dict[str, Any]:
+        """Decide la estrategia de routing basada en la query."""
+        # Clasificar el tipo de query
+        query_type = self._classify_query(question)
 
-client_last_request = defaultdict(lambda: 0)
-RATE_LIMIT_SECONDS = 1.0  # 1 request por segundo por cliente
+        # Decidir si usar knowledge graph
+        use_kg = self._should_use_kg(question)
 
-async def rate_limited_request(client_id: str, prompt: str):
-    now = time.time()
-    if now - client_last_request[client_id] < RATE_LIMIT_SECONDS:
-        raise HTTPException(status_code=429, detail="Rate limit exceeded")
-    client_last_request[client_id] = now
+        routes = []
+        if query_type == "factual":
+            routes.append({"source": "docs", "strategy": "similarity"})
+        elif query_type == "procedural":
+            routes.append({"source": "code", "strategy": "bm25"})
+        elif query_type == "conceptual":
+            routes.append({"source": "qa", "strategy": "similarity"})
+        else:  # hybrid
+            routes = [
+                {"source": "docs", "strategy": "similarity"},
+                {"source": "qa", "strategy": "similarity"}
+            ]
 
-    limiter = ConcurrencyLimiter(max_concurrent=10)
-    async with limiter.acquire():
-        return await generate_streaming_response(prompt)</code></pre>
+        return {
+            "query_type": query_type,
+            "routes": routes,
+            "use_kg": use_kg,
+            "prompt": self.route_prompts.get(query_type, "")
+        }
+
+    def _classify_query(self, question: str) -> Literal["factual", "procedural", "conceptual", "hybrid"]:
+        """Clasifica el tipo de query (en producción usar LLM)."""
+        question_lower = question.lower()
+
+        # Palabras clave simples para clasificación
+        if any(kw in question_lower for kw in ["cómo", "pasos", "procedimiento", "implementar"]):
+            return "procedural"
+        elif any(kw in question_lower for kw in ["por qué", "explicar", "qué es", "concepto"]):
+            return "conceptual"
+        elif any(kw in question_lower for kw in ["cuándo", "cuánto", "dónde", "quién", "número"]):
+            return "factual"
+        return "hybrid"
+
+    def _should_use_kg(self, question: str) -> bool:
+        """Decide si la query se beneficiaría de knowledge graph."""
+        kg_keywords = ["relación", "conectar", "entre", "jerarquía", "padre", "hijo"]
+        return any(kw in question.lower() for kw in kg_keywords)</code></pre>
+<hr>
+<h2>⚠️ Errores Comunes (y Cómo Evitarlos)</h2>
+<h3>Error 1: No poner límites al número de retrieval steps</h3>
+<p><strong>El problema</strong>: El agente entra en loop infinito de retrieval, consume tokens y nunca termina.</p>
+<p><strong>La solución</strong>: Siempre establecer max_retrieval_steps y timeout:</p>
+<pre><code class="language-python">class BoundedAgenticRAG(AgenticRAG):
+    """Agentic RAG con límites estrictos."""
+
+    def __init__(self, *args, max_retrieval_steps: int = 3, timeout_seconds: float = 30.0, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.max_retrieval_steps = max_retrieval_steps
+        self.timeout_seconds = timeout_seconds
+        self.start_time = None
+
+    def query(self, question: str) -> Dict[str, Any]:
+        self.start_time = time.time()
+        return super().query(question)
+
+    def _check_limits(self) -> bool:
+        """Verifica si se han excedido los límites."""
+        elapsed = time.time() - self.start_time
+        if elapsed > self.timeout_seconds:
+            return False
+        if self.step >= self.max_retrieval_steps:
+            return False
+        return True</code></pre>
+<hr>
+<h3>Error 2: Mezclar recuperación de documentos sin evaluar relevancia primero</h3>
+<p><strong>El problema</strong>: Se acumulan documentos irrelevantes y el contexto se diluye.</p>
+<p><strong>La solución</strong>: Filtrar por relevancia antes de añadir al contexto:</p>
+<pre><code class="language-python">class RelevanceFilteredRetriever:
+    """Filtra resultados por relevancia antes de añadir al contexto."""
+
+    def __init__(self, base_retriever, relevance_threshold: float = 0.6):
+        self.base = base_retriever
+        self.threshold = relevance_threshold
+
+    def search(self, query: str, top_k: int = 5) -> List[Dict]:
+        results = self.base.search(query, top_k=top_k * 3)  # Traer más para filtrar
+
+        # Filtrar por score
+        filtered = [r for r in results if r["score"] >= self.threshold]
+
+        # Deduplicar por contenido similar
+        deduplicated = self._deduplicate(filtered)
+
+        return deduplicated[:top_k]
+
+    def _deduplicate(self, results: List[Dict]) -> List[Dict]:
+        """Elimina resultados con contenido muy similar."""
+        if not results:
+            return []
+
+        unique = [results[0]]
+        for r in results[1:]:
+            is_duplicate = any(
+                self._similarity(r["content"], u["content"]) > 0.9
+                for u in unique
+            )
+            if not is_duplicate:
+                unique.append(r)
+        return unique
+
+    def _similarity(self, text1: str, text2: str) -> float:
+        """Calcula similitud simple entre dos textos."""
+        # En producción usar embeddings
+        words1 = set(text1.lower().split())
+        words2 = set(text2.lower().split())
+        if not words1 or not words2:
+            return 0.0
+        intersection = words1 & words2
+        union = words1 | words2
+        return len(intersection) / len(union)</code></pre>
 <hr>
 <h2>📊 Resumen</h2>
 <ul>
-<li><strong>Streaming</strong> reduce latencia percibida drásticamente — envía tokens conforme se generan.</li>
-<li><strong>WebSockets</strong> son para comunicación bidireccional (chat interactivo).</li>
-<li><strong>SSE</strong> es para server-to-client push sin la complejidad de WebSocket.</li>
-<li><strong>Errores comunes</strong>: no usar streaming, no manejar reconexiones, y usar polling cuando SSE es mejor.</li>
+<li><strong>Agentic RAG</strong> añade un loop de plan-retrieve-reflect sobre RAG tradicional.</li>
+<li><strong>Multi-step retrieval</strong>: el agente puede hacer múltiples búsquedas guiadas por gaps detectados.</li>
+<li><strong>Routing inteligente</strong>: decide qué fuente y estrategia usar based on la query.</li>
+<li><strong>Límites estrictos</strong>: max steps y timeout para evitar loops infinitos.</li>
+<li><strong>Relevance filtering</strong>: filtra y deduce before adding to context.</li>
 </ul>
 <hr>
-<p><em>Hagale pues, eso es todo por hoy. El que no está construyendo esto está detrás del 85%. Latencia percibida es experiencia de usuario. Nos vemos en el Día 263.</em></p>
+<p><em>Hagale pues, eso es todo por hoy. El que sigue haciendo RAG sin agente está un paso atrás. Nos vemos en el Día 263.</em></p>
   </article>
 
   <script>

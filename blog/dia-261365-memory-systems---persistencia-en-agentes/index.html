@@ -118,251 +118,281 @@ nav {
   </header>
 
   <article class="article-body">
-<h1>Multimodal RAG — El 80% No Lo Hace y Sus Sistemas Son 10x Menos Potentes</h1>
-<p>Hagale pues, parcero. Café en mano, hoy vamos a hablar de algo que el 80% de los equipos ignora cuando construyen sistemas RAG: <strong>Multimodal RAG</strong>. Esto no es solo poner texto en un vector database. No sire. Aquí hablamos de imágenes, audio, video, y cómo hacer que todo eso se reconozca, se recupere y se genere en una sola cadena coherente. Eso es lo que separa un sistema RAG mediocre de uno que realmente entiende el mundo.</p>
+<h2>🎯 Por Qué Los Agentes Olvidan Todo?</h2>
+<p>Hagale pues, parcero. Día 261 y hoy vamos a hablar de algo que el 90% de los equipos ignora cuando construyen agentes: <strong>Memory Systems</strong>. Un agente sin memoria es como un goldfish — hace cosas pero no recuerda nada. Cada conversación empieza de cero, cada tarea se repite, y el usuario termina frustrado porque "el bot no aprende". Esto separa un agente útil de uno inútil.</p>
 <hr>
-<h2>🎯 Por Qué Multimodal RAG?</h2>
-<p>Piensa en esto: tienes un catálogo de productos con fotos, manuales en PDF, videos tutoriales, y reseñas en audio. Un RAG tradicional solo indexa texto. Estás perdiendo el 80% de la información. La imagen del producto, el tono del cliente en la reseña de audio, el contexto visual del tutorial en video — todo eso se pierde.</p>
-<p>La fórmula de similaridad en RAG multimodal:</p>
-<p>$$\text{Sim}(\mathbf{e}_q, \mathbf{e}_d) = \frac{\mathbf{e}_q \cdot \mathbf{e}_d}{\|\mathbf{e}_q\| \|\mathbf{e}_d\|}$$</p>
-<p>Donde $\mathbf{e}_q$ y $\mathbf{e}_d$ son embeddings que viven en el <em>mismo espacio latente</em>, independientemente de si vinieron de texto, imagen o audio.</p>
+<h2>📐 Tipos de Memoria en Agentes</h2>
+<p>La arquitectura de memoria para agentes tiene tres capas, cada una con propósito diferente:</p>
+<p>$$\text{Memory Architecture} = f(\text{Sensory}, \text{Short-Term}, \text{Long-Term})$$</p>
+<ul>
+<li><strong>Sensory Memory</strong>: Buffer de lo que está pasando ahora mismo. Representaciones raw del ambiente.</li>
+<li><strong>Short-Term Memory (STM)</strong>: Contexto de la conversación actual. Limitado en tamaño — típicamente los últimos N mensajes o tokens.</li>
+<li><strong>Long-Term Memory (LTM)</strong>: Todo lo que el agente ha aprendido across sessions. Puede persistir por días, semanas, o permanentemente.</li>
+</ul>
 <hr>
-<h2>📐 CLIP: El Puente Entre Modalidades</h2>
-<p>CLIP (Contrastive Language-Image Pre-training) de OpenAI es el backbone de multimodal RAG moderno. La idea es simple pero poderosa: aprender embeddings joint de imagen y texto en el mismo espacio vectorial.</p>
-<pre><code class="language-python">import torch
-from PIL import Image
-import clip
+<h2>🔧 Implementando Short-Term Memory</h2>
+<p>STM es lo que ves cuando miras el historial de chat. En agentes, esto se implementa típicamente como un sliding window sobre la conversación:</p>
+<pre><code class="language-python">from collections import deque
+from typing import List, Dict, Any
 
-class MultimodalIndexer:
-    def __init__(self, model_name="ViT-B/32"):
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.model, self.preprocess = clip.load(model_name, device=self.device)
+class ShortTermMemory:
+    """Memory de conversación actual - sliding window approach."""
 
-    def encode_image(self, image_path: str) -> torch.Tensor:
-        """Convierte imagen a embedding vectorial."""
-        image = Image.open(image_path).convert("RGB")
-        image_input = self.preprocess(image).unsqueeze(0).to(self.device)
-        with torch.no_grad():
-            image_features = self.model.encode_image(image_input)
-        # L2 normalize para cosine similarity
-        return torch.nn.functional.normalize(image_features, dim=-1)
+    def __init__(self, max_tokens: int = 4096):
+        self.max_tokens = max_tokens
+        self.messages: deque = deque()
+        self.token_count = 0
 
-    def encode_text(self, text: str) -> torch.Tensor:
-        """Convierte texto a embedding vectorial."""
-        text_input = clip.tokenize([text]).to(self.device)
-        with torch.no_grad():
-            text_features = self.model.encode_text(text_input)
-        return torch.nn.functional.normalize(text_features, dim=-1)
+    def add_message(self, role: str, content: str) -> None:
+        """Agrega mensaje respetando el límite de tokens."""
+        message = {"role": role, "content": content}
+        msg_tokens = self._estimate_tokens(content)
 
-    def index_image(self, image_path: str, metadata: dict) -> dict:
-        """Indexa una imagen con su embedding y metadatos."""
-        embedding = self.encode_image(image_path)
-        return {
-            "embedding": embedding.cpu().numpy().flatten(),
-            "metadata": metadata,
-            "modality": "image"
-        }
+        # Si un solo mensaje excede el límite, truncamos
+        while self.token_count + msg_tokens > self.max_tokens and len(self.messages) > 1:
+            removed = self.messages.popleft()
+            self.token_count -= self._estimate_tokens(removed["content"])
 
-    def index_video_frame(self, frame_path: str, timestamp: float, metadata: dict) -> dict:
-        """Indexa un frame de video con timestamp para contexto temporal."""
-        embedding = self.encode_image(frame_path)
-        return {
-            "embedding": embedding.cpu().numpy().flatten(),
-            "metadata": {**metadata, "timestamp": timestamp},
-            "modality": "video_frame"
-        }
+        if msg_tokens > self.max_tokens:
+            # Truncar el mensaje mismo
+            content = self._truncate_to_tokens(content, self.max_tokens - 50)
+            message["content"] = content
+            msg_tokens = self.max_tokens
 
-    def index_audio(self, audio_embedding: np.ndarray, transcript: str, metadata: dict) -> dict:
-        """Indexa audio usando transcript como puente textual."""
-        text_embedding = self.encode_text(transcript)
-        return {
-            "embedding": text_embedding.cpu().numpy().flatten(),
-            "metadata": {**metadata, "transcript": transcript},
-            "modality": "audio"
-        }</code></pre>
+        self.messages.append(message)
+        self.token_count += msg_tokens
+
+    def get_context(self) -> List[Dict[str, str]]:
+        """Retorna el contexto completo para el LLM."""
+        return list(self.messages)
+
+    def _estimate_tokens(self, text: str) -> int:
+        """Estimación gruesa: ~4 caracteres por token para español."""
+        return len(text) // 4
+
+    def _truncate_to_tokens(self, text: str, max_tokens: int) -> str:
+        """Trunca texto a un número estimado de tokens."""
+        max_chars = max_tokens * 4
+        return text[:max_chars]
+
+    def clear(self) -> None:
+        """Limpia toda la memoria de corto plazo."""
+        self.messages.clear()
+        self.token_count = 0</code></pre>
 <hr>
-<h2>🔍 Retrieval Multimodal Chain</h2>
-<p>Aquí es donde la magia sucede. La chain de retrieval multimodal debe manejar queries que cruzan modalidades:</p>
-<pre><code class="language-python">from typing import List, Union
+<h2>🧠 Implementando Long-Term Memory con Vector Store</h2>
+<p>LTM no puede ser solo un sliding window — necesitas persistencia y retrieval. La técnica más común es usar un vector database para almacenar experiencias pasadas y recuperarlas por similitud semántica:</p>
+<pre><code class="language-python">from typing import List, Dict, Any, Optional
 import numpy as np
 
-class MultimodalRetriever:
-    def __init__(self, indexer: MultimodalIndexer, vector_store):
-        self.indexer = indexer
-        self.store = vector_store
+class LongTermMemory:
+    """Memoria persistente usando vector embeddings."""
+
+    def __init__(self, vector_store, embedder, max_memories: int = 1000):
+        self.store = vector_store  # Chroma, Pinecone, etc.
+        self.embedder = embedder   # OpenAI, sentence-transformers, etc.
+        self.max_memories = max_memories
+
+    def add_memory(
+        self,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+        importance: float = 1.0
+    ) -> str:
+        """Agrega un recuerdo a la memoria de largo plazo."""
+        embedding = self.embedder.embed(content)
+
+        memory_entry = {
+            "content": content,
+            "importance": importance,
+            "metadata": metadata or {}
+        }
+
+        memory_id = self.store.add(
+            embeddings=[embedding],
+            documents=[content],
+            metadatas=[memory_entry]
+        )
+        return memory_id
 
     def retrieve(
         self,
-        query: Union[str, np.ndarray],
-        query_modality: str = "text",
+        query: str,
         top_k: int = 5,
-        filters: dict = None
-    ) -> List[dict]:
-        """Recupera documentos multimodales relevantes a la query."""
+        importance_weight: float = 0.3
+    ) -> List[Dict[str, Any]]:
+        """Recupera memorias relevantes a la query."""
+        query_emb = self.embedder.embed(query)
 
-        # Si la query es texto, encode a embedding
-        if isinstance(query, str):
-            if query_modality == "text":
-                query_emb = self.indexer.encode_text(query)
-            elif query_modality == "image":
-                query_emb = self.indexer.encode_image(query)
-            else:
-                raise ValueError(f"Modalidad no soportada: {query_modality}")
-        else:
-            query_emb = query
-
-        # Búsqueda en vector store
         results = self.store.similarity_search(
-            query_emb.flatten(),
-            k=top_k,
-            filter=filters
+            query_emb,
+            k=top_k * 2  # Traer más para filtrar después
         )
 
-        # Re-ranking por modalidad si hay filtros
-        if filters and "modality" in filters:
-            results = [r for r in results if r["modality"] == filters["modality"]]
+        # Re-rank por relevancia e importancia
+        scored = []
+        for r in results:
+            relevance = 1 - r.get("distance", 0)  # Convertir distancia a similitud
+            importance = r.get("metadata", {}).get("importance", 1.0)
+            score = (1 - importance_weight) * relevance + importance_weight * importance
+            scored.append({**r, "score": score})
 
-        return results
+        # Retornar top_k ordenados por score
+        return sorted(scored, key=lambda x: x["score"], reverse=True)[:top_k]
 
-    def multimodal_query(
+    def consolidate_from_stm(self, stm_messages: List[Dict]) -> None:
+        """Consolida la memoria de corto plazo a largo plazo."""
+        # Crear un resumen de la conversación
+        conversation_text = "\n".join([
+            f"{m['role']}: {m['content']}" for m in stm_messages
+        ])
+
+        # Extraer información importante (aquí podría usar un LLM para resumir)
+        summary = self._summarize_conversation(conversation_text)
+
+        # Guardar como memoria
+        self.add_memory(
+            content=summary,
+            metadata={
+                "type": "conversation_summary",
+                "message_count": len(stm_messages),
+                "first_role": stm_messages[0]["role"] if stm_messages else None
+            }
+        )</code></pre>
+<hr>
+<h2>⚡ Memory Consolidation: De STM a LTM</h2>
+<p>El proceso de consolidar memoria es crítico. No quieres guardar cada mensaje — eso saturaría tu vector store. Quieres resumir y extraer lo importante:</p>
+<pre><code class="language-python">class MemoryConsolidator:
+    """Decide cuándo y qué consolidar de STM a LTM."""
+
+    def __init__(
         self,
-        text_query: str,
-        image_query: str = None,
-        top_k: int = 5
-    ) -> List[dict]:
-        """Query que combina texto e imagen — fusión en early stage."""
-        # Embeddings de ambas modalidades
-        text_emb = self.indexer.encode_text(text_query)
-        if image_query:
-            image_emb = self.indexer.encode_image(image_query)
-            # Fusión: promedio ponderado de embeddings
-            fused_emb = 0.6 * text_emb + 0.4 * image_emb
-        else:
-            fused_emb = text_emb
+        stm: ShortTermMemory,
+        ltm: LongTermMemory,
+        consolidation_threshold: int = 20,
+        min_importance_to_save: float = 0.6
+    ):
+        self.stm = stm
+        self.ltm = ltm
+        self.consolidation_threshold = consolidation_threshold
+        self.min_importance_to_save = min_importance_to_save
 
-        return self.store.similarity_search(fused_emb.flatten(), k=top_k)</code></pre>
+    def should_consolidate(self) -> bool:
+        """Determina si es momento de consolidar."""
+        return len(self.stm.messages) >= self.consolidation_threshold
+
+    def consolidate(self, session_id: str) -> Dict[str, Any]:
+        """Ejecuta la consolidación STM -> LTM."""
+        if not self.should_consolidate():
+            return {"status": "skipped", "reason": "threshold_not_reached"}
+
+        messages = self.stm.get_context()
+
+        # Analizar importancia de cada mensaje (simplificado)
+        important_memories = self._extract_important_memories(messages)
+
+        consolidated = []
+        for memory in important_memories:
+            self.ltm.add_memory(
+                content=memory["content"],
+                metadata={
+                    "session_id": session_id,
+                    "importance": memory["importance"],
+                    "type": memory["type"]
+                }
+            )
+            consolidated.append(memory["content"])
+
+        # Limpiar STM después de consolidar
+        self.stm.clear()
+
+        return {
+            "status": "success",
+            "memories_consolidated": len(consolidated),
+            "sample": consolidated[:3]
+        }
+
+    def _extract_important_memories(self, messages: List[Dict]) -> List[Dict]:
+        """Extrae memorias importantes de la conversación."""
+        # En producción, esto usaría un LLM para clasificar
+        # Por ahora, heurística simple:
+        important = []
+        for m in messages:
+            content = m["content"]
+            # Mensajes largos tienden a ser más importantes
+            length_score = min(len(content) / 500, 1.0)
+            # Mensajes del usuario suelen ser más importantes
+            role_score = 0.8 if m["role"] == "user" else 0.4
+
+            importance = (length_score + role_score) / 2
+
+            if importance >= self.min_importance_to_save:
+                important.append({
+                    "content": content[:500],  # Limitar largo
+                    "importance": importance,
+                    "type": "conversation_fragment"
+                })
+
+        return important</code></pre>
 <hr>
 <h2>⚠️ Errores Comunes (y Cómo Evitarlos)</h2>
-<h3>Error 1: No Soportar Queries Multimodales Cuando Hay Contenido Multimodal</h3>
-<p><strong>El problema</strong>: Tienes un dataset con imágenes y texto, pero solo permites queries en texto. El usuario sube una imagen y dice "¿qué producto es este?" y tu sistema no tiene idea.</p>
-<p><strong>La solución</strong>: Implementar un <code>multimodal_query</code> que acepte tanto texto como imagen como input:</p>
-<pre><code class="language-python"># Mal: solo aceita texto
-def retrieve_text_only(query: str, top_k: int) -> List[dict]:
-    return vector_store.search(embed_text(query), k=top_k)
+<h3>Error 1: No Implementar memory eviction</h3>
+<p><strong>El problema</strong>: La memoria crece infinitamente. Eventually consumes all storage and retrieval becomes slow.</p>
+<p><strong>La solución</strong>: Implementar políticas de eviction como LRU o importance-based pruning:</p>
+<pre><code class="language-python">class EvictionPolicy:
+    """Politicas de eviction para memoria de agente."""
 
-# Bien: acepta múltiples modalidades de input
-def retrieve_multimodal(
-    query: Union[str, Image.Image],
-    query_type: str,  # "text" o "image"
-    top_k: int
-) -> List[dict]:
-    if query_type == "image":
-        emb = encode_image(query)
-    else:
-        emb = encode_text(query)
-    return vector_store.search(emb, k=top_k)</code></pre>
+    @staticmethod
+    def lru_evict(memories: List[Dict], max_count: int) -> List[Dict]:
+        """Mantiene solo los últimos max_count recuerdos."""
+        return memories[-max_count:]
+
+    @staticmethod
+    def importance_evict(memories: List[Dict], max_count: int, min_importance: float) -> List[Dict]:
+        """Evita recuerdos de baja importancia si hay muchos."""
+        # Ordenar por importancia
+        sorted_mem = sorted(memories, key=lambda x: x.get("importance", 0), reverse=True)
+
+        # Si hay espacio, devolver todos los que superen el umbral
+        if len(sorted_mem) <= max_count:
+            return [m for m in sorted_mem if m.get("importance", 0) >= min_importance]
+
+        # Tomar los más importantes hasta max_count
+        return sorted_mem[:max_count]</code></pre>
 <hr>
-<h3>Error 2: Mezclar Embeddings de Diferentes Modalidades Sin Alinear Espacios</h3>
-<p><strong>El problema</strong>: Usas un modelo para embeddings de texto (OpenAI) y otro para imágenes (CLIP) y los pones en el mismo vector store sin verificar que vivan en espacios comparables. Resultado: retrieved garbage.</p>
-<p><strong>La solución</strong>: Usar un modelo joint como CLIP que produce embeddings en el mismo espacio, o alinear espacios con MUSE (Multimodal Semantic Embeddings):</p>
-<p>$$\mathbf{e}_{text}^{aligned} = \mathbf{W} \cdot \mathbf{e}_{text}^{raw} + \mathbf{b}$$</p>
-<p>donde $\mathbf{W}$ y $\mathbf{b}$ se aprenden para alinear el espacio de texto al espacio de imagen.</p>
-<pre><code class="language-python">class AlignedMultimodalIndexer:
-    def __init__(self):
-        # CLIP produce embeddings alineados nativamente
-        self.clip_model, self.preprocess = clip.load("ViT-B/32", device="cuda")
-        # NO mezcles con OpenAI text-embedding-3-large sin alineación
+<h3>Error 2: No separar contextos de diferentes usuarios o sesiones</h3>
+<p><strong>El problema</strong>: Un usuario ve información de otro. Peor aún: tu agente mezcla contextos de sesiones diferentes.</p>
+<p><strong>La solución</strong>: Namespaces o filtros por session_id en el vector store:</p>
+<pre><code class="language-python">classnamespacedMemory:
+    """Memoria separada por sesión o usuario."""
 
-    def index(self, content: Union[str, Image.Image], modality: str) -> dict:
-        if modality == "text":
-            emb = self.clip_model.encode_text(clip.tokenize([content]))
-        elif modality == "image":
-            img = self.preprocess(content).unsqueeze(0)
-            emb = self.clip_model.encode_image(img)
-        # Los embeddings YA están alineados
-        return normalize(emb)</code></pre>
-<hr>
-<h3>Error 3: Tratar Video Como Imagen Estática (Ignorando la Dimensión Temporal)</h3>
-<p><strong>El problema</strong>: Extraes un frame de un video y lo tratas como una imagen estática. Pero el video tiene tiempo: la acción de 0:30s importa, no solo el frame 150.</p>
-<p><strong>La solución</strong>: Indexar video con timestamps y usar retrieval temporal:</p>
-<pre><code class="language-python">import cv2
+    def __init__(self, base_memory: LongTermMemory, namespace: str):
+        self.base = base_memory
+        self.namespace = namespace  # e.g., "user_123" or "session_456"
 
-class VideoIndexer:
-    def __init__(self, clip_model):
-        self.model = clip_model
-        self.fps = 1  # 1 frame por segundo para retrieval
+    def add_memory(self, content: str, metadata: Dict = None) -> str:
+        ns_metadata = {**metadata, "namespace": self.namespace}
+        return self.base.add_memory(content, metadata=ns_metadata)
 
-    def index_video(self, video_path: str, max_frames: int = 30) -> List[dict]:
-        """Indexa video extrayendo frames con contexto temporal."""
-        cap = cv2.VideoCapture(video_path)
-        frames = []
-        timestamps = []
-        frame_num = 0
-
-        while len(frames) < max_frames:
-            ret, frame = cap.read()
-            if not ret:
-                break
-            if frame_num % int(cap.get(cv2.CAP_PROP_FPS)) == 0:
-                # Guardar timestamp en segundos
-                timestamp = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
-                frames.append(frame)
-                timestamps.append(timestamp)
-            frame_num += 1
-
-        cap.release()
-
-        # Crear chunks con contexto temporal
-        chunks = []
-        for i, (frame, ts) in enumerate(zip(frames, timestamps)):
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            emb = self.model.encode_image(preprocess(frame_rgb).unsqueeze(0))
-
-            chunks.append({
-                "embedding": normalize(emb).cpu().numpy().flatten(),
-                "timestamp": ts,
-                "frame_idx": i,
-                "video_path": video_path,
-                "modality": "video"
-            })
-
-        return chunks
-
-    def retrieve_with_temporal_context(
-        self,
-        query: str,
-        chunks: List[dict],
-        window_seconds: float = 5.0
-    ) -> List[dict]:
-        """Recupera frames considerando contexto temporal cercano."""
-        query_emb = self.model.encode_text(clip.tokenize([query]))
-
-        results = []
-        for chunk in chunks:
-            # Similitud base
-            sim = cosine_sim(query_emb, chunk["embedding"])
-
-            # Bonus por contexto: si hay múltiples chunks cercanos con alta similitud
-            nearby_high_sim = sum(
-                1 for c in chunks
-                if abs(c["timestamp"] - chunk["timestamp"]) < window_seconds
-                and cosine_sim(query_emb, c["embedding"]) > 0.7
-            )
-            # Boost si hay coherencia temporal
-            temporal_boost = 1.0 + (nearby_high_sim * 0.1)
-            results.append({**chunk, "score": sim * temporal_boost})
-
-        return sorted(results, key=lambda x: x["score"], reverse=True)</code></pre>
+    def retrieve(self, query: str, top_k: int = 5) -> List[Dict]:
+        # Filtrar por namespace
+        results = self.base.store.similarity_search(
+            query,
+            k=top_k * 3,
+            filter={"namespace": self.namespace}
+        )
+        return results[:top_k]</code></pre>
 <hr>
 <h2>📊 Resumen</h2>
 <ul>
-<li><strong>Multimodal RAG</strong> indexa y recupera texto, imagen, audio y video en un espacio de embeddings unificado.</li>
-<li><strong>CLIP</strong> es el estándar para crear embeddings joint de imagen y texto.</li>
-<li><strong>Video</strong> requiere tratamiento temporal: timestamps y contexto, no solo frames estáticos.</li>
-<li><strong>Errores comunes</strong>: no soportar queries multimodales, mezclar espacios de embeddings no alineados, y tratar video como imagen.</li>
+<li><strong>Short-Term Memory</strong>: Sliding window sobre conversación actual. Limitada en tokens.</li>
+<li><strong>Long-Term Memory</strong>: Vector store con embeddings. Persistente y searchable.</li>
+<li><strong>Consolidation</strong>: Proceso de mover información de STM a LTM cuando la sesión termina o el buffer se llena.</li>
+<li><strong>Eviction policies</strong>: LRU, importance-based, o híbridas para evitar crecimiento infinito.</li>
+<li><strong>Namespaces</strong>: Aislamiento de memoria entre usuarios y sesiones.</li>
 </ul>
 <hr>
-<p><em>Hagale pues, eso es todo por hoy. El que no está haciendo Multimodal RAG está dejando el 80% de su información sin indexing. Nos vemos en el Día 262.</em></p>
+<p><em>Hagale pues, eso es todo por hoy. El que no está implementando memory systems tiene un agente que olvida todo. Nos vemos en el Día 262.</em></p>
   </article>
 
   <script>
