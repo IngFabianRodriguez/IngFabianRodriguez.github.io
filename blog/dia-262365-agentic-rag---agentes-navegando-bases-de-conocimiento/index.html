@@ -118,63 +118,327 @@ nav {
   </header>
 
   <article class="article-body">
-    <h1>Agentic RAG - Agentes Navegando Bases de Conocimiento</h1>
-<p>Hagale pues, parcero. Hoy es el Dia 262 y hablamos de Agentic RAG: agentes que navegan bases de conocimiento de forma inteligente. Cafe.</p>
+<h1>Real-Time LLM Processing — El 85% Está Construyendo Esto Ahora</h1>
+<p>Hagale pues, parcero. Día 262 y hoy toca un tema que define el futuro de cómo interactuamos con IA: <strong>Real-Time LLM Processing</strong>. Esto no es solo "hacer streaming del output". No sire. Es arquitectura completa: WebSockets, Server-Sent Events, optimización de latencia, y cómo manejar miles de conexiones concurrentes sin que tu servidor sezca. El 85% de los equipos están construyendo esto ahora mismo — y la mayoría lo está haciendo mal.</p>
 <hr>
-<h2>🎯 Agentic RAG</h2>
-<p>Agentic RAG va mas alla del RAG tradicional:</p>
+<h2>🎯 Por Qué Importa el Tiempo Real</h2>
+<p>Piénsalo: cuando un usuario escribe en un chat y ve que el cursor parpadea mientras la IA "piensa"... eso es tiempo real percibido. La fórmula de la experiencia de usuario es:</p>
+<p>$$\text{Perceived Latency} = f(\text{TTFT}, \text{TPS}, \text{UI\_Updates})$$</p>
+<p>Donde:</p>
 <ul>
-<li><strong>Multi-hop</strong>: Hacer preguntas que requieren multiple recuperacion</li>
-<li><strong>Iterative</strong>: Refinar busquedas basadas en resultados</li>
-<li><strong>Autonomous</strong>: El agente decide que buscar</li>
+<li><strong>TTFT</strong> (Time To First Token): el tiempo hasta el primer token. Debe ser &lt; 1 segundo.</li>
+<li><strong>TPS</strong> (Tokens Per Second): throughput del modelo. Más es mejor.</li>
+<li><strong>UI_Updates</strong>: cómo de suave actualiza el frontend.</li>
+</ul>
+<p>El usuario perdona 5-10 segundos de espera si ve progreso. Pero si no ve nada en 500ms, se va.</p>
+<hr>
+<h2>📐 Streaming con FastAPI</h2>
+<p>La forma más limpia de hacer streaming de respuestas de LLM es con <code>StreamingResponse</code> de FastAPI y el patrón ASGI:</p>
+<pre><code class="language-python">from fastapi import FastAPI, Request
+from fastapi.responses import StreamingResponse
+import asyncio
+import json
+from typing import AsyncGenerator
+
+app = FastAPI()
+
+async def generate_streaming_response(
+    prompt: str,
+    model: str = "gpt-4",
+    max_tokens: int = 1000
+) -> AsyncGenerator[str, None]:
+    """Genera respuesta de LLM en streaming token por token."""
+
+    # Usar la API de OpenAI con stream=True
+    from openai import AsyncOpenAI
+    client = AsyncOpenAI()
+
+    stream = await client.chat.completions.create(
+        model=model,
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=max_tokens,
+        stream=True
+    )
+
+    async def token_generator():
+        async for chunk in stream:
+            if chunk.choices[0].delta.content:
+                token = chunk.choices[0].delta.content
+                # Enviar como SSE (Server-Sent Events)
+                data = json.dumps({"token": token, "done": False})
+                yield f"data: {data}\n\n"
+        # Señal de completion
+        yield f"data: {json.dumps({'token': '', 'done': True})}\n\n"
+
+    return StreamingResponse(
+        token_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"  # Para nginx
+        }
+    )
+
+@app.post("/v1/chat/stream")
+async def chat_stream(request: Request):
+    body = await request.json()
+    prompt = body.get("prompt", "")
+    return await generate_streaming_response(prompt)</code></pre>
+<hr>
+<h2>🔌 WebSocket Server para LLM</h2>
+<p>WebSockets son mejores cuando necesitas comunicación bidireccional real — el cliente puede enviar mensajes mientras recibe respuestas:</p>
+<pre><code class="language-python">from fastapi import WebSocket, WebSocketDisconnect
+from fastapi import FastAPI
+import asyncio
+import json
+
+app = FastAPI()
+
+class ConnectionManager:
+    """Maneja múltiples conexiones WebSocket concurrentes."""
+
+    def __init__(self):
+        self.active_connections: dict[str, WebSocket] = {}
+
+    async def connect(self, websocket: WebSocket, client_id: str):
+        await websocket.accept()
+        self.active_connections[client_id] = websocket
+
+    def disconnect(self, client_id: str):
+        if client_id in self.active_connections:
+            del self.active_connections[client_id]
+
+    async def broadcast(self, message: str, exclude: str = None):
+        """Envía mensaje a todos los clientes excepto uno."""
+        for client_id, ws in self.active_connections.items():
+            if client_id != exclude:
+                try:
+                    await ws.send_text(message)
+                except:
+                    self.disconnect(client_id)
+
+manager = ConnectionManager()
+
+@app.websocket("/ws/llm/{client_id}")
+async def websocket_llm(websocket: WebSocket, client_id: str):
+    await manager.connect(websocket, client_id)
+
+    try:
+        while True:
+            # Recibir prompt del cliente
+            data = await websocket.receive_text()
+            payload = json.loads(data)
+            prompt = payload.get("prompt", "")
+
+            # Crear stream desde el LLM
+            from openai import AsyncOpenAI
+            client = AsyncOpenAI()
+
+            stream = await client.chat.completions.create(
+                model="gpt-4",
+                messages=[{"role": "user", "content": prompt}],
+                stream=True
+            )
+
+            async for chunk in stream:
+                if chunk.choices[0].delta.content:
+                    token = chunk.choices[0].delta.content
+                    await websocket.send_text(json.dumps({
+                        "type": "token",
+                        "content": token
+                    }))
+
+            # Completion
+            await websocket.send_text(json.dumps({
+                "type": "done",
+                "content": ""
+            }))
+
+    except WebSocketDisconnect:
+        manager.disconnect(client_id)
+        await manager.broadcast(
+            json.dumps({"type": "system", "content": f"Cliente {client_id} desconectado"}),
+            exclude=client_id
+        )</code></pre>
+<hr>
+<h2>⚡ SSE Endpoint (Alternativa a WebSocket)</h2>
+<p>Server-Sent Events es más simple que WebSocket para comunicación unidireccional (servidor → cliente). Ideal para dashboards, notifications, y streaming de respuestas:</p>
+<pre><code class="language-python">@app.get("/v1/llm/stream-sse")
+async def stream_sse(prompt: str):
+    """Endpoint SSE para streaming de LLM."""
+
+    async def event_generator():
+        from openai import AsyncOpenAI
+        client = AsyncOpenAI()
+
+        stream = await client.chat.completions.create(
+            model="gpt-4",
+            messages=[{"role": "user", "content": prompt}],
+            stream=True
+        )
+
+        async for chunk in stream:
+            if chunk.choices[0].delta.content:
+                token = chunk.choices[0].delta.content
+                yield f"data: {json.dumps({'token': token})}\n\n"
+                await asyncio.sleep(0)  # Yield control back
+
+        yield f"data: {json.dumps({'done': True})}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive"
+        }
+    )</code></pre>
+<hr>
+<h2>⚠️ Errores Comunes (y Cómo Evitarlos)</h2>
+<h3>Error 1: No Usar Streaming Cuando la Latencia Percibida Importa</h3>
+<p><strong>El problema</strong>: Esperar a que el LLM termine de generar toda la respuesta antes de enviar nada al cliente. Esto puede significar 10-30 segundos de silencio mientras el usuario ve un spinner.</p>
+<p><strong>La solución</strong>: Implementar streaming desde el primer token. El usuario ve que algo pasa y la percibición de velocidad mejora drásticamente:</p>
+<pre><code class="language-python"># MAL: espera completa
+def generate_sync(prompt: str) -> str:
+    response = openai.ChatCompletion.create(
+        model="gpt-4",
+        messages=[{"role": "user", "content": prompt}]
+    )
+    return response["choices"][0]["message"]["content"]  # Todo junto
+
+# BIEN: streaming desde el primer token
+async def generate_streaming(prompt: str):
+    stream = openai.ChatCompletion.create(
+        model="gpt-4",
+        messages=[{"role": "user", "content": prompt}],
+        stream=True  # Stream=True desde el inicio
+    )
+    for chunk in stream:
+        yield chunk["choices"][0]["delta"]["content"]</code></pre>
+<hr>
+<h3>Error 2: No Manejar Reconexión Graceful en WebSocket</h3>
+<p><strong>El problema</strong>: Cuando el cliente se reconnecta, pierde el estado. O cuando la conexión se cae, el servidor no limpia recursos y quedan zombie connections.</p>
+<p><strong>La solución</strong>: Implementar heartbeat, reconnection logic, y cleanup de recursos:</p>
+<pre><code class="language-python">class RobustWebSocketManager:
+    def __init__(self):
+        self.connections: dict[str, WebSocket] = {}
+        self.heartbeat_interval = 30  # segundos
+
+    async def connect(self, websocket: WebSocket, client_id: str):
+        await websocket.accept()
+        self.connections[client_id] = websocket
+
+        # Iniciar heartbeat para esta conexión
+        asyncio.create_task(self._heartbeat(client_id))
+
+    async def _heartbeat(self, client_id: str):
+        """Envía ping periódicamente para mantener conexión viva."""
+        while client_id in self.connections:
+            try:
+                await asyncio.sleep(self.heartbeat_interval)
+                await self.connections[client_id].send_json({
+                    "type": "ping",
+                    "timestamp": time.time()
+                })
+            except:
+                await self.disconnect(client_id)
+                break
+
+    async def disconnect(self, client_id: str):
+        """Limpia recursos al desconectar."""
+        if client_id in self.connections:
+            del self.connections[client_id]
+            # Limpiar cualquier recurso asociado (sessions, buffers, etc.)
+
+    async def reconnect(self, old_client_id: str, websocket: WebSocket):
+        """Maneja reconexión: recupera estado y limpia viejo."""
+        await self.disconnect(old_client_id)
+        await self.connect(websocket, old_client_id)
+        return old_client_id  # Mismo ID, nueva conexión</code></pre>
+<hr>
+<h3>Error 3: Usar Polling Cuando SSE Es Mejor</h3>
+<p><strong>El problema</strong>: El cliente hace requests cada 1-2 segundos ("polling") para ver si hay nuevos datos. Esto genera carga innecesaria en el servidor y latencia artificial.</p>
+<p><strong>La solución</strong>: Usar Server-Sent Events (SSE) para server-to-client push:</p>
+<pre><code class="language-python"># MAL: Polling (genera innecesario tráfico y latencia)
+async def poll_for_updates(client_id: str):
+    while True:
+        response = await client.get("/api/status")
+        if response["has_update"]:
+            return response["data"]
+        await asyncio.sleep(2)  # Poll cada 2 segundos
+
+# BIEN: SSE (push real desde servidor)
+@app.get("/api/status/stream")
+async def status_stream(client_id: str):
+    async def event_generator():
+        last_check = 0
+        while True:
+            updates = await check_new_updates(client_id, since=last_check)
+            if updates:
+                yield f"data: {json.dumps({'updates': updates})}\n\n"
+                last_check = time.time()
+            await asyncio.sleep(0)  # No hacer polling, esperar
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+# Comparación de tráfico:
+# Polling: ~30 requests/minuto (aunque no haya datos)
+# SSE: 0 requests/minuto (todo es push desde servidor)</code></pre>
+<hr>
+<h2>🔧 Manejo de Conexiones Concurrentes</h2>
+<p>Cuando tienes miles de usuarios simultáneos, necesitas gérer el throughput:</p>
+<pre><code class="language-python">from contextlib import asynccontextmanager
+import asyncio
+
+class ConcurrencyLimiter:
+    """Limita concurrencia para no saturar el LLM."""
+
+    def __init__(self, max_concurrent: int = 10):
+        self.semaphore = asyncio.Semaphore(max_concurrent)
+        self.active_requests = 0
+
+    @asynccontextmanager
+    async def acquire(self):
+        async with self.semaphore:
+            self.active_requests += 1
+            try:
+                yield
+            finally:
+                self.active_requests -= 1
+
+    def get_stats(self) -> dict:
+        return {
+            "active": self.active_requests,
+            "available": self.semaphore._value,
+            "waiting": len(asyncio.all_tasks()) - self.active_requests
+        }
+
+# Rate limiting por cliente
+from collections import defaultdict
+import time
+
+client_last_request = defaultdict(lambda: 0)
+RATE_LIMIT_SECONDS = 1.0  # 1 request por segundo por cliente
+
+async def rate_limited_request(client_id: str, prompt: str):
+    now = time.time()
+    if now - client_last_request[client_id] < RATE_LIMIT_SECONDS:
+        raise HTTPException(status_code=429, detail="Rate limit exceeded")
+    client_last_request[client_id] = now
+
+    limiter = ConcurrencyLimiter(max_concurrent=10)
+    async with limiter.acquire():
+        return await generate_streaming_response(prompt)</code></pre>
+<hr>
+<h2>📊 Resumen</h2>
+<ul>
+<li><strong>Streaming</strong> reduce latencia percibida drásticamente — envía tokens conforme se generan.</li>
+<li><strong>WebSockets</strong> son para comunicación bidireccional (chat interactivo).</li>
+<li><strong>SSE</strong> es para server-to-client push sin la complejidad de WebSocket.</li>
+<li><strong>Errores comunes</strong>: no usar streaming, no manejar reconexiones, y usar polling cuando SSE es mejor.</li>
 </ul>
 <hr>
-<h2>📐 RAG Agéntico</h2>
-<pre><code class="language-python">class AgenticRAG:
-    def __init__(self, retriever, llm):
-        self.retriever = retriever
-        self.llm = llm
-    
-    def query(self, question):
-        # El agente planifica la busqueda
-        search_plan = self.llm.plan_search(question)
-        
-        docs = []
-        for step in search_plan:
-            retrieved = self.retriever.search(step.query)
-            docs.extend(retrieved)
-            
-            # Si el documento es relevante, profundizar
-            if self.is_relevant(retrieved):
-                docs.extend(self.retriever.deep_search(step.query))
-        
-        # Generar respuesta con contexto recuperado
-        return self.llm.answer(question, docs)</code></pre>
-<hr>
-<h2>🚀 Multi-Hop Retrieval</h2>
-<pre><code class="language-python"># Ejemplo multi-hop
-# Pregunta: Quien fue el mentor del creador de ChatGPT?
-
-# Hop 1: Quien creo ChatGPT? -> Sam Altman
-# Hop 2: Quien fue mentor de Sam Altman? -> ...
-
-def multi_hop(question, kg):
-    hops = []
-    current = question
-    
-    for _ in range(3):
-        answer = kg.query(current)
-        hops.append(answer)
-        current = f"Who was {answer}'s mentor?"
-    
-    return hops</code></pre>
-<hr>
-<h2>⚠️ Errores Comunes</h2>
-<h3>Error 1: Recuperacion Ciega</h3>
-<p><strong>El problema</strong>: Buscar sin saber que buscar.</p>
-<p><strong>La solucion</strong>: Usar el LLM para generar queries de busqueda.</p>
-<hr>
-<p><em>Eso es todo! Nos vemos en el Dia 263.</em></p>
+<p><em>Hagale pues, eso es todo por hoy. El que no está construyendo esto está detrás del 85%. Latencia percibida es experiencia de usuario. Nos vemos en el Día 263.</em></p>
   </article>
 
   <script>
