@@ -118,140 +118,208 @@ nav {
   </header>
 
   <article class="article-body">
-    <h2>La Intro que el 85% Se Salta</h2>
-    <p>Parcero, ¿alguna vez te has preguntado cómo es que una red neuronal puede detectar que en una imagen hay un gato, sin que nadie le haya explicado explícitamente qué es un gato? No hay una regla que diga "un gato tiene forma de X con orejas de Y" — la red simplemente aprende a reconocer patrones visuales por sí misma. El mecanismo detrás de esto son las capas convolucionales (Conv2D).</p>
-    <p>Yo lo entendí verdaderamente cuando implementé mi primera CNN desde cero. Después de ver cómo los filtros aprendían solos a detectar bordes, texturas, y eventualmente objetos completos, me di cuenta de que la convolución no es solo una operación de procesamiento de imagen — es la forma en que las máquinas aprenden a ver. Y lo más remarkable: la matemática detrás es bastante simple.</p>
-    <p>Hoy: cómo funcionan las capas convolucionales, por qué son tan efectivas para visión, y cómo implementarlas correctamente.</p>
+<p>Hágale pues Parcero, ¿sabes cuál es el error más común cuando alguien implementa su primera CNN? Poner capas de Pooling sin entender qué están descartando.-maximizar o promediar — esa es la decisión. Y el 90% no sabe que está destruyendo información cuando usa AvgPool donde debería usar MaxPool, o viceversa. Lo descubrí de la manera más dolorosa: mi modelo de detección de bordes fallaba exactamente en los casos más difíciles porque el AvgPool promediaba la señal y el ruido juntos. Hoy destapamos Pooling: la matemática real de por qué reduce dimensionalidad, qué información preserva cada tipo, y cómo implementarlo correctamente en PyTorch.</p>
 
-    <h2>La Operación de Convolución</h2>
-    <p>Una convolución es una operación linear que aplica un filtro (kernel) sobre una imagen de entrada. El filtro es una matriz pequeña (típicamente 3x3, 5x5, o 7x7) que se desliza sobre toda la imagen. En cada posición, se calcula el producto punto entre el filtro y la región de la imagen subyacente:</p>
-    <p>$$y[i,j] = \sum_m \sum_n x[i+m, j+n] \cdot k[m,n]$$</p>
-    <p>Donde $x$ es la imagen de entrada, $k$ es el kernel, e $y$ es el feature map de salida. El kernel se aprende durante el entrenamiento — la red descubre qué patrones debe detectar.</p>
+## 🎯 ¿Por Qué Reducir Dimensionalidad sin Perder lo que Importa?
+**Definición técnica (sin rodeos):** Pooling es una operación de down-sampling que reduce el spatial size (alto × ancho) de los feature maps mientras preserva la información más importante. A diferencia de la convolución, que aprende filtros, Pooling es una operación fija — no tiene pesos que aprender.
 
-    <h2>Parámetros de Conv2D en PyTorch</h2>
-    <p><code>torch.nn.Conv2d(in_channels, out_channels, kernel_size, stride=1, padding=0, dilation=1, groups=1, bias=True)</code></p>
-    <p><strong>in_channels:</strong> Canales de entrada (3 para RGB, 1 para grayscale, el número de feature maps de la capa anterior)</p>
-    <p><strong>out_channels:</strong> Número de filtros que aplicas. Cada filtro produce un feature map de salida. Más filtros = más features detectados.</p>
-    <p><strong>kernel_size:</strong> Tamaño del filtro. 3x3 y 5x5 son los más comunes. Filtros pequeños capturan features finas; filtros grandes capturan patrones más globales.</p>
-    <p><strong>stride:</strong> Cuántos pixels se mueve el filtro en cada paso. stride=1 produce output del mismo tamaño que input; stride=2 reduce las dimensiones a la mitad.</p>
-    <p><strong>padding:</strong> Pixels de cero añadidos alrededor de la imagen antes de aplicar la convolución. padding=1 con kernel=3x3 mantiene el tamaño original.</p>
-    <p><strong>dilation:</strong> Espaciado entre los elementos del kernel. dilation=1 es el default (kernel denso). dilation>1 produce un kernel "inflado" que captura contexto más amplio.</p>
+**Tipos:**
+- **MaxPool2d**: Toma el valor máximo en cada ventana. Conserva la activación más fuerte — ideal para detectar features como bordes, esquinas, blobs.
+- **AvgPool2d**: Promedia todos los valores en la ventana. Suaviza la señal — útil para clasificación cuando todas las features contribuyen por igual.
+- **Global Pooling**: Reduce CADA canal a un solo valor (1×1 spatial). Reemplaza flatten + dense en arquitecturas modernas.
+- **Adaptive Pooling**: Garantiza output size fijo sin importar el input size — esencial para transfer learning.
 
-    <h2>Feature Maps y Receptive Field</h2>
-    <p>Cada filtro produce un feature map — una matriz 2D donde cada valor indica qué tanto matchea el filtro en esa posición. Varios filtros juntos producen múltiples feature maps que forman el input para la siguiente capa.</p>
-    <p>El <strong>receptive field</strong> es el área de la imagen original que afecta a un pixel particular en un feature map dado. En una CNN profunda, el receptive field de las capas finales puede ser toda la imagen — lo que les permite capturar features globales.</p>
+**Mirá**: Es como cuando ves una foto desde lejos — automáticamente ignoras los detalles ruidosos y solo captas las formas grandes. MaxPool es como "quédate con lo más brillante"; AvgPool es como "quédate con el promedio de lo que ves".
 
-    <h2>Código Production-Grade</h2>
-    <pre><code class="language-python">import torch
+## 📐 La Ecuación del Pooling — LA JOYA
+Esta ecuación parece simple pero tiene TODO el poder de reducir computación mientras preserva invariancia espacial:
+
+$$y_{c,i,j} = \frac{1}{k_h \cdot k_w} \sum_{m=0}^{k_h-1} \sum_{n=0}^{k_w-1} x_{c, i \cdot s_h + m, j \cdot s_w + n}$$
+
+"Output $y$ del canal $c$ en posición $(i,j)$ es el promedio (o máximo) de la ventana $k_h \times k_w$ del input,Starting en $x$ con stride $s$."
+
+**$k_h, k_w$** = tamaño del kernel de pooling (típicamente 2×2)
+**$s_h, s_w$** = stride — cuánto se mueve la ventana (típicamente 2, reduce dimensiones a la mitad)
+**$c$** = índice del canal (el pooling se aplicaindependientemente por canal)
+
+### MaxPool — La Ecuación del Máximo
+$$\max(x_{c,i,j}) = \max_{\substack{0 \leq m < k_h \\ 0 \leq n < k_w}} \left\{ x_{c, i \cdot s_h + m, j \cdot s_w + n} \right\}$$
+
+"Para cada ventana, solo el valor máximo sobrevive. Esto le da a la red invariancia a translaciones pequeñas — si el feature más importante se mueve un poco, sigue siendo capturado."
+
+**Ventaja**: Preserva features estructurales (bordes, esquinas) incluso con ruido.
+**Desventaja**: Puede perder información si el feature importante no es el máximo.
+
+### AvgPool — La Ecuación del Promedio
+$$\text{avg}(x_{c,i,j}) = \frac{1}{k_h \cdot k_w} \sum_{m=0}^{k_h-1} \sum_{n=0}^{k_w-1} x_{c, i \cdot s_h + m, j \cdot s_w + n}$$
+
+"Cada valor contribuye por igual al output. Suaviza activaciones ruidosas."
+
+**Ventaja**: Suaviza features, útil para clasificación robusta.
+**Desventaja**: Diluye features fuertes con ruido circundante.
+
+### Output Size After Pooling
+$$H_{out} = \left\lfloor \frac{H_{in} - k_h}{s_h} \right\rfloor + 1$$
+
+Con $k=2, s=2$: cada dimensión se reduce a la mitad.
+
+Ejemplo numérico concreto:
+```python
+import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from dataclasses import dataclass
 
+# Simular feature map 4x4 (ej: después de una conv)
+x = torch.arange(16, dtype=torch.float32).reshape(1, 1, 4, 4)
+print("Input:\n", x.squeeze())
 
-class ConvBlock(nn.Module):
-    """Bloque convolucional estándar: Conv -> BatchNorm -> ReLU"""
-    def __init__(self, in_ch, out_ch, kernel_size=3, stride=1, padding=1):
+# MaxPool 2x2 con stride 2
+maxpool = nn.MaxPool2d(kernel_size=2, stride=2)
+out_max = maxpool(x)
+print("\nMaxPool output:\n", out_max.squeeze())
+# [[ 5,  7]
+#  [13, 15]]
+
+# AvgPool 2x2 con stride 2
+avgpool = nn.AvgPool2d(kernel_size=2, stride=2)
+out_avg = avgpool(x)
+print("\nAvgPool output:\n", out_avg.squeeze())
+# [[ 2.5,  4.5]
+#  [10.5, 12.5]]
+
+# Global Average Pooling — cada canal se reduce a 1 valor
+gap = nn.AdaptiveAvgPool2d((1, 1))
+out_gap = gap(x)
+print("\nGlobal AvgPool output shape:", out_gap.shape)  # [1, 1, 1, 1]
+
+# Adaptive Pooling — output size fijo sin importar input
+adaptive = nn.AdaptiveAvgPool2d((2, 2))
+x_large = torch.randn(1, 1, 8, 8)  # input más grande
+out_adaptive = adaptive(x_large)
+print("Adaptive AvgPool output shape:", out_adaptive.shape)  # [1, 1, 2, 2]
+```
+
+## 🚨 Errores Comunes (y Cómo No Cagarla)
+
+**Error 1: Usar AvgPool donde MaxPool preservaría mejor los features**
+**El problema**: AvgPool promedia todos los valores en la ventana, incluyendo ruido. Para tasks de detección (bordes, objetos, esquinas), el máximo preserva la señal más fuerte mientras suprime el ruido.
+
+❌
+```python
+# Detección de bordes con AvgPool — destruye la señal
+class EdgeDetectorAvg(nn.Module):
+    def __init__(self):
         super().__init__()
-        self.conv = nn.Conv2d(in_ch, out_ch, kernel_size, stride, padding, bias=False)
-        self.bn = nn.BatchNorm2d(out_ch)
-        self.relu = nn.ReLU(inplace=True)
+        self.conv = nn.Conv2d(3, 16, 3, padding=1)
+        self.pool = nn.AvgPool2d(2, 2)  # Promedia el borde con el fondo!
+        self.fc = nn.Linear(..., 10)
+```
+**Por qué falla**: Un borde con intensidad 0.9 rodeado de fondo 0.1, pooleado con AvgPool 2×2, resulta en (0.9 + 0.1×3)/4 = 0.3 — casi indistinguible del fondo.
 
-    def forward(self, x):
-        return self.relu(self.bn(self.conv(x)))
-
-
-class DepthwiseSeparableConv(nn.Module):
-    """
-    Depthwise Separable Convolution:
-    1. Depthwise: un filtro por canal (in_ch filtros de 3x3)
-    2. Pointwise: 1x1 conv que mezcla canales (in_ch -> out_ch)
-    Más eficiente que Conv2d completo.
-    """
-    def __init__(self, in_ch, out_ch):
+✓
+```python
+# Detección de bordes con MaxPool — preserva la señal fuerte
+class EdgeDetectorMax(nn.Module):
+    def __init__(self):
         super().__init__()
-        self.depthwise = nn.Conv2d(in_ch, in_ch, 3, 1, 1, groups=in_ch, bias=False)
-        self.pointwise = nn.Conv2d(in_ch, out_ch, 1, bias=False)
-        self.bn = nn.BatchNorm2d(out_ch)
-        self.relu = nn.ReLU(inplace=True)
+        self.conv = nn.Conv2d(3, 16, 3, padding=1)
+        self.pool = nn.MaxPool2d(2, 2)  # Toma el máximo = 0.9
+        self.fc = nn.Linear(..., 10)
+```
 
-    def forward(self, x):
-        x = self.depthwise(x)
-        x = self.pointwise(x)
-        return self.relu(self.bn(x))
+**Error 2: Olvidar que Global Pooling reemplaza flatten + dense**
+**El problema**: Muchos practitioners usan Flatten + Dense para conectar capas convolucionales al clasificador. Esto introduce millones de parámetros innecesarios. Global Pooling reduce cada canal a un solo valor — dramáticamente más eficiente.
 
-
-class DilatedConvBlock(nn.Module):
-    """Convolución dilatada (Atrous) para expandir receptive field sin perder resolución."""
-    def __init__(self, in_ch, out_ch, dilation_rate=2):
+❌
+```python
+# Arquitectura ineficiente: flatten + dense
+class InefficientNet(nn.Module):
+    def __init__(self):
         super().__init__()
-        self.conv = nn.Conv2d(in_ch, out_ch, 3, 1, padding=dilation_rate, dilation=dilation_rate, bias=False)
-        self.bn = nn.BatchNorm2d(out_ch)
-        self.relu = nn.ReLU(inplace=True)
-
-    def forward(self, x):
-        return self.relu(self.bn(self.conv(x)))
-
-
-class SimpleCNN(nn.Module):
-    """CNN simple para CIFAR-10."""
-    def __init__(self, num_classes=10):
-        super().__init__()
-        # in: 3x32x32
         self.features = nn.Sequential(
-            ConvBlock(3, 32, kernel_size=3, padding=1),      # 32x32
-            nn.MaxPool2d(2),                                  # 16x16
-            ConvBlock(32, 64, kernel_size=3, padding=1),    # 16x16
-            nn.MaxPool2d(2),                                  # 8x8
-            ConvBlock(64, 128, kernel_size=3, padding=1),    # 8x8
-            nn.AdaptiveAvgPool2d((1, 1)),                   # 1x1
+            nn.Conv2d(3, 64, 3, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(2),  # 224->112
+            nn.Conv2d(64, 128, 3, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(2),  # 112->56
         )
-        self.classifier = nn.Linear(128, num_classes)
+        # flatten: 56*56*128 = 401,408 valores
+        self.fc = nn.Linear(56*56*128, 10)  # ~4M parámetros solo aquí!
+```
+**Por qué falla**: Los 4M parámetros en la primera capa Dense son innecesarios. La red está sobre-parametrizada y sobreajusta.
 
-    def forward(self, x):
-        x = self.features(x)
-        x = x.view(x.size(0), -1)
-        return self.classifier(x)
+✓
+```python
+# Arquitectura eficiente: Global Average Pooling
+class EfficientNet(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.features = nn.Sequential(
+            nn.Conv2d(3, 64, 3, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+            nn.Conv2d(64, 128, 3, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+        )
+        # Global Average Pooling: cada canal -> 1 valor
+        self.gap = nn.AdaptiveAvgPool2d((1, 1))  # Output: 128 valores
+        self.fc = nn.Linear(128, 10)  # Solo 1,280 parámetros!
+```
 
+**Error 3: No usar Adaptive Pooling cuando haces transfer learning**
+**El problema**: Modelos pre-entrenados en ImageNet esperan input de 224×224. Si tus imágenes son de otro tamaño y no usas transforms correctas, tienes que elegir entre resize deformante o crop parcial. Adaptive Pooling resuelve esto: garantiza output size fijo sin importar input size.
 
-def count_parameters(model):
-    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+❌
+```python
+# Sin adaptive pooling: fallan con inputs de diferente tamaño
+model = MyCNN()
+# Input de 300x300 falla porque la conv reduce a tamaño inesperado
+x = torch.randn(1, 3, 300, 300)
+out = model(x)  # Shape mismatch en la capa fully connected
+```
+**Por qué falla**: Convocional Pooling stride 2 reduce 300→150→75→38... el feature map final no tiene tamaño fijo para la capa Dense.
 
+✓
+```python
+# Con adaptive pooling: cualquier input -> tamaño fijo
+class CNNWithAdaptivePool(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.features = nn.Sequential(
+            nn.Conv2d(3, 64, 3, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+            nn.Conv2d(64, 128, 3, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+        )
+        # Adaptive pool: SIEMPRE produce 7x7 sin importar input
+        self.adaptive_pool = nn.AdaptiveAvgPool2d((7, 7))
+        self.fc = nn.Linear(128 * 7 * 7, 10)
 
-if __name__ == '__main__':
-    model = SimpleCNN()
-    x = torch.randn(8, 3, 32, 32)
-    out = model(x)
-    print(f"Output shape: {out.shape}")  # [8, 10]
-    print(f"Parameters: {count_parameters(model):,}")</code></pre>
+# Ahora funciona con CUALQUIER tamaño >= 14x14
+x_300 = torch.randn(1, 3, 300, 300)  # Funciona
+x_224 = torch.randn(1, 3, 224, 224)  # Funciona
+x_150 = torch.randn(1, 3, 150, 150)  # Funciona
+```
 
-    <h2>Errores Comunes</h2>
-    <p><strong>Error 1: Padding incorrecto que destruye la información de los bordes</strong></p>
-    <p>Sin padding, cada convolución shrink la imagen. Después de varias capas, la información de los bordes se pierde porque nunca son el centro de un kernel. Muchos practitioners olvidan añadir padding y se preguntan por qué el modelo no aprende features de los bordes.</p>
-    <p><strong>Fix:</strong> Usa padding para mantener el spatial size. Con kernel=3, usa padding=1. Con kernel=5, usa padding=2. O usa <code>padding='same'</code> si tu framework lo soporta (PyTorch no lo tiene built-in, pero puedes calcularlo).</p>
+---
+## 🎯 Resumen Ejecutivo
+Pooling no es "reducir la imagen para que sea más pequeña".
 
-    <p><strong>Error 2: Mezclar canales con y sin bias</strong></p>
-    <p>Cuando usas <code>BatchNorm</code> después de <code>Conv2d</code>, el bias de la convolución es innecesario porque BatchNorm lo absorbe. Pero si olvidas poner <code>bias=False</code> y NO usas BatchNorm, el bias ayuda a la convolución a shift la activation function. Muchos practitioners pierden este detalle y entrenan con bias redundant cuando tienen BatchNorm.</p>
-    <p><strong>Fix:</strong> Si usas BatchNorm después de Conv2d, pon <code>bias=False</code> en la convolución. Si no usas BatchNorm, deja bias=True.</p>
+Es resolver: $$y_{c,i,j} = \text{pool}\left(x_{c, i \cdot s:i \cdot s+k, j \cdot s:j \cdot s+k}\right)$$
 
-    <p><strong>Error 3: depthwise separable convolutions sin entender cuándo usarlas</strong></p>
-    <p>Depthwise separable convolutions ( Depthwise + Pointwise) son ~8-9x más baratas computacionalmente que convolución completa con la misma dimensionalidad. Son el basis de MobileNet y EfficientNet. Pero tienen menos capacidad de aprender features complejos porque cada canal se procesa independientemente antes de mezclarse.</p>
-    <p><strong>Fix:</strong> Usa depthwise separable cuando necesites eficiencia (móvil, edge devices) y la calidad del modelo no sea crítica. Para máxima accuracy en GPUs potentes, usa convolución completa.</p>
+Mediante la reducción espacial que mantiene invariancia a translaciones pequeñas.
 
-    <h2>Resumen del Día</h2>
-    <ul>
-      <li><strong>Conv2D</strong>: Aplica filtros que aprenden a detectar patrones visuales. El kernel se desliza sobre la imagen.</li>
-      <li><strong>Feature Maps</strong>: Output de aplicar un filtro. Cada filtro detecta un tipo de patrón.</li>
-      <li><strong>Padding</strong>: Pixels artificiales para mantener el tamaño espacial. Crítico para bordes.</li>
-      <li><strong>Stride</strong>: Paso del filtro. stride=2 reduce dimensiones a la mitad.</li>
-      <li><strong>Dilation</strong>: Espaciado en el kernel. Dilated conv captura contexto más amplio.</li>
-      <li><strong>Depthwise Separable</strong>: Convolución eficiente (MobileNet). Depthwise + Pointwise.</li>
-      <li><strong>Receptive Field</strong>: Área de la imagen original que afecta a un pixel del feature map.</li>
-      <li><strong>Bias=False con BatchNorm</strong>: Si usas BN después de Conv2d, pon bias=False.</li>
-    </ul>
+Con todas las implicaciones que eso conlleva:
+- **MaxPool**: Preserva features máximos — ideal para detección de bordes, esquinas, objetos. Invarianza a ruido.
+- **AvgPool**: Suaviza features — útil para clasificación cuando todas las activaciones contribuyen igual.
+- **Global Pooling**: Reemplaza flatten+dense, dramáticamente más parámetros-efficient. Estándar en arquitecturas modernas.
+- **Adaptive Pooling**: Garantiza output size fijo sin importar input size — esencial para transfer learning.
+- **Stride vs Kernel**: Con stride=2 y kernel=2, las ventanas no se solapan (down-sampling puro). Con stride=1 y kernel=2, hay solape.
 
-    <h2>El Cierre</h2>
-    <p>Parcero, las capas convolucionales son el foundation de todo computer vision moderno. Desde ResNet hasta YOLO, todas las arquitecturas de visión usan algún tipo de convolución. Entender cómo funcionan — padding, stride, dilation, depthwise separable — te permite no solo usar arquitecturas pre-hechas sino diseñar las tuyas propias cuando el problema lo requiera.</p>
-    <p>Esa vaina de que "las CNNs ya están resueltas con transfer learning" es cierta para muchos casos, pero hay problemas donde necesitas entender convolutions desde cero — cuando trabajas con dominios no naturales (medical imaging, remote sensing, spectral imaging) donde los modelos pre-entrenados de ImageNet no transferen bien. Hágale que la próxima vez que veas un feature map de una CNN, recuerdes que cada pixel es el resultado de un filtro aprendido que detecta algo específico. ¡Nos vemos en el día 82!</p>
+Parcero, Pooling es de las operaciones más simples y efectivas en CNNs. Y precisamente por eso el 90% la subestima — la ven como "reducir la imagen". Pero como con todo en deep learning, el diablo está en los detalles: MaxPool preserva features, AvgPool los suaviza, Global Pooling elimina la necesidad de flatten+dense, y Adaptive Pooling hace tu modelo robusto a cualquier input size. Recuerda: "promediar siempre es mejor que maximizar" es mentira — depende del task. ¡Nos vemos en el día 82!
   </article>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
@@ -263,8 +331,8 @@ if __name__ == '__main__':
         delimiters: [
           { left: '$$', right: '$$', display: true },
           { left: '$',  right: '$',  display: false },
-          { left: '\\[', right: '\\]', display: true },
-          { left: '\\(', right: '\\)', display: false },
+          { left: '\[', right: '\]', display: true },
+          { left: '\(', right: '\)', display: false },
         ],
         throwOnError: false,
       });
