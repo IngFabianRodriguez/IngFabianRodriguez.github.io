@@ -118,288 +118,196 @@ nav {
   </header>
 
   <article class="article-body">
-<h2>La historia del maestro que le enseña al aprendiz</h2>
+    <h2>La Revolución de las Máquinas que Ven</h2>
+    <p>En 1998, Yann LeCun demostró que las redes neuronales podían reconocer dígitos manuscritos con una precisión que superaba a los sistemas tradicionales. Llamó a su arquitectura LeNet, y fue la primera Convolutional Neural Network (CNN) que funcionó en el mundo real. El problema era que requerían demasiado compute para las GPUs de esa época. Tuvieron que pasar 14 años para que AlexNet, en 2012, ganara ImageNet con una CNN profunda y demuestre que el deep learning para visión era el camino correcto.</p>
+    <p>Hoy, las CNNs están en todas partes: en tu teléfono que detecta tu cara para desbloquearse, en los autos que reconocen señales de tránsito, en los sistemas médicos que detectan cáncer en radiografías. La pregunta ya no es si funcionan — es cómo funcionan y por qué son tan efectivas para imágenes.</p>
 
-<p>En Bogotá, cuando un maestro artesano comparte su taller con un joven aprendiz, no le da simplemente las piezas terminadas para que las copie. Le muestra cómo las manos se mueven, por dónde cortar, cuándo el metal está a la temperatura justa. Ese saber tácito —lo que el maestro *sabe* pero no puede explicar completamente— se transfiere por exposición, por práctica, por osmosis. La knowledge distillation hace exactamente lo mismo, pero entre redes neuronales.</p>
+    <h2>La Anatomía de una CNN</h2>
+    <p>Una CNN no procesa una imagen como una lista plana de píxeles. La procesa como lo haría tu corteza visual: reconociendo patrones locales primero (bordes, texturas), y luego combinándolos en representaciones más abstractas (formas, objetos, escenas).</p>
 
-<p>El 70% de los equipos deploya modelos grandes y caros cuando un modelo 10x más pequeño podría servir en la mayoría de casos. No porque no sepan que existen técnicas de compresión —es que no saben cómo aplicarlas bien. Y créeme, en este país sabemos de hacer mucho con poco. De eso se trata la distillación.</p>
-
-<h2>La matemática detrás de transferir conocimiento</h2>
-
-<p>Cuando un teacher model genera probabilities sobre miles de clases, está encapsulando más información que un simple label. La "soft target" contiene información sobre qué tan cerca están unas clases de otras. Un modelo que clasifica "perro" y "gato" tiene una probability baja de confundir un perro con un gato, pero altísima de confundir un perro con otro perro. Eso es conocimiento estructurado.</p>
-
-<p>La <strong>distillation loss</strong> combina dos componentes:</p>
-
-<p>La <strong>soft loss</strong> mide qué tan bien el student captura la distribución de probabilidades del teacher:</p>
-
-<code>$$\mathcal{L}_{soft} = -\sum_{j} P^{teacher}_j \cdot \log\left(\frac{e^{z_j/T}}{\sum_i e^{z_i/T}}\right)$$</code>
-
-<p>Donde <code>T</code> es la <em>temperatura</em> — un hyperparameter que controla qué tan "suaves" son las distribuciones. Con <code>T=1</code> tenemos softmax normal. Con <code>T>1</code> los logits se dividen por T antes de softmax, produciendo distribuciones más suaves que revelan más estructura del teacher.</p>
-
-<p>La <strong>hard loss</strong> es el cross-entropy contra los labels reales:</p>
-
-<code>$$\mathcal{L}_{hard} = -\sum_{j} y_j \cdot \log\left(\frac{e^{z_j}}{\sum_i e^{z_i}}\right)$$</code>
-
-<p>La loss total es una combinación ponderada:</p>
-
-<code>$$\mathcal{L}_{total} = \alpha \cdot T^2 \cdot \mathcal{L}_{soft} + (1-\alpha) \cdot \mathcal{L}_{hard}$$</code>
-
-<p>El factor <code>T²</code> compensa el efecto de dividir los logits por T en la soft loss — sin este factor, los gradients de la soft loss serían más pequeños que los de la hard loss, desbalanceando el entrenamiento.</p>
-
-<h3>Por qué funciona: la información en los logits</h3>
-
-<p>Los logits (las outputs crudas del modelo antes de softmax) contienen información sobre las relaciones entre clases. Si el teacher produce logits <code>[2.1, 1.9, 0.3, 0.1]</code> para cuatro clases, eso dice: "clase 1 y clase 2 son muy similares entre sí, y ambas son muy diferentes de las clases 3 y 4". Un simple label <code>[1, 0, 0, 0]</code> pierde toda esa estructura relacional.</p>
-
-<h2>Arquitectura teacher-student: diseñando la transferencia</h2>
-
-<p>No cualquier student funciona con cualquier teacher. Si el student es demasiado pequeño, no tiene capacidad de capturar lo que el teacher sabe. Si es demasiado grande, desperdicia recursos. La regla práctica: el student típicamente tiene 1/10 a 1/2 los parámetros del teacher.</p>
-
-<p>Existen tres estrategias de arquitectura:</p>
-
-<ul>
-<li><strong>Same architecture, different size</strong>: misma familia (BERT-base → BERT-distilled), más simple de entrenar</li>
-<li><strong>Different architecture</strong>: Transformer → CNN, permite explorar espacios de diseño diferentes</li>
-<li><strong>Intermediate size con skip connections</strong>: mantiene algo de la profundidad del teacher</li>
-</ul>
-
-<h2>Implementación práctica en PyTorch</h2>
-
-<pre><code>import torch
+    <h3>1. Capas Convolucionales: Los Filtros que Aprenden</h3>
+    <p>Una convolución es simplemente un filtro que se desliza sobre la imagen. En lugar de filtros fijos como los de Sobel o Gaussian, en una CNN estos filtros tienen valores aprendibles. Durante el entrenamiento, la red descubre qué patrones necesita detectar.</p>
+    <p>Matemáticamente, para una imagen de entrada $I$ y un kernel $K$:</p>
+    <p>$$(I * K)_{ij} = \sum_m \sum_n I_{i+m, j+n} \cdot K_{m,n}$$</p>
+    <p>Después de cada convolución, la salida pasa por una función de activación (típicamente ReLU):</p>
+    <p>$$f(x) = \max(0, x)$$</p>
+    <pre><code class="language-python">import torch
 import torch.nn as nn
-import torch.nn.functional as F
-import torch.optim as optim
 
-class DistillationLoss(nn.Module):
-    """
-    Combina soft targets (del teacher) con hard targets (labels reales).
-    La temperature T controla qué tan suaves son las distribuciones:
-    - T alta (ej: 5-20) -> más información relacional, pero gradients más pequeños
-    - T baja (ej: 1-2) -> más cercano a softmax normal
-    """
-    def __init__(self, temperature=4.0, alpha=0.7):
+class SimpleConvLayer(nn.Module):
+    """Una capa convolucional básica."""
+    def __init__(self, in_channels=3, out_channels=64, kernel_size=3):
         super().__init__()
-        self.T = temperature
-        self.alpha = alpha  # Peso para la soft loss
-
-    def forward(self, student_logits, teacher_logits, labels):
-        # Soft loss: KL divergence entre distribuciones suavizadas
-        soft_student = F.log_softmax(student_logits / self.T, dim=-1)
-        soft_teacher = F.softmax(teacher_logits / self.T, dim=-1)
-        soft_loss = F.kl_div(soft_student, soft_teacher, reduction='batchmean')
-        
-        # Hard loss: cross-entropy normal con labels
-        hard_loss = F.cross_entropy(student_logits, labels)
-        
-        # Combinar: el factor T² compensa los logits divididos por T
-        return self.alpha * (self.T ** 2) * soft_loss + (1 - self.alpha) * hard_loss
-
-
-class StudentModel(nn.Module):
-    """Student más pequeño que el teacher pero con suficiente capacidad."""
-    def __init__(self, input_dim=768, num_classes=1000, hidden_dim=256):
-        super().__init__()
-        # Capas más pequeñas que el teacher
-        self.net = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(0.2),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(0.2),
-            nn.Linear(hidden_dim, num_classes)
+        # Kernel aprendible: 64 filtros de 3x3
+        self.conv = nn.Conv2d(
+            in_channels=in_channels,
+            out_channels=out_channels,
+            kernel_size=kernel_size,
+            padding=kernel_size // 2  # Mantener dimensiones
         )
-
+        self.relu = nn.ReLU()
+    
     def forward(self, x):
-        return self.net(x)
+        # x: (batch, channels, height, width)
+        x = self.conv(x)
+        x = self.relu(x)
+        return x
 
+# Ejemplo: procesar una imagen de 224x224
+layer = SimpleConvLayer(in_channels=3, out_channels=64)
+img = torch.randn(1, 3, 224, 224)  # batch=1, 3 canales, 224x224
+output = layer(img)
+print(f"Output shape: {output.shape}")  # (1, 64, 224, 224)</code></pre>
 
-def train_student_with_distillation(
-    teacher, 
-    student, 
-    train_loader, 
-    epochs=10, 
-    temperature=4.0, 
-    alpha=0.7,
-    lr=0.001
-):
-    """
-    Training loop completo para distillation.
+    <h3>2. Pooling: Reduciendo Dimensionalidad</h3>
+    <p>Después de las capas convolucionales, usamos pooling para reducir el tamaño espacial. Max pooling toma el valor máximo en cada región, mientras que average pooling promedia los valores.</p>
+    <p>$$\text{MaxPool}(X)_{i,j} = \max_{(m,n) \in \text{window}} X_{m,n}$$</p>
+    <p>Una ventana de 2x2 con stride 2 reduce la imagen a la mitad en cada dimensión:</p>
+    <pre><code class="language-python"># Max pooling reduce 224x224 a 112x112
+pool = nn.MaxPool2d(kernel_size=2, stride=2)
+pooled = pool(output)
+print(f"After pooling: {pooled.shape}")  # (1, 64, 112, 112)
+
+# En PyTorch:
+# - Conv2d + ReLU + MaxPool2d = bloque básico de VGG
+# - Cada bloque reduce espacialmente pero aumenta canales</code></pre>
+
+    <h3>3. Capas Fully Connected: La Clasificación</h3>
+    <p>Después de varias capas convolucionales y de pooling, la representación es un tensor de forma (batch, channels, height, width). Se aplana a un vector y pasa por capas densas para la clasificación final:</p>
+    <pre><code class="language-python">class CNNClassifier(nn.Module):
+    def __init__(self, num_classes=1000):
+        super().__init__()
+        # Bloque 1: 224 -> 112
+        self.block1 = nn.Sequential(
+            nn.Conv2d(3, 64, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(2, 2)
+        )
+        # Bloque 2: 112 -> 56
+        self.block2 = nn.Sequential(
+            nn.Conv2d(64, 128, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(2, 2)
+        )
+        # Bloque 3: 56 -> 28
+        self.block3 = nn.Sequential(
+            nn.Conv2d(128, 256, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(2, 2)
+        )
+        # Clasificación
+        self.classifier = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(256 * 28 * 28, 4096),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+            nn.Linear(4096, num_classes)
+        )
     
-    Args:
-        teacher: modelo pre-entrenado grande
-        student: modelo pequeño a entrenar
-        train_loader: DataLoader con (input, label)
-        epochs: cuántos ciclos de entrenamiento
-        temperature: parámetro T de suavizado
-        alpha: peso de la soft loss (0-1)
-        lr: learning rate
-    """
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    teacher.to(device).eval()  # Teacher NO se entrena
-    student.to(device).train()
+    def forward(self, x):
+        x = self.block1(x)
+        x = self.block2(x)
+        x = self.block3(x)
+        x = self.classifier(x)
+        return x
+
+model = CNNClassifier(num_classes=1000)
+print(model(torch.randn(1, 3, 224, 224)).shape)  # (1, 1000)</code></pre>
+
+    <h2>Arquitecturas Que Definieron la Era</h2>
+
+    <h3>LeNet-5 (1998): El Abuelo</h3>
+    <p>7 capas, 60K parámetros. Reconocía dígitos MNIST con 99.2% de accuracy. Para su época era revolucionario. Hoy es el "Hello World" de CNNs.</p>
+
+    <h3>AlexNet (2012): El Renacimiento</h3>
+    <p>8 capas, 60M parámetros. Ganó ImageNet con 16.4% de error (el segundo lugar tuvo 26.2%). Usó ReLU, dropout, y GPU training. Demostró que deep learning funcionaba para visión a escala.</p>
+
+    <h3>VGGNet (2014): La Profundidad Simple</h3>
+    <p>16-19 capas, 138M parámetros. Su contribución: usar solo filtros 3x3, apilados. Tres capas 3x3 tienen el mismo receptive field que una 7x7, pero con menos parámetros y más no-linearidad.</p>
+
+    <h3>ResNet (2015): Las Conexiones Residuales</h3>
+    <p>152 capas con skip connections: la salida de una capa se suma a la entrada de capas más profundas. Esto resuelve el problema de degradación: cuando agregas más capas, la red puede aprender identidad y no empeorar.</p>
+    <p>$$\mathbf{y} = \mathcal{F}(\mathbf{x}) + \mathbf{x}$$</p>
+    <pre><code class="language-python">class ResidualBlock(nn.Module):
+    """Bloque residual básico."""
+    def __init__(self, channels):
+        super().__init__()
+        self.conv1 = nn.Conv2d(channels, channels, 3, padding=1)
+        self.bn1 = nn.BatchNorm2d(channels)
+        self.conv2 = nn.Conv2d(channels, channels, 3, padding=1)
+        self.bn2 = nn.BatchNorm2d(channels)
+        self.relu = nn.ReLU()
     
-    optimizer = optim.Adam(student.parameters(), lr=lr)
-    criterion = DistillationLoss(temperature=temperature, alpha=alpha)
-    
-    for epoch in range(epochs):
-        total_loss = 0.0
-        correct = 0
-        total = 0
-        
-        for inputs, labels in train_loader:
-            inputs, labels = inputs.to(device), labels.to(device)
-            
-            # Teacher genera soft targets (sin gradientes)
-            with torch.no_grad():
-                teacher_logits = teacher(inputs)
-            
-            # Student genera sus predictions
-            student_logits = student(inputs)
-            
-            # Calcular pérdida combinada
-            loss = criterion(student_logits, teacher_logits, labels)
-            
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            
-            total_loss += loss.item()
-            _, predicted = student_logits.max(1)
-            total += labels.size(0)
-            correct += predicted.eq(labels).sum().item()
-        
-        acc = 100. * correct / total
-        print(f"Epoch {epoch+1}/{epochs} | Loss: {total_loss/len(train_loader):.4f} | Acc: {acc:.2f}%")
-    
-    return student
+    def forward(self, x):
+        residual = x
+        out = self.relu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+        out += residual  # Skip connection
+        out = self.relu(out)
+        return out</code></pre>
 
+    <h2>Data Augmentation: Crear Datos de la Nada</h2>
+    <p>Las CNNs necesitan muchos datos. Data augmentation genera variaciones de las imágenes existentes: rotaciones, flips, crops, cambios de color. Durante training, la red ve versiones transformadas, lo que mejora generalización.</p>
+    <pre><code class="language-python">from torchvision import transforms
 
-def evaluate_distillation_quality(teacher, student, test_loader, temperature=4.0):
-    """
-    Compara el teacher vs student en el test set.
-    No solo medimos accuracy — también medimos "calibration" y "confidence".
-    """
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    teacher.to(device).eval()
-    student.to(device).eval()
-    
-    teacher_correct = 0
-    student_correct = 0
-    total = 0
-    
-    # Calcular si student y teacher coinciden en sus errores
-    disagree_count = 0
-    
-    with torch.no_grad():
-        for inputs, labels in test_loader:
-            inputs, labels = inputs.to(device), labels.to(device)
-            
-            teacher_logits = teacher(inputs)
-            student_logits = student(inputs)
-            
-            _, teacher_pred = teacher_logits.max(1)
-            _, student_pred = student_logits.max(1)
-            
-            teacher_correct += teacher_pred.eq(labels).sum().item()
-            student_correct += student_pred.eq(labels).sum().item()
-            disagree_count += (teacher_pred != student_pred).sum().item()
-            total += labels.size(0)
-    
-    print(f"\n=== Distillation Quality Report ===")
-    print(f"Teacher accuracy: {100.*teacher_correct/total:.2f}%")
-    print(f"Student accuracy: {100.*student_correct/total:.2f}%")
-    print(f"Disagreement rate: {100.*disagree_count/total:.2f}%")
-    print(f"Accuracy gap: {100.*(teacher_correct - student_correct)/total:.2f}%")
-    
-    return {
-        'teacher_acc': teacher_correct / total,
-        'student_acc': student_correct / total,
-        'disagreement_rate': disagree_count / total
-    }</code></pre>
+train_transform = transforms.Compose([
+    transforms.RandomResizedCrop(224, scale=(0.8, 1.0)),
+    transforms.RandomHorizontalFlip(p=0.5),
+    transforms.ColorJitter(brightness=0.2, contrast=0.2),
+    transforms.RandomRotation(degrees=15),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                         std=[0.229, 0.224, 0.225])
+])
 
-<h2>Los 3 errores más comunes</h2>
+# Para inferencia: solo normalizar
+val_transform = transforms.Compose([
+    transforms.Resize(256),
+    transforms.CenterCrop(224),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                         std=[0.229, 0.224, 0.225])
+])</code></pre>
 
-<h3>Error 1: No usar distillation y deployar modelos enormes</h3>
+    <h2>Transfer Learning: No Entrenes de Cero</h2>
+    <p>Un modelo entrenado en ImageNet ya aprendió características genéricas de visión: bordes, texturas, formas. Puedes usar esas características como punto de partida y afinar para tu tarea específica:</p>
+    <pre><code class="language-python">import torchvision.models as models
 
-<p><strong>El error:</strong> Muchas empresas deployan un BERT-large con 340M parámetros para una tarea que podría resolver un distilled de 30M. El costo en GPU, latencia, y dinero es 10x mayor de lo necesario. En producción, cada milisegundo de latencia y cada dólar de GPU cuenta.</p>
+# Descargar ResNet pre-entrenada
+model = models.resnet50(weights='IMAGENET1K_V1')
 
-<p><strong>La solución:</strong> Evalúa si tu tarea realmente necesita el modelo grande. Aplica distillation tempranamente en el pipeline de desarrollo, no como afterthought. Un flujo correcto:</p>
+# Freezar capas base (no entrenar)
+for param in model.parameters():
+    param.requires_grad = False
 
-<pre><code># Paso 1: Baseline con modelo pequeño
-student = StudentModel(input_dim=768, num_classes=1000, hidden_dim=256)
-baseline_acc = evaluate(student, test_loader)
+# Reemplazar classifier para nueva tarea (e.g., 10 clases)
+model.fc = nn.Linear(model.fc.in_features, 10)
 
-# Paso 2: Distillar desde un teacher competente
-teacher = load_pretrained_large_model()
-distilled_acc = evaluate(train_student_with_distillation(teacher, student, train_loader))
+# Solo el nuevo classifier se entrena
+optimizer = torch.optim.Adam(model.fc.parameters(), lr=0.001)
 
-# Paso 3: Solo si el gap es inaceptable, considerar modelo más grande
-print(f"Baseline: {baseline_acc:.2f} | Distilled: {distilled_acc:.2f}")
-# Si gap < 5%, el student serve perfectamente</code></pre>
+# Fine-tuning: después de entrenar el classifier, descongelar
+# las últimas capas y entrenar todo con learning rate bajo</code></pre>
 
-<h3>Error 2: No diseñar correctamente la arquitectura teacher-student</h3>
+    <h2>Los 3 Errores Más Comunes</h2>
 
-<p><strong>El error:</strong> Tomar un teacher Transformer y usar un student RNN, o tomar un teacher de 1000 clases y un student de solo 100. La arquitectura debe ser compatible en el tipo de información que procesa. Un teacher que produce embeddings de 768 dims necesita un student que pueda procesar esa dimensionalidad.</p>
+    <h3>Error 1: Usar arquitecturas complicadas cuando algo simple funciona</h3>
+    <p><strong>El error:</strong> Implementar una ResNet de 152 capas para clasificar gatos vs perros cuando un VGG de 11 capas logra 97% de accuracy. Over-engineering genera modelos lentos y difíciles de mantener.</p>
+    <p><strong>La solución:</strong> Empieza con algo simple: una arquitectura tipo LeNet aumentada, evalúa baseline, y solo aumenta complejidad si el accuracy plateau requiere más capacidad.</p>
 
-<p><strong>La solución:</strong> Diseña el student con estas consideraciones:</p>
+    <h3>Error 2: No usar batch normalization correctamente</h3>
+    <p><strong>El error:</strong> Poner batch norm antes o después de la convolución sin entender el orden correcto. En PyTorch, la convención es: Conv -> BatchNorm -> Activation.</p>
+    <p><strong>La solución:</strong> Usa la estructura correcta y asegúrate de que el batch size no sea demasiado pequeño (idealmente 32+ para que las estadísticas del batch sean estables).</p>
 
-<ul>
-<li><strong>Misma familia de modelo</strong> cuando sea posible: DistilBERT con BERT, TinyBERT con BERT</li>
-<li><strong>Dimensionalidad compatible</strong>: si el teacher usa capas de 768 dims, el student debe poder representar esa información</li>
-<li><strong>Intermedia complexity</strong>: un student muy pequeño simplemente no tiene capacidad de memorizar lo que el teacher sabe</li>
-</ul>
+    <h3>Error 3: Ignorar el receptive field</h3>
+    <p><strong>El error:</strong> No pensar en qué parte de la imagen puede "ver" cada neurona. Capas muy profundas con kernels pequeños pueden tener un receptive field insuficiente para capturar patrones globales.</p>
+    <p><strong>La solución:</strong> Calcula el receptive field acumulativo: con kernels de 3x3, después de 3 capas el campo receptivo es 7x7, después de 5 capas es 11x11, etc. Usa dilations o aumenta el kernel si necesitas más contexto global.</p>
 
-<pre><code># Ejemplo: TinyBERT para NLP
-# Teacher: BERT-base (768 hidden, 12 layers, 110M params)
-# Student: TinyBERT (312 hidden, 4 layers, 14M params)
-
-# La reducción debe ser proporcional en todas las dimensiones
-TEACHER_CONFIG = {'hidden': 768, 'num_layers': 12, 'num_heads': 12}
-# Proporción 1/4 en todas las dimensiones
-STUDENT_CONFIG = {'hidden': 312, 'num_layers': 4, 'num_heads': 4}
-# 312 * 4 ≈ 1248 vs 768 * 12 ≈ 9216 (ratio ~8x, no 100x)</code></pre>
-
-<h3>Error 3: No evaluar el distilled model contra el original</h3>
-
-<p><strong>El error:</strong> Asumir que porque el student aprendió del teacher, es "suficientemente bueno". Pero un student puede aprender a imitar al teacher sin aprender la tarea correctamente. Puede desarrollar diferentes errores, puede estar mal calibrado (dar alta confianza en predicciones wrong).</p>
-
-<p><strong>La solución:</strong> Evalúa en tres dimensiones:</p>
-
-<pre><code># 1. Accuracy en test set
-assert student_acc > 0.90 * teacher_acc, "Student accuracy too low"
-
-# 2. Calibration: ¿las confidencias del student son correctas?
-from sklearn.calibration import calibration_curve
-prob_true, prob_pred = calibration_curve(y_true, student_probs, n_bins=5)
-calibration_error = np.abs(prob_true - prob_pred).mean()
-assert calibration_error < 0.05, "Student poorly calibrated"
-
-# 3. Análisis de errores: ¿el student comete errores diferentes al teacher?
-errors_student = set(torch.where(student_pred != labels)[0].cpu().numpy())
-errors_teacher = set(torch.where(teacher_pred != labels)[0].cpu().numpy())
-shared_errors = errors_student & errors_teacher
-unique_student_errors = errors_student - errors_teacher
-unique_teacher_errors = errors_teacher - errors_student
-
-print(f"Shared errors: {len(shared_errors)}")
-print(f"Student unique errors: {len(unique_student_errors)}")
-print(f"Teacher unique errors: {len(unique_teacher_errors)}")</code></pre>
-
-<h2>Más allá de la clasificación: distillación para embedding y generación</h2>
-
-<p>La distillation no es solo para clasificación. Técnicas como <strong>SEIRD</strong> (Self-Distillation with In-place Labelling) permiten que un modelo se distille a sí mismo. <strong>Rejection Sampling Distillation</strong> filtra samples del modelo pequeño que coinciden con el grande solo si tienen alta confianza.</p>
-
-<p>Para generación de texto, la <strong>Sequence-Level Knowledge Distillation</strong> toma no solo el próximo token, sino secuencias completas generadas por beam search del teacher y las usa para entrenar el student. Esto captura decisiones a nivel de secuencia, no solo de token individual.</p>
-
-<h2>Resumen y cierre</h2>
-
-<p>La knowledge distillation es la técnica que transforma el saber acumulado de modelos grandes en modelos eficientes que puedes deployar en producción sin vender un riñón para pagar las GPUs. La matemática es clara: combinar la información relacional de los soft targets con los labels duros, usando temperatura y alpha como knobs de control.</p>
-
-<p>Lo más importante: no es magia. El student tiene límites físicos de capacidad. Si el student no tiene suficientes parámetros para representar lo que el teacher sabe, por más que entrenes no vas a cerrar el gap. Diseña la arquitectura primero, evalúa tres dimensiones después (accuracy, calibration, errores), y si el gap es pequeño,恭喜 — tienes un modelo que corre 10x más barato.</p>
-
-<p>En Colombia tenemos la tradición de apalancarnos con lo que tenemos. De hacer Plata con poco. La distillation es exactamente eso: tomar el conocimiento acumulado de un modelo grande y apretujarlo en uno pequeño que quepa en la vida real. No es perder calidad — es ganarle al sistema con inteligencia.</p>
-
-<p><strong>Hasta el próximo día.</strong></p>
+    <h2>Resumen y Cierre</h2>
+    <p>Las CNNs son la columna vertebral de Computer Vision moderna. Su poder viene de tres ideas simples: convoluciones locales que capturan patrones espaciales, pooling que reduce dimensionalidad mientras preserva información, y capas profundas que construyen representaciones cada vez más abstractas.</p>
+    <p>Desde LeNet hasta ResNet, la evolución ha sido constante. Lo importante no es memorizar arquitecturas — es entender por qué funcionan: localidad, traducción invariante, y jerarquía de características.</p>
+    <p>La próxima vez que tu teléfono reconozca tu cara o un radiólogo use IA para detectar anomalías, recuerda: todo empieza con filtros que detectan bordes. El resto es matemáticas apiladas en profundidad.</p>
+    <p><strong>Hasta el próximo día.</strong></p>
   </article>
 
   <script>
