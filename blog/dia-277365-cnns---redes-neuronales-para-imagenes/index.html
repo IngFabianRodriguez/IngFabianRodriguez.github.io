@@ -118,8 +118,288 @@ nav {
   </header>
 
   <article class="article-body">
-    <h1>CNNs - Redes Neuronales Para Imagenes</h1>
-<p>Content for day 277 coming soon.</p>
+<h2>La historia del maestro que le enseña al aprendiz</h2>
+
+<p>En Bogotá, cuando un maestro artesano comparte su taller con un joven aprendiz, no le da simplemente las piezas terminadas para que las copie. Le muestra cómo las manos se mueven, por dónde cortar, cuándo el metal está a la temperatura justa. Ese saber tácito —lo que el maestro *sabe* pero no puede explicar completamente— se transfiere por exposición, por práctica, por osmosis. La knowledge distillation hace exactamente lo mismo, pero entre redes neuronales.</p>
+
+<p>El 70% de los equipos deploya modelos grandes y caros cuando un modelo 10x más pequeño podría servir en la mayoría de casos. No porque no sepan que existen técnicas de compresión —es que no saben cómo aplicarlas bien. Y créeme, en este país sabemos de hacer mucho con poco. De eso se trata la distillación.</p>
+
+<h2>La matemática detrás de transferir conocimiento</h2>
+
+<p>Cuando un teacher model genera probabilities sobre miles de clases, está encapsulando más información que un simple label. La "soft target" contiene información sobre qué tan cerca están unas clases de otras. Un modelo que clasifica "perro" y "gato" tiene una probability baja de confundir un perro con un gato, pero altísima de confundir un perro con otro perro. Eso es conocimiento estructurado.</p>
+
+<p>La <strong>distillation loss</strong> combina dos componentes:</p>
+
+<p>La <strong>soft loss</strong> mide qué tan bien el student captura la distribución de probabilidades del teacher:</p>
+
+<code>$$\mathcal{L}_{soft} = -\sum_{j} P^{teacher}_j \cdot \log\left(\frac{e^{z_j/T}}{\sum_i e^{z_i/T}}\right)$$</code>
+
+<p>Donde <code>T</code> es la <em>temperatura</em> — un hyperparameter que controla qué tan "suaves" son las distribuciones. Con <code>T=1</code> tenemos softmax normal. Con <code>T>1</code> los logits se dividen por T antes de softmax, produciendo distribuciones más suaves que revelan más estructura del teacher.</p>
+
+<p>La <strong>hard loss</strong> es el cross-entropy contra los labels reales:</p>
+
+<code>$$\mathcal{L}_{hard} = -\sum_{j} y_j \cdot \log\left(\frac{e^{z_j}}{\sum_i e^{z_i}}\right)$$</code>
+
+<p>La loss total es una combinación ponderada:</p>
+
+<code>$$\mathcal{L}_{total} = \alpha \cdot T^2 \cdot \mathcal{L}_{soft} + (1-\alpha) \cdot \mathcal{L}_{hard}$$</code>
+
+<p>El factor <code>T²</code> compensa el efecto de dividir los logits por T en la soft loss — sin este factor, los gradients de la soft loss serían más pequeños que los de la hard loss, desbalanceando el entrenamiento.</p>
+
+<h3>Por qué funciona: la información en los logits</h3>
+
+<p>Los logits (las outputs crudas del modelo antes de softmax) contienen información sobre las relaciones entre clases. Si el teacher produce logits <code>[2.1, 1.9, 0.3, 0.1]</code> para cuatro clases, eso dice: "clase 1 y clase 2 son muy similares entre sí, y ambas son muy diferentes de las clases 3 y 4". Un simple label <code>[1, 0, 0, 0]</code> pierde toda esa estructura relacional.</p>
+
+<h2>Arquitectura teacher-student: diseñando la transferencia</h2>
+
+<p>No cualquier student funciona con cualquier teacher. Si el student es demasiado pequeño, no tiene capacidad de capturar lo que el teacher sabe. Si es demasiado grande, desperdicia recursos. La regla práctica: el student típicamente tiene 1/10 a 1/2 los parámetros del teacher.</p>
+
+<p>Existen tres estrategias de arquitectura:</p>
+
+<ul>
+<li><strong>Same architecture, different size</strong>: misma familia (BERT-base → BERT-distilled), más simple de entrenar</li>
+<li><strong>Different architecture</strong>: Transformer → CNN, permite explorar espacios de diseño diferentes</li>
+<li><strong>Intermediate size con skip connections</strong>: mantiene algo de la profundidad del teacher</li>
+</ul>
+
+<h2>Implementación práctica en PyTorch</h2>
+
+<pre><code>import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+
+class DistillationLoss(nn.Module):
+    """
+    Combina soft targets (del teacher) con hard targets (labels reales).
+    La temperature T controla qué tan suaves son las distribuciones:
+    - T alta (ej: 5-20) -> más información relacional, pero gradients más pequeños
+    - T baja (ej: 1-2) -> más cercano a softmax normal
+    """
+    def __init__(self, temperature=4.0, alpha=0.7):
+        super().__init__()
+        self.T = temperature
+        self.alpha = alpha  # Peso para la soft loss
+
+    def forward(self, student_logits, teacher_logits, labels):
+        # Soft loss: KL divergence entre distribuciones suavizadas
+        soft_student = F.log_softmax(student_logits / self.T, dim=-1)
+        soft_teacher = F.softmax(teacher_logits / self.T, dim=-1)
+        soft_loss = F.kl_div(soft_student, soft_teacher, reduction='batchmean')
+        
+        # Hard loss: cross-entropy normal con labels
+        hard_loss = F.cross_entropy(student_logits, labels)
+        
+        # Combinar: el factor T² compensa los logits divididos por T
+        return self.alpha * (self.T ** 2) * soft_loss + (1 - self.alpha) * hard_loss
+
+
+class StudentModel(nn.Module):
+    """Student más pequeño que el teacher pero con suficiente capacidad."""
+    def __init__(self, input_dim=768, num_classes=1000, hidden_dim=256):
+        super().__init__()
+        # Capas más pequeñas que el teacher
+        self.net = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(hidden_dim, num_classes)
+        )
+
+    def forward(self, x):
+        return self.net(x)
+
+
+def train_student_with_distillation(
+    teacher, 
+    student, 
+    train_loader, 
+    epochs=10, 
+    temperature=4.0, 
+    alpha=0.7,
+    lr=0.001
+):
+    """
+    Training loop completo para distillation.
+    
+    Args:
+        teacher: modelo pre-entrenado grande
+        student: modelo pequeño a entrenar
+        train_loader: DataLoader con (input, label)
+        epochs: cuántos ciclos de entrenamiento
+        temperature: parámetro T de suavizado
+        alpha: peso de la soft loss (0-1)
+        lr: learning rate
+    """
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    teacher.to(device).eval()  # Teacher NO se entrena
+    student.to(device).train()
+    
+    optimizer = optim.Adam(student.parameters(), lr=lr)
+    criterion = DistillationLoss(temperature=temperature, alpha=alpha)
+    
+    for epoch in range(epochs):
+        total_loss = 0.0
+        correct = 0
+        total = 0
+        
+        for inputs, labels in train_loader:
+            inputs, labels = inputs.to(device), labels.to(device)
+            
+            # Teacher genera soft targets (sin gradientes)
+            with torch.no_grad():
+                teacher_logits = teacher(inputs)
+            
+            # Student genera sus predictions
+            student_logits = student(inputs)
+            
+            # Calcular pérdida combinada
+            loss = criterion(student_logits, teacher_logits, labels)
+            
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            
+            total_loss += loss.item()
+            _, predicted = student_logits.max(1)
+            total += labels.size(0)
+            correct += predicted.eq(labels).sum().item()
+        
+        acc = 100. * correct / total
+        print(f"Epoch {epoch+1}/{epochs} | Loss: {total_loss/len(train_loader):.4f} | Acc: {acc:.2f}%")
+    
+    return student
+
+
+def evaluate_distillation_quality(teacher, student, test_loader, temperature=4.0):
+    """
+    Compara el teacher vs student en el test set.
+    No solo medimos accuracy — también medimos "calibration" y "confidence".
+    """
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    teacher.to(device).eval()
+    student.to(device).eval()
+    
+    teacher_correct = 0
+    student_correct = 0
+    total = 0
+    
+    # Calcular si student y teacher coinciden en sus errores
+    disagree_count = 0
+    
+    with torch.no_grad():
+        for inputs, labels in test_loader:
+            inputs, labels = inputs.to(device), labels.to(device)
+            
+            teacher_logits = teacher(inputs)
+            student_logits = student(inputs)
+            
+            _, teacher_pred = teacher_logits.max(1)
+            _, student_pred = student_logits.max(1)
+            
+            teacher_correct += teacher_pred.eq(labels).sum().item()
+            student_correct += student_pred.eq(labels).sum().item()
+            disagree_count += (teacher_pred != student_pred).sum().item()
+            total += labels.size(0)
+    
+    print(f"\n=== Distillation Quality Report ===")
+    print(f"Teacher accuracy: {100.*teacher_correct/total:.2f}%")
+    print(f"Student accuracy: {100.*student_correct/total:.2f}%")
+    print(f"Disagreement rate: {100.*disagree_count/total:.2f}%")
+    print(f"Accuracy gap: {100.*(teacher_correct - student_correct)/total:.2f}%")
+    
+    return {
+        'teacher_acc': teacher_correct / total,
+        'student_acc': student_correct / total,
+        'disagreement_rate': disagree_count / total
+    }</code></pre>
+
+<h2>Los 3 errores más comunes</h2>
+
+<h3>Error 1: No usar distillation y deployar modelos enormes</h3>
+
+<p><strong>El error:</strong> Muchas empresas deployan un BERT-large con 340M parámetros para una tarea que podría resolver un distilled de 30M. El costo en GPU, latencia, y dinero es 10x mayor de lo necesario. En producción, cada milisegundo de latencia y cada dólar de GPU cuenta.</p>
+
+<p><strong>La solución:</strong> Evalúa si tu tarea realmente necesita el modelo grande. Aplica distillation tempranamente en el pipeline de desarrollo, no como afterthought. Un flujo correcto:</p>
+
+<pre><code># Paso 1: Baseline con modelo pequeño
+student = StudentModel(input_dim=768, num_classes=1000, hidden_dim=256)
+baseline_acc = evaluate(student, test_loader)
+
+# Paso 2: Distillar desde un teacher competente
+teacher = load_pretrained_large_model()
+distilled_acc = evaluate(train_student_with_distillation(teacher, student, train_loader))
+
+# Paso 3: Solo si el gap es inaceptable, considerar modelo más grande
+print(f"Baseline: {baseline_acc:.2f} | Distilled: {distilled_acc:.2f}")
+# Si gap < 5%, el student serve perfectamente</code></pre>
+
+<h3>Error 2: No diseñar correctamente la arquitectura teacher-student</h3>
+
+<p><strong>El error:</strong> Tomar un teacher Transformer y usar un student RNN, o tomar un teacher de 1000 clases y un student de solo 100. La arquitectura debe ser compatible en el tipo de información que procesa. Un teacher que produce embeddings de 768 dims necesita un student que pueda procesar esa dimensionalidad.</p>
+
+<p><strong>La solución:</strong> Diseña el student con estas consideraciones:</p>
+
+<ul>
+<li><strong>Misma familia de modelo</strong> cuando sea posible: DistilBERT con BERT, TinyBERT con BERT</li>
+<li><strong>Dimensionalidad compatible</strong>: si el teacher usa capas de 768 dims, el student debe poder representar esa información</li>
+<li><strong>Intermedia complexity</strong>: un student muy pequeño simplemente no tiene capacidad de memorizar lo que el teacher sabe</li>
+</ul>
+
+<pre><code># Ejemplo: TinyBERT para NLP
+# Teacher: BERT-base (768 hidden, 12 layers, 110M params)
+# Student: TinyBERT (312 hidden, 4 layers, 14M params)
+
+# La reducción debe ser proporcional en todas las dimensiones
+TEACHER_CONFIG = {'hidden': 768, 'num_layers': 12, 'num_heads': 12}
+# Proporción 1/4 en todas las dimensiones
+STUDENT_CONFIG = {'hidden': 312, 'num_layers': 4, 'num_heads': 4}
+# 312 * 4 ≈ 1248 vs 768 * 12 ≈ 9216 (ratio ~8x, no 100x)</code></pre>
+
+<h3>Error 3: No evaluar el distilled model contra el original</h3>
+
+<p><strong>El error:</strong> Asumir que porque el student aprendió del teacher, es "suficientemente bueno". Pero un student puede aprender a imitar al teacher sin aprender la tarea correctamente. Puede desarrollar diferentes errores, puede estar mal calibrado (dar alta confianza en predicciones wrong).</p>
+
+<p><strong>La solución:</strong> Evalúa en tres dimensiones:</p>
+
+<pre><code># 1. Accuracy en test set
+assert student_acc > 0.90 * teacher_acc, "Student accuracy too low"
+
+# 2. Calibration: ¿las confidencias del student son correctas?
+from sklearn.calibration import calibration_curve
+prob_true, prob_pred = calibration_curve(y_true, student_probs, n_bins=5)
+calibration_error = np.abs(prob_true - prob_pred).mean()
+assert calibration_error < 0.05, "Student poorly calibrated"
+
+# 3. Análisis de errores: ¿el student comete errores diferentes al teacher?
+errors_student = set(torch.where(student_pred != labels)[0].cpu().numpy())
+errors_teacher = set(torch.where(teacher_pred != labels)[0].cpu().numpy())
+shared_errors = errors_student & errors_teacher
+unique_student_errors = errors_student - errors_teacher
+unique_teacher_errors = errors_teacher - errors_student
+
+print(f"Shared errors: {len(shared_errors)}")
+print(f"Student unique errors: {len(unique_student_errors)}")
+print(f"Teacher unique errors: {len(unique_teacher_errors)}")</code></pre>
+
+<h2>Más allá de la clasificación: distillación para embedding y generación</h2>
+
+<p>La distillation no es solo para clasificación. Técnicas como <strong>SEIRD</strong> (Self-Distillation with In-place Labelling) permiten que un modelo se distille a sí mismo. <strong>Rejection Sampling Distillation</strong> filtra samples del modelo pequeño que coinciden con el grande solo si tienen alta confianza.</p>
+
+<p>Para generación de texto, la <strong>Sequence-Level Knowledge Distillation</strong> toma no solo el próximo token, sino secuencias completas generadas por beam search del teacher y las usa para entrenar el student. Esto captura decisiones a nivel de secuencia, no solo de token individual.</p>
+
+<h2>Resumen y cierre</h2>
+
+<p>La knowledge distillation es la técnica que transforma el saber acumulado de modelos grandes en modelos eficientes que puedes deployar en producción sin vender un riñón para pagar las GPUs. La matemática es clara: combinar la información relacional de los soft targets con los labels duros, usando temperatura y alpha como knobs de control.</p>
+
+<p>Lo más importante: no es magia. El student tiene límites físicos de capacidad. Si el student no tiene suficientes parámetros para representar lo que el teacher sabe, por más que entrenes no vas a cerrar el gap. Diseña la arquitectura primero, evalúa tres dimensiones después (accuracy, calibration, errores), y si el gap es pequeño,恭喜 — tienes un modelo que corre 10x más barato.</p>
+
+<p>En Colombia tenemos la tradición de apalancarnos con lo que tenemos. De hacer Plata con poco. La distillation es exactamente eso: tomar el conocimiento acumulado de un modelo grande y apretujarlo en uno pequeño que quepa en la vida real. No es perder calidad — es ganarle al sistema con inteligencia.</p>
+
+<p><strong>Hasta el próximo día.</strong></p>
   </article>
 
   <script>
