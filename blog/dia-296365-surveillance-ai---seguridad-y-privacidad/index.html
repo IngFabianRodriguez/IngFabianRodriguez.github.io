@@ -119,563 +119,1085 @@ nav {
 
   <article class="article-body">
     <h2>Intro</h2>
-<p>En Medellín, un call center de Bancolombia recibe 10,000 llamadas diarias. El operador promedio tarda 4 minutos en procesar una solicitud de información de cuenta. ¿Y si le dijera que con un <strong>voice interface bien implementado</strong> ese tiempo se reduce a 45 segundos, con mayor precisión y sinfadiga? La voz es la modality más natural para los humanos — nacemos hablando, no escribiendo prompts. Sin embargo, el 75% de los equipos salta directamente a chatbots de texto cuando diseña interfaces de IA, ignorando que la voz es un canal completamente diferente que requiere思考 distinta. El 25% que sí la implementa bien está diferenciándose con experiencias que se sienten como magia. Hoy desglosamos cómo construir voice interfaces con LLMs que realmente funcionen.</p>
+<p>En Bogotá, una estación de metro con 200 cámaras CCTV genera 2TB de video por día. El operador de seguridad promedio puede monitorear efectivamente 6-8 cámaras simultáneamente, ignorando el 95% del footage. El resultado: incidentes que se detectan horas después cuando ya no se puede actuar. La Surveillance AI promete cambiar eso — detección en tiempo real, reconocimiento de anomalías, alertas automáticas. Pero el 80% de los implementadores no considera las implicaciones de privacidad y ética. El 20% que sí lo hace está constru-yendo sistemas que balances seguridad con derechos fundamentales. Hoy desglosamos cómo implementar surveillance AI de manera efectiva Y responsable.</p>
 
 <hr>
-<h2>¿Por qué Voice es Diferente?</h2>
-<p>La voz no es "texto con delay". Es una modality con características únicas:</p>
-
-<ul>
-<li><strong>Latencia baja es crítica</strong>: 300ms es el umbral para que una conversación se sienta natural.超过1 segundo y se rompe el flujo.</li>
-<li><strong>Prosodia carries meaning</strong>: el tono, ritmo y énfasis изменяют el significado tanto como las palabras</li>
-<li><strong>Turn-taking es complejo</strong>: saber cuándo hablar, cuándo escuchar, cuándo interrumpir</li>
-<li><strong>Error recovery es diferente</strong>: en texto puedes editar; en voz necesitas strategies de confirmación y repair</li>
-</ul>
-
-<p>La fórmula del <strong>Round-Trip Time (RTT)</strong> en un pipeline de voz:</p>
-
-<p>$$RTT = T_{STT} + T_{LLM} + T_{TTS}$$</p>
-
-<p>Donde cada componente tiene su propia latencia característica. El objetivo es mantener RTT < 300ms para interactividad natural.</p>
-
-<hr>
-<h2>Arquitectura de un Voice Interface con LLM</h2>
-<p>Un pipeline completo de voice interface incluye:</p>
+<h2>Arquitectura de un Sistema de Surveillance AI</h2>
+<p>Un pipeline completo de surveillance intelligence incluye múltiples componentes:</p>
 
 <pre><code class="language-python">
 from dataclasses import dataclass
-from typing import Optional, Literal
-import asyncio
+from typing import List, Dict, Optional, Tuple
+from enum import Enum
+import numpy as np
+import cv2
+from datetime import datetime
+
+class EventType(Enum):
+    MOTION_DETECTED = "motion"
+    INTRUSION = "intrusion"
+    ABANDONED_OBJECT = "abandoned_object"
+    CROWD_GATHERING = "crowd_gathering"
+    FALL_DETECTION = "fall"
+    FACIAL_MATCH = "facial_match"
+    ANOMALY = "anomaly"
 
 @dataclass
-class VoiceMessage:
-    audio_bytes: bytes
-    transcript: Optional[str] = None
-    intent: Optional[str] = None
-    entities: Optional[dict] = None
-    confidence: float = 0.0
-
-@dataclass  
-class VoiceResponse:
-    text: str
-    audio_bytes: Optional[bytes] = None
-    should_speak: bool = True
-    interruptible: bool = True
-
-class VoiceInterfacePipeline:
-    """
-    Pipeline de voice interface con LLM.
+class BoundingBox:
+    x: int
+    y: int
+    width: int
+    height: int
     
-    Flujo: Audio → STT → LLM → TTS → Audio
+    @property
+    def area(self) -> int:
+        return self.width * self.height
+    
+    def iou(self, other: 'BoundingBox') -> float:
+        """Calcula Intersection over Union con otra caja."""
+        x1 = max(self.x, other.x)
+        y1 = max(self.y, other.y)
+        x2 = min(self.x + self.width, other.x + other.width)
+        y2 = min(self.y + self.height, other.y + other.height)
+        
+        intersection = max(0, x2 - x1) * max(0, y2 - y1)
+        union = self.area + other.area - intersection
+        
+        return intersection / union if union > 0 else 0
+
+@dataclass
+class Detection:
+    event_type: EventType
+    confidence: float
+    bbox: BoundingBox
+    timestamp: datetime
+    camera_id: str
+    metadata: Dict = None
+
+@dataclass
+class Alert:
+    alert_id: str
+    detection: Detection
+    priority: str  # low, medium, high, critical
+    status: str  # new, acknowledged, resolved, false_positive
+    assigned_to: Optional[str] = None
+
+class SurveillancePipeline:
+    """
+    Pipeline completo de surveillance AI.
+    
+    Flujo: Video → Detection → Tracking → Analysis → Alert
     """
     
-    def __init__(self, config: VoiceConfig):
-        # 1. Speech-to-Text (STT)
-        self.stt = WhisperSTT(
-            model_size=config.stt_model,  # tiny/base/small/medium/large
-            language=config.language,
-            timestamp=True
+    def __init__(self, config: Dict):
+        self.camera_ids = config["camera_ids"]
+        
+        # Modelos de detección
+        self.object_detector = YOLOv8Detector(
+            model_path=config["yolo_model"],
+            conf_thresh=0.5
+        )
+        self.person_tracker = DeepSORTTracker()
+        self.anomaly_detector = AnomalyDetectionModel()
+        
+        # Detección de rostros (para blacklist/whitelist)
+        self.face_detector = FaceRecognitionSystem(
+            model=config.get("face_model", "retinaface")
         )
         
-        # 2. Intent recognition + NER (lightweight, runs with STT)
-        self.intent_parser = IntentParser(
-            model=config.intent_model
+        # Movimiento y flow analysis
+        self.motion_detector = MOG2MotionDetector()
+        self.flow_analyzer = OpticalFlowAnalyzer()
+        
+        # Gestión de alertas
+        self.alert_manager = AlertManager(
+            max_alerts_per_hour=config.get("max_alerts", 100)
         )
         
-        # 3. LLM para generación de respuestas
-        self.llm = LLM(
-            model=config.llm_model,
-            system_prompt=config.system_prompt,
-            temperature=config.temperature
+        # Privacy filters
+        self.privacy_masker = PrivacyMasking(
+            blur_faces=config.get("blur_faces", True),
+            anonymize_metadata=config.get("anonymize", True)
         )
-        
-        # 4. Text-to-Speech (TTS)
-        self.tts = CoquiTTS(
-            model=config.tts_model,
-            voice=config.voice_clone  # opción de voice cloning
-        )
-        
-        # 5. Audio buffer y turn management
-        self.audio_buffer = RingBuffer(size=config.buffer_size)
-        self.vad = VoiceActivityDetection()  # detecta cuándo habla el usuario
-        self.turn_manager = TurnManager()
-
-    async def process_turn(self, audio_chunk: bytes) -> VoiceResponse:
+    
+    def process_frame(self, camera_id: str, frame: np.ndarray, timestamp: datetime) -> List[Alert]:
         """
-        Procesa un turno de voz completo.
+        Procesa un frame de video y genera alertas.
         """
-        # Detectar si hay voz activa
-        is_speech = self.vad.is_speech(audio_chunk)
+        alerts = []
         
-        if not is_speech:
-            return VoiceResponse(text="", should_speak=False)
+        # 1. Detección de objetos (personas, vehículos, objetos)
+        detections = self.object_detector.detect(frame)
+        people_detections = [d for d in detections if d.class_id == 0]  # Persona = clase 0 en COCO
         
-        # 1. STT: audio → texto
-        transcript = await self.stt.transcribe(audio_chunk)
-        
-        # 2. Parsear intent y entities
-        intent_data = self.intent_parser.parse(transcript)
-        
-        # 3. Verificar que el LLM recebeu tudo corretamente
-        if not self.turn_manager.should_respond(intent_data):
-            # Interlocutor no terminó, esperar más input
-            return VoiceResponse(text="", should_speak=False)
-        
-        # 4. Generar respuesta con LLM
-        llm_response = await self.llm.generate(
-            context=self.conversation_history,
-            user_input=transcript,
-            intent=intent_data
-        )
-        
-        # 5. Actualizar historial
-        self.conversation_history.add("user", transcript)
-        self.conversation_history.add("assistant", llm_response.text)
-        
-        # 6. TTS: texto → audio
-        if llm_response.should_speak:
-            audio_response = await self.tts.synthesize(
-                llm_response.text,
-                voice=self.voice_config
-            )
+        # 2. Tracking de personas
+        if people_detections:
+            tracks = self.person_tracker.update(people_detections, frame)
         else:
-            audio_response = None
+            tracks = []
         
-        return VoiceResponse(
-            text=llm_response.text,
-            audio_bytes=audio_response,
-            should_speak=llm_response.should_speak,
-            interruptible=llm_response.interruptible
+        # 3. Análisis de anomalías en movimiento
+        flow_features = self.flow_analyzer.extract_features(frame)
+        anomaly_score = self.anomaly_detector.predict(flow_features)
+        
+        if anomaly_score > config["anomaly_threshold"]:
+            alerts.append(self._create_alert(
+                camera_id, EventType.ANOMALY, anomaly_score,
+                self._get_frame_bbox(frame), timestamp
+            ))
+        
+        # 4. Detección de eventos específicos
+        for track in tracks:
+            # Detectar intrusiones (persona en zona prohibida)
+            if self._is_in_restricted_zone(track):
+                alerts.append(self._create_alert(
+                    camera_id, EventType.INTRUSION, 0.95,
+                    track.bbox, timestamp
+                ))
+            
+            # Detectar caídas
+            if self._detect_fall(track):
+                alerts.append(self._create_alert(
+                    camera_id, EventType.FALL_DETECTION, 0.85,
+                    track.bbox, timestamp
+                ))
+        
+        # 5. Detección de rostros (solo si hay whitelist/blacklist activa)
+        if self.face_detector.has_reference_faces():
+            faces = self.face_detector.detect_faces(frame)
+            for face in faces:
+                match_result = self.face_detector.match(face)
+                if match_result["match_type"] == "blacklist":
+                    alerts.append(self._create_alert(
+                        camera_id, EventType.FACIAL_MATCH,
+                        match_result["confidence"],
+                        BoundingBox(*face["bbox"]),
+                        timestamp,
+                        metadata={"match_type": "blacklist", "person_id": match_result["id"]}
+                    ))
+        
+        # 6. Aplicar privacy masking para logging
+        if self.privacy_masker.enabled:
+            frame = self.privacy_masker.apply(frame, detections)
+        
+        return alerts
+    
+    def _create_alert(self, camera_id: str, event_type: EventType, 
+                      confidence: float, bbox: BoundingBox, 
+                      timestamp: datetime, metadata: Dict = None) -> Alert:
+        """Crea y registra una alerta."""
+        detection = Detection(
+            event_type=event_type,
+            confidence=confidence,
+            bbox=bbox,
+            timestamp=timestamp,
+            camera_id=camera_id,
+            metadata=metadata or {}
         )
-</code></pre>
-
-<hr>
-<h2>Speech-to-Text (STT) con Whisper</h2>
-<p>Whisper de OpenAI es el estándar actual para STT en producción. Pero hay que configurarlo bien:</p>
-
-<pre><code class="language-python">
-import whisper
-import numpy as np
-from typing import AsyncGenerator
-
-class WhisperSTT:
-    def __init__(self, model_size: str = "medium", language: str = "es"):
-        self.model = whisper.load_model(model_size)
-        self.language = language
-        self.sample_rate = 16000
         
-        # Timings para control de flujo
-        self.last_transcript_time = 0
+        priority = self._calculate_priority(event_type, confidence)
         
-    async def transcribe(
-        self, 
-        audio: np.ndarray, 
-        partial: bool = False
-    ) -> str:
-        """
-        Transcribe audio a texto.
-        
-        Args:
-            audio: numpy array de audio (16kHz, mono, float32)
-            partial: si True, devuelve transcripción parcial (para streaming)
-        """
-        # Normalizar
-        audio = audio.astype(np.float32) / 32768.0
-        
-        # Opciones de decodificación
-        options = {
-            "language": self.language,
-            "task": "transcribe",
-            "beam_size": 5,
-            "best_of": 5,
-            "temperature": 0.0,  # más determinístico
-            "condition_on_previous_text": True,  # coherencia contextual
+        alert = self.alert_manager.create_alert(detection, priority)
+        return alert
+    
+    def _calculate_priority(self, event_type: EventType, confidence: float) -> str:
+        """Calcula prioridad de alerta basada en tipo de evento y confianza."""
+        base_priority = {
+            EventType.INTRUSION: "high",
+            EventType.ABANDONED_OBJECT: "medium",
+            EventType.CROWD_GATHERING: "medium",
+            EventType.FALL_DETECTION: "critical",
+            EventType.FACIAL_MATCH: "critical",
+            EventType.ANOMALY: "medium",
         }
         
-        if partial:
-            # Para streaming, usar timestamps
-            options["return_segments"] = True
-            
-        result = self.model.transcribe(audio, **options)
+        priority = base_priority.get(event_type, "low")
         
-        return result["text"].strip()
-    
-    async def transcribe_streaming(
-        self, 
-        audio_stream: AsyncGenerator[np.ndarray, None]
-    ) -> AsyncGenerator[str, None]:
-        """
-        Versión streaming para baja latencia.
-        Devuelve fragmentos de texto conforme se procesan.
-        """
-        buffer = np.array([], dtype=np.float32)
+        # Bajar prioridad si confianza es baja
+        if confidence < 0.7:
+            priority = "low"
+        elif confidence < 0.85 and priority == "critical":
+            priority = "high"
         
-        async for chunk in audio_stream:
-            buffer = np.concatenate([buffer, chunk])
-            
-            # Procesar cada 5 segundos de audio
-            if len(buffer) >= self.sample_rate * 5:
-                text = await self.transcribe(buffer, partial=True)
-                if text:
-                    yield text
-                # Mantener últimos 2 seg para continuidad
-                buffer = buffer[-self.sample_rate * 2:]
+        return priority
 </code></pre>
 
 <hr>
-<h2>Text-to-Speech (TTS)</h2>
-<p>Para TTS moderno, Coqui TTS o ElevenLabs son opciones populares:</p>
+<h2>Detección de Objetos con YOLOv8</h2>
+<p>YOLOv8 es el estándar actual para detección de objetos en tiempo real. Para surveillance, FPS y precisión son críticos:</p>
 
 <pre><code class="language-python">
-from TTS.api import TTS
-import scipy.io.wavfile as wavfile
+# Detector YOLOv8 optimizado para surveillance
+from ultralytics import YOLO
+import torch
 import numpy as np
+from typing import List, Tuple
 
-class CoquiTTS:
-    def __init__(self, model_name: str = "tts_models/es/coqui/vits"):
-        self.tts = TTS(model_name=model_name, gpu=True)
-        self.sample_rate = 22050
+class YOLOv8Detector:
+    """
+    Detector de objetos usando YOLOv8 optimizado para inferencia en tiempo real.
+    """
+    
+    def __init__(self, model_path: str = "yolov8m.pt", conf_thresh: float = 0.5):
+        # Cargar modelo
+        self.model = YOLO(model_path)
         
-    async def synthesize(
-        self, 
-        text: str, 
-        voice: str = None,
-        speed: float = 1.0
-    ) -> bytes:
+        # Optimizaciones
+        if torch.cuda.is_available():
+            self.model.to('cuda')
+            # Half precision para GPUs NVIDIA
+            self.model.model.half()
+        
+        self.conf_thresh = conf_thresh
+        
+        # Clases relevantes para surveillance (COCO)
+        self.person_class = 0
+        self.vehicle_classes = [2, 3, 5, 7]  # car, motorcycle, bus, truck
+        self.baggage_class = 24  # suitcase
+        
+        # NMS threshold
+        self.iou_thresh = 0.45
+    
+    def detect(self, frame: np.ndarray) -> List[Detection]:
         """
-        Convierte texto a speech.
+        Detecta objetos en un frame.
+        
+        Returns:
+            Lista de Detection objects
+        """
+        # Inferencia
+        results = self.model(
+            frame,
+            conf=self.conf_thresh,
+            iou=self.iou_thresh,
+            verbose=False,
+            half=torch.cuda.is_available()
+        )[0]
+        
+        detections = []
+        boxes = results.boxes
+        
+        for i in range(len(boxes)):
+            box = boxes[i]
+            x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+            confidence = float(box.conf[0])
+            class_id = int(box.cls[0])
+            
+            detection = Detection(
+                bbox=BoundingBox(
+                    x=int(x1), y=int(y1),
+                    width=int(x2 - x1),
+                    height=int(y2 - y1)
+                ),
+                confidence=confidence,
+                class_id=class_id,
+                class_name=results.names[class_id]
+            )
+            detections.append(detection)
+        
+        return detections
+    
+    def detect_people(self, frame: np.ndarray) -> List[Detection]:
+        """Detecta solo personas."""
+        all_detections = self.detect(frame)
+        return [d for d in all_detections if d.class_id == self.person_class]
+    
+    def detect_vehicles(self, frame: np.ndarray) -> List[Detection]:
+        """Detecta solo vehículos."""
+        all_detections = self.detect(frame)
+        return [d for d in all_detections if d.class_id in self.vehicle_classes]
+    
+    def detect_in_roi(self, frame: np.ndarray, roi_mask: np.ndarray) -> List[Detection]:
+        """
+        Detecta objetos solo dentro de una Region of Interest (ROI).
+        Útil para filtrar detecciones en zonas de paso.
+        """
+        all_detections = self.detect(frame)
+        
+        filtered = []
+        for det in all_detections:
+            # Obtener centro del bounding box
+            center_x = det.bbox.x + det.bbox.width // 2
+            center_y = det.bbox.y + det.bbox.height // 2
+            
+            # Verificar si está dentro del ROI
+            if roi_mask[center_y, center_x] > 0:
+                filtered.append(det)
+        
+        return filtered
+    
+    def process_stream(self, video_path: str, callback=None, skip_frames: int = 0):
+        """
+        Procesa un video completo con detección.
         
         Args:
-            text: texto a sintetizar
-            voice: ID del voice clone (opcional)
-            speed: velocidad del habla (0.5 - 2.0)
+            video_path: ruta al video
+            callback: función a llamar por cada frame detectado
+            skip_frames: procesar cada N frames (0 = todos)
         """
-        # Generar WAV
-        wav = self.tts.tts(
-            text=text,
-            speaker_wav=voice,  # para voice cloning
-            speed=speed
-        )
+        cap = cv2.VideoCapture(video_path)
+        frame_count = 0
         
-        # Convertir a bytes (WAV format)
-        wav_int16 = (wav * 32767).astype(np.int16)
+        while cap.isOpened():
+            ret, frame = cap.read()
+            if not ret:
+                break
+            
+            frame_count += 1
+            
+            if skip_frames > 0 and frame_count % skip_frames != 0:
+                continue
+            
+            # Detectar
+            detections = self.detect(frame)
+            
+            # Callback
+            if callback:
+                callback(frame_count, frame, detections)
         
-        import io
-        buffer = io.BytesIO()
-        wavfile.write(buffer, self.sample_rate, wav_int16)
-        buffer.seek(0)
-        
-        return buffer.getvalue()
-    
-    def synthesize_ssml(self, ssml: str) -> bytes:
-        """
-        SSML permite control más fino: pausas, énfasis, pronunciación.
-        """
-        wav = self.tts.tts_with_speak(ssml)
-        # ... (convert a bytes)
-        return bytes
+        cap.release()
 </code></pre>
 
 <hr>
-<h2>Manejo de Turn-Taking</h2>
-<p>El turn-taking es lo que hace que una voz interface se sienta natural o robótica. La clave es detectar:</p>
-
-<ol>
-<li><strong>Cuando el usuario terminó de hablar</strong>: VAD + silence detection</li>
-<li><strong>Cuando el asistente debe empezar</strong>: después de generar y pre-roll del TTS</li>
-<li><strong>Cuando interrumpir es apropiado</strong>: durante pausas naturales del TTS</li>
-</ol>
+<h2>Optical Flow para Análisis de Movimiento</h2>
+<p>El optical flow permite detectar movimiento sin depender de detección de objetos. Es útil para detectar anomalías comportamentales:</p>
 
 <pre><code class="language-python">
-import torch
-from scipy.signal import find_peaks
+import cv2
+import numpy as np
+from typing import Tuple, List
 
-class VoiceActivityDetection:
+class OpticalFlowAnalyzer:
     """
-    Detecta cuándo hay voz activa vs silencio.
-    Usa energía de señal + spectral features.
+    Analiza flujo óptico para detectar anomalías de movimiento.
     """
     
-    def __init__(self, energy_threshold: float = 0.02):
-        self.energy_threshold = energy_threshold
-        self.speech_prob_history = []
+    def __init__(self, roi_points: List[Tuple[int, int]] = None):
+        # params para Lucas-Kanade optical flow
+        self.lk_params = dict(
+            winSize=(31, 31),
+            maxLevel=3,
+            criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01)
+        )
         
-    def is_speech(self, audio: np.ndarray) -> bool:
-        """Detecta si hay voz en el audio."""
-        # Calcular energía RMS
-        energy = np.sqrt(np.mean(audio ** 2))
+        # ROI para filtrar área de análisis
+        self.roi_points = roi_points
+        self.roi_mask = None
+        if roi_points:
+            self.roi_mask = self._create_roi_mask(roi_points)
         
-        # Calcular zero-crossing rate (más alto para voz)
-        zcr = np.mean(np.abs(np.diff(np.sign(audio)))) / 2
+        # Frame anterior para comparación
+        self.prev_gray = None
+    
+    def extract_features(self, frame: np.ndarray) -> Dict:
+        """
+        Extrae features de flujo óptico del frame.
         
-        # Heurística simple
-        is_speech = energy > self.energy_threshold and zcr > 0.1
+        Returns:
+            Diccionario con magnitudes, ángulos, y estadísticas
+        """
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         
-        self.speech_prob_history.append(float(is_speech))
-        if len(self.speech_prob_history) > 10:
-            self.speech_prob_history.pop(0)
+        if self.prev_gray is None:
+            self.prev_gray = gray
+            return self._zero_features()
+        
+        # Calcular optical flow
+        flow = cv2.calcOpticalFlowFarneback(
+            self.prev_gray, gray,
+            None,
+            pyr_scale=0.5,
+            levels=3,
+            winsize=15,
+            iterations=3,
+            poly_n=5,
+            poly_sigma=1.2,
+            flags=0
+        )
+        
+        # Separar componentes
+        flow_x, flow_y = flow[..., 0], flow[..., 1]
+        
+        # Magnitud y ángulo
+        magnitude, angle = cv2.cartToPolar(flow_x, flow_y)
+        
+        # Aplicar ROI mask si existe
+        if self.roi_mask is not None:
+            magnitude = magnitude * self.roi_mask
+            flow_x = flow_x * self.roi_mask
+            flow_y = flow_y * self.roi_mask
+        
+        # Features estadísticas
+        features = {
+            "mean_magnitude": float(np.mean(magnitude)),
+            "max_magnitude": float(np.max(magnitude)),
+            "std_magnitude": float(np.std(magnitude)),
             
-        return is_speech
+            "mean_flow_x": float(np.mean(flow_x)),
+            "mean_flow_y": float(np.mean(flow_y)),
+            
+            "dominant_angle": float(self._dominant_angle(angle)),
+            "angle_variance": float(np.var(angle)),
+            
+            "flow_entropy": float(self._calculate_entropy(magnitude)),
+            
+            "motion_pixels": int(np.sum(magnitude > 2.0)),
+            "motion_ratio": float(np.sum(magnitude > 2.0) / magnitude.size)
+        }
+        
+        self.prev_gray = gray
+        return features
     
-    def detect_turn_end(self, audio: np.ndarray) -> bool:
+    def detect_anomaly(self, current_features: Dict, baseline_features: Dict, threshold: float = 2.0) -> Tuple[bool, float]:
         """
-        Detecta cuándo terminó un turno de habla.
-        Busca silencio prolongado (500ms+).
+        Detecta si el frame actual es una anomalía comparando con baseline.
+        
+        Returns:
+            (is_anomaly, anomaly_score)
         """
-        # Dividir en frames de 20ms
-        frame_size = int(0.02 * 16000)  # 20ms a 16kHz
-        n_frames = len(audio) // frame_size
+        # Calcular distancia Mahalanobis simplificada
+        score = 0.0
         
-        silence_frames = 0
-        for i in range(n_frames):
-            frame = audio[i * frame_size:(i + 1) * frame_size]
-            if np.sqrt(np.mean(frame ** 2)) < self.energy_threshold:
-                silence_frames += 1
-            else:
-                silence_frames = 0
+        # Comparar magnitudes
+        mag_diff = abs(current_features["mean_magnitude"] - baseline_features["mean_magnitude"])
+        mag_std = max(baseline_features["std_magnitude"], 0.1)
+        score += (mag_diff / mag_std) ** 2
         
-        # Si hay 25+ frames consecutivos de silencio (~500ms), fin de turno
-        return silence_frames >= 25
+        # Comparar dirección de flujo
+        angle_diff = abs(current_features["dominant_angle"] - baseline_features["dominant_angle"])
+        angle_diff = min(angle_diff, 360 - angle_diff)  # Handle wrap-around
+        score += (angle_diff / 45) ** 2  # 45 grados como referencia
+        
+        # Raíz del score
+        anomaly_score = np.sqrt(score)
+        
+        return anomaly_score > threshold, anomaly_score
+    
+    def create_motion_heatmap(self, frame: np.ndarray) -> np.ndarray:
+        """Crea un heatmap de movimiento para visualización."""
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        
+        if self.prev_gray is None:
+            self.prev_gray = gray
+            return np.zeros_like(frame)
+        
+        flow = cv2.calcOpticalFlowFarneback(
+            self.prev_gray, gray, None,
+            pyr_scale=0.5, levels=3, winsize=15,
+            iterations=3, poly_n=5, poly_sigma=1.2, flags=0
+        )
+        
+        magnitude, _ = cv2.cartToPolar(flow[..., 0], flow[..., 1])
+        
+        # Normalizar
+        magnitude_norm = cv2.normalize(magnitude, None, 0, 255, cv2.NORM_MINMAX)
+        magnitude_uint8 = magnitude_norm.astype(np.uint8)
+        
+        # Aplicar colormap
+        heatmap = cv2.applyColorMap(magnitude_uint8, cv2.COLORMAP_JET)
+        
+        self.prev_gray = gray
+        return heatmap
+    
+    def _dominant_angle(self, angles: np.ndarray, mask: np.ndarray = None) -> float:
+        """Calcula el ángulo dominante del flujo."""
+        if mask is not None:
+            angles = angles[mask > 0]
+        
+        if angles.size == 0:
+            return 0.0
+        
+        # Convertir a vector promedio
+        sin_sum = np.sum(np.sin(np.radians(angles)))
+        cos_sum = np.sum(np.cos(np.radians(angles)))
+        
+        return float(np.degrees(np.arctan2(sin_sum, cos_sum)) % 360)
+    
+    def _calculate_entropy(self, magnitude: np.ndarray) -> float:
+        """Calcula entropía de la distribución de magnitud."""
+        hist, _ = np.histogram(magnitude.flatten(), bins=50, range=(0, 20))
+        hist = hist / hist.sum()  # Normalizar
+        hist = hist[hist > 0]  # Filtrar ceros
+        return float(-np.sum(hist * np.log2(hist)))
+    
+    def _create_roi_mask(self, points: List[Tuple[int, int]]) -> np.ndarray:
+        """Crea máscara binaria para ROI."""
+        mask = np.zeros((480, 640), dtype=np.uint8)  # Default size
+        pts = np.array(points, dtype=np.int32)
+        cv2.fillPoly(mask, [pts], 255)
+        return mask / 255.0
+    
+    def _zero_features(self) -> Dict:
+        """Feature vector para frames sin movimiento previo."""
+        return {
+            "mean_magnitude": 0.0,
+            "max_magnitude": 0.0,
+            "std_magnitude": 0.0,
+            "mean_flow_x": 0.0,
+            "mean_flow_y": 0.0,
+            "dominant_angle": 0.0,
+            "angle_variance": 0.0,
+            "flow_entropy": 0.0,
+            "motion_pixels": 0,
+            "motion_ratio": 0.0
+        }
+</code></pre>
 
+<hr>
+<h2>Reconocimiento Facial para Blacklist/Whitelist</h2>
+<p>El reconocimiento facial en surveillance debe usarse con extrema responsabilidad. Solo para casos específicos como blacklist de personas no autorizadas:</p>
 
-class TurnManager:
+<pre><code class="language-python">
+import face_recognition
+import numpy as np
+from typing import List, Dict, Optional
+from dataclasses import dataclass
+import pickle
+import os
+
+@dataclass
+class FaceRecord:
+    person_id: str
+    name: str
+    encoding: np.ndarray
+    encoding_date: str
+    tags: List[str]  # e.g., ["employee", "contractor", "blacklist"]
+
+class FaceRecognitionSystem:
     """
-    Gestiona el turno de palabra en la conversación.
+    Sistema de reconocimiento facial para surveillance.
+    Implementa blacklist/whitelist para alertas.
     """
     
-    def __init__(self):
-        self.user_speaking = False
-        self.assistant_speaking = False
-        self.last_user_speech_time = 0
-        self.interruption_allowed = False
-        
-    def should_respond(self, intent_data) -> bool:
+    def __init__(self, encoding_model: str = "cnn", tolerance: float = 0.45):
         """
-        Decide si el asistente debe responder.
+        Args:
+            encoding_model: 'cnn' (más preciso) o 'hog' (más rápido)
+            tolerance: threshold de similitud (menor = más estricto)
         """
-        # Estrategias de decisión
-        if self.assistant_speaking:
-            return False  # Ya estamos hablando
+        self.encoding_model = encoding_model
+        self.tolerance = tolerance
         
-        if not self.user_speaking:
-            return False  # Usuario no está hablando
-        
-        # Esperar confirmaciones de fim de turno
-        turn_ended = self._detect_turn_end()
-        
-        return turn_ended
+        # Base de datos de rostros
+        self.face_database: Dict[str, FaceRecord] = {}
+        self.blacklist_ids: set = set()
+        self.whitelist_ids: set = set()
     
-    def _detect_turn_end(self) -> bool:
-        """Detecta si el turno del usuario terminó."""
-        import time
-        elapsed = time.time() - self.last_user_speech_time
+    def load_database(self, db_path: str):
+        """Carga base de datos de rostros desde disco."""
+        if os.path.exists(db_path):
+            with open(db_path, 'rb') as f:
+                data = pickle.load(f)
+                self.face_database = data.get("faces", {})
+                self._rebuild_indices()
+    
+    def save_database(self, db_path: str):
+        """Guarda base de datos a disco."""
+        with open(db_path, 'wb') as f:
+            pickle.dump({
+                "faces": self.face_database
+            }, f)
+    
+    def add_face(self, person_id: str, name: str, image_path: str, 
+                 tags: List[str] = None) -> bool:
+        """
+        Añade un rostro a la base de datos.
         
-        # Más de 1.5 seg de silencio = fin de turno
-        return elapsed > 1.5
+        Returns:
+            True si exitoso, False si no se detectó rostro
+        """
+        # Cargar y codificar imagen
+        image = face_recognition.load_image_file(image_path)
+        encodings = face_recognition.face_encodings(image, model=self.encoding_model)
+        
+        if len(encodings) == 0:
+            return False  # No se detectó rostro
+        
+        # Usar la encoding más grande (más definido)
+        encoding = max(encodings, key=lambda e: np.linalg.norm(e))
+        
+        # Guardar registro
+        from datetime import datetime
+        self.face_database[person_id] = FaceRecord(
+            person_id=person_id,
+            name=name,
+            encoding=encoding,
+            encoding_date=datetime.now().isoformat(),
+            tags=tags or []
+        )
+        
+        # Actualizar índices
+        self._rebuild_indices()
+        
+        return True
+    
+    def match(self, face_encoding: np.ndarray) -> Dict:
+        """
+        Busca coincidencia de un rostro en la base de datos.
+        
+        Returns:
+            Dict con match_type ('blacklist', 'whitelist', 'unknown'),
+            confidence, y person_id si hay match
+        """
+        if not self.face_database:
+            return {"match_type": "unknown", "confidence": 0.0, "person_id": None}
+        
+        # Calcular distancias con todos los rostros
+        known_ids = list(self.face_database.keys())
+        known_encodings = [self.face_database[pid].encoding for pid in known_ids]
+        
+        distances = face_recognition.face_distance(known_encodings, face_encoding)
+        
+        # Mejor coincidencia
+        best_idx = np.argmin(distances)
+        best_distance = distances[best_idx]
+        best_id = known_ids[best_idx]
+        
+        # Convertir distancia a confianza (inversamente proporcional)
+        # distancia 0 = confianza 100%, distancia 1 = confianza 0%
+        confidence = max(0, 1.0 - (best_distance / self.tolerance))
+        
+        if best_distance > self.tolerance:
+            return {"match_type": "unknown", "confidence": float(confidence), "person_id": None}
+        
+        record = self.face_database[best_id]
+        
+        # Determinar tipo de match
+        if best_id in self.blacklist_ids:
+            match_type = "blacklist"
+        elif best_id in self.whitelist_ids:
+            match_type = "whitelist"
+        else:
+            match_type = "registered"
+        
+        return {
+            "match_type": match_type,
+            "confidence": float(confidence),
+            "person_id": best_id,
+            "person_name": record.name
+        }
+    
+    def detect_and_match(self, frame) -> List[Dict]:
+        """
+        Detecta rostros en un frame y busca coincidencias.
+        
+        Returns:
+            Lista de resultados de match para cada rostro detectado
+        """
+        # Detectar ubicaciones de rostros
+        face_locations = face_recognition.face_locations(frame, model=self.encoding_model)
+        
+        if not face_locations:
+            return []
+        
+        # Codificar rostros detectados
+        encodings = face_recognition.face_encodings(frame, face_locations, model=self.encoding_model)
+        
+        results = []
+        for encoding, location in zip(encodings, face_locations):
+            match_result = self.match(encoding)
+            match_result["location"] = location  # (top, right, bottom, left)
+            results.append(match_result)
+        
+        return results
+    
+    def add_to_blacklist(self, person_id: str):
+        """Añade persona a blacklist."""
+        self.blacklist_ids.add(person_id)
+    
+    def remove_from_blacklist(self, person_id: str):
+        """Remueve persona de blacklist."""
+        self.blacklist_ids.discard(person_id)
+    
+    def _rebuild_indices(self):
+        """Reconstruye índices de blacklist/whitelist desde tags."""
+        self.blacklist_ids = set()
+        self.whitelist_ids = set()
+        
+        for pid, record in self.face_database.items():
+            if "blacklist" in record.tags:
+                self.blacklist_ids.add(pid)
+            if "whitelist" in record.tags:
+                self.whitelist_ids.add(pid)
+</code></pre>
+
+<hr>
+<h2>Privacy y Compliance en Surveillance AI</h2>
+<p>El uso de surveillance AI sin consideraciones de privacidad viola regulaciones como GDPR y genera riesgos legales y éticos. La <strong>Privacy by Design</strong> no es opcional — es requisito:</p>
+
+<h3>Principios de Privacy by Design</h3>
+<ul>
+<li><strong>Minimización de datos</strong>: solo recolectar lo necesario para el objetivo específico</li>
+<li><strong>Purpose limitation</strong>: los datos de surveillance solo para security, nunca para otros propósitos</li>
+<li><strong>Data anonymization</strong>: rostros yplate numbers deben ser anonimizados por defecto</li>
+<li><strong>Retention limits</strong>: definir tiempos máximos de almacenamiento</li>
+<li><strong>Access controls</strong>: solo personal autorizado accede a footage sin anonimizar</li>
+</ul>
+
+<pre><code class="language-python">
+class PrivacyMasking:
+    """
+    Aplica técnicas de privacy masking sobre frames de video.
+    """
+    
+    def __init__(self, blur_faces: bool = True, 
+                 blur_license_plates: bool = True,
+                 anonymize_timestamps: bool = True):
+        self.blur_faces = blur_faces
+        self.blur_license_plates = blur_plates
+        self.anonymize_timestamps = anonymize_timestamps
+        
+        # Detector de rostros (lightweight para speed)
+        self.face_cascade = cv2.CascadeClassifier(
+            cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
+        )
+    
+    def apply(self, frame: np.ndarray, detections: List[Detection]) -> np.ndarray:
+        """
+        Aplica masking de privacidad sobre un frame.
+        
+        Args:
+            frame: frame original
+            detections: detecciones del modelo (para saber dónde blur)
+            
+        Returns:
+            Frame con privacy masking aplicado
+        """
+        result = frame.copy()
+        
+        # Blur rostros si está habilitado
+        if self.blur_faces:
+            result = self._blur_faces_detected(result, detections)
+        
+        # Blur license plates si está habilitado
+        if self.blur_license_plates:
+            result = self._blur_license_plates(result, detections)
+        
+        # Anonymize timestamps si está habilitado
+        if self.anonymize_timestamps:
+            result = self._remove_metadata(result)
+        
+        return result
+    
+    def _blur_faces_detected(self, frame: np.ndarray, detections: List[Detection]) -> np.ndarray:
+        """Aplica blur a rostros detectados."""
+        result = frame.copy()
+        
+        # Usar bounding boxes de detecciones de personas
+        for det in detections:
+            if det.class_name == "person":
+                # Extraer región superior de la caja (donde estaría el rostro)
+                x = det.bbox.x
+                y = det.bbox.y
+                w = det.bbox.width
+                h = det.bbox.height
+                
+                # Rostro está en el 30% superior de la caja de persona
+                face_y = y
+                face_h = h // 3
+                
+                if face_h > 20:  # Mínimo tamaño para procesar
+                    face_roi = result[face_y:face_y+face_h, x:x+w]
+                    if face_roi.size > 0:
+                        blurred_face = cv2.GaussianBlur(face_roi, (51, 51), 30)
+                        result[face_y:face_y+face_h, x:x+w] = blurred_face
+        
+        return result
+    
+    def _blur_license_plates(self, frame: np.ndarray, detections: List[Detection]) -> np.ndarray:
+        """Aplica blur a patentes de vehículos."""
+        result = frame.copy()
+        
+        for det in detections:
+            if det.class_name in ["car", "truck", "bus", "motorcycle"]:
+                # Patentes están en la parte inferior del vehículo
+                x = det.bbox.x
+                y = det.bbox.y + int(det.bbox.height * 0.7)
+                w = det.bbox.width
+                h = det.bbox.height // 4
+                
+                if w > 40 and h > 10:
+                    plate_roi = result[y:y+h, x:x+w]
+                    if plate_roi.size > 0:
+                        blurred_plate = cv2.GaussianBlur(plate_roi, (21, 21), 15)
+                        result[y:y+h, x:x+w] = blurred_plate
+        
+        return result
+    
+    def _remove_metadata(self, frame: np.ndarray) -> np.ndarray:
+        """
+        Elimina metadata sensible del frame.
+        En producción, también limpiar EXIF y metadatos del video.
+        """
+        # Para frames individuales, no hay timestamp visible
+        # Esta función es más relevante para el contenedor de video
+        return frame
+
+class ComplianceLogger:
+    """
+    Logger específico para compliance de surveillance.
+    Registra quién accedió a qué datos y cuándo.
+    """
+    
+    def __init__(self, log_path: str):
+        self.log_path = log_path
+        self.access_log = []
+    
+    def log_access(self, user_id: str, camera_id: str, 
+                   access_type: str, timestamp: str):
+        """
+        Registra un acceso a footage.
+        
+        access_type: 'live_view', 'playback', 'download', 'alert_review'
+        """
+        entry = {
+            "user_id": user_id,
+            "camera_id": camera_id,
+            "access_type": access_type,
+            "timestamp": timestamp,
+            "data_subject_count": 0  # Contar personas registradas
+        }
+        
+        self.access_log.append(entry)
+        self._flush_to_disk()
+    
+    def generate_dsar_report(self, data_subject_id: str) -> Dict:
+        """
+        Genera reporte para Data Subject Access Request (DSAR).
+        Required bajo GDPR.
+        """
+        subject_accesses = [
+            log for log in self.access_log
+            if log.get("user_id") == data_subject_id
+        ]
+        
+        return {
+            "subject_id": data_subject_id,
+            "total_access_events": len(subject_accesses),
+            "access_history": subject_accesses,
+            "data_categories": ["access_logs"],
+            "purpose": "security_operations",
+            "retention_period_days": 90
+        }
 </code></pre>
 
 <hr>
 <h2>Los 3 Errores Comunes (y sus Soluciones)</h2>
 
-<h3>Error 1: No considerar la voz como modality propia</h3>
-<p><strong>Síntoma</strong>: Diseñas un voice bot copiando exactamente tu chatbot de texto. Resultado: delays incómodos, respuestas que no suenan naturales, y usuarios colgando.</p>
+<h3>Error 1: Sobre-detección genera fatiga de alertas</h3>
+<p><strong>Síntoma</strong>: El sistema genera 500 alertas por hora. Los operadores ignoran todo. Incidentes reales se pierden en el ruido.</p>
 
-<p><strong>Fix</strong>: Diseña para voz desde cero. La voz requiere:</p>
+<p><strong>Fix</strong>: Implementar smart filtering con feedback loop:</p>
 
 <pre><code class="language-python">
-# Checklist de diseño para voz
-VOICE_DESIGN_CHECKLIST = {
-    "latency": {
-        "target": "< 300ms RTT",
-        "why": "Más de 1 segundo rompe la naturalidad",
-        "how": ["Streaming STT", "speculative TTS generation"]
-    },
-    "response_style": {
-        "target": "Respuestas cortas y conversacionales",
-        "why": "El usuario no puede escanear texto",
-        "how": ["Max 2-3 oraciones", "Evitar listas", "No leer números/fechas"]
-    },
-    "error_handling": {
-        "target": "Confirmación implícita",
-        "why": "No se puede 'ver' un error",
-        "how": ["Repetir info clave", "Parafrasear", "Confirmación explícita"]
+class SmartAlertFilter:
+    """
+    Filtro inteligente que aprende de las decisiones de los operadores.
+    """
+    
+    def __init__(self):
+        self.alert_history = []  # (alert, operator_decision)
+        self.feature_weights = {
+            "time_of_day": 1.0,
+            "location": 1.0,
+            "event_type": 1.0,
+            "confidence": 1.0,
+            "pattern": 1.0
+        }
+    
+    def should_escalate(self, alert: Alert, context: Dict) -> bool:
+        """
+        Decide si una alerta debe escalar a operador.
+        """
+        # Calcular score
+        score = 0.0
+        
+        # Score por confianza
+        score += alert.detection.confidence * self.feature_weights["confidence"]
+        
+        # Score por tipo de evento
+        type_scores = {
+            EventType.INTRUSION: 0.8,
+            EventType.FALL_DETECTION: 0.9,
+            EventType.FACIAL_MATCH: 0.95,
+            EventType.ANOMALY: 0.4,
+            EventType.MOTION_DETECTED: 0.1
+        }
+        score += type_scores.get(alert.detection.event_type, 0.3) * self.feature_weights["event_type"]
+        
+        # Score por hora (noche = más importante)
+        hour = context.get("hour", 12)
+        if hour < 6 or hour > 22:  # Madrugada o noche
+            score *= 1.5
+        
+        # Score por zona (zonas críticas = más importante)
+        critical_zones = ["entrada_principal", "caja_fuerte", "area_restringida"]
+        if context.get("zone") in critical_zones:
+            score *= 1.3
+        
+        return score > 0.6
+    
+    def learn_from_feedback(self, alert_id: str, operator_action: str):
+        """
+        Aprende de las decisiones del operador.
+        
+        operator_action: 'acknowledged', 'false_positive', 'escalated'
+        """
+        # Actualizar feature weights basado en feedback
+        # Este es un ejemplo simplificado - en producción usar bandit algorithms
+        pass
+</code></pre>
+
+<h3>Error 2: No considerar sesgos en detección</h3>
+<p><strong>Síntoma</strong>: El modelo detecta "anomalías" más frecuentemente en ciertas zonas donde hay más personas de ciertos grupos demográficos. Bias algorítmico.</p>
+
+<p><strong>Fix</strong>: Auditar regularly por sesgos y usar fairness metrics:</p>
+
+<pre><code class="language-python">
+def audit_bias(model, test_dataset, demographic_groups: Dict) -> Dict:
+    """
+    Audita bias en modelo de detección.
+    
+    Returns:
+        Reporte de fairness por grupo demográfico
+    """
+    results = {}
+    
+    for group_name, group_data in demographic_groups.items():
+        # Calcular true/false positive rates para cada grupo
+        predictions = model.predict(group_data["features"])
+        
+        results[group_name] = {
+            "sample_size": len(group_data["labels"]),
+            "true_positive_rate": np.mean(predictions == group_data["labels"]),
+            "false_positive_rate": np.mean((predictions == 1) & (group_data["labels"] == 0)),
+            "disparate_impact": calculate_disparate_impact(
+                predictions, group_data["labels"]
+            )
+        }
+    
+    return results
+
+def calculate_disparate_impact(predictions, labels) -> float:
+    """
+    Calcula disparate impact ratio.
+    < 0.8 indica impacto dispar potencialmente problemático.
+    """
+    positive_rate_group = np.mean(predictions)
+    positive_rate_baseline = np.mean(labels)
+    
+    if positive_rate_baseline == 0:
+        return 1.0
+    
+    return positive_rate_group / positive_rate_baseline
+</code></pre>
+
+<h3>Error 3: Ignorar retención y eliminación de datos</h3>
+<p><strong>Síntoma</strong>: Video se almacena indefinidamente. Cuando llega una auditoría o request de un ciudadano, no hay forma de demostrar compliance. Riesgo legal enorme.</p>
+
+<p><strong>Fix</strong>: Implementar data lifecycle management automático:</p>
+
+<pre><code class="language-python">
+class VideoRetentionManager:
+    """
+    Gestiona retención y eliminación de footage de surveillance.
+    """
+    
+    RETENTION_POLICIES = {
+        "standard": 30,  # 30 días para cámaras normales
+        "high_security": 90,  # 90 días para zonas críticas
+        "incident_related": 365,  # 1 año para footage con incidentes
+        "facial_recognition": 7   # 7 días máximo si se usa reconocimiento facial
     }
-}
-
-# Sistema de prompts para voz (diferente a texto)
-VOICE_SYSTEM_PROMPT = """Eres un asistente de voz para un banco colombiano.
-- Responde en máximo 2-3 oraciones
-- Habla como colombiano paisa (no formal)
-- Para información importante, confirma: "Te estoy confirmando que tu saldo es..."
-- NUNCA leas números de cuenta o fechas completa. Di: "el número que termina en 1234"
-- Si no entiendes, di: "No te entendí bien, ¿me lo repites?"
-- Para acciones irreversibles, pide confirmación explícita"""
-</code></pre>
-
-<h3>Error 2: Tratar la voz como texto con delay</h3>
-<p><strong>Síntoma</strong>: Haces STT → LLM → TTS secuencial, esperando toda la respuesta de texto antes de empezar TTS. Latencia > 3 segundos.</p>
-
-<p><strong>Fix</strong>: Implementa <strong>streaming</strong> y <strong>speculative TTS</strong>:</p>
-
-<pre><code class="language-python">
-class StreamingVoicePipeline:
-    """
-    Pipeline optimizado para baja latencia.
-    """
     
-    async def process_streaming(self, audio_stream):
-        """
-        Procesa audio en streaming mientras genera respuesta.
-        """
-        # 1. STT streaming con partial results
-        transcript_queue = asyncio.Queue()
+    def __init__(self, db_connection):
+        self.db = db_connection
+        self.retention_cache = {}  # cache de políticas por cámara
+    
+    def get_retention_days(self, camera_id: str) -> int:
+        """Determina días de retención para una cámara."""
+        if camera_id in self.retention_cache:
+            return self.retention_cache[camera_id]
         
-        async def transcribe_task():
-            async for partial_text in self.stt.transcribe_streaming(audio_stream):
-                await transcript_queue.put(partial_text)
+        # Query base de datos para configuración de cámara
+        camera_config = self.db.get_camera_config(camera_id)
         
-        # 2. LLM con streaming output
-        async def llm_task():
-            full_response = ""
-            async for token in self.llm.generate_streaming(
-                self.build_prompt(transcript_queue)
-            ):
-                full_response += token
-                # 3. Empezar TTS ANTES de tener toda la respuesta
-                await self.tts.add_token(token)  # speculative
-                yield token  # yield tokens para logging
+        if camera_config.get("facial_recognition_enabled"):
+            policy = "facial_recognition"
+        elif camera_config.get("high_security_zone"):
+            policy = "high_security"
+        else:
+            policy = "standard"
         
-        # 4. TTS reproduce mientras recibe tokens
-        async def tts_task():
-            async for audio_chunk in self.tts.stream_synthesize():
-                await self.play_audio(audio_chunk)  # play in real-time
+        days = self.RETENTION_POLICIES[policy]
+        self.retention_cache[camera_id] = days
         
-        # Ejecutar todo en paralelo
-        await asyncio.gather(
-            transcribe_task(),
-            self.consume_and_play(llm_task())
+        return days
+    
+    def mark_for_deletion(self, video_segment_id: str):
+        """Marca segmento de video para eliminación."""
+        self.db.mark_segment_deletion(
+            segment_id=video_segment_id,
+            deletion_date=datetime.now()
         )
-
-    async def llm_generate_streaming(self, prompt):
+    
+    def run_retention_policy(self):
         """
-        LLM generando tokens uno por uno.
+        Ejecuta política de retención.
+        Debe correr diariamente via cron job.
         """
-        async for token in self.llm.astream(prompt):
-            yield token
+        today = datetime.now().date()
+        
+        cameras = self.db.get_all_cameras()
+        for camera in cameras:
+            retention_days = self.get_retention_days(camera["id"])
+            cutoff_date = today - timedelta(days=retention_days)
+            
+            # Marcar segmentos antiguos para eliminación
+            old_segments = self.db.get_segments_before_date(
+                camera["id"], cutoff_date
+            )
+            
+            for segment in old_segments:
+                # Verificar que no tenga incidentes asociados
+                if not self._has_linked_incidents(segment["id"]):
+                    self.mark_for_deletion(segment["id"])
+                    self._secure_delete(segment)  # Sobrescribir datos
+        
+        # Eliminar alerts viejas según política
+        alert_retention = 90  # 90 días para alertas
+        self.db.delete_alerts_before(today - timedelta(days=alert_retention))
+    
+    def _has_linked_incidents(self, segment_id: str) -> bool:
+        """Verifica si el segmento tiene incidentes asociados."""
+        return self.db.segment_has_incidents(segment_id)
+    
+    def _secure_delete(self, segment: Dict):
+        """
+        Eliminación segura: sobrescribe datos antes de borrar.
+        """
+        # En implementación real, abrir archivo y sobrescribir con zeros/random
+        pass
 </code></pre>
-
-<h3>Error 3: No manejar errores de STT/TTS graceful</h3>
-<p><strong>Síntoma</strong>: STT devuelve basura o TTS falla, y el usuario queda colgado sin saber qué pasó.</p>
-
-<p><strong>Fix</strong>: Implementa graceful degradation:</p>
-
-<pre><code class="language-python">
-class ErrorHandlingVoice:
-    """
-    Manejo robusto de errores en pipeline de voz.
-    """
-    
-    # Códigos de error específicos para voz
-    VOICE_ERROR_CODES = {
-        "STT_NOISE": "No pude entender bien, ¿me lo repites más claro?",
-        "STT_SILENCE": "No te escuché bien, ¿podrías hablar más fuerte?",
-        "STT_LATENCY": "Se perdió un poco de tu mensaje, ¿qué decías?",
-        "TTS_ERROR": "Tengo problemas con el audio, pero aquí está tu respuesta en texto.",
-        "LLM_ERROR": "Tuve un problema procesando tu solicitud, ¿puedes repetir?",
-        "NETWORK_TIMEOUT": "Se cayó la conexión, déjame intentarlo de nuevo.",
-    }
-    
-    async def process_with_error_handling(self, audio):
-        try:
-            # STT con timeout
-            transcript = await asyncio.wait_for(
-                self.stt.transcribe(audio),
-                timeout=5.0
-            )
-        except asyncio.TimeoutError:
-            return self._error_response("STT_LATENCY")
-        
-        # Verificar calidad de transcript
-        if self._low_quality_transcript(transcript):
-            return self._error_response("STT_NOISE")
-        
-        if len(transcript.strip()) == 0:
-            return self._error_response("STT_SILENCE")
-        
-        try:
-            response = await self.llm.generate(transcript)
-        except Exception as e:
-            return self._error_response("LLM_ERROR")
-        
-        try:
-            audio_response = await asyncio.wait_for(
-                self.tts.synthesize(response),
-                timeout=10.0
-            )
-        except asyncio.TimeoutError:
-            return VoiceResponse(
-                text=response,  # Devolver texto si TTS falla
-                should_speak=False,
-                audio_bytes=None
-            )
-        
-        return VoiceResponse(text=response, audio_bytes=audio_response)
-    
-    def _low_quality_transcript(self, text: str) -> bool:
-        """Detecta transcripciones de baja calidad."""
-        # Demasiados caracteres especiales
-        special_char_ratio = sum(1 for c in text if not c.isalnum() and not c.isspace()) / max(len(text), 1)
-        if special_char_ratio > 0.3:
-            return True
-        
-        # Muy corto o muy largo
-        if len(text) < 3 or len(text) > 500:
-            return True
-        
-        return False
-    
-    def _error_response(self, error_code: str) -> VoiceResponse:
-        """Genera respuesta de error friendly."""
-        return VoiceResponse(
-            text=self.VOICE_ERROR_CODES.get(error_code, "Tuve un problema, ¿me lo repites?"),
-            should_speak=True,
-            audio_bytes=None
-        )
-</code></pre>
-
-<hr>
-<h2>Métricas para Voice Interfaces</h2>
-<p>No puedes medir un voice bot igual que un chatbot de texto:</p>
-
-<ul>
-<li><strong>Latencia percibida</strong>: time-to-first-audio (TTFA) — ideally < 500ms</li>
-<li><strong>Word Error Rate (WER)</strong>: qué tan preciso es el STT</li>
-<li><strong>Mean Opinion Score (MOS)</strong>: rating 1-5 de calidad de voz</li>
-<li><strong>Turn-Taking Accuracy</strong>: % de veces que el bot responde en el momento correcto</li>
-<li><strong>Completion Rate</strong>: % de tareas completadas sin escalar a humano</li>
-</ul>
-
-<p>$$MOS = \frac{1}{N}\sum_{i=1}^{N} \frac{\sum_{j=1}^{M} r_{ij}}{M}$$</p>
-
-<p>Donde $r_{ij}$ es el rating del juez $i$ para el sample $j$.</p>
 
 <hr>
 <h2>Resumen</h2>
-<p>Los voice interfaces con LLMs son un superpower subestimado:</p>
+<p>Surveillance AI es poderosa pero requiere implementación responsable:</p>
 
 <ul>
-<li><strong>STT + LLM + TTS</strong>: la tríada fundamental del pipeline de voz</li>
-<li><strong>Latencia < 300ms</strong>: el umbral crítico para naturalidad</li>
-<li><strong>Streaming</strong>: imperative para evitar delays percibidos</li>
-<li><strong>Turn-taking</strong>: gestionar cuando hablar y cuando escuchar es tan importante como qué decir</li>
-<li><strong>Error recovery diferente a texto</strong>: confirmación implícita, nunca dejar al usuario colgado</li>
+<li><strong>Pipeline completo</strong>: detección + tracking + análisis + alertas</li>
+<li><strong>YOLOv8 + Optical Flow</strong>: combinación poderosa para detección en tiempo real</li>
+<li><strong>Reconocimiento facial</strong>: solo para blacklists/whitelists con governance claro</li>
+<li><strong>Privacy by Design</strong>: no es opcional, es requisito legal y ético</li>
+<li><strong>Compliance logging</strong>: auditorías, DSAR requests, data lifecycle</li>
+<li><strong>Bias auditing</strong>: verificar que el sistema no discrimina</li>
 </ul>
 
-<p>La voz es el modality más natural para los humanos. Cuando la implementas bien, la IA se siente como un помощник real, no como un robot con el que tienes que hablar lento y claro.</p>
+<p>El 80% de implementadores que ignora privacidad está creando problemas legales y éticos que eventualmente explotarán. El 20% que implementa privacy-first está constru-yendo sistemas sostenibles que protegen tanto la seguridad como los derechos fundamentales.</p>
 
 <hr>
 <h2>Cierre</h2>
-<p>Así como en Colombia la voz es parte de nuestra identidad — el cariño en el "¿cómo está pues varón?", la velocidad del "¡venga que se quema!", el tono del "le cuento doctor" — los voice interfaces bien hechos llevan el человеческий toque a la IA. El 75% que salta directo al texto está perdiendo algo fundamental: la voz conecta de otra manera. El 25% que la implementa bien está creando experiencias que la gente prefiere sobre cualquier botón o chat. En el futuro, el mejor interfaz será el que no se nota que existe. Y ese es precisamente un voice interface hecho con cariño — como lo hacemos aquí, con dedicación y ojo pelao al detalle.</p>
+<p>Así como en Colombia valoramos la confianza cuando caminamos por el parque sin miedo, la surveillance AI debe inspirar seguridad, no temor. El verdadero desafio no es técnica — es governance. Podemos detectar todo, pero ¿debemos? La respuesta requiere diálogo entre technologists, legal teams, y la ciudadanía. El futuro de surveillance no es más cámaras — es cámaras inteligentes con alma ética. El que domine ese balance no solo tendrá mejores sistemas; tendrá el respeto de todos.</p>
 
 <p><em>— Fabian Rodriguez | #365DaysOfAI</em></p>
   </article>
