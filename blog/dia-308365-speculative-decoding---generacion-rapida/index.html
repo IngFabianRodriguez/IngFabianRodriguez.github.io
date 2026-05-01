@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="Speculative Decoding - Generacion Rapida | #365DaysOfAI por Fabian Rodriguez">
-  <title>Speculative Decoding - Generacion Rapida | #365DaysOfAI</title>
+  <meta name="description" content="LLM Information Retrieval — el 75% no conoce y el 25% usa para encontrar info | #365DaysOfAI por Fabian Rodriguez">
+  <title>LLM Information Retrieval — El 75% No Conoce y el 25% Usa | #365DaysOfAI</title>
   
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
@@ -110,47 +110,435 @@ nav {
 
   <header class="article-hero">
     <div class="day-badge">Dia 308 / 365 &nbsp;·&nbsp; #365DaysOfAI</div>
-    <h1 class="article-title">Speculative Decoding - Generacion Rapida</h1>
+    <h1 class="article-title">LLM Information Retrieval — El 75% No Conoce y el 25% Usa para Encontrar Info</h1>
     <div class="article-meta">
       <time class="article-date">04 de noviembre de 2026</time>
-      <div class="tags"><span class="tag">speculative-decoding</span><span class="tag">inference</span><span class="tag">speed</span><span class="tag">optimization</span></div>
+      <div class="tags"><span class="tag">information-retrieval</span><span class="tag">query-expansion</span><span class="tag">llm</span><span class="tag">rag</span><span class="tag">fusion</span></div>
     </div>
   </header>
 
   <article class="article-body">
-    <h1>Speculative Decoding - Generacion Rapida</h1>
-<p>Hagale pues, parcero. Hoy es el Dia 308 y hablamos de Speculative Decoding, generacion rapida con drafts. Dejala el cafe.</p>
-<hr>
-<h2>🎯 Que Es Speculative Decoding?</h2>
-<p>Speculative decoding usa un "draft model" pequeno para generar candidatos rapido, luego el model grande solo verifica en paralelo.</p>
-<h3>Speedup:</h3>
-<ul>
-<li><strong>Draft model</strong>: 7B parametros, generacion rapida</li>
-<li><strong>Verifier</strong>: 70B params, verificacion en paralelo</li>
-<li><strong>Beneficio</strong>: 2-3x speedup en generacion</li>
-</ul>
-<hr>
-<h2>📐 Speculative Decoding</h2>
-<pre><code class="language-python">def speculative_decode(draft_model, target_model, prompt, gamma=4):
-    # Draft model genera candidatos
-    draft_tokens = []
-    for _ in range(gamma):
-        next_tok = draft_model.generate(prompt + draft_tokens)
-        draft_tokens.append(next_tok)
+    <h2>🎯 Introducción: Por Qué el 75% No Conoce Information Retrieval para LLMs</h2>
+    <p>Hagale pues, parcero. Aquí en Medellín cuando uno pregunta por ahí, el 75% de los developers no sabe que existen técnicas de Information Retrieval (IR) específicas para mejorar cómo los LLMs encuentran información. Solo hacen embedding básico y ya. Hoy Día 308 vamos a cambiar eso: query expansion, multi-method retrieval, y fusion strategies. Sírvame un tintico.</p>
+
+    <h2>📐 La Matemática de Information Retrieval con LLMs</h2>
+    <p>Information Retrieval con LLMs se diferencia del search tradicional porque el LLM puede reformular queries, expandir conceptos, y entender intención. La query original Q se transforma en Q' mediante el LLM:</p>
+    <p><code>Q' = LLM_expand(Q) = {q1, q2, ..., qn} donde cada qi es una reformulación</code></p>
+    <p>El retrieval se hace sobre todas las Q' y los scores se fusionan. Esto mejora recall significativamente porque diferentes reformulaciones capturan diferentes aspectos del significado.</p>
+    <p>La métrica clave es <strong>Recall@K</strong>: de todos los documentos relevantes, cuántos encontramos en los primeros K. Para RAG efectivo, queremos Recall@50 > 0.85.</p>
+
+    <h2>🔧 Framework de Retrieval con Query Expansion</h2>
+    <pre><code class="language-python">from openai import OpenAI
+from rank_bm25 import BM25Okapi
+import numpy as np
+
+client = OpenAI()
+
+class QueryExpansionRetriever:
+    """
+    Retrieval con query expansion usando LLM.
+    El LLM genera múltiples reformulaciones de la query
+    para capturar diferentes aspectos del significado.
+    """
     
-    # Target model verifica todos en paralelo
-    # Si todos correctos, 4x speedup
-    # Si alguno wrong, rollback parcial
-    verified = target_model.verify(prompt, draft_tokens)
-    return verified</code></pre>
-<hr>
-<h2>🚀 Consideraciones</h2>
-<p>El draft model debe ser pequeno pero competente. Often es una version quantizada del mismo model.</p>
-<hr>
-<h2>⚠️ Limitaciones</h2>
-<p>Funciona mejor en tasks donde el draft es bueno. Tasks muy technicalas pueden sufrir.</p>
-<hr>
-<p><em>Eso es todo! Nos vemos en el Dia 309.</em></p>
+    def __init__(self, documents, embedder, alpha=0.5):
+        self.documents = documents
+        self.embedder = embedder  # Función que devuelve embeddings
+        self.alpha = alpha  # Peso para hybrid search
+        
+        # BM25 para retrieval léxico
+        self.tokenized_docs = [doc.lower().split() for doc in documents]
+        self.bm25 = BM25Okapi(self.tokenized_docs)
+        
+    def expand_query(self, query, n_expansions=4):
+        """
+        Genera n_expansions reformulaciones de la query original.
+        """
+        prompt = f"""Given the following query, generate {n_expansions} different 
+        reformulations that capture different aspects or interpretations.
+        Return them as a JSON array of strings.
+        
+        Query: {query}
+        
+        Reformulations:"""
+        
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"},
+            temperature=0.8
+        )
+        
+        import json
+        expansions = json.loads(response.choices[0].message.content)
+        return list(expansions.values())[:n_expansions]
+    
+    def vector_search(self, query, top_k=50):
+        """Búsqueda por embeddings."""
+        query_emb = self.embedder(query)
+        doc_embs = self.embedder(self.documents)
+        
+        # Similitud coseno
+        scores = np.dot(doc_embs, query_emb) / (
+            np.linalg.norm(doc_embs, axis=1) * np.linalg.norm(query_emb)
+        )
+        
+        top_indices = np.argsort(scores)[::-1][:top_k]
+        return [(idx, float(scores[idx])) for idx in top_indices]
+    
+    def lexical_search(self, query, top_k=50):
+        """Búsqueda BM25."""
+        tokenized = query.lower().split()
+        scores = self.bm25.get_scores(tokenized)
+        top_indices = np.argsort(scores)[::-1][:top_k]
+        return [(idx, float(scores[idx])) for idx in top_indices]
+    
+    def search(self, query, top_k=20):
+        """
+        Búsqueda con query expansion: 
+        1. Expandir query original
+        2. Retrieval para cada expansión
+        3. Fusionar scores
+        """
+        # Expandir query
+        expansions = self.expand_query(query)
+        all_queries = [query] + expansions
+        
+        # Fusionar resultados de todas las queries
+        fused_scores = {}
+        
+        for q in all_queries:
+            # Vector search
+            vector_results = self.vector_search(q, top_k=top_k)
+            for rank, (idx, score) in enumerate(vector_results):
+                fused_scores[idx] = fused_scores.get(idx, 0) + score / (rank + 1)
+            
+            # Lexical search
+            lexical_results = self.lexical_search(q, top_k=top_k)
+            for rank, (idx, score) in enumerate(lexical_results):
+                fused_scores[idx] = fused_scores.get(idx, 0) + self.alpha * score / (rank + 1)
+        
+        # Ordenar por score fusionado
+        ranked = sorted(fused_scores.items(), key=lambda x: x[1], reverse=True)
+        
+        return [
+            {"document": self.documents[idx], "score": score}
+            for idx, score in ranked[:top_k]
+        ]
+
+# Uso:
+documents = ["texto1", "texto2", ...]  # Tus documentos
+embedder = lambda texts: np.array([...])  # Tu embedder
+
+retriever = QueryExpansionRetriever(documents, embedder)
+results = retriever.search("optimización de queries PostgreSQL", top_k=10)</code></pre>
+
+    <h2>🔄 Multi-Method Retrieval: No Confíes en Solo Uno</h2>
+    <p>El error del 60%: usar solo embeddings o solo BM25. La realidad: diferentes methods rinden mejor para diferentes queries. La solución: multi-method retrieval con learned fusion.</p>
+    <pre><code class="language-python">class MultiMethodRetriever:
+    """
+    Combina múltiples métodos de retrieval:
+    - Dense (embeddings)
+    - Sparse (BM25)
+    - Hybrid (combinación)
+    - Keyword matching
+    """
+    
+    def __init__(self, documents):
+        self.documents = documents
+        self.dense_retriever = None  # Embeddings
+        self.sparse_retriever = None  # BM25
+        self.keyword_index = {}  # Índice keyword simple
+        
+    def add_dense_retriever(self, embedder):
+        self.dense_retriever = embedder
+        
+    def add_sparse_retriever(self, bm25):
+        self.sparse_retriever = bm25
+        
+    def build_keyword_index(self):
+        """Índice keyword simple para términos exactos."""
+        for idx, doc in enumerate(self.documents):
+            words = doc.lower().split()
+            for word in words:
+                if word not in self.keyword_index:
+                    self.keyword_index[word] = []
+                self.keyword_index[word].append(idx)
+    
+    def keyword_search(self, query, top_k=50):
+        """Búsqueda por palabras clave exactas."""
+        words = query.lower().split()
+        scores = {}
+        
+        for word in words:
+            if word in self.keyword_index:
+                for idx in self.keyword_index[word]:
+                    scores[idx] = scores.get(idx, 0) + 1
+        
+        ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+        return [(idx, score) for idx, score in ranked[:top_k]]
+    
+    def search(self, query, top_k=20, method_weights=None):
+        """
+        Retrieval con weights aprendidos para cada método.
+        """
+        if method_weights is None:
+            method_weights = {"dense": 0.4, "sparse": 0.3, "keyword": 0.3}
+        
+        fused_scores = {}
+        
+        # Dense retrieval
+        if self.dense_retriever:
+            results = self.dense_retriever(query, top_k=top_k)
+            for rank, (idx, score) in enumerate(results):
+                fused_scores[idx] = fused_scores.get(idx, 0) + \
+                    method_weights["dense"] * score / np.log(rank + 2)
+        
+        # Sparse retrieval
+        if self.sparse_retriever:
+            results = self.sparse_retriever.search(query, top_k=top_k)
+            for rank, (idx, score) in enumerate(results):
+                fused_scores[idx] = fused_scores.get(idx, 0) + \
+                    method_weights["sparse"] * score / np.log(rank + 2)
+        
+        # Keyword search
+        results = self.keyword_search(query, top_k=top_k)
+        for rank, (idx, score) in enumerate(results):
+            fused_scores[idx] = fused_scores.get(idx, 0) + \
+                method_weights["keyword"] * score / np.log(rank + 2)
+        
+        # Ordenar
+        ranked = sorted(fused_scores.items(), key=lambda x: x[1], reverse=True)
+        
+        return [
+            {"document": self.documents[idx], "score": score}
+            for idx, score in ranked[:top_k]
+        ]
+
+# Uso:
+multi = MultiMethodRetriever(documents)
+multi.add_dense_retriever(dense_embedder)
+multi.add_sparse_retriever(bm25)
+multi.build_keyword_index()
+
+results = multi.search("PostgreSQL query optimization", top_k=10)</code></pre>
+
+    <h2>🎯 Fusion Strategies: Como Combinar Scores</h2>
+    <p>Hay varias formas de fusionar scores de múltiples retrieval methods. La más robusta: Reciprocal Rank Fusion (RRF) y CombMNZ.</p>
+    <pre><code class="language-python">def reciprocal_rank_fusion(results_lists, k=60):
+    """
+    Reciprocal Rank Fusion: combina rankings multiplicando por 1/(k+rank).
+    
+    k=60 es el estándar (constante de suavizado).
+    """
+    fused = {}
+    
+    for results in results_lists:
+        for rank, result in enumerate(results):
+            doc_id = result["document"]
+            score = 1 / (k + rank + 1)
+            fused[doc_id] = fused.get(doc_id, 0) + score
+    
+    return sorted(fused.items(), key=lambda x: x[1], reverse=True)
+
+
+def combmnz_fusion(results_lists):
+    """
+    CombMNZ (Combination with Multiple Normalized Scores):
+    Suma los scores normalizados multiplicado por el número de 
+    métodos que retornaron el documento.
+    
+    Bonus: documentos retornados por más métodos obtienen mayor score.
+    """
+    fused = {}
+    method_count = {}
+    
+    for results in results_lists:
+        for result in results:
+            doc_id = result["document"]
+            normalized = (result["score"] - min_score) / (max_score - min_score + 1e-8)
+            
+            fused[doc_id] = fused.get(doc_id, 0) + normalized
+            method_count[doc_id] = method_count.get(doc_id, 0) + 1
+    
+    # Multiplicar por count de métodos
+    for doc_id in fused:
+        fused[doc_id] *= method_count[doc_id]
+    
+    return sorted(fused.items(), key=lambda x: x[1], reverse=True)
+
+
+def distribution_based_fusion(results_lists):
+    """
+    Distribution-Based Score Fusion (DBSF):
+    Convierte scores a percentiles y promedia.
+    Robusto a outliers en scores.
+    """
+    all_scores = []
+    doc_scores = {}
+    
+    for results in results_lists:
+        scores = [r["score"] for r in results]
+        all_scores.extend(scores)
+        
+        for result in results:
+            doc_id = result["document"]
+            if doc_id not in doc_scores:
+                doc_scores[doc_id] = []
+            doc_scores[doc_id].append(result["score"])
+    
+    # Percentiles
+    sorted_scores = sorted(all_scores)
+    
+    def to_percentile(score):
+        return sorted_scores.index(score) / len(sorted_scores)
+    
+    fused = {}
+    for doc_id, scores in doc_scores.items():
+        percentiles = [to_percentile(s) for s in scores]
+        fused[doc_id] = np.mean(percentiles)
+    
+    return sorted(fused.items(), key=lambda x: x[1], reverse=True)
+
+
+# Uso:
+dense_results = [{"document": "doc1", "score": 0.9}, {"document": "doc2", "score": 0.8}]
+sparse_results = [{"document": "doc1", "score": 0.7}, {"document": "doc3", "score": 0.6}]
+keyword_results = [{"document": "doc2", "score": 1.0}, {"document": "doc1", "score": 0.5}]
+
+# RRF
+rrf_ranked = reciprocal_rank_fusion([dense_results, sparse_results, keyword_results])
+print(f"RRF: {rrf_ranked}")
+
+# CombMNZ
+cmnz_ranked = combmnz_fusion([dense_results, sparse_results, keyword_results])
+print(f"CombMNZ: {cmnz_ranked}")</code></pre>
+
+    <h2>📊 Evaluando Recall: No Sabes Si No Mides</h2>
+    <pre><code class="language-python">def evaluate_retrieval(retriever, queries_with_relevant, k_values=[5, 10, 20, 50]):
+    """
+    Evaluar retrieval con Recall@K y Average Precision (AP).
+    
+    queries_with_relevant: lista de {"query": str, "relevant": [doc_ids]}
+    """
+    metrics = {"recall": {}, "mrr": {}, "ap": {}}
+    
+    for k in k_values:
+        recalls = []
+        mrrs = []
+        aps = []
+        
+        for item in queries_with_relevant:
+            query = item["query"]
+            relevant = set(item["relevant"])
+            
+            # Retrieval
+            results = retriever.search(query, top_k=k)
+            retrieved = [r["document"] for r in results]
+            
+            # Recall@K
+            relevant_retrieved = relevant & set(retrieved)
+            recall = len(relevant_retrieved) / len(relevant)
+            recalls.append(recall)
+            
+            # MRR
+            for rank, doc in enumerate(retrieved, 1):
+                if doc in relevant:
+                    mrrs.append(1 / rank)
+                    break
+            else:
+                mrrs.append(0)
+            
+            # Average Precision
+            num_relevant = 0
+            precision_sum = 0
+            for rank, doc in enumerate(retrieved, 1):
+                if doc in relevant:
+                    num_relevant += 1
+                    precision_sum += num_relevant / rank
+            ap = precision_sum / len(relevant) if relevant else 0
+            aps.append(ap)
+        
+        metrics["recall"][f"@{k}"] = np.mean(recalls)
+        metrics["mrr"][f"@{k}"] = np.mean(mrrs)
+        metrics["ap"][f"@{k}"] = np.mean(aps)
+    
+    return metrics
+
+
+# Ejemplo de evaluación
+test_set = [
+    {
+        "query": "PostgreSQL JOIN optimization",
+        "relevant": ["doc_15", "doc_23", "doc_42", "doc_88"]
+    },
+    {
+        "query": "React component lifecycle",
+        "relevant": ["doc_7", "doc_19"]
+    },
+    {
+        "query": "Docker container networking",
+        "relevant": ["doc_3", "doc_11", "doc_56", "doc_99"]
+    }
+]
+
+metrics = evaluate_retrieval(multi, test_set, k_values=[10, 20, 50])
+
+print(f"Recall@10: {metrics['recall']['@10']:.3f}")  # Target: >0.75
+print(f"Recall@50: {metrics['recall']['@50']:.3f}")  # Target: >0.85
+print(f"MRR@10: {metrics['mrr']['@10']:.3f}")        # Target: >0.60
+print(f"MAP@10: {metrics['ap']['@10']:.3f}")         # Target: >0.50</code></pre>
+
+    <h2>⚠️ Los 3 Errores Comunes y Sus Arreglos</h2>
+    
+    <h3>❌ Error 1: No Usar Query Expansion</h3>
+    <p><strong>El problema:</strong> Una query como "error 500 en API REST" no captura que el usuario busca debugging, causes, y soluciones. Un solo embedding no representa todos los aspectos.</p>
+    <p><strong>La solución:</strong> Expandir la query con reformulaciones LLM que capturen diferentes aspectos.</p>
+    <pre><code class="language-python"># Wrong: query sin expansión
+results = retriever.search("error 500 API")
+
+# Correct: query expansion
+expansions = retriever.expand_query("error 500 API")
+print(f"Querys generadas: {expansions}")
+# ["HTTP 500 internal server error debugging",
+#  "causes of 500 status code in REST API", 
+#  "how to fix 500 error in web services"]</code></pre>
+
+    <h3>❌ Error 2: Confiar en Solo Un Método de Retrieval</h3>
+    <p><strong>El problema:</strong> Embeddings fallan en matching exacto de keywords técnicos. BM25 falla en sinónimos. Solo uno deja huecos.</p>
+    <p><strong>La solución:</strong> Multi-method retrieval combinando dense, sparse, y keyword matching.</p>
+    <pre><code class="language-python"># Wrong: solo embeddings
+dense_results = dense_retriever.search(query)
+
+# Correct: multi-method con fusion
+dense_results = dense_retriever.search(query, top_k=50)
+sparse_results = bm25.search(query, top_k=50)
+keyword_results = keyword_search(query)
+
+fused = reciprocal_rank_fusion([dense_results, sparse_results, keyword_results])</code></pre>
+
+    <h3>❌ Error 3: No Evaluar Recall</h3>
+    <p><strong>El problema:</strong> Sin medir recall, no sabes cuántos documentos relevantes estás perdiendo. Puedes tener precision del 90% pero recall del 20%.</p>
+    <p><strong>La solución:</strong> Crear ground truth con documentos relevantes para cada query y medir Recall@K y MRR.</p>
+    <pre><code class="language-python"># Wrong: solo mirar precision
+results = retriever.search(query, top_k=10)
+print(f"Tiene {len(results)} resultados")
+
+# Correct: medir recall con ground truth
+metrics = evaluate_retrieval(retriever, test_set, k_values=[10, 50])
+print(f"Recall@50: {metrics['recall']['@50']:.3f}")  # Debe ser >0.85</code></pre>
+
+    <h2>📝 Resumen y Cierre Colombiano</h2>
+    <p>Pues ahí lo tiene, parcero. Information Retrieval para LLMs no es solo embedding search. Es todo un framework:</p>
+    <ul>
+      <li><strong>Query expansion</strong> con LLM para capturar múltiples aspectos de la búsqueda</li>
+      <li><strong>Multi-method retrieval</strong> combinando dense, sparse, y keyword</li>
+      <li><strong>Fusion strategies</strong> como RRF, CombMNZ, o DBSF</li>
+      <li><strong>Evaluación obligatoria</strong> con Recall@K y MRR</li>
+    </ul>
+    <p>El 75% de los que implementan RAG no usan query expansion ni multi-method retrieval. Usted ya sabe cómo hacerlo bien. Practique en sus proyectos, arme su test set con ground truth, y no pare hasta que el Recall@50 sea mayor a 0.85.</p>
+    <p>Ahí nos vemos. Estoy pidiendo unas empanadas en el Día 308. ¡Hagámoslo! 🇨🇴</p>
+    <p><em>Eso es todo por hoy. Día 308 completado. #365DaysOfAI</em></p>
   </article>
 
   <script>
