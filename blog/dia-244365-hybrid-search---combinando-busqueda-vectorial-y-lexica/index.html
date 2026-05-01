@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="Hybrid Search - Combinando Busqueda Vectorial y Lexica | #365DaysOfAI por Fabian Rodriguez">
-  <title>Hybrid Search - Combinando Busqueda Vectorial y Lexica | #365DaysOfAI</title>
+  <meta name="description" content="Mixture of Experts - Sparse MoE, Dense vs Sparse, Load Balancing, Routing | #365DaysOfAI por Fabian Rodriguez">
+  <title>Mixture of Experts - Sparse MoE, GPT-4, Mixtral, Load Balancing | #365DaysOfAI</title>
   
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
@@ -110,67 +110,524 @@ nav {
 
   <header class="article-hero">
     <div class="day-badge">Dia 244 / 365 &nbsp;&middot;&nbsp; #365DaysOfAI</div>
-    <h1 class="article-title">Hybrid Search - Combinando Busqueda Vectorial y Lexica</h1>
+    <h1 class="article-title">Mixture of Experts: El Mecanismo que Permite Escalar a Más de 1 Trilón de Parámetros</h1>
     <div class="article-meta">
       <time class="article-date">01 de septiembre de 2026</time>
-      <div class="tags"><span class="tag">hybrid-search</span><span class="tag">bm25</span><span class="tag">vector-search</span><span class="tag">retrieval</span></div>
+      <div class="tags"><span class="tag">mixture-of-experts</span><span class="tag">moe</span><span class="tag">sparse-moe</span><span class="tag">llm-architecture</span><span class="tag">scaling</span></div>
     </div>
   </header>
 
   <article class="article-body">
-    <h1>Hybrid Search - Combinando Busqueda Vectorial y Lexica</h1>
-<p>Hagale pues, parcero. Hoy es el Dia 244 y hablamos de hybrid search: combinando busqueda vectorial y lexica para mejores resultados. Cafe.</p>
+<h1>Mixture of Experts: El Mecanismo que el 75% Ignora y que Permite Escalar a Más de 1 Trilón de Parámetros</h1>
+<p>Hagale pues, parcero. Día 244 y hoy nos metemos con una de las arquitecturas más elegantes y menos entendidas del deep learning moderno: Mixture of Experts o MoE. Si usted usa GPT-4, Mistral, o Mixtral, ya está interactuando con sistemas basados en MoE sin saberlo. Después de este artículo va a entender cómo funcionan por dentro. Vamos.</p>
+
 <hr>
-<h2>Hybrid Search</h2>
-<p>Hybrid search combina busqueda semantica (vectorial) con busqueda lexica (BM25/keyword). Esto aprovecha lo mejor de ambos mundos: significado y coincidencia exacta.</p>
-<h3>Por que hibrido:</h3>
+
+<h2>¿Qué es Mixture of Experts?</h2>
+
+<p>La idea central de MoE es dececentemente simple pero profound en sus implicaciones. En lugar de que toda la información pase por todos los parámetros del modelo (como en un modelo "denso" tradicional), MoE divide la computación en "expertos" especializados y usa un enrutador (router) para decidir qué expertos procesan qué entrada.</p>
+
+<p>Visualmente, imagine un equipo de especialistas en un hospital: en lugar de que cada paciente vea a todos los doctores, un recepcionista inteligente lo deriva al especialista correcto. Cada experto es muy bueno en su área, y el paciente llega más rápido porque no pierde tiempo esperando a doctores que no pueden ayudarlo con su problema específico.</p>
+
+<p>La matemática detrás es elegante. En un transformer denso, cada token pasa por todas las capas:</p>
+
+<p><code>h_l = LayerNorm(Attention(LayerNorm(x_l)) + x_l)  # Todas las cabezas ven todo</code></p>
+
+<p>En un MoE, laFFN (Feed-Forward Network) de cada capa es reemplazada por múltiples expertos:</p>
+
+<p><code>h_l = LayerNorm(Attention(LayerNorm(x_l)) + MoE(x_l))</code></p>
+
+<p>Donde MoE(x) = Σᵢ G(x)ᵢ · Expertᵢ(x) y G(x)ᵢ es el "gate score" que determina cuánto contribuye cada experto.</p>
+
+<h3>La Formulación Matemática</h3>
+
+<p>El layer MoE se define como:</p>
+
+<p><code>y = Σᵢ G(x)ᵢ · Eᵢ(x)</code></p>
+
+<p>Donde:</p>
+
 <ul>
-<li><strong>Vector search</strong>: Captura significado, maneja sinonimos</li>
-<li><strong>Keyword search</strong>: Captura terminos exactos, proper nouns</li>
-<li><strong>Hibrido</strong>: El mejor de ambos mundos</li>
+<li>Eᵢ(x) es el i-ésimo experto (típicamente una FFN)</li>
+<li>G(x)ᵢ es el gate score para el experto i</li>
+<li>Σᵢ G(x)ᵢ = 1 (distribución de probabilidad)</li>
 </ul>
+
+<p>En un MoE *sparse*, solo activamos los top-k expertos más relevantes:</p>
+
+<p><code>G(x) = TopK(Softmax(W_g · x), k)</code></p>
+
+<p>Esto significa que de N expertos, solo activamos K (típicamente 1 o 2) por token. El resto no consume computación para ese token específico.</p>
+
 <hr>
-<h2>Implementacion Hibrida</h2>
-<pre><code class="language-python"># Hybrid search basico
-def hybrid_search(query, collection, alpha=0.5):
-    # 1. Busqueda semantica
-    semantic_results = collection.query(
-        query_embeddings=[embed(query)],
-        n_results=10
+
+<h2>Dense vs Sparse: ¿Por Qué Importa?</h2>
+
+<h3>Dense Models (Tradicionales)</h3>
+
+<p>En un modelo denso, cada capa activa el 100% de los parámetros para cada token. Esto es computacionalmente intensivo pero también "equitativo" — todos los parámetros contribuyen a cada decisión.</p>
+
+<p>La complejidad computacional es O(parameters) por token. Para un modelo de 7B parámetros, cada token requiere procesar 7B parámetros.</p>
+
+<h3>Sparse MoE: El Truco de la Eficiencia</h3>
+
+<p>MoE sparse explota una observación key: no todos los parámetros son igualmente importantes para cada token. Si podemos enrutar inteligentemente, solo necesitamos activar una fracción de los parámetros por token.</p>
+
+<p>Para un modelo MoE con N expertos donde activamos K:</p>
+
+<ul>
+<li>Parámetros totales: N × expert_size (muchos más que denso)</li>
+<li>Parámetros activos por token: K × expert_size (mucho menos que denso)</li>
+<li>FLOPs por token: ~K/N del modelo denso equivalente</li>
+</ul>
+
+<p>Por ejemplo, Mixtral 8x7B tiene 46.7B parámetros totales, pero solo activa 12.9B por token (2 expertos de 8 × experto de ~6.5B). Es como tener un modelo de 46B con el costo computacional de uno de 13B.</p>
+
+<h3>El Tradeoff</h3>
+
+<p>MoE no es gratis. Introduce:</p>
+
+<ul>
+<li><strong>Communication overhead</strong>: En inference distribuida, los expertos pueden estar en diferentes GPUs, requiriendo comunicación de red</li>
+<li><strong>Load balancing complexity</strong>: Algunos expertos pueden ser sobreutilizados mientras otros casi no se usan</li>
+<li><strong>Memory para experts</strong>: Todos los expertos necesitan vivir en memoria, aunque no todos estén activos</li>
+</ul>
+
+<hr>
+
+<h2>Load Balancing: El Problema que Nadie Habla</h2>
+
+<p>Uno de los problemas más sutiles y críticos en MoE es el load balancing. Si el router no está bien diseñado, puede pasar una de dos cosas:</p>
+
+<ul>
+<li><strong>Expert hoarding</strong>: Algunos expertos reciben la mayoría de tokens, causando bottleneck</li>
+<li><strong>Expert starvation</strong>: Algunos expertos casi nunca reciben tokens, desperdiciando parámetros</li>
+</ul>
+
+<p>Esto no es solo un problema de eficiencia — si ciertos expertos nunca se entrenan con ciertos tipos de inputs, no aprenderán a handle esos casos. El modelo queda "ciego" a ciertos patrones.</p>
+
+<h3>La Loss de Load Balancing</h3>
+
+<p>Para解决 este problema, se añade una auxiliary loss durante el entrenamiento:</p>
+
+<p><code>L_balance = α · Σᵢ fᵢ · Pᵢ</code></p>
+
+<p>Donde:</p>
+
+<ul>
+<li>fᵢ = fraction de tokens asignados al experto i</li>
+<li>Pᵢ = probabilidad promedio del gate para el experto i</li>
+<li>α = hyperparameter que controla la fuerza del balanceo (típicamente 0.01-0.05)</li>
+</ul>
+
+<p>La idea es penalizar configuraciones donde hay gran varianza en la utilización de expertos. Un modelo bien balanceado tiene fᵢ y Pᵢ similares para todos los expertos.</p>
+
+<pre><code class="language-python">import torch
+import torch.nn.functional as F
+
+def load_balancing_loss(gate_logits, top_k=2, alpha=0.01):
+    """
+    Calcula load balancing loss para MoE.
+    
+    Esta loss encourage que los expertos sean utilizados 
+    de manera uniforme, evitando que unos se saturen 
+    mientras otros quedan subutilizados.
+    
+    Args:
+        gate_logits: [batch_size, num_experts] - scores del router
+        top_k: cuántos expertos activar por token
+        alpha: peso de la auxiliary loss
+    
+    Returns:
+        La loss combinada (main_loss + alpha * balance_loss)
+    """
+    batch_size, num_experts = gate_logits.shape
+    
+    # 1. Obtener qué expertos se activan (top-k)
+    _, indices = torch.topk(gate_logits, top_k, dim=-1)  # [batch_size, top_k]
+    
+    # 2. Calcular qué porcentaje de tokens va a cada experto
+    # Crear one-hot de los expertos seleccionados
+    gates = F.softmax(gate_logits, dim=-1)
+    
+    # Fraction de tokens por experto
+    # Para cada experto i, cuántos tokens lo seleccionaron?
+    f_expert = torch.zeros(num_experts, device=gate_logits.device)
+    for i in range(num_experts):
+        f_expert[i] = (indices == i).float().mean()
+    
+    # 3. Probabilidad promedio del gate por experto
+    P_expert = gates.mean(dim=0)  # [num_experts]
+    
+    # 4. La auxiliary loss: varianza en utilización
+    # Minimizar sum(f_i * P_i) penaliza correlación entre 
+    # utilización y alta probabilidad del gate
+    balance_loss = num_experts * torch.sum(f_expert * P_expert)
+    
+    return alpha * balance_loss
+
+
+class SparseMoELayer(torch.nn.Module):
+    """
+    Una capa MoE sparse con load balancing integrado.
+    """
+    def __init__(self, d_model, num_experts, top_k=2, capacity_factor=1.0):
+        super().__init__()
+        self.num_experts = num_experts
+        self.top_k = top_k
+        self.capacity_factor = capacity_factor
+        
+        # El router: linear layer que decide qué experto para cada token
+        self.gate = torch.nn.Linear(d_model, num_experts, bias=False)
+        
+        # Los expertos: cada uno es una FFN completa
+        self.experts = torch.nn.ModuleList([
+            torch.nn.Sequential(
+                torch.nn.Linear(d_model, d_model * 4),
+                torch.nn.GELU(),
+                torch.nn.Linear(d_model * 4, d_model)
+            )
+            for _ in range(num_experts)
+        ])
+        
+    def forward(self, x):
+        """
+        x: [batch_size, seq_len, d_model]
+        """
+        batch_size, seq_len, d_model = x.shape
+        x_flat = x.view(-1, d_model)  # [batch_size * seq_len, d_model]
+        
+        # 1. Calcular gate scores
+        gate_logits = self.gate(x_flat)  # [batch_size * seq_len, num_experts]
+        
+        # 2. Seleccionar top-k expertos
+        gate_weights, gate_indices = torch.topk(gate_logits, self.top_k, dim=-1)
+        gate_weights = F.softmax(gate_weights, dim=-1)  # Normalizar pesos
+        
+        # 3. Procesar cada experto (solo los activos)
+        output = torch.zeros_like(x_flat)
+        
+        # Procesamiento secuencial de expertos (en práctica sería paralelo/distribuido)
+        for k in range(self.top_k):
+            expert_idx = gate_indices[:, k]  # Qué experto para cada token
+            weight = gate_weights[:, k]     # Cuánto pesa
+            
+            # Para cada experto activo, acumular su output
+            for e in range(self.num_experts):
+                mask = (expert_idx == e)
+                if mask.any():
+                    # Tokens asignados a este experto
+                    expert_input = x_flat[mask]
+                    expert_output = self.experts[e](expert_input)
+                    # Acumular weighted
+                    output[mask] += weight[mask].unsqueeze(-1) * expert_output
+        
+        # 4. Calcular load balancing loss (solo durante entrenamiento)
+        balance_loss = load_balancing_loss(gate_logits, self.top_k)
+        
+        return output.view(batch_size, seq_len, d_model), balance_loss</code></pre>
+
+<hr>
+
+<h2>Routing Algorithms: Más Allá del Simple Top-K</h2>
+
+<h3>El Problema con Top-K Estándar</h3>
+
+<p>Top-K simple selecciona los K expertos con mayores scores. Pero hay problemas:</p>
+
+<ul>
+<li><strong>僧恨分配</strong>: Tokens similares pueden ir al mismo experto, dejando otros vacíos</li>
+<li><strong>No considera capacity</strong>: Un experto puede recibir más tokens de los que puede procesar</li>
+<li><strong>No hay exploración</strong>: Siempre selecciona los mismos expertos "seguros"</li>
+</ul>
+
+<h3>Hashing Routing (Hash Layer)</h3>
+
+<p>Una alternativa interessante es usar hashing fijo:</p>
+
+<p><code>expert_idx = hash(token) mod num_experts</code></p>
+
+<p>Esto garantiza distribución uniforme, pero pierde la habilidad de routing baseado en contenido. Es determinista y no aprende.</p>
+
+<h3>Sentinela-Based Routing</h3>
+
+<p>Mistral's Sliding Window Attention + MoE usa una variant donde:</p>
+
+<pre><code class="language-python">def expert_routing_with_capacity(x, num_experts, top_k, capacity_factor):
+    """
+    Routing con capacity factor para evitar overload.
+    
+    Cada experto tiene un capacity máximo de tokens que puede procesar.
+    Tokens que no caben son procesados por un experto de fallback.
+    """
+    batch_size, seq_len, d_model = x.shape
+    x_flat = x.view(-1, d_model)
+    
+    # Gate scores
+    gate_logits = gate(x_flat)
+    gate_probs = F.softmax(gate_logits, dim=-1)
+    
+    # Top-k con capacity
+    _, indices = torch.topk(gate_probs, top_k, dim=-1)
+    
+    # Capacity por experto
+    capacity = int(capacity_factor * len(x_flat) / num_experts)
+    
+    # Crear output con residual para tokens overflow
+    output = torch.zeros_like(x_flat)
+    overflow = torch.zeros_like(x_flat)
+    
+    for e in range(num_experts):
+        mask = (indices[:, 0] == e)  # Primary expert
+        count = mask.sum().item()
+        
+        if count == 0:
+            continue
+            
+        if count <= capacity:
+            output[mask] = experts[e](x_flat[mask])
+        else:
+            # Split: algunos van a este experto, otros al overflow
+            primary_mask = mask.clone()
+            primary_mask[torch.randperm(len(mask))[:capacity]] = False
+            output[primary_mask] = experts[e](x_flat[primary_mask])
+            
+            # Overflow va al segundo mejor experto
+            overflow_mask = mask & ~primary_mask
+            secondary_best = indices[overflow_mask, 1]
+            for i, e2 in enumerate(secondary_best.unique()):
+                secondary_mask = overflow_mask & (indices[:, 1] == e2)
+                output[secondary_mask] = experts[e2.item()](x_flat[secondary_mask])
+    
+    return output</code></pre>
+
+<hr>
+
+<h2>Usando MoE con HuggingFace</h2>
+
+<p>HuggingFace tiene soporte nativo para modelos MoE. Veamos cómo usar Mixtral, uno de los modelos MoE más populares:</p>
+
+<pre><code class="language-python">from transformers import AutoModelForCausalLM, AutoTokenizer
+import torch
+
+# Cargar Mixtral 8x7B - ¡46.7B parámetros totales!
+model_name = "mistralai/Mixtral-8x7B-v0.1"
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+model = AutoModelForCausalLM.from_pretrained(
+    model_name,
+    device_map="auto",  # Distribuye automáticamente entre GPUs
+    torch_dtype=torch.float16,
+)
+
+# Inspectionar arquitectura MoE
+print(model.config.architectures)
+# ['MixtralForCausalLM']
+
+# Ver cómo HF representa los expertos
+print(f"Número de expertos: {model.config.num_local_experts}")
+# 8
+
+print(f"Expertos activos por token: {model.config.num_experts_per_tok}")
+# 2
+
+# Generate con el modelo
+prompt = "La inteligencia artificial es"
+inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+
+with torch.no_grad():
+    outputs = model.generate(
+        inputs.input_ids,
+        max_new_tokens=50,
+        do_sample=True,
+        temperature=0.7
     )
+
+response = tokenizer.decode(outputs[0], skip_special_tokens=True)
+print(response)
+
+
+# Inspectionar routing durante generación
+def analyze_routing(model, prompt):
+    """
+    Analiza qué expertos se activan para un prompt dado.
+    Útil para debugging y entender el comportamiento del router.
+    """
+    inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
     
-    # 2. Busqueda lexica (BM25)
-    bm25_scores = bm25.get_scores(query.split())
-    lexical_results = sorted(
-        range(len(bm25_scores)), 
-        key=lambda i: bm25_scores[i], 
-        reverse=True
-    )[:10]
+    # Hook para capturar gate scores
+    gate_activations = []
     
-    # 3. Combinar scores (RRF - Reciprocal Rank Fusion)
-    fused = {}
-    for rank, doc_id in enumerate(semantic_results['ids'][0]):
-        fused[doc_id] = fused.get(doc_id, 0) + alpha / (60 + rank)
-    for rank, doc_id in enumerate(lexical_results):
-        fused[doc_id] = fused.get(doc_id, 0) + (1-alpha) / (60 + rank)
+    def gate_hook(module, input, output):
+        gate_activations.append(output[0].cpu())
     
-    return sorted(fused.items(), key=lambda x: x[1], reverse=True)</code></pre>
+    # Registrar hooks en las capas MoE
+    handles = []
+    for layer in model.model.layers:
+        if hasattr(layer, 'block_sparse_moe'):
+            handles.append(
+                layer.block_sparse_moe.gate.register_forward_hook(gate_hook)
+            )
+    
+    with torch.no_grad():
+        _ = model(inputs.input_ids)
+    
+    # Limpiar hooks
+    for h in handles:
+        h.remove()
+    
+    # Analizar
+    import torch.nn.functional as F
+    gate_scores = torch.stack(gate_activations)
+    gate_probs = F.softmax(gate_scores, dim=-1)
+    
+    # Top эксперт por capa
+    top_experts = gate_probs.argmax(dim=-1)
+    
+    print(f"Shape de gate scores: {gate_scores.shape}")
+    print(f"Capa 0, posición 0 - top эксперт: {top_experts[0, 0, 0].item()}")
+    print(f"Probabilidades: {gate_probs[0, 0, 0]}")
+    
+    # Distribución de utilización
+    for layer_idx in range(top_experts.shape[1]):
+        layer_counts = torch.bincount(top_experts[:, layer_idx], minlength=8)
+        print(f"Capa {layer_idx}: {layer_counts.tolist()}")
+
+analyze_routing(model, "Explícame cómo funciona el mecanismo de atención en transformers.")</code></pre>
+
 <hr>
-<h2>Weaviate Hybrid</h2>
-<pre><code class="language-python"># Weaviate tiene hybrid search built-in
-result = (
-    client.query
-    .get("Document", ["content", "title"])
-    .with_hybrid(query="machine learning", alpha=0.5)
-    .do()
+
+<h2>Comparación de Eficiencia: MoE vs Dense</h2>
+
+<p>¿Cuándo vale la pena MoE sobre dense? La respuesta depende de varios factores:</p>
+
+<pre><code class="language-python">def compare_moe_vs_dense(
+    moe_params,      # Parámetros totales del modelo MoE
+    dense_params,    # Parámetros del modelo denso a comparar
+    num_experts,     # Número de expertos
+    top_k,           # Expertos activos por token
+    seq_len,         # Longitud de secuencia
+    inference_pattern  # 'batch' o 'streaming'
+):
+    """
+    Compara eficiencia de MoE vs Dense.
+    """
+    # MoE stats
+    active_params_per_token = (moe_params / num_experts) * top_k
+    memory_for_experts = moe_params * 2  # 2x por los pesos + gradients en training
+    
+    # Dense stats (para mismo nivel de capacidad)
+    memory_dense = dense_params * 2
+    
+    # Communication overhead (en distributed inference)
+    # Asumiendo que expertos están en diferentes dispositivos
+    if inference_pattern == 'batch':
+        # En batch processing, comunicación es menos problemática
+        comm_overhead = 0.1  # 10% overhead estimado
+    else:  # streaming
+        # En streaming, latencia de comunicación importa más
+        comm_overhead = 0.3  # 30% overhead
+    
+    #throughput
+    dense_throughput = dense_params / active_params_per_token
+    moe_throughput = dense_throughput * num_experts / top_k * (1 - comm_overhead)
+    
+    print(f"""
+=== Comparación MoE vs Dense ===
+    
+MoE ({moe_params/1e9:.1f}B params total, {top_k} de {num_experts} activos):
+  - Params activos por token: {active_params_per_token/1e9:.1f}B
+  - Speedup teórico: {dense_params/active_params_per_token:.1f}x
+  - Memory: {memory_for_experts/1e9:.1f}GB
+  - Communication overhead: {comm_overhead*100:.0f}%
+
+Dense equivalente ({dense_params/1e9:.1f}B params):
+  - Params por token: {dense_params/1e9:.1f}B
+  - Memory: {memory_dense/1e9:.1f}GB
+  - Speedup real con overhead: {moe_throughput/dense_params:.1f}x
+
+Veredicto: {'MoE es más eficiente' if moe_throughput > dense_params else 'Dense puede ser mejor'}
+    """)
+
+# Ejemplo: Mixtral 8x7B vs Llama 2 70B
+compare_moe_vs_dense(
+    moe_params=46.7e9,
+    dense_params=70e9,
+    num_experts=8,
+    top_k=2,
+    seq_len=512,
+    inference_pattern='streaming'
 )</code></pre>
+
 <hr>
-<h2>Errores Comunes</h2>
-<h3>Error 1: No Normalizar Scores</h3>
-<p><strong>El problema</strong>: BM25 y similitud coseno tienen escalas diferentes.</p>
-<p><strong>La solucion</strong>: Normaliza ambos scores antes de fusionar.</p>
+
+<h2>Errores Comunes con MoE</h2>
+
+<h3>Error 1: Asumir que MoE Siempre es Mejor que Dense</h3>
+
+<p><strong>El problema</strong>: Muchos asumen que por ser más grande (en parámetros totales), MoE siempre supera a dense. Esto no es cierto. La eficiencia de MoE depende fuertemente del patrón de inference.</p>
+
+<p>Si su workload es:</p>
+
+<ul>
+<li><strong>Batch processing</strong>: MoE shine porque puede procesar muchos ejemplos en paralelo, ocultando la latencia de comunicación entre expertos</li>
+<li><strong>Single-sequence streaming</strong>: MoE puede ser más lento que dense equivalente porque la comunicación entre dispositivos domina</li>
+<li><strong>Short sequences</strong>: MoE overhead de routing puede superar los beneficios</li>
+</ul>
+
+<p><strong>La solución</strong>: Evalúe en su workload específico antes de comprometerse con MoE. Para streaming de baja latencia, un modelo denso bien optimizado puede ser mejor opción.</p>
+
 <hr>
-<p><em>Eso es todo! Nos vemos en el Dia 245.</em></p>
+
+<h3>Error 2: Ignorar el Load Balancing Loss</h3>
+
+<p><strong>El problema</strong>: Algunos practitioners implementan MoE sin load balancing o con un peso muy bajo, pensando que es solo un "nice to have". El resultado: algunos expertos se convierten en "chokepoints" que reciben la mayoría del tráfico mientras otros se atrofian.</p>
+
+<p>Esto causa:</p>
+
+<ul>
+<li>El modelo desarrolla cuellos de botella en ciertos expertos</li>
+<li>Algunos tipos de inputs quedan mal servidos</li>
+<li>Fine-tuning se vuelve difícil porque expertos subutilizados no han aprendido patrones diversos</li>
+</ul>
+
+<p><strong>La solución</strong>: Siempre incluya load balancing loss durante pre-training con un α apropiado (0.01-0.05). Monitoree la utilización de expertos durante training y ajusta si la distribución se skews.</p>
+
+<hr>
+
+<h3>Error 3: No Considerar Communication Overhead en Distributed MoE</h3>
+
+<p><strong>El problema</strong>: En producción distribuida, los expertos típicamente residen en diferentes GPUs o incluso nodos. Cuando un token necesita procesarse por un experto en otra GPU, hay que enviar la activación a través de la red. Este overhead no existe en modelos densos donde todo está en una GPU.</p>
+
+<p>En redes lentas (10 Gbps), esto puede destruir el speedup teórico:</p>
+
+<ul>
+<li>Teórico: 4x speedup (2 de 8 expertos activos)</li>
+<li>Real con network: ~1.5-2x speedup</li>
+<li>Peor caso (experts en diferentes nodos): puede ser más lento que denso</li>
+</ul>
+
+<p><strong>La solución</strong>: Para inference distribuida:</p>
+
+<ul>
+<li>Use InfiniBand o redes de alta velocidad (100+ Gbps)</li>
+<li>Co-locate expertos frecuentemente usados juntos</li>
+<li>Considere "expert parallelism" combinando tensor parallelism para cada experto</li>
+<li>Para edge cases,备用手头在专家本地处理</li>
+</ul>
+
+<hr>
+
+<h2>Resumen y Cierre</h2>
+
+<p>Hoy cubrimos Mixture of Experts desde los fundamentos hasta los detalles de implementación: la diferencia entre dense y sparse, por qué MoE permite escalar a modelos de trillones de parámetros con costo computacional de modelos mucho más pequeños, cómo el load balancing previene que el sistema se congele en expertos dominantes, y los tradeoffs que vienen con esta arquitectura.</p>
+
+<p>MoE no es una solución mágica — viene con complejidad extra en forma de load balancing, communication overhead, y memoria. Pero para ciertos workloads, especialmente batch inference donde el throughput importa más que la latencia, puede ser la diferencia entre un modelo que cabe en producción y uno que no.</p>
+
+<p>Los modelos más grandes del mundo (GPT-4, Gemini, Mixtral) usan MoE por una razón: les permite ofrecer capacidades que serían prohibitivamente costosas con arquitectura densa. Entender cómo funcionan no es solo ejercicio académico — es prepáse para un mundo donde la mayoría de los modelos de frontier van a usar variantes de esta arquitectura.</p>
+
+<p>Hasta el día 245, parcero.</p>
+
+<p><em>#365DaysOfAI #MixtureOfExperts #MoE #SparseMoE #LLMArchitecture</em></p>
   </article>
 
   <script>
