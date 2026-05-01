@@ -110,78 +110,646 @@ nav {
 
   <header class="article-hero">
     <div class="day-badge">Dia 361 / 365 &nbsp;·&nbsp; #365DaysOfAI</div>
-    <h1 class="article-title">Few-shot Learning - Prompts con Ejemplos</h1>
+    <h1 class="article-title">LLM Production Systems III — Fine-tuning y Evaluación a Escala</h1>
     <div class="article-meta">
       <time class="article-date">27 de diciembre de 2026</time>
-      <div class="tags"><span class="tag">few-shot</span><span class="tag">prompting</span><span class="tag">learning</span><span class="tag">examples</span></div>
+      <div class="tags"><span class="tag">llm</span><span class="tag">production</span><span class="tag">fine-tuning</span><span class="tag">evaluation</span></div>
     </div>
   </header>
 
   <article class="article-body">
-    <h1>Few-shot Learning - Prompts con Ejemplos</h1>
-<p>Hagale pues, parcero. Dia 361 y hoy hablamos de Few-shot Learning: prompts con ejemplos. Dejala.</p>
+<h1>LLM Production Systems III — Fine-tuning y Evaluación a Escala</h1>
+<p>Hagale pues, parcero. Día 361 y hoy llegamos a la tercera parte de nuestra saga de LLM Production Systems. Ya hablamos de arquitectura y escalamiento — hoy nos metemos de lleno en lo que separa los sistemas que simplemente funcionan de los que realmente brillan: cómo hacer fine-tuning cuando es necesario y cómo evaluar modelos a escala sin perder la cabeza.</p>
+<p>Y miren, desde Colombia sabemos que no todo se resuelve con la misma herramienta — aquí en el Valle del Cauca primero probamos la uva y después decidimos si hacemos vino o mermelada. Eso mismo aplica para el fine-tuning: no todo problema requiere ajustar el modelo completo. Vamos a ver cuándo sí, cuándo no, y cómo hacerlo bien cuando sea necesario.</p>
 <hr>
-<h2>🎯 Few-shot Learning</h2>
-<p>Few-shot learning usa ejemplos en el prompt:</p>
+<h2>🎯 ¿Cuándo Hacer Fine-tuning en Producción?</h2>
+<p>La pregunta del millón: ¿cuándo vale la pena hacer fine-tuning vs. seguir con prompting engineering o RAG? La respuesta está en entender la matemática del aprendizaje:</p>
+<p>La función de pérdida de un modelo pre-entrenado vs. uno fine-tuned tiene formas muy diferentes. Un modelo base captura conocimiento general con alta incertidumbre en tareas específicas. Un modelo fine-tuned reduce esa incertidumbre pero introduce un costo de generalización si sobre-entrenamos.</p>
+<p><strong>La fórmula clave del sesgo-varianza en fine-tuning:</strong></p>
+<p>$$L_{total} = L_{base} + \lambda \cdot \Omega(\theta)$$</p>
+<p>Donde $L_{base}$ es la pérdida del modelo pre-entrenado, $\lambda$ es el factor de regularización, y $\Omega(\theta)$ es la complejidad de los pesos entrenados. Un buen fine-tuning minimiza $L_{base}$ sin infljar $\Omega(\theta)$ — eso es exactamente lo que logran técnicas como LoRA y QLoRA.</p>
+<hr>
+<h2>🔧 Pipeline de Fine-tuning para Producción</h2>
+<pre><code class="language-python">"""
+Fine-tuning Pipeline para producción con evaluación continua.
+"""
+
+from dataclasses import dataclass, field
+from typing import List, Dict, Optional, Tuple, Any
+from datetime import datetime
+from enum import Enum
+import json
+import hashlib
+
+
+class FineTuningTrigger(Enum):
+    """Triggers que justifican fine-tuning."""
+    DRIFT_DETECTED = "drift_detected"           # El modelo empieza a degradar
+    NEW_DOMAIN = "new_domain"                   # Nuevo dominio/tarea
+    ACCURACY_DROP = "accuracy_drop"             # Caída en métricas clave
+    USER_FEEDBACK = "user_feedback"             # Feedback negativo recurrente
+    COST_OPTIMIZATION = "cost_optimization"     # Reducir costos de API
+
+
+@dataclass
+class TrainingConfig:
+    """Configuración para un ciclo de fine-tuning."""
+    base_model: str
+    task_type: str
+    dataset_path: str
+    num_epochs: int = 3
+    learning_rate: float = 2e-4
+    batch_size: int = 16
+    max_seq_length: int = 2048
+    lora_r: int = 8
+    lora_alpha: int = 16
+    lora_dropout: float = 0.05
+    warmup_steps: int = 100
+    save_steps: int = 500
+    eval_steps: int = 500
+
+
+@dataclass
+class EvaluationResult:
+    """Resultado de una evaluación."""
+    timestamp: datetime
+    task: str
+    metric: str
+    score: float
+    baseline_score: float
+    improvement_pct: float
+    confidence_interval: Tuple[float, float]
+    sample_size: int
+    passed: bool
+
+
+class FineTuningPipeline:
+    """
+    Pipeline completo de fine-tuning con evaluación.
+    
+    Fases:
+    1. Decision: ¿Realmente necesitamos fine-tuning?
+    2. Data Preparation: Preparar datos de entrenamiento
+    3. Training: Ejecutar fine-tuning con LoRA/QLoRA
+    4. Evaluation: Evaluar en múltiples métricas
+    5. A/B Deployment: Desplegar junto al modelo actual
+    6. Monitoring: Monitorear performance en producción
+    """
+    
+    def __init__(self, model_registry_url: str, evaluation_api: str):
+        self.model_registry = model_registry_url
+        self.evaluation_api = evaluation_api
+        self.training_history: List[Dict] = []
+        self.current_model_id: Optional[str] = None
+        
+    def should_fine_tune(
+        self,
+        trigger: FineTuningTrigger,
+        evidence: Dict[str, Any]
+    ) -> Tuple[bool, str]:
+        """
+        Decide si se debe hacer fine-tuning basado en evidencia.
+        
+        Returns:
+            (should_fine_tune, reasoning)
+        """
+        thresholds = {
+            FineTuningTrigger.DRIFT_DETECTED: 0.15,      # 15% degradación
+            FineTuningTrigger.ACCURACY_DROP: 0.10,       # 10% caída en accuracy
+            FineTuningTrigger.NEW_DOMAIN: 0.20,          # 20% peor que baseline
+            FineTuningTrigger.USER_FEEDBACK: 0.25,       # 25% feedback negativo
+        }
+        
+        threshold = thresholds.get(trigger, 0.20)
+        metric_value = evidence.get("metric_value", 0)
+        baseline = evidence.get("baseline", 1.0)
+        
+        degradation = (baseline - metric_value) / baseline
+        
+        should_tune = degradation >= threshold
+        
+        reasoning = (
+            f"Trigger: {trigger.value}\n"
+            f"Degradation: {degradation:.1%} (threshold: {threshold:.1%})\n"
+            f"Decision: {'APROBAR fine-tuning' if should_tune else 'RECHAZAR fine-tuning'}\n"
+            f"Reason: {'Performance degradado' if should_tune else 'Aún dentro de umbrales'}"
+        )
+        
+        return should_tune, reasoning
+    
+    def prepare_dataset(
+        self,
+        raw_data: List[Dict],
+        task_type: str,
+        augmentation_config: Optional[Dict] = None
+    ) -> Tuple[List[Dict], List[Dict], List[Dict]]:
+        """
+        Prepara dataset para fine-tuning.
+        
+        Returns:
+            (train_set, val_set, test_set)
+        """
+        # Deduplicación
+        seen_hashes = set()
+        deduplicated = []
+        for item in raw_data:
+            h = hashlib.sha256(json.dumps(item, sort_keys=True).encode()).hexdigest()
+            if h not in seen_hashes:
+                seen_hashes.add(h)
+                deduplicated.append(item)
+        
+        # Filtrado de calidad
+        quality_filtered = [
+            item for item in deduplicated
+            if self._check_quality(item, task_type)
+        ]
+        
+        # División 80/10/10
+        n = len(quality_filtered)
+        train_end = int(n * 0.8)
+        val_end = int(n * 0.9)
+        
+        train_set = quality_filtered[:train_end]
+        val_set = quality_filtered[train_end:val_end]
+        test_set = quality_filtered[val_end:]
+        
+        # Data augmentation si está configurado
+        if augmentation_config:
+            train_set = self._augment(train_set, augmentation_config)
+        
+        return train_set, val_set, test_set
+    
+    def _check_quality(self, item: Dict, task_type: str) -> bool:
+        """Verifica calidad de un item de entrenamiento."""
+        if task_type == "classification":
+            return "text" in item and "label" in item and len(item.get("text", "")) > 10
+        elif task_type == "generation":
+            return "prompt" in item and "response" in item
+        return True
+    
+    def _augment(self, data: List[Dict], config: Dict) -> List[Dict]:
+        """Data augmentation simple."""
+        augmented = list(data)
+        
+        if config.get("synonym_replacement"):
+            # Placeholder para augmentación real
+            pass
+        
+        return augmented
+    
+    def train(
+        self,
+        config: TrainingConfig,
+        train_data: List[Dict],
+        val_data: List[Dict]
+    ) -> Dict[str, Any]:
+        """
+        Ejecuta el entrenamiento con LoRA.
+        """
+        training_run = {
+            "run_id": f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+            "config": config.__dict__,
+            "train_size": len(train_data),
+            "val_size": len(val_data),
+            "start_time": datetime.now().isoformat(),
+            "status": "training",
+            "checkpoints": [],
+            "metrics": {}
+        }
+        
+        # Simulación del entrenamiento
+        steps_per_epoch = len(train_data) // config.batch_size
+        total_steps = steps_per_epoch * config.num_epochs
+        
+        for step in range(0, total_steps, config.save_steps):
+            # En producción, aquí调用 HuggingFace Trainer
+            checkpoint = {
+                "step": step,
+                "train_loss": 1.5 * (1 - step/total_steps) + 0.1,
+                "val_loss": 1.6 * (1 - step/total_steps) + 0.15,
+                "learning_rate": config.learning_rate * (1 - step/total_steps),
+                "timestamp": datetime.now().isoformat()
+            }
+            training_run["checkpoints"].append(checkpoint)
+        
+        training_run["status"] = "completed"
+        training_run["end_time"] = datetime.now().isoformat()
+        training_run["metrics"] = {
+            "best_train_loss": min(c["train_loss"] for c in training_run["checkpoints"]),
+            "best_val_loss": min(c["val_loss"] for c in training_run["checkpoints"]),
+            "total_steps": total_steps
+        }
+        
+        self.training_history.append(training_run)
+        return training_run
+    
+    def evaluate(
+        self,
+        model_path: str,
+        test_data: List[Dict],
+        metrics: List[str]
+    ) -> EvaluationResult:
+        """
+        Evalúa el modelo fine-tuned.
+        """
+        # Placeholder: en producción usar lm-eval-harness
+        results = {}
+        for metric in metrics:
+            # Simulación de evaluación
+            if metric == "accuracy":
+                score = 0.87 + hash(model_path[0]) % 100 / 1000
+            elif metric == "f1":
+                score = 0.85 + hash(model_path[0]) % 100 / 1000
+            elif metric == "rouge":
+                score = 0.42 + hash(model_path[0]) % 100 / 1000
+            else:
+                score = 0.80 + hash(model_path[0]) % 100 / 1000
+            results[metric] = score
+        
+        # Calcular mejora vs baseline
+        baseline_scores = {"accuracy": 0.82, "f1": 0.80, "rouge": 0.38}
+        improvement = {}
+        for metric, score in results.items():
+            baseline = baseline_scores.get(metric, 0.80)
+            improvement[metric] = (score - baseline) / baseline * 100
+        
+        return EvaluationResult(
+            timestamp=datetime.now(),
+            task="fine_tuned_model",
+            metric="aggregate",
+            score=results.get("accuracy", results.get("f1", 0.85)),
+            baseline_score=baseline_scores.get("accuracy", 0.82),
+            improvement_pct=improvement.get("accuracy", 5.0),
+            confidence_interval=(0.84, 0.90),
+            sample_size=len(test_data),
+            passed=True
+        )</code></pre>
+<hr>
+<h2>📊 Framework de Evaluación a Escala</h2>
+<p>Evaluar LLMs en producción no es solo correr benchmarks — es un sistema completo que mide performance, detecta regresiones, y te dice cuándo necesitas intervenir. La evaluación debe ser continua, no un evento único.</p>
+<pre><code class="language-python">"""
+Evaluation Framework para LLM Production Systems.
+"""
+
+from dataclasses import dataclass, field
+from typing import List, Dict, Optional, Callable, Any
+from datetime import datetime, timedelta
+from collections import defaultdict
+import statistics
+
+
+@dataclass
+class EvalDataset:
+    """Dataset de evaluación con categorías."""
+    name: str
+    samples: List[Dict[str, Any]]
+    category: str  # e.g., "reasoning", "factual", "coding"
+    difficulty: str  # "easy", "medium", "hard"
+    source: str
+
+
+@dataclass
+class EvalSuite:
+    """Suite de evaluación compuesta de múltiples datasets."""
+    name: str
+    datasets: List[EvalDataset]
+    weights: Dict[str, float]  # category -> weight
+
+
+@dataclass
+class ModelPerformance:
+    """Performance de un modelo en una evaluación."""
+    model_id: str
+    timestamp: datetime
+    dataset_name: str
+    metrics: Dict[str, float]
+    latency_p50_ms: float
+    latency_p95_ms: float
+    cost_per_1k_tokens: float
+    sample_outputs: List[str]  # Para revisión manual
+
+
+class LLMEvaluationFramework:
+    """
+    Framework completo de evaluación para LLMs en producción.
+    
+    Componentes:
+    1. Eval Suites: Conjuntos de pruebas pre-definidas
+    2. Continuous Eval: Evaluación automática periódica
+    3. A/B Testing: Comparación entre modelos
+    4. Drift Detection: Detección de degradación
+    5. Human Review: Calidad asistida por humanos
+    """
+    
+    def __init__(
+        self,
+        eval_api_endpoint: str,
+        human_review_queue: Optional[str] = None
+    ):
+        self.eval_api = eval_api_endpoint
+        self.human_review_queue = human_review_queue
+        
+        # Histórico de evaluaciones
+        self.evaluation_history: List[ModelPerformance] = []
+        
+        # Suites pre-definidas
+        self.suites: Dict[str, EvalSuite] = {}
+        self._register_default_suites()
+    
+    def _register_default_suites(self):
+        """Registra suites de evaluación estándar."""
+        # Suite de producción: lo que importa para tu caso de uso
+        production_suite = EvalSuite(
+            name="production_v1",
+            datasets=[
+                EvalDataset(
+                    name="user_queries_sample",
+                    samples=self._load_production_samples(),
+                    category="production",
+                    difficulty="mixed",
+                    source="live_traffic"
+                ),
+                EvalDataset(
+                    name="known_failures",
+                    samples=self._load_known_failures(),
+                    category="regression",
+                    difficulty="hard",
+                    source="user_feedback"
+                )
+            ],
+            weights={"production": 0.7, "regression": 0.3}
+        )
+        self.suites["production_v1"] = production_suite
+    
+    def _load_production_samples(self) -> List[Dict]:
+        """Carga muestras de tráfico de producción."""
+        # Placeholder: en producción, samplear del traffic real
+        return [
+            {"input": "¿Cuál es el estado de mi orden?", "expected_category": "support"},
+            {"input": "Explícame qué pasó con mi facturación", "expected_category": "billing"},
+        ]
+    
+    def _load_known_failures(self) -> List[Dict]:
+        """Carga casos conocidos que fallaron."""
+        return [
+            {"input": "Caso complejo que sabemos difícil", "expected": "detailed_response"},
+        ]
+    
+    def evaluate_model(
+        self,
+        model_id: str,
+        suite: EvalSuite,
+        sample_size: Optional[int] = None
+    ) -> ModelPerformance:
+        """
+        Ejecuta evaluación completa de un modelo.
+        """
+        all_results = []
+        latencies = []
+        
+        for dataset in suite.datasets:
+            samples = dataset.samples
+            if sample_size and sample_size < len(samples):
+                samples = self._stratified_sample(samples, sample_size)
+            
+            for sample in samples:
+                # En producción, llamar al API del modelo
+                result = self._call_model(model_id, sample["input"])
+                all_results.append({
+                    "dataset": dataset.name,
+                    "category": dataset.category,
+                    "input": sample["input"],
+                    "output": result["output"],
+                    "latency_ms": result["latency_ms"],
+                    "correct": self._check_correctness(
+                        result["output"],
+                        sample.get("expected", ""),
+                        dataset.category
+                    )
+                })
+                latencies.append(result["latency_ms"])
+        
+        # Calcular métricas agregadas
+        metrics = self._compute_metrics(all_results, suite.weights)
+        
+        # Calcular percentiles de latencia
+        latencies_sorted = sorted(latencies)
+        p50 = latencies_sorted[len(latencies_sorted) // 2]
+        p95 = latencies_sorted[int(len(latencies_sorted) * 0.95)]
+        
+        performance = ModelPerformance(
+            model_id=model_id,
+            timestamp=datetime.now(),
+            dataset_name=suite.name,
+            metrics=metrics,
+            latency_p50_ms=p50,
+            latency_p95_ms=p95,
+            cost_per_1k_tokens=0.002,  # Placeholder
+            sample_outputs=[r["output"][:200] for r in all_results[:5]]
+        )
+        
+        self.evaluation_history.append(performance)
+        return performance
+    
+    def _stratified_sample(
+        self,
+        samples: List[Dict],
+        n: int
+    ) -> List[Dict]:
+        """Sampleo estratificado por dificultad."""
+        by_difficulty = defaultdict(list)
+        for s in samples:
+            by_difficulty[s.get("difficulty", "medium")].append(s)
+        
+        result = []
+        for diff, items in by_difficulty.items():
+            proportion = {"easy": 0.2, "medium": 0.5, "hard": 0.3}.get(diff, 0.33)
+            k = max(1, int(n * proportion))
+            result.extend(items[:k])
+        
+        return result[:n]
+    
+    def _call_model(
+        self,
+        model_id: str,
+        prompt: str
+    ) -> Dict[str, Any]:
+        """Llama al modelo (placeholder)."""
+        import random
+        import time
+        time.sleep(0.01)  # Simular latencia
+        return {
+            "output": f"Response for: {prompt[:50]}...",
+            "latency_ms": random.uniform(50, 500)
+        }
+    
+    def _check_correctness(
+        self,
+        output: str,
+        expected: str,
+        category: str
+    ) -> bool:
+        """Verifica correctitud según categoría."""
+        if category == "factual":
+            # Para factual, usar embedding similarity
+            return len(output) > 50
+        elif category == "regression":
+            # Para regresión, verificar que sea detallado
+            return len(output) > 200
+        return True
+    
+    def _compute_metrics(
+        self,
+        results: List[Dict],
+        weights: Dict[str, float]
+    ) -> Dict[str, float]:
+        """Computa métricas ponderadas por categoría."""
+        by_category = defaultdict(list)
+        for r in results:
+            by_category[r["category"]].append(1 if r["correct"] else 0)
+        
+        weighted_accuracy = 0
+        for category, scores in by_category.items():
+            acc = sum(scores) / len(scores)
+            weight = weights.get(category, 1.0)
+            weighted_accuracy += acc * weight
+        
+        weighted_accuracy /= sum(weights.values())
+        
+        return {
+            "weighted_accuracy": weighted_accuracy,
+            "by_category": {
+                cat: sum(scores) / len(scores)
+                for cat, scores in by_category.items()
+            },
+            "total_samples": len(results)
+        }
+    
+    def detect_drift(
+        self,
+        model_id: str,
+        window_hours: int = 24
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Detecta drift en performance comparando con el baseline.
+        """
+        cutoff = datetime.now() - timedelta(hours=window_hours)
+        recent_evals = [
+            e for e in self.evaluation_history
+            if e.model_id == model_id and e.timestamp > cutoff
+        ]
+        
+        if len(recent_evals) < 3:
+            return None
+        
+        # Comparar con evaluación más reciente del baseline
+        baseline = min(
+            [e for e in self.evaluation_history if e.model_id == model_id],
+            key=lambda x: x.timestamp
+        )
+        
+        recent_scores = [e.metrics["weighted_accuracy"] for e in recent_evals]
+        avg_recent = statistics.mean(recent_scores)
+        std_recent = statistics.stdev(recent_scores)
+        
+        drift = {
+            "model_id": model_id,
+            "baseline_accuracy": baseline.metrics["weighted_accuracy"],
+            "current_accuracy": avg_recent,
+            "drift_pct": (avg_recent - baseline.metrics["weighted_accuracy"]) 
+                        / baseline.metrics["weighted_accuracy"] * 100,
+            "std": std_recent,
+            "trend": "stable" if abs(avg_recent - baseline.metrics["weighted_accuracy"]) < 0.05 else "degrading",
+            "recommendation": None
+        }
+        
+        if drift["drift_pct"] < -10:
+            drift["recommendation"] = "TRIGGER_FINE_TUNING"
+        elif drift["drift_pct"] < -5:
+            drift["recommendation"] = "INVESTIGATE_ROOT_CAUSE"
+        
+        return drift
+    
+    def compare_models(
+        self,
+        model_a: str,
+        model_b: str,
+        suite: EvalSuite
+    ) -> Dict[str, Any]:
+        """
+        Compara dos modelos con A/B testing estadístico.
+        """
+        perf_a = self.evaluate_model(model_a, suite)
+        perf_b = self.evaluate_model(model_b, suite)
+        
+        # Test t para significancia estadística
+        # Placeholder: en producción usar scipy.stats.ttest_ind
+        from math import sqrt
+        
+        n_a = perf_a.metrics.get("total_samples", 100)
+        n_b = perf_b.metrics.get("total_samples", 100)
+        
+        # Simulación de test t
+        mean_diff = perf_b.metrics["weighted_accuracy"] - perf_a.metrics["weighted_accuracy"]
+        
+        return {
+            "model_a": model_a,
+            "model_b": model_b,
+            "accuracy_a": perf_a.metrics["weighted_accuracy"],
+            "accuracy_b": perf_b.metrics["weighted_accuracy"],
+            "improvement": mean_diff,
+            "improvement_pct": mean_diff / perf_a.metrics["weighted_accuracy"] * 100,
+            "latency_a_ms": perf_a.latency_p50_ms,
+            "latency_b_ms": perf_b.latency_p50_ms,
+            "cost_a": perf_a.cost_per_1k_tokens,
+            "cost_b": perf_b.cost_per_1k_tokens,
+            "statistically_significant": abs(mean_diff) > 0.02,
+            "recommendation": "USE_B" if mean_diff > 0.01 else "KEEP_A"
+        }</code></pre>
+<hr>
+<h2>⚠️ Los 3 Errores Críticos</h2>
+<h3>Error 1: No Tener Framework de Evaluación</h3>
+<p><strong>El problema</strong>: Sin evaluación sistemática, no sabes si tu modelo está mejorando o empeorando. Estás volando a ciegas.</p>
+<p><strong>La solución</strong>: Implementa un framework de evaluación desde day one. No necesita ser perfecto, pero necesita existir. Empieza con métricas básicas (accuracy, latencia) y expande gradualmente.</p>
+<pre><code class="language-python"># Framework mínimo viable de evaluación
+MINIMAL_EVAL = {
+    "evaluate_on_deployment": True,
+    "compare_with_baseline": True,
+    "track_over_time": ["accuracy", "latency", "cost"],
+    "alert_on_degradation": True,
+    "human_review_sample": 0.01  # 1% para review manual
+}</code></pre>
+<h3>Error 2: No Hacer Fine-tuning Cuando Es Necesario</h3>
+<p><strong>El problema</strong>: Intentar resolver todo con prompting. Llegas a un punto donde el modelo simplemente no puede aprender ciertos patrones solo con instrucciones — necesitas mostrarle ejemplos concretos de tu dominio.</p>
+<p><strong>La solución</strong>: Monitorea métricas específicas. Si ves que el accuracy en tareas de tu dominio es consistentemente X% menor que en tareas generales, es hora de fine-tunar con datos específicos de tu dominio.</p>
+<pre><code class="language-python"># Signals que indican necesidad de fine-tuning
+FINE_TUNING_SIGNALS = {
+    "domain_accuracy_gap": 0.15,      # 15% menos en tu dominio vs general
+    "repeated_failures": 5,           # Mismo tipo de failure 5+ veces
+    "cost_of_prompts": 1000,          # Costo mensual en prompting
+    "latency_requirements": 200,      # ms max que tu app permite
+}</code></pre>
+<h3>Error 3: No Iterar en la Selección del Modelo</h3>
+<p><strong>El problema</strong>: Elegir un modelo una vez y quedarte con él para siempre. El landscape de LLMs cambia rápido — lo que era mejor hace 6 meses puede que no lo sea hoy.</p>
+<p><strong>La solución</strong>: Treat model selection as a continuous process. Evalúa nuevos modelos regularmente, compare performance, y esté dispuesto a switch cuando haya mejora significativa.</p>
+<pre><code class="language-python"># Política de model selection
+MODEL_SELECTION_POLICY = {
+    "reeval_frequency_days": 30,
+    "improvement_threshold": 0.05,     # 5% mejora mínima para switch
+    "keep_baseline": True,            # Siempre mantener un fallback
+    "canary_deployment": True,        # 5% traffic inicial
+}</code></pre>
+<hr>
+<h2>📝 Resumen</h2>
+<p>Hoy aprendimos que el fine-tuning y la evaluación no son eventos únicos sino procesos continuos. La clave está en:</p>
 <ul>
-<li><strong>Examples</strong>: 2-5 ejemplos de la tarea</li>
-<li><strong>Pattern matching</strong>: El modelo aprende del formato</li>
-<li><strong>No training</strong>: No requiere fine-tuning</li>
-<li><strong>Flexible</strong>: Cambia ejemplos rapidamente</li>
+<li><strong>Evaluar antes de actuar</strong>: No haga fine-tuning sin datos que justifiquen el costo</li>
+<li><strong>Medir lo que importa</strong>: Define métricas específicas para tu caso de uso</li>
+<li><strong>Iterar constantemente</strong>: El mejor modelo de hoy puede no serlo mañana</li>
+<li><strong>Automatizar lo repetible</strong>: La evaluación debe correr sin que tengas que acordarte</li>
 </ul>
-<hr>
-<h2>📐 Few-shot Structure</h2>
-<pre><code class="language-python"># Estructura de few-shot prompt
-FEW_SHOT_TEMPLATE = """Realiza la tarea {task_description}
-
-Ejemplos:
-
-Ejemplo 1:
-Input: {example1_input}
-Output: {example1_output}
-
-Ejemplo 2:
-Input: {example2_input}
-Output: {example2_output}
-
-Ejemplo 3:
-Input: {example3_input}
-Output: {example3_output}
-
-Ahora tu:
-Input: {actual_input}
-Output:"""
-
-# Ejemplo: Traduccion
-TRANSLATION_PROMPT = """Traduce al espanol:
-
-Ejemplo 1:
-English: Hello, how are you?
-Espanol: Hola, como estas?
-
-Ejemplo 2:
-English: The weather is nice today.
-Espanol: El clima esta agradable hoy.
-
-Ahora tu:
-English: I love learning new languages.
-Espanol:"""</code></pre>
-<hr>
-<h2>🚀 Best Practices</h2>
-<pre><code class="language-python">FEW_SHOT_TIPS = [
-    "Use 3-5 diverse examples",
-    "Examples should be representative",
-    "Format should match desired output",
-    "Order matters: more similar first",
-    "Include edge cases in examples"
-]</code></pre>
-<hr>
-<h2>⚠️ Errores Comunes</h2>
-<h3>Error 1: Ejemplos Inconsistentes</h3>
-<p><strong>El problema</strong>: Formato variable confunde al modelo.</p>
-<p><strong>La solucion</strong>: Formato uniforme en todos los ejemplos.</p>
-<hr>
-<p><em>Eso es todo! Nos vemos en el Dia 362.</em></p>
+<p>Mañana en el Día 362 cerramos esta saga de LLM Production Systems con el tema que muchos ignoran hasta que les duele: Security, Compliance y Privacy. No se lo pierdan — en Colombia sabemos lo que pasa cuando no cuidamos bien la información.</p>
+<p><em>Nos vemos en el Día 362.</em></p>
   </article>
 
   <script>
