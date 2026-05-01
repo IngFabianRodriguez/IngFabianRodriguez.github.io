@@ -118,592 +118,289 @@ nav {
   </header>
 
   <article class="article-body">
-<h2>🇨🇴 El Mesero que No Sabe Cocinar</h2>
+<h2>Cuando los Pixels Salvan Vidas</h2>
 
-<p>Piénselo así: usted llega a un restaurante en Medellín, el mesero lo saluda con una sonrisa, usted pide una bandeja paisa, y el mesero le responde "muy buena elección, se la voy a preparar". Pero no sabe dónde está la cocina. No tiene receta. No puede usar los cubiertos. Literalmente solo puede leer el menú que alguien le escribió hace seis meses. Así trabajan el 75% de las integraciones de LLMs con herramientas externas: el modelo dice que va a hacer algo, pero no tiene forma real de ejecutar acciones. En este artículo vamos a ver cómo construir tool integration bien — la forma en que el 25% restante lo hace y que marca la diferencia entre un LLM útil y uno que solo conversa bonito.</p>
+<p>Piénselo así: un radiólogo en un hospital de Medellín ve entre 50 y 100 imágenes al día. Cada imagen requiere buscar patrones sutiles, anomalías que pueden ser la diferencia entre un diagnóstico temprano y uno tardío. El ojo humano tiene limitaciones: fatiga, variabilidad entre observadores, y la realidad de que algunas patologías son extraordinariamente difíciles de detectar a simple vista. Ahora agregue inteligencia artificial que puede analizar cada imagen en segundos, aprender de millones de casos, y nunca se cansa. Así es como la AI está transformando el campo del medical imaging — y no es el futuro, es el presente.</p>
 
-<h2>Qué Es Tool Integration y Por Qué Existe</h2>
+<h2>Modalidades de Imagen Médica</h2>
 
-<p>Un LLM por sí solo solo puede generar texto. Puede describir qué debería pasar, puede explicar un paso a paso, puede hasta dar instrucciones detalladas — pero no puede حقيقة hacer cosas en el mundo real. No puede buscar en Google, no puede ejecutar código, no puede consultar su base de datos, no puede enviar un email. Tool integration es el puente que conecta la capacidad de razonamiento de un LLM con la capacidad de acción de sistemas externos.</p>
-
-<p>La idea central es elegante: describir las capacidades de una herramienta (su schema), dejar que el LLM decida cuándo usarla y con qué parámetros, y luego ejecutar la herramienta y devolver el resultado. Es lo que OpenAI llama function calling y lo que Anthropic llama tool use. El LLM no ejecuta la herramienta directamente — genera una intención de ejecución que su código traduce y ejecuta.</p>
-
-<h2>Tool Schemas: El Contrato Entre LLM y Herramientas</h2>
-
-<p>El tool schema es la descripción que el LLM usa para entender qué puede hacer y cómo invocarlo. Un schema bien diseñado es la diferencia entre un LLM que 调用 la herramienta correcta con los parámetros correctos y uno que falla estrepitosamente.</p>
-
-<p>Estructura de un tool schema en el formato OpenAI:</p>
-
-<pre><code class="language-json">{
-  "type": "function",
-  "function": {
-    "name": "get_weather",
-    "description": "Obtiene el clima actual para una ciudad específica",
-    "parameters": {
-      "type": "object",
-      "properties": {
-        "city": {
-          "type": "string",
-          "description": "Nombre de la ciudad (ej: 'Bogotá', 'Medellín')"
-        },
-        "unit": {
-          "type": "string",
-          "enum": ["celsius", "fahrenheit"],
-          "description": "Unidad de temperatura",
-          "default": "celsius"
-        }
-      },
-      "required": ["city"]
-    }
-  }
-}</code></pre>
-
-<p>La clave de un buen schema:</p>
+<p>La imagen médica no es solo radiografías. Existen múltiples modalidades, cada una con características físicas y clínicas distintas:</p>
 
 <ul>
-<li><strong>description</strong> debe explicar el propósito y contexto de uso, no solo qué hace la función</li>
-<li><strong>parameters</strong> deben tener tipos claros y descripciones que el LLM pueda interpretar</li>
-<li><strong>required</strong> debe incluir solo los parámetros sin los cuales la herramienta no tiene sentido</li>
-<li><strong>defaults</strong> deben ser inteligentes — el LLM debe poder inferirlos correctamente</li>
+<li><strong>Radiografía (X-Ray)</strong>: Proyección 2D, rápida, accesible. Útil para huesos, tórax, dental.</li>
+<li><strong>Tomografía Computarizada (CT)</strong>: Cortes transversales 3D usando rayos X. Excelente para emergencias, stroke, trauma.</li>
+<li><strong>Resonancia Magnética (MRI)</strong>: Usa campos magnéticos y ondas de radio. Sin radiación ionizante. Superior para tejido blando, cerebro, articulaciones.</li>
+<li><strong>Ultrasonido</strong>: Ondas de sonido de alta frecuencia. En tiempo real, sin radiación. Estándar en obstetricia.</li>
+<li><strong>PET Scan</strong>: Muestra actividad metabólica usando trazadores radiactivos. Crucial para oncología.</li>
+<li><strong>Mamografía</strong>: Radiografía especializada de mama. El screening más efectivo para cáncer de mama.</li>
 </ul>
 
-<h2>La Matemática del Tool Selection</h2>
+<h2>Arquitecturas Neurales para Imagen Médica</h2>
 
-<p>Cuando un LLM con tool support recibe un mensaje, técnicamente está haciendo un proceso de decisión: dada la conversación actual y los tool schemas disponibles, ¿debo llamar una herramienta, múltiples herramientas, o simplemente responder con texto?</p>
+<h3>U-Net: La Arquitectura Estándar</h3>
 
-<p>Para modelos que usan function calling estructurado, el proceso internally es:</p>
+<p>Cuando hablamos de segmentación de imágenes médicas, <strong>U-Net</strong> es la arquitectura dominante. Diseñada originalmente para imágenes de microscopía celular, su estructura simétrica encoder-decoder con skip connections permite localización precisa — exactamente lo que se necesita para delineado de tumores y órganos.</p>
 
-<p>Dada una secuencia de tokens $x_1, x_2, ..., x_t$ y $K$ herramientas disponibles, el modelo predice:</p>
+<pre><code class="language-python">import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
-<p>$$a^* = \arg\max_{a \in \{None, tool_1, ..., tool_K\}} P(a | x_1, ..., x_t, schemas)$$</p>
-
-<p>donde $a$ es la acción seleccionada. Si $a^* = tool_j$, el modelo simultáneamente genera los parámetros $\theta_j$ para esa herramienta:</p>
-
-<p>$$P(tool_j, \theta_j | x_1, ..., x_t) = P(tool_j | context) \cdot P(\theta_j | tool_j, context)$$</p>
-
-<p>Esto significa que la calidad del schema afecta directamente la distribución de probabilidad sobre tool selection y parameter generation. Un schema ambiguo genera incertidumbre en ambas decisiones.</p>
-
-<h2>Código: Tool Integration Framework Completo</h2>
-
-<pre><code class="language-python">"""
-LLM Tool Integration Framework
-Framework completo para integrar LLMs con herramientas externas.
-"""
-
-from dataclasses import dataclass, field
-from typing import Any, Callable, Optional, list
-from enum import Enum
-from datetime import datetime
-import json
-import re
-
-
-class ToolError(Exception):
-    """Error base para excepciones de herramientas."""
-    def __init__(self, tool_name: str, message: str, recoverable: bool = True):
-        self.tool_name = tool_name
-        self.message = message
-        self.recoverable = recoverable
-        super().__init__(f"[{tool_name}] {message}")
-
-
-class ValidationError(ToolError):
-    """Error de validación de parámetros."""
-    def __init__(self, tool_name: str, message: str):
-        super().__init__(tool_name, message, recoverable=True)
-
-
-class ExecutionError(ToolError):
-    """Error durante ejecución de la herramienta."""
-    def __init__(self, tool_name: str, message: str):
-        super().__init__(tool_name, message, recoverable=True)
-
-
-class AuthenticationError(ToolError):
-    """Error de autenticación con servicio externo."""
-    def __init__(self, tool_name: str, message: str):
-        super().__init__(tool_name, message, recoverable=False)
-
-
-@dataclass
-class ToolDefinition:
+class UNet(nn.Module):
     """
-    Definición formal de una herramienta.
-    Esta definición es el 'schema' que se le pasa al LLM.
+    U-Net para segmentación de imágenes médicas.
+    Arquitectura encoder-decoder con skip connections.
     """
-    name: str
-    description: str
-    parameters: dict  # JSON Schema de los parámetros
-    handler: Callable  # Función que ejecuta la herramienta
-    required_permissions: list[str] = field(default_factory=list)
-    rate_limit: Optional[int] = None  # Llamadas por minuto
-    retryable: bool = True
-    timeout: int = 30  # Segundos antes de timeout
-
-    def to_openai_schema(self) -> dict:
-        """Convierte a formato de schema para OpenAI function calling."""
-        return {
-            "type": "function",
-            "function": {
-                "name": self.name,
-                "description": self.description,
-                "parameters": self.parameters
-            }
-        }
-
-    def to_anthropic_schema(self) -> dict:
-        """Convierte a formato Anthropic tool use."""
-        return {
-            "name": self.name,
-            "description": self.description,
-            "input_schema": self.parameters
-        }
-
-
-@dataclass
-class ToolResult:
-    """Resultado de una llamada a herramienta."""
-    tool_name: str
-    success: bool
-    result: Any = None
-    error: Optional[str] = None
-    execution_time_ms: float = 0.0
-    timestamp: datetime = field(default_factory=datetime.now)
-    retry_count: int = 0
-
-    def to_llm_message(self) -> str:
-        """
-        Formatea el resultado para enviarlo de vuelta al LLM.
-        El formato debe ser legible y no ambiguo.
-        """
-        if self.success:
-            result_str = json.dumps(self.result, ensure_ascii=False, indent=2)
-            # Truncar si es muy largo para evitar消费的 tokens
-            if len(result_str) > 2000:
-                result_str = result_str[:2000] + f"\n... (truncado, {len(result_str) - 2000} chars omitidos)"
-            return f"[Tool: {self.tool_name}] Resultado:\n{result_str}"
-        else:
-            return f"[Tool: {self.tool_name}] Error: {self.error}"
-
-
-class ToolRegistry:
-    """
-    Registro central de herramientas disponibles.
-    Mantiene el mapping entre nombres de herramientas y sus definiciones.
-    """
-
-    def __init__(self):
-        self._tools: dict[str, ToolDefinition] = {}
-        self._call_history: list[ToolResult] = []
-
-    def register(self, tool: ToolDefinition):
-        """Registra una nueva herramienta."""
-        if tool.name in self._tools:
-            raise ValueError(f"Tool '{tool.name}' ya está registrada")
-        self._tools[tool.name] = tool
-
-    def get(self, name: str) -> Optional[ToolDefinition]:
-        """Obtiene una herramienta por nombre."""
-        return self._tools.get(name)
-
-    def list_tools(self) -> list[ToolDefinition]:
-        """Lista todas las herramientas registradas."""
-        return list(self._tools.values())
-
-    def get_schemas(self, provider: str = "openai") -> list[dict]:
-        """Retorna los schemas para todos los providers soportados."""
-        converters = {
-            "openai": lambda t: t.to_openai_schema(),
-            "anthropic": lambda t: t.to_anthropic_schema(),
-        }
-        converter = converters.get(provider, converters["openai"])
-        return [converter(t) for t in self._tools.values()]
-
-    def record_call(self, result: ToolResult):
-        """Registra una llamada para logging y analytics."""
-        self._call_history.append(result)
-
-
-class ToolExecutor:
-    """
-    Ejecutor de herramientas con validación, manejo de errores y retries.
-    """
-
-    def __init__(self, registry: ToolRegistry):
-        self.registry = registry
-
-    def validate_params(
-        self,
-        tool_def: ToolDefinition,
-        params: dict
-    ) -> tuple[bool, Optional[str]]:
-        """
-        Valida los parámetros contra el schema de la herramienta.
-        Retorna (es_válido, mensaje_error).
-        """
-        schema = tool_def.parameters
-        required = schema.get("required", [])
-        properties = schema.get("properties", {})
-
-        # 1. Verificar requeridos
-        for req in required:
-            if req not in params:
-                return False, f"Parámetro requerido faltante: '{req}'"
-
-        # 2. Verificar tipos
-        for param_name, param_value in params.items():
-            if param_name not in properties:
-                return False, f"Parámetro desconocido: '{param_name}'"
-
-            expected_type = properties[param_name].get("type")
-            if not self._validate_type(param_value, expected_type):
-                return False, (
-                    f"Tipo incorrecto para '{param_name}': "
-                    f"esperado {expected_type}, recibido {type(param_value).__name__}"
-                )
-
-            # 3. Validar enum si existe
-            if "enum" in properties[param_name]:
-                if param_value not in properties[param_name]["enum"]:
-                    return False, (
-                        f"Valor inválido para '{param_name}': "
-                        f"debe ser uno de {properties[param_name]['enum']}"
-                    )
-
-        return True, None
-
-    def _validate_type(self, value: Any, expected: str) -> bool:
-        """Valida que un valor corresponda a un tipo JSON Schema."""
-        type_map = {
-            "string": str,
-            "number": (int, float),
-            "integer": int,
-            "boolean": bool,
-            "array": list,
-            "object": dict,
-        }
-        if expected not in type_map:
-            return True  # Tipo desconocido, no validar
-        return isinstance(value, type_map[expected])
-
-    def execute(
-        self,
-        tool_name: str,
-        params: dict,
-        retry_count: int = 0,
-        max_retries: int = 3
-    ) -> ToolResult:
-        """
-        Ejecuta una herramienta con manejo de errores y retries.
-        """
-        import time
-
-        tool_def = self.registry.get(tool_name)
-        if not tool_def:
-            return ToolResult(
-                tool_name=tool_name,
-                success=False,
-                error=f"Herramienta '{tool_name}' no encontrada"
+    
+    def __init__(self, in_channels=1, out_channels=1, features=[64, 128, 256, 512]):
+        super().__init__()
+        self.downs = nn.ModuleList()
+        self.ups = nn.ModuleList()
+        self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
+        
+        # Encoder (path de contracción)
+        for feature in features:
+            self.downs.append(DoubleConv(in_channels, feature))
+            in_channels = feature
+            
+        # Bottleneck
+        self.bottleneck = DoubleConv(features[-1], features[-1] * 2)
+        
+        # Decoder (path de expansión)
+        for feature in reversed(features):
+            self.ups.append(
+                nn.ConvTranspose2d(feature * 2, feature, kernel_size=2, stride=2)
             )
-
-        start = time.time()
-
-        # Validar parámetros antes de ejecutar
-        is_valid, error_msg = self.validate_params(tool_def, params)
-        if not is_valid:
-            return ToolResult(
-                tool_name=tool_name,
-                success=False,
-                error=f"Validación fallida: {error_msg}"
-            )
-
-        # Ejecutar con manejo de errores
-        try:
-            result = tool_def.handler(**params)
-            execution_time = (time.time() - start) * 1000
-            tool_result = ToolResult(
-                tool_name=tool_name,
-                success=True,
-                result=result,
-                execution_time_ms=execution_time
-            )
-            self.registry.record_call(tool_result)
-            return tool_result
-
-        except ValidationError as e:
-            # Errores de validación no se reintentan
-            return ToolResult(
-                tool_name=tool_name,
-                success=False,
-                error=str(e)
-            )
-
-        except AuthenticationError as e:
-            # Errores de auth no son recuperables
-            return ToolResult(
-                tool_name=tool_name,
-                success=False,
-                error=f"Error de autenticación (no recuperable): {e.message}"
-            )
-
-        except Exception as e:
-            # Otros errores: retry si está habilitado
-            if retry_count < max_retries and tool_def.retryable:
-                time.sleep(2 ** retry_count)  # Exponential backoff
-                return self.execute(
-                    tool_name, params,
-                    retry_count=retry_count + 1,
-                    max_retries=max_retries
-                )
-
-            return ToolResult(
-                tool_name=tool_name,
-                success=False,
-                error=f"Error en ejecución: {type(e).__name__}: {str(e)}",
-                retry_count=retry_count
-            )
+            self.ups.append(DoubleConv(feature * 2, feature))
+            
+        # Output
+        self.final_conv = nn.Conv2d(features[0], out_channels, kernel_size=1)
+        
+    def forward(self, x):
+        skip_connections = []
+        
+        # Encoder
+        for down in self.downs:
+            x = down(x)
+            skip_connections.append(x)
+            x = self.pool(x)
+            
+        x = self.bottleneck(x)
+        skip_connections = skip_connections[::-1]
+        
+        # Decoder con skip connections
+        for idx in range(0, len(self.ups), 2):
+            x = self.ups[idx](x)
+            skip = skip_connections[idx // 2]
+            x = torch.cat([skip, x], dim=1)
+            x = self.ups[idx + 1](x)
+            
+        return self.final_conv(x)
 
 
-# ============================================================
-# Ejemplo: Definición de herramientas reales
-# ============================================================
-
-def search_google(query: str, num_results: int = 10) -> list[dict]:
-    """
-    Busca en Google y retorna resultados.
-    En producción usar Google Custom Search API o SerpAPI.
-    """
-    # Simulación
-    return [
-        {"title": f"Resultado para '{query}'", "url": f"https://example.com/{i}", "snippet": "..."}
-        for i in range(num_results)
-    ]
-
-
-def send_email(to: str, subject: str, body: str) -> dict:
-    """
-    Envía un email vía SMTP o API de email.
-    Requiere credenciales configuradas en el ambiente.
-    """
-    # En producción: usar SendGrid, AWS SES, o smtplib
-    print(f"Enviando email a {to}: {subject}")
-    return {"status": "sent", "message_id": "abc123"}
-
-
-def execute_code(code: str, language: str = "python") -> dict:
-    """
-    Ejecuta código en un sandbox.
-    En producción usar servicios como Piston o CodeExec.
-    """
-    if language != "python":
-        return {"error": f"Lenguaje '{language}' no soportado"}
-    # Simulación de ejecución
-    return {"output": "Hello from executed code!", "exit_code": 0}
-
-
-# ============================================================
-# Construcción del registry y demo
-# ============================================================
-
-def build_tool_registry() -> ToolRegistry:
-    """Construye un registry con herramientas de ejemplo."""
-    registry = ToolRegistry()
-
-    # Herramienta de búsqueda
-    registry.register(ToolDefinition(
-        name="google_search",
-        description=(
-            "Busca información en Google. Úsala cuando necesites información "
-            "actual, hechos, noticias, o datos que no estés seguro. "
-            "No la uses para preguntas de opinión o matemáticas."
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "Consulta de búsqueda (usa términos precisos)"
-                },
-                "num_results": {
-                    "type": "integer",
-                    "description": "Número de resultados a retornar (default: 10)"
-                }
-            },
-            "required": ["query"]
-        },
-        handler=search_google,
-        timeout=15
-    ))
-
-    # Herramienta de email
-    registry.register(ToolDefinition(
-        name="send_email",
-        description=(
-            "Envía un email a un destinatario específico. "
-            "Usa esta herramienta cuando el usuario quiera contactar a alguien "
-            "por email. Requiere dirección, asunto y cuerpo del mensaje."
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "to": {"type": "string", "description": "Dirección de email del destinatario"},
-                "subject": {"type": "string", "description": "Asunto del email"},
-                "body": {"type": "string", "description": "Cuerpo del mensaje (puede ser HTML)"}
-            },
-            "required": ["to", "subject", "body"]
-        },
-        handler=send_email,
-        required_permissions=["email:send"]
-    ))
-
-    # Herramienta de ejecución de código
-    registry.register(ToolDefinition(
-        name="execute_code",
-        description=(
-            "Ejecuta código Python en un sandbox. "
-            "Úsala para cálculos matemáticos, procesamiento de datos, "
-            "o para verificar código que quieras validar. "
-            "Retorna la salida estándar y el código de salida."
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "code": {"type": "string", "description": "Código Python a ejecutar"},
-                "language": {
-                    "type": "string",
-                    "enum": ["python", "javascript"],
-                    "description": "Lenguaje de programación",
-                    "default": "python"
-                }
-            },
-            "required": ["code"]
-        },
-        handler=execute_code,
-        timeout=30,
-        retryable=False  # La ejecución de código no se reintenta
-    ))
-
-    return registry
-
-
-# --- Demo de uso ---
-if __name__ == "__main__":
-    # Construir registry
-    registry = build_tool_registry()
-    executor = ToolExecutor(registry)
-
-    # Listar herramientas disponibles
-    print("=== Herramientas disponibles ===")
-    for tool in registry.list_tools():
-        print(f"- {tool.name}: {tool.description[:60]}...")
-
-    # Obtener schemas para OpenAI
-    print("\n=== OpenAI Schemas ===")
-    schemas = registry.get_schemas("openai")
-    print(json.dumps(schemas[0], indent=2, ensure_ascii=False)[:500])
-
-    # Ejecutar una llamada
-    print("\n=== Ejecutar google_search ===")
-    result = executor.execute("google_search", {"query": "test", "num_results": 5})
-    print(result.to_llm_message()[:200])
-
-    # Probar manejo de errores
-    print("\n=== Validación de parámetros ===")
-    bad_result = executor.execute("send_email", {"to": "invalid"})  # Falta subject y body
-    print(bad_result.to_llm_message())
+class DoubleConv(nn.Module):
+    """Dos convoluciones consecutivas con BatchNorm y ReLU."""
+    def __init__(self, in_channels, out_channels):
+        super().__init__()
+        self.conv = nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True)
+        )
+        
+    def forward(self, x):
+        return self.conv(x)
 </code></pre>
 
-<h2>Los 3 Errores Comunes (y Sus Soluciones)</h2>
+<h3>Transfer Learning desde ImageNet</h3>
 
-<h3>Error 1: Tool Schemas Mal Definidos</h3>
+<p>Un desafío central en medical imaging: los datasets son pequeños comparados con ImageNet. Un hospital puede tener 10,000 TC scans; ImageNet tiene 14 millones de imágenes. <strong>Transfer learning</strong> resuelve esto usando representaciones aprendidas de dominios masivos:</p>
 
-<p>El error más frecuente y más costoso. Descriptions vagos, parámetros sin tipos claros, sin información de qué valores son válidos. El resultado: el LLM inventa parámetros, llama la herramienta con el tipo errado, o simplemente no la llama cuando debería.</p>
+<pre><code class="language-python">import torchvision.models as models
 
-<p><strong>Solución</strong>: Tratar los schemas como contracts de API. Cada parámetro necesita:</p>
+class MedicalImageClassifier:
+    """
+    Clasificador usando transfer learning desde ResNet-50.
+    """
+    
+    def __init__(self, num_classes=2, freeze_backbone=False):
+        # Cargar ResNet-50 pre-entrenada en ImageNet
+        self.backbone = models.resnet50(weights='IMAGENET1K_V2')
+        
+        if freeze_backbone:
+            for param in self.backbone.parameters():
+                param.requires_grad = False
+                
+        # Reemplazar la capa final para nuestro problema
+        in_features = self.backbone.fc.in_features
+        self.backbone.fc = nn.Sequential(
+            nn.Dropout(0.3),
+            nn.Linear(in_features, 256),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(256, num_classes)
+        )
+        
+    def fine_tune(self, train_loader, val_loader, epochs=10, lr=1e-4):
+        """
+        Fine-tuning con diferentes learning rates para backbone vs head.
+        """
+        optimizer = torch.optim.AdamW([
+            {'params': self.backbone.parameters(), 'lr': lr * 0.1},
+            {'params': self.backbone.fc.parameters(), 'lr': lr}
+        ], weight_decay=0.01)
+        
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=epochs
+        )
+        
+        for epoch in range(epochs):
+            train_loss, train_acc = self._train_epoch(train_loader, optimizer)
+            val_loss, val_acc = self._validate(val_loader)
+            scheduler.step()
+            print(f"Epoch {epoch}: train_loss={train_loss:.4f}, val_acc={val_acc:.4f}")
+            
+    def _train_epoch(self, loader, optimizer):
+        self.backbone.train()
+        total_loss = 0
+        correct = 0
+        total = 0
+        
+        for images, labels in loader:
+            images = images.cuda()
+            labels = labels.cuda()
+            
+            optimizer.zero_grad()
+            outputs = self.backbone(images)
+            loss = F.cross_entropy(outputs, labels)
+            loss.backward()
+            optimizer.step()
+            
+            total_loss += loss.item()
+            _, predicted = outputs.max(1)
+            total += labels.size(0)
+            correct += predicted.eq(labels).sum().item()
+            
+        return total_loss / len(loader), correct / total
+</code></pre>
+
+<h2>Métricas Clínicas y el Problema del Desbalance</h2>
+
+<p>En medical imaging, accuracy no es suficiente. Si usted está detectando cáncer con 99% de accuracy pero ese 1% incluye tumores malignos que no detectó, el modelo es peligroso. Las métricas relevantes son:</p>
 
 <ul>
-<li>Tipo explícito (<code>string</code>, <code>number</code>, <code>boolean</code>, <code>array</code>, <code>object</code>)</li>
-<li>Descripción que explique el contenido esperado, no solo el nombre</li>
-<li>Valores válidos documentados (enums, ranges, patterns)</li>
-<li>Cuál es el default y cuándo inferirlo</li>
+<li><strong>Sensibilidad (Recall)</strong>: De todos los casos positivos, ¿cuántos detecté? Crítico para screening.</li>
+<li><strong>Especificidad</strong>: De todos los casos negativos, ¿cuántos identifiqué correctamente?</li>
+<li><strong>AUC-ROC</strong>: Área bajo la curva que mide discriminacion agregada.</li>
+<li><strong>Dice Score</strong>: Coeficiente de similitud para segmentación. 1.0 = perfección.</li>
 </ul>
 
-<pre><code class="language-json">// Mal: descripción vaga
-"city": { "type": "string", "description": "La ciudad" }
+<p>$$\text{Dice}(A, B) = \frac{2 |A \cap B|}{|A| + |B|}$$</p>
 
-// Bien: descripción con contexto y ejemplos
-"city": {
-  "type": "string",
-  "description": "Ciudad para la consulta de clima (ej: 'Bogotá', 'Medellín', 'Cali'). No usar abreviaturas."
-}
+<p>donde $A$ es la segmentación predicha y $B$ es la ground truth.</p>
+
+<pre><code class="language-python">import torch
+import numpy as np
+
+def dice_score(pred, target, threshold=0.5, epsilon=1e-6):
+    """
+    Calcula Dice Score para segmentación binaria.
+    
+    Args:
+        pred: logits o probabilidades (H, W) o (B, H, W)
+        target: mascara binaria (H, W) o (B, H, W)
+        threshold: umbral para binarizar pred
+    """
+    pred = torch.sigmoid(pred) if pred.min() < 0 else pred
+    pred = (pred > threshold).float()
+    target = target.float()
+    
+    intersection = (pred * target).sum()
+    union = pred.sum() + target.sum()
+    
+    dice = (2. * intersection + epsilon) / (union + epsilon)
+    return dice.item()
+
+
+def sensitivity_specificity(pred, target, threshold=0.5):
+    """
+    Calcula sensibilidad y especificidad.
+    """
+    pred = (pred > threshold).float()
+    
+    # True Positives, False Negatives, True Negatives, False Positives
+    tp = ((pred == 1) & (target == 1)).sum().item()
+    fn = ((pred == 0) & (target == 1)).sum().item()
+    tn = ((pred == 0) & (target == 0)).sum().item()
+    fp = ((pred == 1) & (target == 0)).sum().item()
+    
+    sensitivity = tp / (tp + fn) if (tp + fn) > 0 else 0
+    specificity = tn / (tn + fp) if (tn + fp) > 0 else 0
+    
+    return sensitivity, specificity
+
+
+def compute_auc_roc(predictions, targets):
+    """
+    Calcula AUC-ROC usando sklearn.
+    """
+    from sklearn.metrics import roc_auc_score
+    return roc_auc_score(targets, predictions)
 </code></pre>
 
-<h3>Error 2: No Manejar Errores de Herramientas</h3>
+<h2>Aplicaciones Clínicas por Especialidad</h2>
 
-<p>Asumir que las herramientas siempre funcionan. Pero las APIs fallan, los servicios se caen, los permisos expiran, los rate limits se agotan. Si su código no maneja estos casos, el LLM recibe un error críptico y no sabe qué hacer.</p>
+<h3>Radiología Torácica</h3>
 
-<p><strong>Solución</strong>: Implementar manejo de errores estructurado con categorías claras:</p>
+<p>Los modelos para análisis de chest X-rays son de los más maduros. Pueden detectar:</p>
 
 <ul>
-<li><strong>ValidationError</strong>: parámetros inválidos — no reintentar, retornar error claro</li>
-<li><strong>AuthenticationError</strong>: credenciales inválidas — no reintentar, el LLM debe notificar al usuario</li>
-<li><strong>RateLimitError</strong>: límite de llamadas — esperar y reintentar con backoff</li>
-<li><strong>ExecutionError</strong>: errores inesperados — reintentar con exponential backoff</li>
+<li><strong>COVID-19</strong>: Patrones de neumonía viral con sensibilidad >95% en estudios validados.</li>
+<li><strong>Tuberculosis</strong>: WHO aprueba sistemas de screening automatizado.</li>
+<li><strong>Nódulos pulmonares</strong>: Detección temprana de cáncer de pulmón en screening CT.</li>
+<li><strong>Cardiomegalia</strong>: Índice cardiotorácico automatizado.</li>
 </ul>
 
-<pre><code class="language-python">result = executor.execute(tool_name, params)
-if not result.success:
-    if "Rate limit" in result.error:
-        # El LLM debe saber que puede reintentar en X segundos
-        return f"Rate limit alcanzado. Reintentar en 60 segundos."
-    elif "Authentication" in result.error:
-        # Informar al usuario, no reintentar
-        return "Error de autenticación. Por favor verificar credenciales."
-    else:
-        # Error desconocido, sugerir alternativas
-        return f"Error: {result.error}. Sugerencia: intentar con parámetros diferentes."
-</code></pre>
+<h3>Oftalmología</h3>
 
-<h3>Error 3: Llamar Herramientas Sin Validación</h3>
+<p><strong>Diabetic Retinopathy</strong> es la causa líder de ceguera preventable en adultos en edad laboral. Google Health demostró que su sistema de screening iguala o supera a oftalmólogos expertos en la detección de casos referibles.</p>
 
-<p>Pasar los parámetros que el LLM genera directamente a la función sin validar. Esto es un riesgo de seguridad enorme: un LLM podría generar parámetros malicious que su función no espera, o simplemente parámetros con tipos incorrectos que crashean el sistema.</p>
+<h3>Patología Digital</h3>
 
-<p><strong>Solución</strong>: SIEMPRE validar antes de ejecutar. El framework arriba implementa <code>validate_params</code> que verifica:</p>
-
-<ol>
-<li>Todos los parámetros requeridos están presentes</li>
-<li>Los tipos de datos son correctos</li>
-<li>Los valores están dentro de los enum permitidos</li>
-<li>No hay parámetros extra no definidos en el schema</li>
-</ol>
-
-<pre><code class="language-python"># Nunca hacer esto:
-result = tool.handler(**llm_generated_params)  # PELIGROSO
-
-# Siempre hacer esto:
-is_valid, error = executor.validate_params(tool_def, params)
-if not is_valid:
-    return ToolResult(success=False, error=f"Parámetros inválidos: {error}")
-result = tool_def.handler(**params)
-</code></pre>
-
-<h2>Resumen y Cierre</h2>
-
-<p>Tool integration es lo que separa un LLM que conversa de uno que realmente actúa. Sin ella, usted tiene un sistema que puede describirle cómo resolver un problema pero no puede hacerlo por usted. Con ella, tiene un agente que puede buscar, calcular, enviar, ejecutar — y hacer el trabajo real.</p>
-
-<p>Los puntos clave para implementarlo bien:</p>
+<p>Los pathologists analizan biopsias donde cada slide puede ser 100,000 x 100,000 píxeles. La AI ayuda a:</p>
 
 <ul>
-<li>Definir schemas completos con tipos, descripciones claras y valores válidos</li>
-<li>Manejar errores estructuradamente según el tipo de falla</li>
-<li>Validar TODOS los parámetros antes de ejecutar — nunca confiar ciegamente en el LLM</li>
-<li>Implementar retries con backoff exponencial para errores transitorios</li>
-<li>Dar feedback claro al LLM para que pueda recuperarse o informar al usuario</li>
+<li>Detectar mitosis atípicas (pronóstico de cáncer de mama)</li>
+<li>Cuantificar expresión de receptores (HER2, ER, PR)</li>
+<li>Identificar áreas de interés para revisión prioritaria</li>
 </ul>
 
-<p>En Colombia tenemos una frase que aplica perfectamente: "del dicho al hecho hay un trecho". El LLM puede decir qué herramienta quiere llamar, pero si usted no tiene la tubería bien construida para ejecutar esa llamada, validar los parámetros, manejar el error, y retornar el resultado — al final del día solo tiene un modelo muy caro que le dice cosas bonitas. El 25% que lo hace bien no solo tiene la intención sino la ejecución. Esa es la diferencia.</p>
+<h2>El Marco Regulatorio y Validación Clínica</h2>
 
-<p>Mañana continuamos con más temas de AI agents, autonomous systems, y todo lo que necesitamos para construir aplicaciones que realmente trabajen — no solo que hablen.</p>
+<p>Un modelo que funciona en investigación puede fallar en producción. La FDA ha establecido frameworks para approval de Software as a Medical Device (SaMD):</p>
+
+<ul>
+<li><strong>IDE (Investigational Device Exemption)</strong>: Para estudios clínicos piloto.</li>
+<li><strong>510(k)</strong>: Demostrar equivalencia sustancial a dispositivo aprobado.</li>
+<li><strong>De Novo</strong>: Para dispositivos noveles sin precedente.</li>
+<li><strong>PMA (Premarket Approval)</strong>: Para dispositivos de alto riesgo.</li>
+</ul>
+
+<p>Los estándares de validación incluyen:</p>
+
+<ul>
+<li><strong>Prospectivo</strong>: El modelo se evalúa en pacientes futuros.</li>
+<li><strong>Multi-site</strong>: Datos de múltiples instituciones para generalización.</li>
+<li><strong>Estratificación</strong>: Evaluación por subgrupos demográficos.</li>
+</ul>
+
+<hr>
+
+<p>La AI en medical imaging no va a reemplazar radiólogos — va a hacer radiólogos más eficientes, más precisos, y capaces de ver más pacientes. El futuro es colaboración: el algoritmo marca anomalías, el médico valida. Como en todo en AI, la clave es entender las limitaciones y usar estas herramientas donde realmente agregan valor clínico.</p>
+
+<p>Mañana continuamos con más aplicaciones de AI en el mundo real. Cada día de esta serie de 365 nos acerca a entender cómo la inteligencia artificial está transformando cada industria.</p>
   </article>
 
   <script>
