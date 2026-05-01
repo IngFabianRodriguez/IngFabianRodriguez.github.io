@@ -118,255 +118,163 @@ nav {
   </header>
 
   <article class="article-body">
-<h2>🎯 Introduction</h2>
-<p>Hagale pues, parcero. Aquí en Medellín cuando empezamos un proyecto con LLMs, el 80% de los equipos se mete en problemas porque trata el LLM como si fuera una función determinista: llama, recibe, usa. Pero resulta que eso no escala, no se prueba, y cuando el modelo cambia de provider o de versión, se rompe todo. El 20% que lo hace bien sigue patrones de arquitectura que ya están probados en la industria — y hoy se los voy a mostrar con código de verdad.</p>
-<p>Construir aplicaciones robustas con LLMs no es solo hacer API calls. Es pensar en abstracción, inyección de dependencias, y estrategias de testing que reconocen que el output del modelo tiene variabilidad inherente. Vamos paso a paso.</p>
+<h2>Introduction</h2>
+<p>Hagale pues, parcero. Aqui en Medellin cuando hablamos de modelos grandes, el 90% de la gente los trata como cajas negras: le metes texto, sale texto, punto. Pero hay un campo emergente que esta cambiando eso: Mechanistic Interpretability. La idea es simple pero poderosa: reverse-engineer las redes neuronales para entender exactamente que computo esta haciendo, a nivel de circuitos y features individuales.</p>
+<p>Anthropic, Google DeepMind, y otros equipos pequenos de researchers estan usando estas tecnicas para entender desde que exactamente hace un transformer cuando responde una pregunta, hasta por que ciertos prompts causan comportamientos inesperado. Vamos paso a paso.</p>
 <hr>
-<h2>📐 The Math Behind LLM Application Architecture</h2>
-<p>Antes de escribir código, la matemática. Una aplicación LLM procesa secuencias de tokens. La probabilidad de una respuesta completa $R$ dado un prompt $P$ es:</p>
-<p>$$P(R|P) = \prod_{t=1}^{T} P(r_t | r_{<t}, P)$$</p>
-<p>Donde $T$ es el número de tokens en la respuesta. Esto es importante porque significa que el output es una distribución de probabilidad, no un string determinista. Cuando architectureamos nuestra aplicación, necesitamos manejar esta naturaleza estocástica explícitamente.</p>
-<p>El segundo concepto matemático clave es el <strong>reward modeling</strong> en el contexto de RLHF. La función de reward:</p>
-<p>$$R(s, a) = \mathbb{E}[r(s, a)] + \beta \cdot H(\pi_\theta)$$</p>
-<p>Donde $H(\pi_\theta)$ es la entropía de la política, que controla la exploración. Entender esto nos ayuda a diseñar mejores sistemas de evaluación para nuestras aplicaciones.</p>
+<h2>Que Es Mechanistic Interpretability?</h2>
+<p>La interpretability mecanistica busca descomponer una red neuronal en sus componentes fundamentales y entender como interactuan. No es solo ver que activaciones ocurren, sino entender el circuito computacional subyacente.</p>
+<p>La intuicion central viene de la neuroscience: si queremos entender el cerebro, no solo medimos actividad neuronal. Estudiamos circuitos, pathways, y mecanismos. Mechanistic interpretability aplica lo mismo a redes artificiales.</p>
+<p>El concepto clave es que una red neuronal no es una funcion continua incomprensible. Es una composicion de modulos discretos que implementan algoritmos especificos. Si podemos identificar esos modulos y esos algoritmos, podemos explicar el comportamiento del modelo.</p>
 <hr>
-<h2>🏗️ Architecture Patterns for LLM Applications</h2>
-<p>El patrón central es el <strong>Provider Abstraction Layer</strong>. En lugar de esto:</p>
-<pre><code class="language-python"># ❌ MAL: Acoplamiento directo al provider
-def generate_response(prompt):
-    response = openai.ChatCompletion.create(
-        model="gpt-4",
-        messages=[{"role": "user", "content": prompt}]
-    )
-    return response.choices[0].message.content</code></pre>
-<p>Hacemos esto:</p>
-<pre><code class="language-python"># ✅ BIEN: Abstracción via Protocolo
-from abc import ABC, abstractmethod
-from typing import AsyncIterator
-
-class LLMProvider(ABC):
-    """Interface abstracta para todos los providers de LLM."""
-    
-    @abstractmethod
-    async def generate(
-        self,
-        prompt: str,
-        temperature: float = 0.7,
-        max_tokens: int = 2048,
-        **kwargs
-    ) -> str:
-        """Genera una respuesta sincronica."""
-        pass
-    
-    @abstractmethod
-    async def stream_generate(
-        self,
-        prompt: str,
-        temperature: float = 0.7,
-        max_tokens: int = 2048,
-        **kwargs
-    ) -> AsyncIterator[str]:
-        """Genera respuesta en stream token por token."""
-        pass
-
-class OpenAIProvider(LLMProvider):
-    def __init__(self, api_key: str, model: str = "gpt-4"):
-        self.client = OpenAI(api_key=api_key)
-        self.model = model
-    
-    async def generate(self, prompt: str, temperature: float = 0.7, max_tokens: int = 2048, **kwargs) -> str:
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=temperature,
-            max_tokens=max_tokens,
-            **kwargs
-        )
-        return response.choices[0].message.content
-    
-    async def stream_generate(self, prompt: str, temperature: float = 0.7, max_tokens: int = 2048, **kwargs) -> AsyncIterator[str]:
-        stream = self.client.chat.completions.create(
-            model=self.model,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=temperature,
-            max_tokens=max_tokens,
-            stream=True,
-            **kwargs
-        )
-        async for chunk in stream:
-            if chunk.choices[0].delta.content:
-                yield chunk.choices[0].delta.content
-
-class AnthropicProvider(LLMProvider):
-    def __init__(self, api_key: str, model: str = "claude-3-opus"):
-        self.client = Anthropic(api_key=api_key)
-        self.model = model
-    
-    async def generate(self, prompt: str, temperature: float = 0.7, max_tokens: int = 2048, **kwargs) -> str:
-        response = self.client.messages.create(
-            model=self.model,
-            max_tokens=max_tokens,
-            messages=[{"role": "user", "content": prompt}],
-            **kwargs
-        )
-        return response.content[0].text
-    
-    async def stream_generate(self, prompt: str, temperature: float = 0.7, max_tokens: int = 2048, **kwargs) -> AsyncIterator[str]:
-        with self.client.messages.stream(
-            model=self.model,
-            max_tokens=max_tokens,
-            messages=[{"role": "user", "content": prompt}],
-            **kwargs
-        ) as stream:
-            async for text_stream_event in stream:
-                if text_stream_event.type == "content_block_delta":
-                    yield text_stream_event.delta.text</code></pre>
+<h2>Features como Direcciones en Activation Space</h2>
+<p>El primer concepto fundamental: las activaciones de una red neuronal viven en espacios de alta dimensionalidad. Cada token en una secuencia tiene un vector de activacion asociado.</p>
+<p>$$a(x) \in \mathbb{R}^d$$</p>
+<p>Donde $d$ es la dimension del modelo (puede ser miles o millones). Un <strong>feature</strong> es una direccion especifica en ese espacio que corresponde a un concepto interpretable.</p>
+<p>La hipotesis de superposition dice que los modelos representan mas features de los que tienen dimensiones. Esto es posible porque features pueden ser quase-orthogonales: correlacionados pero no exactamente iguales.</p>
+<p>Para detectar features, usamos tecnicas como:</p>
+<ul>
+<li><strong>Probing</strong>: entrenar un clasificador lineal sobre las activaciones para predecir una propiedad deseada</li>
+<li><strong>Activation patching</strong>: cambiar activaciones especificas y observar el efecto en el output</li>
+<li><strong>SAE (Sparse Autoencoders)</strong>: descomponer activaciones en features mas sparse y interpretables</li>
+</ul>
 <hr>
-<h2>💉 Dependency Injection for Testability</h2>
-<p>Ahora viene la magia: inyección de dependencias. Esto nos permite hacer testing real con LLMs simulados:</p>
-<pre><code class="language-python">from dataclasses import dataclass
-from typing import Protocol
+<h2>Circuit Analysis</h2>
+<p>Un <strong>circuito</strong> es un subgrafo de la red que implementa un computo especifico. Por ejemplo, un circuito podria ser el pathway que detecta si una palabra es un verbo y lo согласует con el sujeto.</p>
+<p>Los circuitos se identifican mediante:</p>
+<ol>
+<li><strong>Activation analysis</strong>: identificar que componentes se activan para ciertos patrones</li>
+<li><strong>Gradient analysis</strong>: ver como el loss cambia cuando modificamos ciertas activaciones</li>
+<li><strong>ablation studies</strong>: remover componentes y ver como degrada el rendimiento</li>
+</ol>
+<pre><code class="language-python">import torch
+import transformer_lens
 
-# Protocol en lugar de ABC para más flexibilidad
-class LLMClient(Protocol):
-    async def generate(self, prompt: str, **kwargs) -> str: ...
+# Cargar un modelo pequeno para analisis
+model = transformer_lens.HookedTransformer.from_pretrained("gpt2-small")
 
-@dataclass
-class EssayGenerator:
-    """Generador de essays que depende de abstracción, no de implementación."""
-    llm_client: LLMClient
-    max_words: int = 1000
-    
-    async def generate(self, topic: str) -> str:
-        prompt = f"Write a {self.max_words}-word essay about: {topic}"
-        return await self.llm_client.generate(prompt)
+# Obtener activaciones para un prompt especifico
+tokens = model.tokenizer("The cat sat on the", return_tensors="pt")
+logits, activations = model.run_with_cache(tokens.input_ids)
 
-# Mock para testing - retorna valores deterministas
-class MockLLMClient:
-    def __init__(self, response: str = "Mock response"):
-        self.response = response
-        self.call_count = 0
-        self.last_prompt = None
-    
-    async def generate(self, prompt: str, **kwargs) -> str:
-        self.call_count += 1
-        self.last_prompt = prompt
-        return self.response
+# Analizar las activaciones del attention head 0
+attention_pattern = activations['blocks.0.attn.hook_attn'][0, 0]
+print(f"Attention pattern shape: {attention_pattern.shape}")
+print(f"Max attention: {attention_pattern.max().item():.3f}")
 
-# Test con mock
-import pytest
+# Hacer patching: reemplazar activacion y ver efecto
+def patch_hook(value, hook, new_value):
+    return new_value
 
-@pytest.mark.asyncio
-async def test_essay_generator():
-    mock_llm = MockLLMClient(response="This is a test essay about AI.")
-    generator = EssayGenerator(llm_client=mock_llm, max_words=100)
-    
-    result = await generator.generate("artificial intelligence")
-    
-    assert "test essay" in result.lower()
-    assert mock_llm.call_count == 1
-    assert "artificial intelligence" in mock_llm.last_prompt
-
-# Fixture para pytest-asyncio
-@pytest.fixture
-def mock_llm():
-    return MockLLMClient(response="Test response")
-
-@pytest.mark.asyncio
-async def test_with_fixture(mock_llm):
-    generator = EssayGenerator(llm_client=mock_llm)
-    result = await generator.generate("test topic")
-    assert result == "Test response"</code></pre>
+# Patchear la atencion para ver su rol
+patched_logits = model.run(
+    tokens.input_ids,
+    fwd_hooks=[('blocks.0.attn.hook_z', patch_hook)]
+)</code></pre>
 <hr>
-<h2>🧪 Testing Strategies for LLM Applications</h2>
-<p>El testing de aplicaciones LLM es diferente al software tradicional porque el output es probabilístico. No podemosassertEqual(output, expected_string). En cambio, usamos:</p>
-<pre><code class="language-python">import pytest
-from hypothesis import given, strategies as st, settings
-
-# Property-based testing para prompts
-@given(st.text(min_size=1, max_size=1000))
-@settings(max_examples=100)
-async def test_prompt_handling(llm_client, prompt):
-    """El LLM debe manejar cualquier prompt sin crashear."""
-    try:
-        result = await llm_client.generate(prompt)
-        assert isinstance(result, str)
-        assert len(result) > 0
-    except ValueError:
-        # Prompts vacíos pueden ser rechazados
-        pass
-
-# Testing con eval metrics
-class ResponseEvaluator:
-    def __init__(self, llm_client: LLMClient):
-        self.llm = llm_client
-    
-    async def evaluate(self, prompt: str, criteria: dict) -> dict:
-        """Evalua respuestas contra criterios específicos."""
-        response = await self.llm.generate(prompt)
+<h2>El Problema de Superposition</h2>
+<p>Uno de los descubrimientos mas sorprendente de mechanistic interpretability es el fenomeno de <strong>superposition</strong>: los modelos representan mas features interpretables de las dimensiones que tienen.</p>
+<p>Esto es eficiente pero problematico para interpretability. Si cada neurona representara exactamente un feature, seria facil. Pero en la practica, las neuronas representan combinaciones de features, y un solo feature puede estar distribuido en muchas neuronas.</p>
+<p>La formula matematica de superposition:</p>
+<p>$$\text{Superposition Hypothesis}: \exists F \text{ features t.q. } |F| \gg d \text{ y } \forall f \in F, \cos^2(\theta_f, \theta_{f'}) \approx 0$$</p>
+<p>Esto explica por que el probing directo often fails: no puedes simplemente entrenar un clasificador en una capa y esperar que las neuronas correspondan a conceptos claros.</p>
+<hr>
+<h2>SAE: Sparse Autoencoders para Descomponer Superposition</h2>
+<p>Una solucion emergente es usar <strong>Sparse Autoencoders (SAE)</strong>. La idea es entrenar un autoencoder que descomponga las activaciones en una representacion mas sparse donde cada feature es mas independiente.</p>
+<pre><code class="language-python">class SparseAutoencoder(torch.nn.Module):
+    def __init__(self, d_model: int, d_hidden: int, sparsity: float = 0.01):
+        super().__init__()
+        self.W_encoder = torch.nn.Linear(d_model, d_hidden, bias=True)
+        self.W_decoder = torch.nn.Linear(d_hidden, d_model, bias=False)
+        self.sparsity = sparsity
         
-        return {
-            "response": response,
-            "length_ok": len(response.split()) >= criteria.get("min_words", 10),
-            "has_structure": any(marker in response for marker in ["##", "1.", "- ", "* "]),
-            "length": len(response)
-        }
+    def encode(self, x):
+        z = self.W_encoder(x)
+        z = torch.relu(z)  # Solo valores positivos
+        return z
+    
+    def decode(self, z):
+        return self.W_decoder(z)
+    
+    def forward(self, x, l1_lambda: float = 1e-3):
+        z = self.encode(x)
+        x_reconstructed = self.decode(z)
+        
+        # Loss = reconstruction + sparsity penalty
+        recon_loss = torch.nn.functional.mse_loss(x_reconstructed, x)
+        sparsity_loss = z.abs().mean()  # L1 promotes sparsity
+        
+        return recon_loss + l1_lambda * sparsity_loss, z
 
-@pytest.mark.asyncio
-async def test_evaluation_criteria():
-    mock = MockLLMClient(response="## Introduction\nThis is a test essay.")
-    evaluator = ResponseEvaluator(mock)
-    
-    result = await evaluator.evaluate(
-        prompt="Write about AI",
-        criteria={"min_words": 5}
-    )
-    
-    assert result["length_ok"] is True
-    assert result["has_structure"] is True
+# Entrenar SAE en activaciones de un modelo
+activations_dataset = [...]  # Recolectar activaciones
+sae = SparseAutoencoder(d_model=768, d_hidden=32768, sparsity=0.001)
 
-# Integration test con proveedor real (skip en CI)
-@pytest.mark.asyncio
-@pytest.mark.skipif(os.getenv("CI"), reason="No real API calls in CI")
-async def test_real_provider():
-    real_llm = OpenAIProvider(api_key=os.getenv("OPENAI_API_KEY"))
-    generator = EssayGenerator(llm_client=real_llm)
-    
-    result = await generator.generate("climate change")
-    assert len(result) > 100</code></pre>
+for batch in activations_dataset:
+    loss, features = sae(batch)
+    # features ahora tiene interpretable features sparse
+    # Ver cuales features se activan para diferentes conceptos</code></pre>
 <hr>
-<h2>⚠️ Los 3 Errores Más Comunes</h2>
-<h3>Error 1: Hardcoding de LLM Calls Por Todo el Código</h3>
-<p><strong>El problema</strong>: Imagina que tienes 50 archivos con llamadas directas a OpenAI y decides migrar a Anthropic. Tienes que cambiar 50 archivos. Peor aún: los tests requieren API keys reales.</p>
-<p><strong>La solución</strong>: Inyección de dependencias desde el día uno. Usa el patrón Provider que mostré arriba. Siempres inyecta el cliente LLM, nunca lo instancies dentro de las clases que lo usan.</p>
-<pre><code class="language-python"># ❌ MAL: Instanciación directa
-class MyService:
-    def __init__(self):
-        self.llm = OpenAIProvider(api_key="sk-...")  # Coupled!
-    
-# ✅ BIEN: Inyección
-class MyService:
-    def __init__(self, llm_provider: LLMProvider):
-        self.llm = llm_provider  # Decoupled!</code></pre>
-<h3>Error 2: No Tener Capa de Abstracción Sobre el Provider</h3>
-<p><strong>El problema</strong>: Cada provider tiene su propia API. OpenAI usa <code>messages</code>, Anthropic usa <code>messages</code> también pero con estructura diferente. Sin abstracción, cambiar de provider significa reescribir toda tu lógica de prompting.</p>
-<p><strong>La solución</strong>: Unificar la interfaz. El código que usa el LLM solo conoce <code>generate(prompt)</code>. El adapter traduce entre formatos. Agregar un nuevo provider es agregar una clase, no modificar la existente.</p>
-<h3>Error 3: No Testear Aplicaciones LLM de Forma Diferente</h3>
-<p><strong>El problema</strong>: Tratar el LLM como función determinista. Esperar que <code>generate("¿Cuál es 2+2?")</code> siempre retorne <code>"4"</code>. Cuando el modelo cambia de version o temperature, los tests fallan arbitrariamente.</p>
-<p><strong>La solución</strong>: Testing por propiedades, no por valores exactos. Usa mocks deterministiccos para单元 tests. Para integración, evalúa con métricas: ¿la respuesta tiene estructura? ¿tiene longitud razonable? ¿responde al tema? No: ¿contiene exactamente estas palabras?</p>
-<pre><code class="language-python"># ❌ MAL: Test frágil
-assert "4" in generate("¿Cuánto es 2+2?")
-
-# ✅ BIEN: Test por propiedad
-response = generate("¿Cuánto es 2+2?")
-assert any(word in response for word in ["2", "dos", "two", "4"])
-assert len(response) < 50  # Respuesta corta es probable</code></pre>
+<h2>Attention Heads y Sus Roles</h2>
+<p>Dentro de un transformer, los <strong>attention heads</strong> son componentes fundamentales. Cada head aprende a asistir a diferentes tipos de informacion.</p>
+<p>En modelos de lenguaje, algunos patrones comunes de attention heads:</p>
+<ul>
+<li><strong>Duplicate token heads</strong>: detectan tokens repetidos en el contexto</li>
+<li><strong>Induction heads</strong>: copian patrones de un token a otro (ej: "First... Then" -> "Then...")</li>
+<li><strong>Previous token heads</strong>: asisten al token anterior</li>
+<li><strong>Semantic similarity heads</strong>: asisten a tokens semanticamente relacionados</li>
+</ul>
+<p>Los <strong>induction heads</strong> son particularmente importantes: son un circuito simple que permite al modelo hacer few-shot learning pattern completion.</p>
 <hr>
-<h2>📊 Resumen y Cierre</h2>
-<p>Pues ahí lo tiene, parcero. Para construir aplicaciones LLM que escalen bien, necesita tres cosas: primero, una capa de abstracción sobre el provider para que pueda cambiar de modelo sin reescribir código; segundo, inyección de dependencias para que todo sea testeable sin hacer llamadas reales; tercero, estrategias de testing que acepten la naturaleza probabilística del output.</p>
-<p>La próxima vez que начальничать un proyecto con LLMs, piense en esto: ¿puedo cambiar de GPT-4 a Claude sin cambiar mi código de negocio? Si la respuesta es no, tiene un problema de arquitectura. Arrégielo antes de que sea tarde.</p>
-<p>El que aprende a architecture bien sus aplicaciones LLM, aprende a construir sobre cimientos sólidos. Eso es lo que diferencia un prototype que muere en demo de un producto que escala de verdad.</p>
-<p>Nos vemos en el Día 270.</p>
+<h2>Herramientas Practicas para Interpretability</h2>
+<p>Para hacer mechanistic interpretability en la practica, hay varias herramientas disponibles:</p>
+<ul>
+<li><strong>TransformerLens</strong>: library de Neel Nanda para cargar modelos y hacer analysis de activaciones</li>
+<li><strong>Circuits.overfit.com</strong>: blog de Neel Nanda con analisis detallados de circuitos</li>
+<li><strong>SAE Vis</strong>: herramienta para visualizar features aprendidas por SAEs</li>
+<li><strong>PySvelte</strong>: visualizacion de circuitos neuronales</li>
+</ul>
+<pre><code class="language-python"># Ejemplo completo con TransformerLens
+import transformer_lens
+import sae_lens
+
+# Cargar modelo y SAE asociado
+model = transformer_lens.HookedTransformer.from_pretrained("gpt2-small")
+sae, cfg, sparsity = sae_lens.get_sae("gpt2-small-resid-post")
+
+# Obtener features para un prompt
+prompt = "The meaning of life is"
+tokens = model.tokenizer(prompt, return_tensors="pt")
+
+# Run model y obtener sparse features
+_, cache = model.run_with_cache(tokens.input_ids)
+resid_post = cache["blocks.0.hook_resid_post"]
+
+# Encode a features
+features = sae.encode(resid_post)
+
+# Ver top features activas
+top_features = features[0, 0].topk(10)
+print("Top active features:")
+for idx, val in zip(top_features.indices, top_features.values):
+    feature_desc = sae_lens.get_feature_description(idx.item())
+    print(f"  Feature {idx}: {val:.3f} - {feature_desc}")</code></pre>
+<hr>
+<h2>Por Que Importa</h2>
+<p>Mechanistic interpretability no es solo curiosidad academic. Tiene implicaciones practicas profundas:</p>
+<ul>
+<li><strong>Safety</strong>: si entendemos como un modelo causa ciertos comportamientos, podemos detect y mitigating riesgos</li>
+<li><strong>Debugging</strong>: cuando un modelo falla, podemos entender por que a nivel de circuito</li>
+<li><strong>Alignment</strong>: si queremos que modelos hagan lo que queremos, entender como piensan es fundamental</li>
+<li><strong>Improvement</strong>: conocimiento de circuitos puede guiar arquitectura y training improvements</li>
+</ul>
+<p>El objetivo ultimo es双向: poder explicar el comportamiento de modelos complejos en terminos de mecanismos interpretables, y usar ese conocimiento para hacer modelos mejores y mas seguros.</p>
+<hr>
+<h2>Resumen y Cierre</h2>
+<p>Pues alla lo tiene, parcero. Mechanistic interpretability es el intento mas serio de desmontar redes neuronales y entender que exactamente esta pasando dentro. Features como direcciones, circuitos como algoritmos, superposition como problema fundamental, y SAE como una solucion emergente.</p>
+<p>No es magia ni filosofia. Es ciencia empirica aplicada a sistemas complejos. Cada semana hay nuevos descubrimientos sobre como los modelos implementan computos especificos. El que entiende los circuitos, entiende el modelo.</p>
+<p>La proxima vez que un LLM te sorprende con su respuesta, piensa: que circuito se activo? Que feature detecto? Estamos empezando a tener las herramientas para responder esas preguntas.</p>
+<p>Nos vemos en el Dia 270.</p>
   </article>
 
   <script>
