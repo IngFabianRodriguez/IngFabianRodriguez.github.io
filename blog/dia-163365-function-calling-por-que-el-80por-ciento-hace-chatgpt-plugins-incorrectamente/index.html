@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="QLoRA - El gold standard para fine-tuning eficiente que el 80% desconoce | #365DaysOfAI por Fabián Rodríguez">
-  <title>QLoRA - El gold standard para fine-tuning eficiente que el 80% desconoce | #365DaysOfAI</title>
+  <meta name="description" content="Function Calling - Por qué el 80% hace ChatGPT plugins incorrectamente | #365DaysOfAI por Fabián Rodríguez">
+  <title>Function Calling - Por qué el 80% hace ChatGPT plugins incorrectamente | #365DaysOfAI</title>
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
@@ -91,165 +91,214 @@ nav {
 
   <header class="article-hero">
     <div class="day-badge">Día 163 / 365 &nbsp;·&nbsp; #365DaysOfAI</div>
-    <h1 class="article-title">QLoRA — El gold standard para fine-tuning eficiente que el 80% desconoce</h1>
+    <h1 class="article-title">Function Calling — Por qué el 80% hace ChatGPT plugins incorrectamente</h1>
     <div class="article-meta">
       <time class="article-date">13 de may de 2026</time>
-      <div class="tags"><span class="tag">fine-tuning</span><span class="tag">qlora</span><span class="tag">pytorch</span></div>
+      <div class="tags"><span class="tag">openai</span><span class="tag">function-calling</span><span class="tag">tool-use</span></div>
     </div>
   </header>
 
   <article class="article-body">
-    <p>Hola, parcero. Llegamos al Día 163 y hoy vamos con QLoRA. Este artículo es para los que tienen una GPU con 24GB de VRAM y sueñan con fine-tunear un Llama-70B. spoiler: se puede. QLoRA es la técnica que el 80% ignora cuando podría salvarles la GPU — y hoy te explico por qué, con código real de PyTorch.</p>
+    <p>Hola, parcero. Llegamos al Día 163 y hoy vamos con Function Calling. Si pensabas que los plugins de ChatGPT eran magia o que basta con囲む una API, esta vaina te va a volar la cabeza. El 80% implementa function calling incorrectamente — y hoy te explico por qué, con código real.</p>
     <hr>
     <h2>📐 Fundamentos Teóricos</h2>
-    <p>QLoRA = <strong>Quantized Low-Rank Adaptation</strong>. Es la combinación de dos ideas poderosas:</p>
+    <p><strong>Function Calling</strong> (también conocido como tool use o tool calling) es la capacidad de un LLM para identificar cuándo necesita ejecutar una función externa y generar los parámetros correctos para invocarla. En lugar de solo generar texto, el modelo puede pedir ejecutar acciones.</p>
+    <h3>¿Cómo funciona por debajo?</h3>
+    <p>El proceso tiene tres componentes críticos:</p>
     <ul>
-    <li><strong>LoRA</strong> (Hu et al., 2021): en lugar de fine-tunear todos los pesos, solo entrenamos matrices de bajo rank que descomponen las actualizaciones de pesos como <code>W + ΔW = W + BA</code>, donde <code>B ∈ ℝ<sup>d×r</sup></code> y <code>A ∈ ℝ<sup>r×k</sup></code> con <code>r << min(d,k)</code>.</li>
-    <li><strong>Quantization</strong>: almacenar los pesos del modelo base en 4 bits en lugar de FP16/FP32, reduciendo dramáticamente el memory footprint.</li>
+    <li><strong>Function Schema</strong>: JSON Schema que define la función disponible, sus parámetros y tipos</li>
+    <li><strong>Prompt Engineering</strong>: Se le dice al modelo cuándo y cómo usar funciones</li>
+    <li><strong>Parsing y validación</strong>: La salida del modelo se parsea para extraer el llamada a función</li>
     </ul>
-    <p>La matemática detrás de QLoRA tiene tres componentes críticos:</p>
-    <h3>1. NF4 (4-bit NormalFloat)</h3>
-    <p>QLoRA usa <strong>NF4</strong>, un tipo de cuantización óptimo para pesos que siguen una distribución normal. La clave: no es una cuantización uniforme. La fórmula de los niveles de cuantización es:</p>
-    <pre><code class="language-python"># Niveles NF4 (ejemplo para 4 bits = 16 niveles)
-# Los niveles están espaciados según la CDF de la Normal(0,1)
-# escalados al rango [-1, 1]
-nf4_levels = [-1.0, -0.6966, -0.5257, -0.3949, -0.2924, -0.2072,
-               -0.1350, -0.0729, 0.0, 0.0729, 0.1350, 0.2072,
-               0.2924, 0.3949, 0.5257, 0.6966, 1.0]
-</code></pre>
-    <p>La ventaja sobre INT4 puro: NF4 tiene niveles más densos cerca de cero (donde la mayoría de los pesos residen) y más espaciados en las colas.</p>
-    <h3>2. Double Quantization</h3>
-    <p>Los <strong>quantization constants</strong> (un valor por bloque de pesos) también se cuantizan. Específicamente:</p>
-    <ul>
-    <li>Cada bloque de 32 elementos tiene su propia constante de cuantización</li>
-    <li>Esa constante se cuantiza a FP8 (8 bits)</li>
-    <li>Ahorro adicional: por cada 64K parámetros, solo 8 bits extra</li>
-    </ul>
-    <p>El ahorro en memoria de double quantization (DQ) es:</p>
-    <pre><code class="language-python"># Sin DQ: 1 constante FP32 por bloque de 32 = 32 bits / 32 = 1 bit/param solo para constantes
-# Con DQ: la constante se cuantiza a FP8 = 8 bits / 32 = 0.25 bits/param
-# Ahorro: 0.75 bits/param en constantes
-dq_savings_bits_per_param = 1.0 - 0.25  # = 0.75 bits
-</code></pre>
-    <h3>3. Gradient Checkpointing</h3>
-    <p>Durante el forward pass, no almacenamos los activations completos — los recomputamos durante el backward pass. Esto intercambia compute por memory:</p>
-    <pre><code class="language-python"># En PyTorch, gradient checkpointing reduce memory de O(n) a O(√n)
-# pero aumenta compute en ~20-30%
-model.gradient_checkpointing_enable()
-</code></pre>
-    <p>Combinado con QLoRA, esto permite que un 70B que ocuparía ~140GB en FP16 quepa en ~35GB con QLoRA + gradient checkpointing.</p>
-    <hr>
-    <h2>💻 Implementación Práctica</h2>
-    <p>Vamos con código real. Necesitamos: <code>bitsandbytes</code>, <code>transformers</code>, <code>peft</code>, y una GPU con 24GB.</p>
-    <pre><code class="language-python">import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM
-from peft import LoraConfig, get_peft_model, TaskType
-from bitsandbytes.nn import Linear4Bit
-
-# 1. Cargar modelo en 4-bit con NF4
-model_name = "meta-llama/Llama-2-70b-hf"
-
-# Config de cuantización
-bnb_config = {
-    "load_in_4bit": True,
-    "bnb_4bit_quant_type": "nf4",           # NormalFloat4
-    "bnb_4bit_compute_dtype": torch.bfloat16,
-    "bnb_4bit_use_double_quant": True,        # Double quantization
+    <p>La matemática detrás es interesante: el modelo no "ejecuta" la función — solo genera una estructura que representa la llamada. La ejecución real ocurre fuera del modelo.</p>
+    <h3>Arquitectura de una llamada a función</h3>
+    <p>La anatomía de una function call es:</p>
+    <pre><code class="language-python"># Estructura de una function call
+function_call = {
+    "name": "get_weather",           # Nombre de la función
+    "arguments": {                     # Argumentos en JSON
+        "location": "Bogotá",
+        "unit": "celsius"
+    }
 }
 
-model = AutoModelForCausalLM.from_pretrained(
-    model_name,
-    quantization_config=bnb_config,
-    device_map="auto",
-    trust_remote_code=True,
-)
-model.enable_gradient_checkpointing()  # Gradient checkpointing
-
-# 2. Configurar LoRA
-lora_config = LoraConfig(
-    r=64,                          # Rank - más alto = más expressivo pero más params
-    lora_alpha=128,                # Scaling factor (típicamente 2x rank)
-    target_modules=[                # Módulos a adaptar
-        "q_proj", "v_proj",        # Attention
-        "k_proj", "o_proj",
-        "gate_proj", "up_proj", "down_proj"  # MLP
-    ],
-    lora_dropout=0.05,
-    bias="none",
-    task_type=TaskType.CAUSAL_LM,
-)
-
-# 3. Aplicar LoRA al modelo cuantizado
-model = get_peft_model(model, lora_config)
-model.print_trainable_parameters()
-# Output: "trainable params: 166M || all params: 33.7B || trainable%: 0.49"
-
-# 4. Training loop (simplificado)
-from torch.utils.data import DataLoader
-
-optimizer = torch.optim.AdamW(model.parameters(), lr=2e-4)
-
-for batch in DataLoader(dataset):
-    optimizer.zero_grad()
-    
-    # El forward pass usa pesos en 4-bit, pero computa en bfloat16
-    outputs = model(**batch)
-    loss = outputs.loss
-    
-    loss.backward()  # Gradient checkpointing recombina activations
-    
-    # Solo actualizamos los pesos LoRA (166M params), no los 33B completos
-    optimizer.step()
+# El modelo NO ejecuta esto — solo lo GENERA
+# La ejecución real ocurre en tu código
 </code></pre>
-    <p>¿Por qué funciona? Porque durante el forward/backward pass:</p>
-    <ul>
-    <li>Los pesos base se dequantizan temporalmente a bfloat16 para la computación</li>
-    <li>Solo los pesos LoRA (A y B) se almacenan en FP16/bfloat16</li>
-    <li>El gradiente solo fluye hacia las matrices LoRA, no hacia los pesos cuantizados</li>
-    </ul>
     <hr>
-    <h2>📊 Análisis de Memoria</h2>
-    <pre><code class="language-python"># Comparación de memory footprint para Llama-70B
-memory_fp16 = 70e9 * 2  # FP16 = 2 bytes/param → 140 GB
-memory_qlora = 70e9 * 0.5 + 166e6 * 2  # 4-bit (0.5 bytes) + LoRA FP16 → ~38 GB
+    <h2>💻 Implementación Práctica</h2>
+    <p>Vamos con código real. Usaremos la API de OpenAI, pero el patrón aplica a cualquier proveedor.</p>
+    <pre><code class="language-python">import openai
+import json
+from datetime import datetime
 
-print(f"FP16: {memory_fp16/1e9:.1f} GB")
-print(f"QLoRA: {memory_qlora/1e9:.1f} GB")  # ~38 GB
-# ¡En una RTX 3090/4090 con 24GB puedes fine-tunear 70B!
+# 1. Definir las funciones disponibles
+functions = [
+    {
+        "name": "get_weather",
+        "description": "Obtiene el clima actual para una ubicación",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "location": {
+                    "type": "string",
+                    "description": "Ciudad y país, ej: Bogotá, Colombia"
+                },
+                "unit": {
+                    "type": "string",
+                    "enum": ["celsius", "fahrenheit"],
+                    "description": "Unidad de temperatura"
+                }
+            },
+            "required": ["location"]
+        }
+    },
+    {
+        "name": "send_email",
+        "description": "Envía un email",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "to": {
+                    "type": "string",
+                    "description": "Email del destinatario"
+                },
+                "subject": {
+                    "type": "string",
+                    "description": "Asunto del email"
+                },
+                "body": {
+                    "type": "string",
+                    "description": "Cuerpo del email"
+                }
+            },
+            "required": ["to", "subject", "body"]
+        }
+    }
+]
+
+# 2. Función para ejecutar la llamada
+def execute_function(function_name, arguments):
+    """Ejecuta la función seleccionada con los argumentos"""
+    if function_name == "get_weather":
+        # Simulación — en producción harías el llamado real
+        return {"temperature": 22, "condition": "Parcialmente nublado", "humidity": 65}
+    elif function_name == "send_email":
+        # Simulación
+        return {"status": "sent", "message_id": "abc123"}
+    else:
+        return {"error": "Función desconocida"}
+
+# 3. Conversation loop
+def chat_with_functions(messages, functions):
+    """Loop principal de conversation con function calling"""
+    response = openai.ChatCompletion.create(
+        model="gpt-4o",
+        messages=messages,
+        functions=functions,
+        function_call="auto"  # El modelo decide cuándo llamar
+    )
+    
+    message = response["choices"][0]["message"]
+    
+    # Si el modelo quiere llamar una función
+    if message.get("function_call"):
+        function_name = message["function_call"]["name"]
+        arguments = json.loads(message["function_call"]["arguments"])
+        
+        # Ejecutar la función
+        result = execute_function(function_name, arguments)
+        
+        # Agregar la respuesta de la función al conversation
+        messages.append({
+            "role": "function",
+            "name": function_name,
+            "content": json.dumps(result)
+        })
+        
+        # Llamada final para generar la respuesta
+        response = openai.ChatCompletion.create(
+            model="gpt-4o",
+            messages=messages,
+            functions=functions
+        )
+    
+    return response["choices"][0]["message"]["content"]
+
+# 4. Uso
+messages = [
+    {"role": "system", "content": "Eres un asistente útil"},
+    {"role": "user", "content": "¿Cómo está el clima en Bogotá?"}
+]
+
+response = chat_with_functions(messages, functions)
+print(response)
+# "El clima en Bogotá está parcialmente nublado con 22°C y 65% de humedad."
+</code></pre>
+    <hr>
+    <h2>🔍 Tipos de Function Calling</h2>
+    <p>Hay tres modos principales:</p>
+    <h3>1. Auto (recomendado)</h3>
+    <p>El modelo decide si llamar una función o responder normalmente:</p>
+    <pre><code class="language-python"># El modelo puede o no llamar una función
+response = openai.ChatCompletion.create(
+    model="gpt-4o",
+    messages=messages,
+    functions=functions,
+    function_call="auto"
+)
+</code></pre>
+    <h3>2. Forced</h3>
+    <p>Fuerza al modelo a llamar una función específica:</p>
+    <pre><code class="language-python"># Siempre llama get_weather, aunque no tenga sentido
+response = openai.ChatCompletion.create(
+    model="gpt-4o",
+    messages=messages,
+    functions=functions,
+    function_call={"name": "get_weather"}
+)
+</code></pre>
+    <h3>3. None</h3>
+    <p>Desactiva function calling — útil para conversaciones normales:</p>
+    <pre><code class="language-python"># Sin function calling
+response = openai.ChatCompletion.create(
+    model="gpt-4o",
+    messages=messages,
+    function_call="none"
+)
 </code></pre>
     <hr>
     <h2>🚨 Errores Comunes y Fixes</h2>
-    <h3>Error 1: Full Fine-Tune con GPU limitada</h3>
-    <p><strong>Síntoma</strong>: <code>CUDA out of memory</code> cuando intentas fine-tunear un modelo >7B en una GPU de 24GB.</p>
-    <p><strong>Causa</strong>: No usar cuantización cuando el hardware es limitado. Un 70B en FP16 requiere 140GB de VRAM — imposible en una sola GPU consumer.</p>
-    <blockquote>Fix: Usar QLoRA con <code>load_in_4bit=True</code> y <code>bnb_4bit_quant_type="nf4"</code>. Esto reduce el modelo base a ~35GB y permite fine-tuning en GPU de 24GB.</blockquote>
-    <h3>Error 2: Rank de LoRA demasiado bajo</h3>
-    <p><strong>Síntoma</strong>: El modelo fine-tuneado pierde expressividad, no captura tareas complejas, el loss no converge bien.</p>
-    <p><strong>Causa</strong>: Elegir <code>r=8</code> o <code>r=16</code> cuando el modelo tiene 70B. Con rank tan bajo, la matriz de actualización <code>BA</code> no tiene suficiente capacidad.</p>
-    <blockquote>Fix: Usar <code>r=64</code> o <code>r=128</code> para modelos grandes. El trade-off: más rank = más parámetros entrenables pero mejor quality. Para 70B, <code>r=64</code> es el sweet spot (166M params entrenables). Para modelos más pequeños (7B), <code>r=16</code> puede ser suficiente.</blockquote>
-    <h3>Error 3: No usar Gradient Checkpointing</h3>
-    <p><strong>Síntoma</strong>: El modelo ocupa casi toda la VRAM disponible y el batch size tiene que ser 1 o 2.</p>
-    <p><strong>Causa</strong>: Sin gradient checkpointing, todas las activations del forward pass se guardan para el backward pass. Para un 70B, esto puede ocupar >50GB adicionales.</p>
-    <blockquote>Fix: Llamar <code>model.enable_gradient_checkpointing()</code> después de aplicar LoRA. Esto intercambia ~20-30% más compute por ~60% menos memory en activations, permitiendo batch sizes 4-8x más grandes.</blockquote>
+    <h3>Error 1: No definir bien los JSON Schemas</h3>
+    <p><strong>Síntoma</strong>: El modelo inventa parámetros o genera llamadas incorrectas.</p>
+    <p><strong>Causa</strong>: Los schemas son vagos o incompletos. Sin constraints claros, el modelo improvisa.</p>
+    <blockquote>Fix: Define todos los campos posibles con tipos específicos, descriptions claras, y enums cuando hay opciones fijas. Un buen schema es la diferencia entre function calling que funciona y caos.</blockquote>
+    <h3>Error 2: No manejar errores de función</h3>
+    <p><strong>Síntoma</strong>: La aplicación crashea cuando una función falla.</p>
+    <p><strong>Causa</strong>: Asumes que todas las llamadas a función van a succeed. En el mundo real, APIs fallan, servicios se caen, timeout pasan.</p>
+    <blockquote>Fix: Implementa try/catch, timeouts, y fallback values. Cuando una función falla, regresa un mensaje claro al modelo para que pueda responder apropiadamente.</blockquote>
+    <h3>Error 3: Loop infinito de function calls</h3>
+    <p><strong>Síntoma</strong>: El modelo sigue llamando funciones en loop.</p>
+    <p><strong>Causa</strong>: No hay límite de recursion o el prompt no indica cuándo parar.</p>
+    <blockquote>Fix: Implementa un max_iterations counter y un stop condition claro. También mejora el system prompt para indicar cuándo el objetivo está logrado y no necesita más llamadas.</blockquote>
     <hr>
     <h2>✅ Mejores Prácticas</h2>
     <ul>
-    <li><strong>Usa NF4</strong> sobre INT4 puro — está diseñado específicamente para pesos normales yda ~1-2% mejor perplexity.</li>
-    <li><strong>Double quantization siempre</strong> — el ahorro en memoria es "gratis" en términos de quality.</li>
-    <li><strong>Target modules completos</strong>: incluye <code>q_proj, v_proj, k_proj, o_proj, gate_proj, up_proj, down_proj</code> para máxima expressividad.</li>
-    <li><strong>Learning rate</strong>: LoRA típicamente necesita 10x más LR que full fine-tune. Prueba entre 1e-3 y 3e-4.</li>
-    <li><strong>Epochs</strong>: QLoRA converge más lento que full FT; planifica 3-5 epochs en vez de 1-2.</li>
+    <li><strong>Schemas precisos</strong>: Cada parámetro necesita description, tipo, y constraints claras.</li>
+    <li><strong>Una función por propósito</strong>: No hagas funciones catch-all. Mejor muchas específicas que una gigante.</li>
+    <li><strong>Validación de inputs</strong>: Nunca confíes ciegamente en los argumentos del modelo — valida siempre antes de ejecutar.</li>
+    <li><strong>Manejo de errores robusto</strong>: Prepared para failures en cualquier llamada externa.</li>
+    <li><strong>Contexto de sesión</strong>: Mantén el conversation history completo para que el modelo pueda razonar sobre múltiples llamadas.</li>
     </ul>
     <hr>
     <h2>📚 Recursos</h2>
     <ul>
-    <li><a href="https://arxiv.org/abs/2305.14314">QLoRA paper (Dettmers et al., 2023)</a></li>
-    <li><a href="https://github.com/art49/py-qlora">Guides de implementación en el blog</a></li>
-    <li><a href="https://github.com/TimDettmers/bitsandbytes">bitsandbytes</a></li>
-    <li><a href="https://github.com/huggingface/peft">PEFT library</a></li>
+    <li><a href="https://platform.openai.com/docs/guides/function-calling">Documentación oficial de OpenAI</a></li>
+    <li><a href="https://cookbook.openai.com/examples/how_to_call_functions_for_knowledge_retrieval">Ejemplos de function calling</a></li>
+    <li><a href="https://github.com/openai/openai-cookbook">OpenAI Cookbook</a></li>
     </ul>
     <hr>
-    <p>Y ahí lo tienes, parcero. QLoRA es la técnica que te permite fine-tunear un 70B en una sola GPU de 24GB. No es magia — es la combinación inteligente de cuantización en 4-bit con LoRA y gradient checkpointing. El 80% que no la usa está desperdiciando el 80% de su hardware. Hasta mañana.</p>
+    <p>Y ahí lo tienes, parcero. Function calling es el puente entre LLMs y el mundo real. El 80% lo implementa mal porque no entiende que el modelo solo genera una estructura — tú eres responsable de la ejecución, validación, y manejo de errores. Hasta mañana.</p>
   </article>
 
   <script>
