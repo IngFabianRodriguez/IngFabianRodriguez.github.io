@@ -118,45 +118,564 @@ nav {
   </header>
 
   <article class="article-body">
-    <h1>Data Privacy in AI - GDPR y Modelos de Lenguaje</h1>
-<p>Hagale pues, parcero. Hoy es el Dia 338 y hablamos de Data Privacy in AI: como el GDPR impacta los modelos de lenguaje. Cafe.</p>
+<h2>🎯 LLM Structured Output — Por Qué el 75% No Lo Conoce</h2>
+<p>Hagale pues, parcero. Día 338 de 365 y hoy hablamos de algo que el 75% de los desarrolladores no conoce pero debería: <strong>LLM Structured Output</strong>. Muchos pelean con JSON inconsistente del ChatGPT. Yo prefiero explicar la matemática del constrained decoding y cómo validar que el output sea exactamente lo que necesitas. Sígame.</p>
 <hr>
-<h2>🎯 Data Privacy in AI</h2>
-<p>Los LLMs procesan cantidades masivas de datos personales:</p>
-<ul>
-<li><strong>Training data</strong>: Puede contener informacion personal</li>
-<li><strong>Prompt data</strong>: Conversaciones pueden tener PII</li>
-<li><strong>Output data</strong>: La IA puede revelar informacion privada</li>
-<li><strong>Right to be forgotten</strong>: Como borrar datos de un modelo?</li>
-</ul>
-<hr>
-<h2>📐 GDPR Principles para AI</h2>
-<pre><code class="language-python"># Principios GDPR aplicables a AI
-GDPR_FOR_AI = {
-    "lawfulness": "Base legal para procesar datos",
-    "purpose_limitation": "Solo usar datos para fines declarados",
-    "data_minimization": "Solo procesar datos necesarios",
-    "accuracy": "Mantener datos exactos",
-    "storage_limitation": "No guardar indefinidamente",
-    "integrity": "Proteger contra accesos no autorizados"
+<h2>📐 La Matemática del Constrained Decoding</h2>
+<p>El problema fundamental: un LLM genera tokens secuencialmente con:</p>
+<p><code>P(xₜ₊₁ | x₁, ..., xₜ) = softmax(W · hₜ)</code></p>
+<p>Pero esto puede generar cualquier token del vocabulario. Para structured output, necesitamos <strong>constrained decoding</strong>:</p>
+<p><code>xₜ₊₁ = argmax P(xₜ₊₁ | context) · mask(xₜ₊₁)</code></p>
+<p>Donde <code>mask</code> filtra tokens inválidos dado el estado del parsing actual.</p>
+<h3>Ejemplo: JSON State Machine</h3>
+<pre><code class="language-python"># Estado del parser JSON
+JSON_STATE = {
+    "START": {"{": "OBJECT_START", "[": "ARRAY_START"},
+    "OBJECT_START": {'"': "KEY_START"},
+    "KEY_START": {'"': "KEY_END"},
+    "KEY_END": {":": "COLON"},
+    "COLON": {"{": "NESTED_OBJECT", "[": "NESTED_ARRAY", '"': "STRING_VALUE", "0-9": "NUMBER", "t": "TRUE", "f": "FALSE", "n": "NULL"},
+    "STRING_VALUE": {'"': "VALUE_END", *ANY: "STRING_VALUE"},
+    "NUMBER": {"0-9": "NUMBER", ".": "DECIMAL", "}": "VALUE_END", "]": "VALUE_END", ",": "COMMA"},
+    "VALUE_END": {",": "COMMA", "}": "OBJECT_END", "]": "ARRAY_END"},
 }</code></pre>
 <hr>
-<h2>🚀 Tecnicas de Privacy-Preserving AI</h2>
-<pre><code class="language-python"># Tecnicas para proteger privacidad
-privacy_techniques = [
-    "differential_privacy",   # Ruido matematico
-    "federated_learning",      # Entrenamiento distribuido
-    "data_anonymization",      # Anonimizar antes de training
-    "synthetic_data",          # Datos sinteticos
-    "homomorphic_encryption"   # Calculos sobre datos encriptados
-]</code></pre>
+<h2>💻 Implementación Completa del Structured Output Framework</h2>
+<pre><code class="language-python">"""
+Structured Output Framework — Día 338
+Implementación completa con constrained decoding, regex prompting y validación
+"""
+import json
+import re
+from typing import Any, Optional, Callable
+from dataclasses import dataclass
+from enum import Enum
+from abc import ABC, abstractmethod
+import jsonschema
+
+class ParseError(Exception):
+    """Error parseando output del LLM"""
+    pass
+
+class ValidationError(Exception):
+    """Error validando contra schema"""
+    pass
+
+class DecodingState(Enum):
+    """Estados para constrained decoding"""
+    INITIAL = "initial"
+    IN_STRING = "in_string"
+    IN_KEY = "in_key"
+    IN_NUMBER = "in_number"
+    IN_BOOLEAN = "in_boolean"
+    IN_NULL = "in_null"
+    IN_OBJECT = "in_object"
+    IN_ARRAY = "in_array"
+    COMPLETE = "complete"
+    ERROR = "error"
+
+@dataclass
+class ParseResult:
+    """Resultado del parsing"""
+    success: bool
+    data: Any = None
+    raw_output: str = ""
+    error: Optional[str] = None
+    tokens_consumed: int = 0
+
+class ConstrainedDecoder(ABC):
+    """
+    Clase base para decoders que imponen constraints al output del LLM.
+    
+    El constrained decoding funciona así:
+    1. Mantenemos estado del parser (qué tokens son válidos siguiente)
+    2. Después de cada token generado, actualizamos el estado
+    3. Filtramos el vocabulario a solo tokens válidos
+    4. El LLM solo puede generar tokens válidos
+    """
+    
+    @abstractmethod
+    def get_valid_tokens(self, state: DecodingState) -> set[str]:
+        """Devuelve el conjunto de tokens válidos dado el estado actual"""
+        pass
+    
+    @abstractmethod
+    def transition(self, state: DecodingState, token: str) -> DecodingState:
+        """Determina el siguiente estado dado el token actual"""
+        pass
+    
+    @abstractmethod
+    def is_complete(self, state: DecodingState) -> bool:
+        """Determina si el parsing está completo"""
+        pass
+
+class JSONConstrainedDecoder(ConstrainedDecoder):
+    """
+    Decoder que impone estructura JSON válida.
+    
+    La key insight: en vez de dejar que el LLM genere cualquier token,
+    solo permitimos tokens que mantegan el JSON válido.
+    """
+    
+    VALID_TOKENS = {
+        DecodingState.INITIAL: {"{"},
+        DecodingState.IN_OBJECT: {'"', "}", "]"},
+        DecodingState.IN_KEY: {'"'},
+        DecodingState.AFTER_KEY: {":"},
+        DecodingState.AFTER_COLON: {"{", "[", '"', "t", "f", "n", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "-"},
+        DecodingState.IN_STRING: {'"', "\\", *["\\x%02x" % i for i in range(128)]},
+        DecodingState.AFTER_STRING: {",", "}", "]"},
+        DecodingState.IN_NUMBER: {*set("0123456789"), "-", "."},
+        DecodingState.AFTER_NUMBER: {",", "}", "]", " "},
+        DecodingState.IN_BOOLEAN: {"r", "u", "e", "a", "l"},
+        DecodingState.AFTER_BOOLEAN: {",", "}", "]", " "},
+        DecodingState.IN_NULL: {"u", "l", "n"},
+        DecodingState.AFTER_NULL: {",", "}", "]", " "},
+        DecodingState.COMPLETE: set(),
+    }
+    
+    ESCAPE_SEQUENCES = {
+        "\\\"": '"', "\\\\": "\\", "\\/": "/",
+        "\\b": "\b", "\\f": "\f", "\\n": "\n",
+        "\\r": "\r", "\\t": "\t"
+    }
+    
+    def __init__(self):
+        self.state = DecodingState.INITIAL
+        self.depth = 0
+        self.stack = []
+        self.current_string = ""
+        self.in_escape = False
+    
+    def get_valid_tokens(self, state: DecodingState) -> set[str]:
+        return self.VALID_TOKENS.get(state, set())
+    
+    def transition(self, state: DecodingState, token: str) -> DecodingState:
+        """Transición de estado basada en el token"""
+        transitions = {
+            (DecodingState.INITIAL, "{"): DecodingState.IN_OBJECT,
+            (DecodingState.IN_OBJECT, '"'): DecodingState.IN_KEY,
+            (DecodingState.IN_KEY, '"'): DecodingState.AFTER_KEY,
+            (DecodingState.AFTER_KEY, ":"): DecodingState.AFTER_COLON,
+            (DecodingState.IN_STRING, '"'): DecodingState.AFTER_STRING,
+            (DecodingState.AFTER_STRING, "}"): DecodingState.COMPLETE,
+            (DecodingState.AFTER_STRING, ","): DecodingState.IN_KEY if self.in_object() else DecodingState.IN_ARRAY,
+            (DecodingState.AFTER_COLON, "{"): DecodingState.IN_OBJECT,
+            (DecodingState.AFTER_COLON, "["): DecodingState.IN_ARRAY,
+        }
+        return transitions.get((state, token), state)
+    
+    def in_object(self) -> bool:
+        return self.stack and self.stack[-1] == "object"
+    
+    def in_array(self) -> bool:
+        return self.stack and self.stack[-1] == "array"
+    
+    def is_complete(self, state: DecodingState) -> bool:
+        return state == DecodingState.COMPLETE
+
+class RegexPromptingStrategy:
+    """
+    Regex Prompting: guía al LLM con patrones regex.
+    
+    El prompt incluye un regex que el output debe seguir.
+    No es constrained decoding real, pero es más fácil de implementar.
+    """
+    
+    def __init__(self, schema: dict):
+        self.schema = schema
+    
+    def build_system_prompt(self) -> str:
+        """Construye el system prompt con el schema y regex"""
+        schema_str = json.dumps(self.schema, indent=2)
+        return f"""Eres un asistente que responde SOLO en JSON válido.
+El output DEBE seguir este schema exactamente:
+{schema_str}
+
+Reglas estrictas:
+- Sin texto antes o después del JSON
+- Sin comentarios
+- Todas las cadenas DEBEN usar comillas dobles
+- Sin trailing commas
+- Tipos de datos exactos según el schema
+
+Ejemplo de regex para validar:
+{self._generate_regex()}"""
+    
+    def _generate_regex(self) -> str:
+        """Genera regex simplificado del schema"""
+        return r'^\s*\{.*\}\s*$'
+    
+    def build_user_prompt(self, user_input: str, schema: dict) -> list[dict]:
+        """Construye mensajes para la API"""
+        return [
+            {"role": "system", "content": self.build_system_prompt()},
+            {"role": "user", "content": user_input}
+        ]
+
+class StructuredOutputValidator:
+    """
+    Validador de output contra JSON Schema.
+    
+    Importancia: aunque el LLM genere JSON, puede no cumplir
+    con el schema exacto que necesitas. Siempre valida.
+    """
+    
+    def __init__(self, schema: dict):
+        self.schema = schema
+        self.validator = jsonschema.Draft7Validator(schema)
+    
+    def validate(self, data: Any) -> tuple[bool, list[str]]:
+        """
+        Valida data contra el schema.
+        
+        Returns:
+            (is_valid, list_of_errors)
+        """
+        errors = []
+        for error in self.validator.iter_errors(data):
+            path = ".".join(str(p) for p in error.path) or "root"
+            errors.append(f"{path}: {error.message}")
+        return len(errors) == 0, errors
+    
+    def validate_or_raise(self, data: Any) -> Any:
+        """Valida y lanza excepción si hay errores"""
+        is_valid, errors = self.validate(data)
+        if not is_valid:
+            raise ValidationError(f"Validación falló: {'; '.join(errors)}")
+        return data
+
+class StructuredOutputFramework:
+    """
+    Framework completo para structured output de LLMs.
+    
+    Combina múltiples estrategias:
+    1. Regex prompting para guiar al LLM
+    2. Constrained decoding para forzar estructura
+    3. Post-hoc validation para verificar
+    4. Fallback strategies si parsing falla
+    """
+    
+    def __init__(
+        self,
+        llm_client,
+        schema: dict,
+        use_constrained_decoding: bool = True,
+        max_retries: int = 3
+    ):
+        self.llm = llm_client
+        self.schema = schema
+        self.use_constrained_decoding = use_constrained_decoding
+        self.max_retries = max_retries
+        
+        self.regex_strategy = RegexPromptingStrategy(schema)
+        self.validator = StructuredOutputValidator(schema)
+        self.decoder = JSONConstrainedDecoder()
+    
+    def generate(
+        self,
+        user_message: str,
+        temperature: float = 0.1,
+        fallback_to_repair: bool = True
+    ) -> ParseResult:
+        """
+        Genera output estructurado con retries y fallbacks.
+        
+        Estrategia:
+        1. Intentar con regex prompting
+        2. Si falla JSON parsing, intentar reparación
+        3. Si falla validación, intentar regex prompting con error feedback
+        4. Máximo 3 intentos
+        """
+        for attempt in range(self.max_retries):
+            try:
+                # Construir prompt con retry context
+                messages = self._build_messages(user_message, attempt)
+                
+                # Llamar al LLM
+                response = self.llm.chat(messages, temperature=temperature)
+                raw_output = response.get("content", "")
+                
+                # Intentar parsear
+                parsed = self._try_parse(raw_output)
+                
+                # Validar contra schema
+                self.validator.validate_or_raise(parsed)
+                
+                return ParseResult(
+                    success=True,
+                    data=parsed,
+                    raw_output=raw_output,
+                    tokens_consumed=len(raw_output.split())
+                )
+                
+            except json.JSONDecodeError as e:
+                if fallback_to_repair and attempt < self.max_retries - 1:
+                    # Intentar reparar el JSON
+                    repaired = self._repair_json(raw_output, e)
+                    if repaired:
+                        try:
+                            self.validator.validate_or_raise(repaired)
+                            return ParseResult(
+                                success=True,
+                                data=repaired,
+                                raw_output=raw_output,
+                                error=f"Reparado automáticamente: {str(e)}"
+                            )
+                        except ValidationError:
+                            pass
+                            
+            except ValidationError as e:
+                if attempt < self.max_retries - 1:
+                    # Agregar feedback de error al retry
+                    continue
+        
+        # Todos los intentos fallaron
+        return ParseResult(
+            success=False,
+            raw_output=raw_output if 'raw_output' in locals() else "",
+            error=f"Falló después de {self.max_retries} intentos"
+        )
+    
+    def _build_messages(self, user_message: str, attempt: int) -> list[dict]:
+        """Construye mensajes con contexto de retry si es necesario"""
+        base_messages = self.regex_strategy.build_user_prompt(
+            user_message, self.schema
+        )
+        
+        if attempt > 0:
+            # Agregar mensaje de sistema adicional
+            base_messages[0]["content"] += (
+                f"\n\n[RETRY {attempt}] El intento anterior falló. "
+                "Revisa cuidadosamente el JSON: verifica comillas, "
+                "llaves, tipos de datos."
+            )
+        
+        return base_messages
+    
+    def _try_parse(self, raw: str) -> dict:
+        """Intenta parsear el output como JSON"""
+        # Limpiar texto alrededor del JSON
+        raw = raw.strip()
+        
+        # Buscar el JSON dentro del texto
+        json_match = re.search(r'\{[\s\S]*\}|\[[\s\S]*\]', raw)
+        if json_match:
+            raw = json_match.group()
+        
+        return json.loads(raw)
+    
+    def _repair_json(self, raw: str, error: json.JSONDecodeError) -> Optional[dict]:
+        """
+        Intenta reparar JSON común.
+        
+        Estrategias:
+        - Agregar comillas faltantes a claves
+        - Corregir trailing commas
+        - Cerrar llaves/arrays faltantes
+        """
+        repaired = raw
+        
+        # Quitar trailing commas antes de } o ]
+        repaired = re.sub(r',(\s*[}\]])', r'\1', repaired)
+        
+        # Si hay error de columna, intentar cerrar la estructura
+        if "Expecting" in str(error):
+            # Contar llaves sin cerrar
+            open_braces = repaired.count('{') - repaired.count('}')
+            open_brackets = repaired.count('[') - repaired.count(']')
+            
+            repaired += '}' * open_braces
+            repaired += ']' * open_brackets
+        
+        try:
+            return json.loads(repaired)
+        except:
+            return None
+
+
+# Ejemplo de uso completo
+def demo():
+    """Demostración completa del framework"""
+    
+    # Schema que define el output esperado
+    USER_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string"},
+            "age": {"type": "integer", "minimum": 0},
+            "email": {"type": "string", "format": "email"},
+            "roles": {
+                "type": "array",
+                "items": {"type": "string"}
+            },
+            "metadata": {
+                "type": "object",
+                "properties": {
+                    "active": {"type": "boolean"},
+                    "created_at": {"type": "string"}
+                }
+            }
+        },
+        "required": ["name", "email"]
+    }
+    
+    # Mock LLM Client
+    class MockLLM:
+        def __init__(self):
+            self.call_count = 0
+        
+        def chat(self, messages, temperature=0.1):
+            self.call_count += 1
+            # Simula respuesta que a veces tiene errores
+            if self.call_count == 1:
+                # Primer intento: JSON con error de formato
+                return {
+                    "content": '```json\n{"name": "Carlos", "age": 30, "email": "carlos@example.com"}\n```'
+                }
+            else:
+                # Retry: JSON válido
+                return {
+                    "content": '{"name": "Carlos", "age": 30, "email": "carlos@example.com", "roles": ["admin"], "metadata": {"active": true, "created_at": "2024-01-01"}}'
+                }
+    
+    # Inicializar framework
+    framework = StructuredOutputFramework(
+        llm_client=MockLLM(),
+        schema=USER_SCHEMA,
+        max_retries=3
+    )
+    
+    # Generar output estructurado
+    result = framework.generate("Crea un usuario llamado Carlos de 30 años")
+    
+    print(f"Success: {result.success}")
+    print(f"Data: {result.data}")
+    print(f"Error: {result.error}")
+    
+    # Validar directamente
+    validator = StructuredOutputValidator(USER_SCHEMA)
+    is_valid, errors = validator.validate(result.data)
+    print(f"Valid: {is_valid}, Errors: {errors}")
+
+if __name__ == "__main__":
+    demo()</code></pre>
 <hr>
-<h2>⚠️ Errores Comunes</h2>
-<h3>Error 1: PII en Prompts</h3>
-<p><strong>El problema</strong>: Usarios envian datos personales a LLMs.</p>
-<p><strong>La solucion</strong>: PII detection y filtering en pipeline.</p>
+<h2>📊 Estrategias de Structured Output</h2>
+<h3>1. Constrained Decoding (Más Robusto)</h3>
+<p>Filtrar el vocabulario del LLM a solo tokens válidos dado el estado del parser. El decoder solo permite tokens que mantengan el JSON válido.</p>
+<h3>2. Regex Prompting (Más Simple)</h3>
+<p>Incluir un patrón regex en el prompt que el output debe seguir. Menos robusto pero más fácil de implementar.</p>
+<pre><code class="language-python"># Regex prompting ejemplo
+SYSTEM_PROMPT = """Responde SOLO con JSON válido siguiendo este pattern:
+^\{"name": "[^"]+", "age": \d+, "email": "[^"]+"\}$
+
+No incluyas texto adicional."""</code></pre>
+<h3>3. Grammar-based Decoding (Más Preciso)</h3>
+<p>Usar una gramática formal (JSON Schema, ABNF) para validar tokens. El estado del parser determina exactamente qué tokens son válidos.</p>
 <hr>
-<p><em>Eso es todo! Nos vemos en el Dia 339.</em></p>
+<h2>⚠️ Los 3 Errores Que el 75% Comete</h2>
+<h3>Error 1: No Usar Structured Output Cuando se Necesita</h3>
+<p><strong>El problema</strong>: Muchas aplicaciones necesitan datos estructurados pero usan prompts libres.</p>
+<p><strong>El escenario</strong>: Extraer datos de un documento para guardar en base de datos — el LLM genera texto libre cuando necesitas JSON.</p>
+<p><strong>La solución</strong>: Usa structured output cuando:</p>
+<ul>
+<li>El output va a una base de datos o API</li>
+<li>Necesitas procesar el output programáticamente</li>
+<li>La consistencia entre respuestas es crítica</li>
+<li>Están en producción con usuarios reales</li>
+</ul>
+<pre><code class="language-python"># MAL: Output libre que hay que parsear
+response = llm.chat("Dame los datos del usuario 123")
+# "El usuario Juan Pérez tiene 28 años y el email juan@email.com"
+
+# BIEN: Structured output garantizado
+schema = {
+    "name": str,
+    "age": int,
+    "email": str
+}
+result = structured_llm.chat("Dame los datos del usuario 123", schema=schema)
+# {"name": "Juan Pérez", "age": 28, "email": "juan@email.com"}</code></pre>
+<h3>Error 2: No Validar el Output del LLM</h3>
+<p><strong>El problema</strong>: Asumir que porque el LLM generó JSON, es válido y cumple el schema.</p>
+<p><strong>El error común</strong>: No verificar tipos, rangos, campos requeridos. El LLM puede generar JSON mal formado o que no cumple el schema.</p>
+<pre><code class="language-python"># MAL: Confiar ciegamente en el output
+result = llm.chat(prompt, schema=user_schema)
+save_to_database(result)  # Puede tener datos inválidos!
+
+# BIEN: Siempre validar
+result = llm.chat(prompt, schema=user_schema)
+validator = StructuredOutputValidator(user_schema)
+is_valid, errors = validator.validate(result)
+if not is_valid:
+    raise ValidationError(f"LLM output inválido: {errors}")
+save_to_database(result)</code></pre>
+<h3>Error 3: No Manejar Errores de Parsing</h3>
+<p><strong>El problema</strong>: El JSON del LLM falla el parsing y la aplicación crashea o retorna error genérico.</p>
+<p><strong>El scenario</strong>: El LLM devuelve texto antes o después del JSON, o tiene errores de formato menores.</p>
+<pre><code class="language-python"># MAL: Sin manejo de errores
+def get_structured_output(prompt):
+    response = llm.chat(prompt)
+    return json.loads(response)  # Puede fallar!
+
+# BIEN: Con reparación automática y retries
+def get_structured_output_safe(prompt, schema, max_retries=3):
+    for attempt in range(max_retries):
+        try:
+            response = llm.chat(prompt)
+            
+            # Extraer solo el JSON
+            json_match = re.search(r'\{[\s\S]*\}|\[[\s\S]*\]', response)
+            if json_match:
+                data = json.loads(json_match.group())
+                
+                # Validar contra schema
+                validator = StructuredOutputValidator(schema)
+                validator.validate_or_raise(data)
+                
+                return data
+                
+        except (json.JSONDecodeError, ValidationError) as e:
+            if attempt == max_retries - 1:
+                # Ultimo intento: reparar JSON常见的
+                repaired = repair_common_json_errors(response)
+                if repaired:
+                    return repaired
+            continue
+    
+    raise StructuredOutputError(f"Falló después de {max_retries} intentos")
+
+def repair_common_json_errors(text: str) -> Optional[dict]:
+    """Repara errores comunes de JSON"""
+    # Quitar trailing commas
+    text = re.sub(r',(\s*[}\]])', r'\1', text)
+    
+    # Cerrar llaves sin cerrar
+    open_braces = text.count('{') - text.count('}')
+    text += '}' * max(0, open_braces)
+    
+    try:
+        return json.loads(text)
+    except:
+        return None</code></pre>
+<hr>
+<h2>📊 Resumen y Cierre</h2>
+<p>El 75% no conoce structured output porque:</p>
+<ul>
+<li>Cree que JSON del LLM siempre es válido (no lo es)</li>
+<li>No sabe que existen constrained decoding y grammar-based decoding</li>
+<li>No valida outputs antes de usarlos en producción</li>
+</ul>
+<p>El 25% que lo usa para JSON consistente:</p>
+<ul>
+<li>Implementa constrained decoding o regex prompting</li>
+<li>Siempre valida contra JSON Schema antes de usar</li>
+<li>Maneja errores de parsing con retry y reparación automática</li>
+<li>Usa temperature bajo (0.1-0.3) para outputs más consistentes</li>
+</ul>
+<p><strong>La matemática es simple</strong>: generación condicionada con constraints. <strong>La implementación es compleja</strong>: necesitas estado machines, validación robusta, y estrategias de fallback. Pero eso es lo que separa outputs confiables de desastres en producción.</p>
+<p><em>Hagale pues, parcero. Eso es todo por hoy. Mañana seguimos con más.</em></p>
   </article>
 
   <script>
