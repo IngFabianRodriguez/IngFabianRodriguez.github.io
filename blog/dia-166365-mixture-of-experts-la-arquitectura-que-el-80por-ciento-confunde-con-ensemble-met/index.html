@@ -99,319 +99,235 @@ nav {
   </header>
 
   <article class="article-body">
-    <p>Hola, parcero. Día 166 y hoy vamos con cuantización. Específicamente GPTQ vs AWQ — el tema donde el 90% simplemente copia lo que ve en Twitter sin entender cuándo realmente importa la diferencia. Vamos a arreglar eso hoy, con math, código real, y los errores que verás en producción si no prestas atención.</p>
+    <p>Hola, parcero. Día 166 y hoy vamos con Mixture of Experts (MoE). El 80% confunde MoE con ensemble methods como Random Forest o XGBoost. Son arquitecturas fundamentalmente diferentes. Vamos a entender por qué MoE es una <strong>arquitectura de red neuronal</strong> y no un algoritmo de ensemble, y por qué modelos como Mixtral y GPT-4 usan esta arquitectura.</p>
 
 <hr>
-<h2>📐 Fundamentos: Qué Es la Cuantización</h2>
-<p>La cuantización es el proceso de convertir valores de precisión completa (típicamente FP32 o FP16) a representacioens de menor precisión (INT8, INT4, etc.) para reducir memoria y computación. La matemática es simple pero las implicaciones son profundas:</p>
+<h2>🧠 MoE No Es Ensemble — La Diferencia Fundamental</h2>
+<p>La confusión viene de que ambos usan múltiples "componentes" para hacer predictions. Pero ahí termina el parecido:</p>
 
-<h3>El Math de la Cuantización</h3>
-<p>Dado un peso original $W$ en FP16, la cuantización proceso:</p>
-<p class="katex-display">$$W_q = \text{clamp}\left(\text{round}\left(\frac{W}{s} + z\right), 0, 255\right)$$</p>
-<p>Donde:</p>
+<h3>Ensemble Methods (Random Forest, XGBoost, etc.)</h3>
 <ul>
-<li>$s$ es el <strong>scale factor</strong> (un valor por grupo de pesos)</li>
-<li>$z$ es el <strong>zero point</strong> (para cuantización asimétrica)</li>
-<li>$W_q$ es el peso cuantizado en UINT8</li>
-</ul>
-<p>La dectructuración (usar el peso cuantizado) es:</p>
-<p class="katex-display">$$\hat{W} = s \cdot (W_q - z)$$</p>
-
-<p>El error de cuantización (diferencia entre $W$ original y $\hat{W}$) depende de:</p>
-<p class="katex-display">$$\text{Error} = |W - \hat{W}|^2 \propto \frac{1}{n_{\text{bits}}}$$</p>
-<p>Más bits = menos error, pero más memoria. El arte está en minimizar error sin perder accuracy.</p>
-
-<hr>
-<h2>🔬 GPTQ: Post-Training Quantization via Hessian</h2>
-<p>GPTQ (Generative Pre-trained Transformer Quantization) usa un enfoque de quantización post-training basado en el Hessian de la función de pérdida. Fue propuesto por Frantar et al. en 2022 y se convirtió en el estándar para cuantizar LLMs a 4 bits.</p>
-
-<h3>Cómo Funciona GPTQ</h3>
-<p>GPTQ quantiza capa por capa. Para cada capa, resuelve:</p>
-<p class="katex-display">$$\min_{\hat{W}} \|W - \hat{W}\|_F^2 \quad \text{sujeto a} \quad \hat{W} \in \mathbb{B}^n$$</p>
-<p>donde $\mathbb{B}^n$ es el códigobook de valores cuantizados. Usa una aproximación de segundo orden (Hessian) para guiar qué pesos cuantizar primero:</p>
-<p class="katex-display">$$\Delta w_i = -\frac{(H^{-1})_{ii}}{\text{diag}(H)^{-1}_i} \cdot (w_i - \hat{w}_i)$$</p>
-
-<pre><code class="language-python"># Implementación con auto-gptq
-from auto_gptq import AutoGPTQForCausalLM, BaseQuantizeConfig
-from transformers import AutoTokenizer
-import torch
-
-model_name = "meta-llama/Llama-2-7b-chat-hf"
-quantize_config = BaseQuantizeConfig(
-    bits=4,                    # 4 bits (GPTQ es excelente en 4-bit)
-    group_size=128,            # Cuantizar por grupos de 128 pesos
-    desc_act=True,             # Activation order - mejor accuracy pero más lento
-)
-
-tokenizer = AutoTokenizer.from_pretrained(model_name)
-model = AutoGPTQForCausalLM.from_pretrained(
-    model_name,
-    quantize_config=quantize_config,
-    torch_dtype=torch.float16,
-)
-
-# Calibración con dataset representativo (¡NO con training data!)
-# El error aquí es usar datos irrelevantes
-calibration_dataset = [
-    tokenizer("Qué es la fotosíntesis?", return_tensors="pt")
-    for _ in range(512)
-]
-
-print("Cuantizando modelo...")
-model.quantize(calibration_dataset)
-
-# Guardar modelo cuantizado
-model.save_pretrained("llama-2-7b-chat-gptq-4bit")
-tokenizer.save_pretrained("llama-2-7b-chat-gptq-4bit")
-
-# Carga y usa
-model = AutoGPTQForCausalLM.from_pretrained(
-    "llama-2-7b-chat-gptq-4bit",
-    device_map="auto",
-)
-</code></pre>
-
-<hr>
-<h2>🔬 AWQ: Activation-Aware Weight Quantization</h2>
-<p>AWQ (Activation-Aware Weight Quantization) es más nuevo y se basa en la observación de que no todos los pesos son igual de importantes. Los pesos que interactúan con activaciones de alta magnitud deben ser cuantizados con menos error.</p>
-
-<h3>Cómo Funciona AWQ</h3>
-<p>AWQ usa una heurística simple pero efectiva: los pesos que tienen productos grandes con las activaciones (i.e., $|W| \cdot |X|$ alto) deben preservarse mejor:</p>
-<p class="katex-display">$$\text{importance}(w_i) = |w_i| \cdot \mathbb{E}[|x_i|]$$</p>
-<p>AWQ busca el factor de escala óptimo $s$ minimizando:</p>
-<p class="katex-display">$$\min_s \|W - \hat{W}_s\|_F^2 \quad \text{donde} \quad \hat{W}_s = \text{quantize}(W / s) \cdot s$$</p>
-
-<pre><code class="language-python"># Implementación con awq
-from transformers import AutoTokenizer, AutoModelForCausalLM
-from awq import AutoAWQForCausalLM
-from awq.utils.lite_utils import get_best_device
-
-model_name = "meta-llama/Llama-2-7b-chat-hf"
-tokenizer = AutoTokenizer.from_pretrained(model_name)
-
-# Cuantización AWQ
-quant_config = {
-    "zero_point": True,         # Cuantización asimétrica
-    "q_group_size": 128,        # Tamaño del grupo
-    "w_bit": 4,                 # Bits para los pesos
-    "version": "gemm",          # GEMM vs GEMV - gemm es más rápido
-}
-
-model = AutoAWQForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16)
-datasets = ["tatsu-lab/alpaca", "yahma/alpaca-cleaned"]  # ¡Data de calibración!
-
-print("Buscando scaling factors óptimos...")
-model.quantize(tokenizer, quant_config=quant_config)
-
-# Guardar
-model.save_quantized("llama-2-7b-chat-awq-4bit")
-tokenizer.save_pretrained("llama-2-7b-chat-awq-4bit")
-
-# Carga
-model = AutoAWQForCausalLM.from_pretrained("llama-2-7b-chat-awq-4bit")
-device = get_best_device()
-model = model.to(device)
-</code></pre>
-
-<hr>
-<h2>📊 GPTQ vs AWQ: Comparación Directa</h2>
-
-<pre><code class="language-python">"""
-Comparación de accuracy vs bits para LLaMA-7B
-Resultados típicos (perplexity en WikiText-2):
-"""
-results = {
-    "FP16 (baseline)": {"bits": 16, "perplexity": 5.68},
-    "GPTQ 4-bit":      {"bits": 4,  "perplexity": 6.14},  # +0.46 vs baseline
-    "AWQ 4-bit":       {"bits": 4,  "perplexity": 5.92},  # +0.24 vs baseline
-    "GPTQ 3-bit":      {"bits": 3,  "perplexity": 7.21},  # Empieza a degradar
-    "AWQ 3-bit":       {"bits": 3,  "perplexity": 6.67},  # AWQ maneja mejor 3-bit
-}
-
-# Para bitsandbytes (NF4) - baseline de la industria
-bnb_results = {
-    "bnb NF4 4-bit":   {"bits": 4, "perplexity": 6.28},  # Típicamente peor que GPTQ/AWQ
-}
-
-print("Comparación de métodos de cuantización:")
-print("=" * 50)
-for name, data in {**results, **bnb_results}.items():
-    print(f"{name:20s}: {data['bits']} bits, ppl={data['perplexity']:.2f}")
-
-# Conclusión:
-# - AWQ típicamente supera a GPTQ en todas las precision levels
-# - bitsandbytes (NF4) es convenient pero tiene worse accuracy
-# - AWQ es mejor para preservación de features importantes
-</code></pre>
-
-<h3>Cuándo Usar Cuál</h3>
-
-<ul>
-<li><strong>Usa GPTQ</strong> cuando:
-  <ul>
-    <li>Quieres estabilidad y reproducibilidad</li>
-    <li>El modelo será served en edge devices (GPTQ tiene mejor soporte para HW específico)</li>
-    <li>Estás cuantizando a 4 bits (el caso de uso principal de GPTQ)</li>
-    <li>Quieres usar <code>exllama</code> o <code>exllamav2</code> para inference rápida</li>
-  </ul>
-</li>
-<li><strong>Usa AWQ</strong> cuando:
-  <ul>
-    <li>Necesitas la mejor accuracy posible para el mismo bit-width</li>
-    <li>Tienes outliers significativos en los pesos (AWQ los maneja mejor)</li>
-    <li>Estás cuantizando a 3 bits (AWQ degrada menos que GPTQ)</li>
-    <li>Usas vLLM (soporte nativo para AWQ)</li>
-  </ul>
-</li>
-<li><strong>Usa bitsandbytes</strong> solo para:
-  <ul>
-    <li>Prototyping rápido donde la accuracy no importa mucho</li>
-    <li>Cuando la convenience > calidad (NF4 con transformers es muy easy)</li>
-    <li>Fine-tuning (bnb funciona mejor para training que para inference)</li>
-  </ul>
-</li>
+<li><strong>Cada modelo entrena independently</strong> sobre los mismos datos</li>
+<li><strong>Todos los modelos ven TODOS los inputs</strong></li>
+<li><strong>Predicción final</strong>: voting (bagging) o weighted average (boosting)</li>
+<li>Los modelos pueden ser cualquier algoritmo: árboles, redes neuronales, etc.</li>
 </ul>
 
+<h3>Mixture of Experts (MoE)</h3>
+<ul>
+<li><strong>Cada expert es una parte de la misma red</strong>, no un modelo independiente</li>
+<li><strong>Cada input solo activa UN SUBCONJUNTO de experts</strong> (sparse activation)</li>
+<li><strong>Un router/decider decide qué experts procesan cada input</strong></li>
+<li>Todo se entrena end-to-end jointly — los experts y el router aprenden en conjunto</li>
+</ul>
+
+<p>La diferencia clave en notación matemática:</p>
+<p class="katex-display">$$\text{Ensemble: } y = \frac{1}{N}\sum_{i=1}^{N} f_i(x)$$</p>
+<p class="katex-display">$$\text{MoE: } y = \sum_{i=1}^{N} G(x)_i \cdot E_i(x)$$</p>
+<p>Donde $G(x)$ es el gate que selecciona qué experts activar, y $E_i(x)$ es la salida del expert $i$. La suma es ponderada por el gate, no uniforme.</p>
+
 <hr>
-<h2>🚨 Los 3 Errores que el 90% Comete</h2>
+<h2>🏗️ Arquitectura de un MoE Layer</h2>
 
-<h3>Error 1: Usar GPTQ Para Todos los Casos Cuando AWQ Es Mejor Para Algunos</h3>
-<p>Este es el más común. GPTQ se volvió popular primero, tiene más tutorials, y la gente simplemente lo usa para todo sin considerar que AWQ puede dar mejor accuracy, especialmente a 3 bits o cuando hay outliers en los pesos.</p>
+<p>Un layer de MoE en un transformer consiste en:</p>
+<ul>
+<li><strong>$N$ Expert Networks</strong>: cada uno es una FFN (Feed-Forward Network)</li>
+<li><strong>1 Router Network</strong>: una capa lineal que decide qué experts activar</li>
+<li><strong>Top-K Gating</strong>: solo los k experts más relevantes procesan el input</li>
+</ul>
 
-<pre><code class="language-python"># ❌ ESTO ES LO QUE EL 90% HACE
-def quantize_model(model_name, method="gptq"):
-    if method == "gptq":
-        # Siempre usa GPTQ sin considerar alternativas
-        model = AutoGPTQForCausalLM.from_pretrained(model_name)
-        model.quantize(...)
-    # ...
+<pre><code class="language-python">import torch
+import torch.nn as nn
 
-# ✅ FIX: Evalúa ambos métodos primero
-def evaluate_quantization(model_name, calibration_data):
-    results = {}
-    
-    # GPTQ
-    gptq_model = quantize_gptq(model_name, calibration_data)
-    results["gptq"] = evaluate_perplexity(gptq_model, test_data)
-    
-    # AWQ
-    awq_model = quantize_awq(model_name, calibration_data)
-    results["awq"] = evaluate_perplexity(awq_model, test_data)
-    
-    #bitsandbytes
-    bnb_model = quantize_bnb(model_name)
-    results["bnb"] = evaluate_perplexity(bnb_model, test_data)
-    
-    # Seleccionar el mejor
-    best = min(results, key=results.get)
-    print(f"Mejor método: {best} con perplexity={results[best]:.4f}")
-    
-    return best, results[best]
-</code></pre>
-
-<h3>Error 2: No Calibrar Con Dataset Representativo</h3>
-<p>Este error es crítico y casi nadie lo menciona. Tanto GPTQ como AWQ usan un dataset de calibración para determinar los scaling factors. Si usas datos que no representan la distribución real de inputs, los scaling factors van a estar mal y la accuracy va a degradar mucho más de lo esperado.</p>
-
-<pre><code class="language-python"># ❌ ERROR CRÍTICO: Usar datos irrelevantes para calibración
-calibration_data = [
-    "Hola mundo",  # ¿En serio?
-    "Test string",
-    "Random text",
-]
-
-# ❌ O peor aún: usar training data (causa overfitting a una distribución específica)
-calibration_data = train_dataset[:1000]  # ¡No!
-
-# ✅ FIX: Usar datos representativos del dominio
-def get_representative_calibration(model_name, domain="general"):
-    if domain == "medical":
-        # Para modelos médicos, usa datos médicos
-        return load_dataset("medical-qa", split="train[:500]")
-    elif domain == "code":
-        return load_dataset("codeparrot/code-valid", split="train[:500]")
-    else:
-        # Para uso general: datasets diversos y balanceados
-        return load_dataset("togethercomputer/RedPajama-Data-1T", split="train[:500]")
-    
-    # O mejor aún: usa tus propios datos de producción (con privacy review)
-    # Esto captura la verdadera distribución que ves en producción
-
-calibration = get_representative_calibration(model_name, domain="your-data-here")
-model.quantize(calibration)
-</code></pre>
-
-<h3>Error 3: Cuantizar Sin Verificar Que el Modelo Todavía Funciona</h3>
-<p>La gente cuantiza y ya. No evalúa. No hace sanity checks. Y después en producción el modelo empieza a generar basura y no saben por qué. Spoiler: es por la cuantización.</p>
-
-<pre><code class="language-python"># ❌ ESTO ES LO QUE HACE EL 90% Y LUEGO SUFRE EN PRODUCCIÓN
-model = AutoGPTQForCausalLM.from_pretrained("llama-2-7b-gptq-4bit")
-# Listo, a productionizar... sin más
-
-# ✅ FIX: Verificación rigurosa antes de deploy
-def verify_quantized_model(model, test_prompts, reference_model=None):
-    """Verifica que el modelo cuantizado sigue funcionando bien."""
-    
-    print("Ejecutando sanity checks...")
-    
-    # Test 1: Perplexity en dataset de evaluación
-    ppl = calculate_perplexity(model, eval_dataset)
-    print(f"Perplexity: {ppl:.4f}")
-    
-    if ppl > threshold:
-        raise ValueError(f"Perplexity {ppl} excede threshold {threshold}")
-    
-    # Test 2: Comparación con modelo original en outputs
-    test_cases = [
-        "¿Qué es la fotosíntesis?",
-        "Explica la relatividad en términos simples",
-        "Escribe un poem sobre el amor",
-    ]
-    
-    for prompt in test_cases:
-        original_output = reference_model.generate(prompt)
-        quantized_output = model.generate(prompt)
+class MoELayer(nn.Module):
+    def __init__(self, d_model, n_experts, top_k):
+        super().__init__()
+        self.n_experts = n_experts
+        self.top_k = top_k
         
-        # Check semántico: ¿Siguen siendo respuestas similares?
-        semantic_similarity = compute_similarity(original_output, quantized_output)
-        print(f"Prompt: {prompt[:30]}...")
-        print(f"  Similarity: {semantic_similarity:.3f}")
+        # Los experts son FFNs independientes
+        self.experts = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(d_model, d_model * 4),
+                nn.ReLU(),
+                nn.Linear(d_model * 4, d_model)
+            )
+            for _ in range(n_experts)
+        ])
         
-        if semantic_similarity < 0.85:  # Threshold para aceptación
-            print(f"  ⚠️ WARNING: Baja similaridad, posible degradación")
+        # El router decide qué experts activar
+        self.router = nn.Linear(d_model, n_experts)
     
-    # Test 3: Longitudes de output deberían ser similares
-    len_original = len(original_output)
-    len_quantized = len(quantized_output)
-    len_ratio = len_quantized / len_original
-    
-    if not (0.8 < len_ratio < 1.2):
-        print(f"  ⚠️ WARNING: Ratio de longitud {len_ratio:.2f} fuera de rango")
-    
-    print("✓ Verificación completada")
-
-# Usa
-verify_quantized_model(quantized_model, test_prompts, reference_fp16_model)
+    def forward(self, x):
+        # x shape: [batch, seq_len, d_model]
+        batch_size, seq_len, d_model = x.shape
+        
+        # Flatten para procesamiento eficiente
+        x_flat = x.view(-1, d_model)  # [batch*seq_len, d_model]
+        
+        # Router: calcula logits para cada expert
+        router_logits = self.router(x_flat)  # [batch*seq_len, n_experts]
+        
+        # Top-K gating: selecciona los k experts más relevantes
+        top_k_logits, top_k_indices = torch.topk(router_logits, self.top_k, dim=-1)
+        
+        # Softmax sobre los top-k para obtener pesos
+        top_k_weights = torch.softmax(top_k_logits, dim=-1)  # [batch*seq_len, top_k]
+        
+        # Inicializar output
+        output = torch.zeros_like(x_flat)
+        
+        # Procesar cada token con sus top-k experts
+        for i in range(self.top_k):
+            expert_idx = top_k_indices[:, i]  # índices de expert para cada token
+            expert_weight = top_k_weights[:, i]  # peso para cada token
+            
+            # Acumular contribuciones de cada expert
+            for expert_id in range(self.n_experts):
+                mask = (expert_idx == expert_id)
+                if mask.any():
+                    expert_output = self.experts[expert_id](x_flat[mask])
+                    output[mask] += expert_weight[mask].unsqueeze(-1) * expert_output
+        
+        return output.view(batch_size, seq_len, d_model)
 </code></pre>
 
 <hr>
-<h2>📊 Resumen: GPTQ vs AWQ vs bitsandbytes</h2>
+<h2>📊 Por Qué MoE-scale Efficiently</h2>
+
+<p>El poder de MoE viene del <strong>sparse activation</strong>. Para un modelo densos:</p>
+<p class="katex-display">$$\text{FLOPs por token} = 2 \times N_{\text{layers}} \times d_{\text{model}}^2$$</p>
+<p>Con MoE (usando top-k = 2 de n_experts = 8):</p>
+<p class="katex-display">$$\text{FLOPs por token} = 2 \times N_{\text{layers}} \times \left(\frac{k}{N_{\text{experts}}} \cdot d_{\text{model}}^2 + d_{\text{model}} \cdot d_{\text{router}}\right)$$</p>
+
+<p>La diferencia en práctica:</p>
+<table>
+<tr><th>Arquitectura</th><th>Parámetros Totales</th><th>FLOPs por Token</th><th>Activos por Token</th></tr>
+<tr><td>Dense 7B</td><td>7B</td><td>~70B</td><td>Todos</td></tr>
+<tr><td>MoE 7B (8 experts, top-2)</td><td>56B</td><td>~17.5B</td><td>~14B</td></tr>
+<tr><td>Dense 70B</td><td>70B</td><td>~700B</td><td>Todos</td></tr>
+<tr><td>MoE 70B (8 experts, top-2)</td><td>~1T</td><td>~175B</td><td>~175B</td></tr>
+</table>
+
+<p>El modelo MoE tiene <strong>más parámetros totales</strong> pero <strong>menos compute por token</strong>. Esto es exactamente lo que queremos: la capacidad de un modelo grande con el costo de uno pequeño.</p>
+
+<hr>
+<h2>⚠️ Problemas Técnicos de MoE</h2>
+
+<h3>Problema 1: Load Balancing</h3>
+<p>Si el router siempre activa los mismos experts, esos experts reciben más training y se vuelven "experts dominantes". Esto defeats el propósito.</p>
+
+<pre><code class="language-python">class LoadBalancingLoss(nn.Module):
+    """Auxiliary loss para balancear uso de experts"""
+    def __init__(self, n_experts):
+        super().__init__()
+        self.n_experts = n_experts
+        self.target_load = 1.0 / n_experts  # distribución uniforme
+    
+    def forward(self, router_probs, expert_mask):
+        # router_probs: probabilidades del router
+        # expert_mask: qué experts fueron seleccionados
+        
+        # Calcular load real de cada expert
+        expert_load = expert_mask.sum(0) / expert_mask.sum()
+        
+        # Calcular bias del router
+        router_bias = router_probs.mean(0)
+        
+        # Loss: penaliza desviación de distribución uniforme
+        # Minimizar: sum(|load - target|) + sum(|bias - target|)
+        load_loss = torch.abs(expert_load - self.target_load).sum()
+        bias_loss = torch.abs(router_bias - self.target_load).sum()
+        
+        return load_loss + bias_loss
+</code></pre>
+
+<h3>Problema 2: Communication Overhead</h3>
+<p>En setting distribuido (multi-GPU), los experts pueden estar en diferentes devices. El router necesita comunicar qué experts activar.</p>
+
+<pre><code class="language-python"># Mixtral's Expert Parallelism (EP)
+# Cada GPU tiene algunos experts
+# Cuando un token necesita un expert en otra GPU: ALL-TO-ALL communication
+
+def expert_parallel_forward(token_batch, expert_distribution):
+    """
+    token_batch: tokens a procesar
+    expert_distribution: qué GPU tiene qué experts
+    """
+    # Local experts: procesar inmediatamente
+    local_output = process_local_experts(token_batch)
+    
+    # Remote experts: enviar tokens a GPU correcta
+    for gpu_id, expert_ids in expert_distribution.items():
+        tokens_for_gpu = select_tokens_for_experts(token_batch, expert_ids)
+        remote_output = send_to_gpu(tokens_for_gpu, gpu_id)  # Communication
+        local_output = combine_outputs(local_output, remote_output)
+    
+    return local_output
+</code></pre>
+
+<h3>Problema 3: Memory Efficiency</h3>
+<p>Aunque el compute por token es menor, <strong>todos los parámetros siguen en memoria</strong>. Un MoE 8x7B requiere ~56B parámetros en VRAM aunque proceses como un 7B.</p>
+
+<hr>
+<h2>🔍 MoE vs Ensemble Methods: La Confusion Explicada</h2>
+
+<p>La confusión principal:</p>
 
 <ul>
-<li><strong>GPTQ</strong>: Basado en Hessian, excelente para 4-bit, más tutorials y tooling</li>
-<li><strong>AWQ</strong>: Activation-aware, mejor accuracy en 3-4 bits, mejor para outliers</li>
-<li><strong>bitsandbytes NF4</strong>: Convenient para prototyping, worse accuracy que GPTQ/AWQ</li>
-<li><strong>Weight-only quantization</strong>: Solo cuantiza pesos, las activaciones se mantienen en FP16</li>
-<li><strong>Calibration dataset</strong>: Debe ser representativo de producción, NO training data</li>
-<li><strong>Siempre verificar</strong>: Perplexity + sanity checks + semantic similarity antes de deploy</li>
+<li><strong>Random Forest</strong>: N árboles independientes, todos ven todos los datos, voting final</li>
+<li><strong>MoE</strong>: 1 red neuronal con N sub-redes (experts), sparse activation, el router decide quién procesa</li>
+</ul>
+
+<p>Otra forma de verlo:</p>
+<ul>
+<li><strong>Ensemble</strong>: múltiples modelos completos <strong>copiando</strong> la tarea</li>
+<li><strong>MoE</strong>: una modelo que <strong>divide la tarea</strong> entre expertos especializados</li>
+</ul>
+
+<p>En MoE, los experts pueden <strong>especializarse en diferentes aspectos</strong>:</p>
+<pre><code class="language-python"># Ejemplo conceptual de especialización
+expert_specializations = {
+    0: "código y programación",
+    1: "matemática y lógica", 
+    2: "lenguaje y narrativa",
+    3: "conocimiento factual",
+    4: "razonamiento espacial",
+    5: "sentimiento y opinión",
+    6: "instrucciones técnicas",
+    7: "contexto histórico"
+}
+
+# El router aprende a enviar tokens al expert correcto
+# Un prompt de código → expert 0
+# Un problema de math → expert 1
+</code></pre>
+
+<hr>
+<h2>📈 Modelos Famosos que Usan MoE</h2>
+
+<ul>
+<li><strong>Mixtral 8x7B</strong>: 8 experts, top-2 routing, 46B parámetros totales, costo de inferencia de 12B</li>
+<li><strong>GPT-4 (rumored)</strong>: предположительно MoE con ~1.8T parámetros totales</li>
+<li><strong>Switch Transformer</strong>: Google's MoE con hasta 2048 experts</li>
+<li><strong>ST-MoE</strong>: Stable Training of MoE</li>
+<li><strong>DBRX</strong>: Databricks' MoE model</li>
 </ul>
 
 <hr>
-<h2>🏁 Cierre</h2>
-<p>Y ahí lo tienen, parcero. Cuantización no es solo "poner el modelo en 4 bits y ya". Es entender qué método funciona mejor para tu caso, calibrar con datos que representen lo que vas a servir, y verificar que después de cuantizar el modelo sigue siendo útil. El 90% que no hace esto es por qué ves tantos modelos cuantizados que generan basura en producción.</p>
+<h2>🏁 Resumen</h2>
+<ul>
+<li><strong>MoE ≠ Ensemble</strong>: ensemble combina modelos completos, MoE divide una red en expertos</li>
+<li><strong>Sparse activation</strong>: solo top-k experts procesan cada token</li>
+<li><strong>Eficiencia computacional</strong>: más parámetros totales, menos FLOPs por token</li>
+<li><strong>Load balancing</strong>: necesita auxiliary loss para evitar expertos dominantes</li>
+<li><strong>Communication overhead</strong>: en setting distribuido, los experts en diferentes GPUs necesitan comunicarse</li>
+<li><strong>Todos los parámetros en memoria</strong>: el modelo completo sigue ocupando VRAM aunque procese sparse</li>
+</ul>
 
-<p>Mañana seguimos con más MLOps. El Día 167 va a estar interesante así que no se lo pierdan. Recuerden: la diferencia entre un modelo que funciona y uno que no en producción a veces es solo cuánto prestas atención a los detalles de la cuantización.</p>
+<p>Mañana seguimos con más. No se lo pierdan.</p>
 
-<p><em>#365DaysOfAI #GPTQ #AWQ #Quantization #MLOps #LLMOptimization</em></p>
+<p><em>#365DaysOfAI #MoE #MixtureOfExperts #Transformers #Architecture</em></p>
   </article>
 
   <script>
@@ -433,8 +349,8 @@ verify_quantized_model(quantized_model, test_prompts, reference_fp16_model)
         delimiters: [
           { left: '$$', right: '$$', display: true },
           { left: '$',  right: '$',  display: false },
-          { left: '\\[', right: '\\]', display: true },
-          { left: '\\(', right: '\\)', display: false },
+          { left: '\[', right: '\]', display: true },
+          { left: '\(', right: '\)', display: false },
         ],
         throwOnError: false,
       });
