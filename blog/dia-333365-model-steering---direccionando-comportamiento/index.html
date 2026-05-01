@@ -118,37 +118,266 @@ nav {
   </header>
 
   <article class="article-body">
-    <h1>Model Steering - Direccionando Comportamiento</h1>
-<p>Hagale pues, parcero. Hoy es el Dia 333 y hablamos de Model Steering, direccionando comportamiento. Cafe.</p>
+<h2>🎯 Intro Colombiana</h2>
+<p>Pues que tal, mi gente del territorio. Aquí Fabian, arriving con el Día 333 de este viaje de #365DaysOfAI. Hoy vamos a hablar de dos herramientas que el 80% de la gente usa mal en esta industria: <strong>LlamaIndex</strong> y <strong>LangChain</strong>. Muchos desarrolladores las voient como soluciones mágicas cuando en realidad son instrumentos quirúrgicos — y la diferencia entre usarlas bien y usarlas mal es abismal. Vamos por un café y desglosemos esto conコード y todo.</p>
+
 <hr>
-<h2>🎯 Que Es Model Steering?</h2>
-<p>Model steering modifica el comportamiento del modelo alterando activaciones internas. Mas preciso que prompting.</p>
-<h3>Metodos:</h3>
+<h2>🔬 Qué Hacen Realmente Estos Frameworks</h2>
+
+<h3>LangChain: El Framework de Orquestación</h3>
+<p>LangChain es fundamentalmente un <strong>framework de orquestación</strong>. Su fortaleazo es encadenar componentes: LLMs, retrievers, tools, memory, callbacks. No es una base de datos vectorial, no es un LLM, no es un servidor de inferencia. Es el pegamento que conecta todo eso.</p>
+
+<h3>LlamaIndex: El Framework de Indexación y Retrieval</h3>
+<p>LlamaIndex nació como <strong>un índice optimizado para RAG</strong> (Retrieval-Augmented Generation). Su nombre lo dice: Index. Tiene conectores a fuentes de datos, algoritmos de chunking, estrategias de embedding, y un sistema de retrieval que puede usar con cualquier LLM. Es más opinionado que LangChain en cómo organizar datos.</p>
+
+<blockquote>La confusión viene de que ambos公开发布 de todo: LangChain tiene sus retrievers, LlamaIndex tiene sus chains. Pero el núcleo es diferente.</blockquote>
+
+<h3>La Math Behind RAG</h3>
+<p>El retrieval en RAG funciona con similitud coseno entre embeddings:</p>
+
+<p style="text-align:center"><code>similarity(a, b) = cos(θ) = (a · b) / (||a|| × ||b||)</code></p>
+
+<p>Donde <code>a</code> y <code>b</code> son vectores de embedding. En práctica, el recall@k se mejora combinando <em> dense retrieval</em> (embeddings) con <em>sparse retrieval</em> (BM25). La fórmula híbrida:</p>
+
+<p style="text-align:center"><code>score = α · sim_dense(q, d) + (1-α) · sim_sparse(q, d)</code></p>
+
+<p>Con <code>α ∈ [0, 1]</code> controlando el peso. En LlamaIndex esto es <code>VectorIndexRetriever</code> + <code>BM25Retriever</code> combinados con <code>QueryFusionRetriever</code>.</p>
+
+<hr>
+<h2>⚠️ Los 3 Errores del 80%</h2>
+
+<h3>Error 1: No Entender Qué Hace Cada Framework</h3>
+<p>El desarrollador typique hace:</p>
+<pre><code class="language-python"># ❌ MAL: LangChain como todo-en-uno
+from langchain.vectorstores import Chroma
+from langchain.embeddings import OpenAIEmbeddings
+
+# Esto NO es LangChain haciendo RAG bien
+# Es solo un wrapper alrededor de Chroma
+vectorstore = Chroma.from_documents(documents, OpenAIEmbeddings())</code></pre>
+
+<p>El problema es que usa LangChain como si fuera una base de datos vectorial. LangChain aquí solo envuelve Chroma. No está orquestando nada, no está chainando pasos. Está haciendo un import innecesario que añade abstracción sin valor.</p>
+
+<h4>Fix:</h4>
+<pre><code class="language-python"># ✅ BIEN: Usa la herrami correcta para cada cosa
+
+# Para retrieval: usa Chroma/Pinecone/qdrant directamente
+# O LlamaIndex si necesitas indexación sofisticada
+from llama_index import VectorStoreIndex, SimpleDirectoryReader
+from llama_index.vector_stores import ChromaVectorStore
+
+# Carga documentos con LlamaIndex (mejor chunking)
+documents = SimpleDirectoryReader("./data").load_data()
+index = VectorStoreIndex.from_documents(documents, vector_store=ChromaVectorStore())
+
+# Y usa LangChain SOLO para orquestar chains de tools
+from langchain.agents import initialize_agent, Tool
+from langchain.llms import OpenAI
+
+# Ahora sí LangChain brilla: orquestando tools
+llm = OpenAI(temperature=0)
+tools = [Tool(name="Search", func=search_fn, description="...")]
+agent = initialize_agent(tools, llm, agent="zero-shot-react-description")</code></pre>
+
+<hr>
+
+<h3>Error 2: Overusing Cuando No Es Necesario</h3>
+<p>El segundo error massivo es introducing LangChain o LlamaIndex en proyectos que no los necesitan. Muchos devs construyen un chatbot simple sobre 10 PDFs y immediatamente arman esto:</p>
+<pre><code class="language-python"># ❌ OVERKILL: RAG sencillo con stack innecesario
+from langchain.document_loaders import PDFMinerLoader
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain.vectorstores import Pinecone
+from langchain.embeddings import OpenAIEmbeddings
+from langchain.chains import RetrievalQA
+from langchain.chat_models import ChatOpenAI
+
+# Todo esto para un chatbot que podría ser 50 líneas con llama_index
+# + una API route en FastAPI</code></pre>
+
+<p>El math del overhead: por cada request RAG, tienes latencia extra de:</p>
 <ul>
-<li><strong>Activation addition</strong>: Agregar vector de direccion</li>
-<li><strong>Steering vectors</strong>: Direcciones geometricas para behaviors</li>
-<li><strong>Linear probes</strong>: Encontrar directions con intervenciones</li>
+<li>Text splitting: <code>O(n log k)</code> donde k = chunk_size</li>
+<li>Embedding generation: latencia de red a OpenAI</li>
+<li>Vector search: <code>O(d · n)</code> donde d = dimensions, n = num vectors</li>
+<li>Context window del LLM: token count × cost per token</li>
 </ul>
+
+<p>Si solo tienes 20 documentos, un simple <code>grep -r "query"</code> + LLM con full context es más rápido y más barato. La complejidad de RAG solo se justifica a escala.</p>
+
+<h4>Fix — Decision Framework:</h4>
+<pre><code class="language-python">def should_use_rag(num_docs: int, avg_doc_size: int, query_type: str) -> bool:
+    """
+    Decision framework: ¿necesitas RAG?
+
+    RAG se justifica cuando:
+    - num_docs > threshold (100+ documentos)
+    - queries son específicas (no resúmenes)
+    - docs actualizan frecuentemente
+    - cost de full context > cost de retrieval + shorter context
+    """
+    full_context_tokens = avg_doc_size * num_docs
+    retrieval_tokens = 1000  # typical retrieved context
+    overhead_ratio = full_context_tokens / retrieval_tokens
+
+    # Si overhead > 10x, RAG probablemente vale la pena
+    return overhead_ratio > 10 or query_type == "specific_retrieval"</code></pre>
+
 <hr>
-<h2>📐 Steering with Vectors</h2>
-<pre><code class="language-python">def steer_model(model, tokens, steering_vector, alpha=1.0):
-    """Agregar steering vector a activations"""
-    def steering_hook(value, hook):
-        return value + alpha * steering_vector.to(value.device)
-    
-    # Aplicar en layer especifico
-    model.run_with_hooks(
-        tokens,
-        fwd_hooks=[(f"blocks.{layer}.hook_resid_post", steering_hook)]
-    )</code></pre>
+
+<h3>Error 3: No Saber Cuándo NO Usar un Framework</h3>
+<p>El tercer error es el reverse: no usar frameworks cuando sí ayudarían, o peor, reinventar la rueda.</p>
+
+<pre><code class="language-python"># ❌ MAL: Reinventar lo que LlamaIndex hace mejor
+def naive_rag(query, documents, llm):
+    """NAIVE RAG: reinventing wheel"""
+    # Embed query
+    query_embedding = get_embedding(query)  # you coded this yourself
+
+    # Search manually (you wrote this vector search)
+    scores = []
+    for doc in documents:
+        doc_embedding = get_embedding(doc)
+        score = cosine_similarity(query_embedding, doc_embedding)
+        scores.append((score, doc))
+
+    # Sort and take top-k
+    top_docs = sorted(scores, key=lambda x: x[0], reverse=True)[:5]
+
+    # Build context
+    context = "\n".join([doc for _, doc in top_docs])
+
+    # Call LLM
+    response = llm(f"Context: {context}\n\nQuestion: {query}")
+    return response
+
+# Esto reinventa:
+# - Chunking strategy
+# - Embedding optimization
+# - Retrieval ranking
+# - Context window management
+# ...y probablemente lo hace peor que llama_index</code></pre>
+
+<h4>Fix — Usa LlamaIndex para retrieval, no lo reinentes:</h4>
+<pre><code class="language-python"># ✅ BIEN: Abstrae lo que ya está bien resuelto
+from llama_index import VectorStoreIndex, SimpleDirectoryReader
+from llama_index.retrievers import VectorIndexRetriever
+from llama_index.query_engine import RetrieverQueryEngine
+
+# El built-in ya tiene:
+# - Semantic chunking optimizado
+# - Hybrid search (dense + sparse)
+# - MMR (Maximal Marginal Relevance) para diversidad
+# - Citation tracking
+
+documents = SimpleDirectoryReader("./data", recursive=True).load_data()
+index = VectorStoreIndex.from_documents(documents)
+
+# Configura retrieval avanzado
+retriever = VectorIndexRetriever(
+    index=index,
+    similarity_top_k=10,
+    vector_store_query_mode="hybrid",  # dense + sparse
+    alpha=0.5  # hybrid weight
+)
+
+query_engine = RetrieverQueryEngine.from_args(
+    retriever,
+    node_postprocessors=[...],  # MMR, SimilarityPostprocessor
+)
+response = query_engine.query("tu pregunta")</code></pre>
+
 <hr>
-<h2>🚀 Applications</h2>
-<p>Steering puede hacer models mas helpful, menos harmful, o cambiar estilo sin fine-tuning.</p>
+<h2>🔗 Cómo Combinar Ambos Frameworks</h2>
+<p>El mejor setup es usar <strong>LlamaIndex para retrieval</strong> y <strong>LangChain para orquestación</strong>. No son competidores, son complementarios:</p>
+
+<pre><code class="language-python"># ✅ ARQUITECTURA HÍBRIDA: Lo mejor de ambos mundos
+from llama_index import VectorStoreIndex, SimpleDirectoryReader
+from llama_index.vector_stores import ChromaVectorStore
+from llama_index.llms import LangChainLLM  # Bridge!
+from langchain.chat_models import ChatOpenAI
+from langchain.agents import initialize_agent, Tool
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+
+# 1. INDEXACIÓN con LlamaIndex (donde brilla)
+documents = SimpleDirectoryReader(
+    "./data",
+    file_extractor={".pdf": "PDFReader", ".csv": "PagedCSVReader"}
+).load_data()
+
+# Advanced chunking que LlamaIndex hace bien
+index = VectorStoreIndex.from_documents(
+    documents,
+    chunk_size=512,
+    chunk_overlap=64,
+    vector_store=ChromaVectorStore(),
+)
+
+# 2. RETRIEVAL con LlamaIndex
+retriever = index.as_retriever(similarity_top_k=5)
+
+# 3. ORQUESTACIÓN con LangChain (donde brilla)
+llm = ChatOpenAI(model="gpt-4-turbo", temperature=0)
+
+def retrieval_func(query: str) -> str:
+    """Tool que LangChain puede llamar para buscar contexto"""
+    nodes = retriever.retrieve(query)
+    return "\n".join([node.text for node in nodes])
+
+# LangChain agent orchestrando tools + retrieval
+tools = [
+    Tool(
+        name="KnowledgeBase",
+        func=retrieval_func,
+        description="Busca información en la base de conocimiento. Input: pregunta detallada."
+    ),
+    Tool(
+        name="Calculator",
+        func=calc_tool,
+        description="Para cálculos matemáticos. Input: expresión matemática."
+    ),
+]
+
+agent = initialize_agent(
+    tools,
+    llm,
+    agent="conversational-react-description",
+    memory=ConversationBufferMemory(memory_key="chat_history"),
+    verbose=True
+)
+
+# El agent decide cuándo buscar en KB (LlamaIndex retrieval)
+# y cuándo usar otras tools
+response = agent.run(input="¿Qué dice la política de devoluciones?")</code></pre>
+
 <hr>
-<h2>⚠️ Robustness</h2>
-<p>Steering vectors pueden no generalizar a todos los contextos igualmente.</p>
+<h2>📊 Cuándo Usar Cuál</h2>
+
+| Caso | Herramienta | Por qué |
+|------|-------------|---------|
+| Retrieval sofisticado (MMR, hybrid) | LlamaIndex | Mejor API para retrieval |
+| Orquestar múltiples tools/agents | LangChain | Framework de chains/agents |
+| Documentos simples (few PDFs) | Ninguno direct | Grep + LLM direct |
+| Chat con memory | LangChain | Gestión de estado/memory |
+| Query engine personalizado | LlamaIndex | Query planning/fusion |
+| Fine-tuning de embeddings | Ninguno | Mira sentence-transformers |
+| Evaluation de RAG | Both + RAGAs | Eval framework independiente |
+
 <hr>
-<p><em>Eso es todo! Nos vemos en el Dia 334.</em></p
+<h2>🚀 Resumen y Cierre Colombiano</h2>
+
+<p>Pues ahí lo tienen, parcero. La clave del día 333:</p>
+
+<ul>
+<li><strong>LangChain</strong> = orquestación de components, chains, tools, y agents. No es tu vector database.</li>
+<li><strong>LlamaIndex</strong> = indexación y retrieval optimizado para RAG. No es tu orchestrator.</li>
+<li><strong>El 80% reinventa</strong> porque no entiende qué problema resuelve cada herramienta.</li>
+<li><strong>El 20% usa bien</strong> combinándolos donde cada uno brilla: LlamaIndex retrieval + LangChain orchestration.</li>
+<li><strong>No todo necesita RAG</strong>. A veces 10 líneas con requests direct al LLM resuelven más rápido.</li>
+</ul>
+
+<p>La próxima vez que vayas a montar un "RAG system con LangChain y LlamaIndex", pregúntate primero: ¿realmente necesito los dos? ¿Dónde exactamente? ¿Qué problema resuelve cada componente que no puedas resolver más simple?</p>
+
+<p>Eso es todo por hoy. Día 333 completado. Nos vemos en el 334 con más、AI安全 y observabilidad. ¡Abrazo a la banda!</p>
   </article>
 
   <script>
