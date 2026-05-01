@@ -118,61 +118,53 @@ nav {
   </header>
 
   <article class="article-body">
-<p>A que no sabías, parce, que el paper de Batch Normalization de 2015 fue uno de los cambios más bruscos que ha tenido el deep learning? Antes de BatchNorm, entrenar redes de más de 10 capas era una pesadilla — había que usar trucos como initialization cuidadosa, non-saturating activations (ReLU), y normalización por layer. El 85% de los practitioners ni siquiera sabe por qué funcionaban esos trucos. Después de BatchNorm, puedo entrenar una red de 100 capas en horas sin especiales cuidados. El secreto está en resolver el internal covariate shift: cuando las capas van actualizando sus pesos, la distribución de las activaciones de cada capa va cambiando. Esto hace que las capas siguientes tengan que adaptarse a una distribución que no para de moverse — como si te cambian el tamaño del guayo mientras estás jugando. BatchNorm congela la distribución de cada capa y listo. Eso permite learning rates más altos y convergencia más rápida. Vamos a destapar la matemática completa, los errores que el 85% comete con BatchNorm, y cómo implementarlo bien en PyTorch.</p>
+    <h2>La Intro que el 85% Se Salta</h2>
+    <p>A que no sabías, parce, que el paper de Batch Normalization de 2015 fue uno de los cambios más bruscos que ha tenido el deep learning? Antes de BatchNorm, entrenar redes de más de 10 capas era una pesadilla — había que usar trucos como initialization cuidadosa, non-saturating activations (ReLU), y normalización por layer. El 85% de los practitioners ni siquiera sabe por qué funcionaban esos trucos.</p>
+    <p>Después de BatchNorm, puedo entrenar una red de 100 capas en horas sin especiales cuidados. El secreto está en resolver el <strong>internal covariate shift</strong>: cuando las capas van actualizando sus pesos, la distribución de las activaciones de cada capa va cambiando. Esto hace que las capas siguientes tengan que adaptarse a una distribución que no para de moverse — como si te cambian el tamaño del guayo mientras estás jugando. BatchNorm congela la distribución de cada capa y listo. Eso permite learning rates más altos y convergencia más rápida.</p>
+    <p>Hoy destapamos BatchNorm: la matemática completa, los errores que el 85% comete, y cómo implementarlo bien en PyTorch. Hágale.</p>
 
-## 🎯 ¿Por Qué Normalizar Entre Capas y No Solo al Inicio?
-**Definición técnica:** Batch Normalization normaliza las activaciones de una capa para cada mini-batch, aprendiendo dos parámetros entrenables ($\gamma$ y $\beta$) que permiten desnormalizar si la normalización perjudica. Aplica la normalización antes de la activación: $\text{BN}(x) = \gamma \odot \frac{x - \mu_B}{\sqrt{\sigma_B^2 + \epsilon}} + \beta$.
+    <h2>¿Por Qué Normalizar Entre Capas y No Solo al Inicio?</h2>
+    <p><strong>Definición técnica:</strong> Batch Normalization normaliza las activaciones de una capa para cada mini-batch, aprendiendo dos parámetros entrenables (γ y β) que permiten desnormalizar si la normalización perjudica. Aplica la normalización antes de la activación.</p>
+    <p><strong>Tipos:</strong></p>
+    <ul>
+      <li><strong>BatchNorm1d:</strong> Para capas lineales (Linear) con vectores de tamaño (batch, features). Mantiene running statistics.</li>
+      <li><strong>BatchNorm2d:</strong> Para capas convolucionales con tensores (batch, channels, H, W). Normaliza por canal.</li>
+      <li><strong>LayerNorm:</strong> Normaliza por muestra, no por batch. γ y β por feature. No usa estadísticas del batch.</li>
+      <li><strong>InstanceNorm:</strong> Normaliza por canal y spatial location independently. Común en style transfer.</li>
+      <li><strong>GroupNorm:</strong> Divide canales en grupos. Independencia del batch size — batch-free.</li>
+    </ul>
+    <p><strong>Imaginá:</strong> Es como si en un equipo de fútbol, en lugar de que cada jugador entrene con cualquier tipo de balón (grande, pequeño, pesado), todos usaran exactamente el mismo balón estándar. Así el portero sabe exactamente cómo va a rebotar el balón y puede entrenarse correctamente, sin importar qué balón usó el defensa en el entrenamiento anterior.</p>
 
-**Tipos:**
-- **BatchNorm1d**: Para capas lineales (Linear) con vectores de tamaño (batch, features).维护 running statistics.
-- **BatchNorm2d**: Para capas convolucionales con tensores (batch, channels, H, W). Normaliza por canal.
-- **LayerNorm**: Normaliza por muestra, no por batch. $\gamma$ y $\beta$ por feature. No usa estadísticas del batch.
-- **InstanceNorm**: Normaliza por canal y spatial location independently. Común en style transfer.
-- **GroupNorm**: Divide canales en grupos. Independencia del batch size — batch-free.
+    <h2>La Ecuación del Batch Normalization — LA JOYA</h2>
+    <p>Esta ecuación es la razón por la que hoy puedes entrenar redes de 100 capas sin que se te caiga el gradiente:</p>
+    <p>$$\hat{x}_i = \frac{x_i - \mu_B}{\sqrt{\sigma_B^2 + \epsilon}}, \quad y_i = \gamma \hat{x}_i + \beta$$</p>
+    <p><strong>Descomposición:</strong></p>
+    <ul>
+      <li><strong>μB</strong> = media del batch actual</li>
+      <li><strong>σB²</strong> = varianza del batch actual</li>
+      <li><strong>γ</strong> = parámetro de escala aprendido (inicializado en 1)</li>
+      <li><strong>β</strong> = parámetro de sesgo aprendido (inicializado en 0)</li>
+      <li><strong>ε</strong> = constante pequeña (10⁻⁵) para evitar división por cero</li>
+    </ul>
+    <p>"Durante training, μB = (1/m) Σ xi y σB² = (1/m) Σ(xi - μB)² se calculan sobre el mini-batch actual. Durante inference, se usan los running statistics acumulados durante training."</p>
 
-**Imaginá**: Es como si en un equipo de fútbol, en lugar de que cada jugador entrene con cualquier tipo de balón (grande, pequeño, pesado), todos usaran exactamente el mismo balón estándar. Así el portero sabe exactamente cómo va a rebotar el balón y puede entrenarse correctamente, sin importar qué balón usó el defensa en el entrenamiento anterior.
+    <h3>Derivación de Por Qué Funciona: Internal Covariate Shift</h3>
+    <p>El problema original que BatchNorm resuelve:</p>
+    <p>$$\mu^{(l-1)} \rightarrow \theta^{(l-1)} \rightarrow \mu^{(l)} \rightarrow \theta^{(l)} \rightarrow \ldots$$</p>
+    <p>Cada actualización de pesos cambia la distribución de activaciones que la capa siguiente recibe. Esto fuerza a cada capa a adaptarse continuamente a una distribución cambiante — ineficiente y lento.</p>
+    <p>BatchNorm fija la distribución:</p>
+    <p>$$\mu_B^{(l)} \approx \text{constante}, \quad \sigma_B^{(l)} \approx \text{constante}$$</p>
+    <p>La red puede ahora concentrar su energía en aprender, no en compensar distribuciones cambiantes.</p>
 
-## 📐 La Ecuación del Batch Normalization — LA JOYA
-Esta ecuación es la razón por la que hoy puedes entrenar redes de 100 capas sin que se te caiga el gradiente:
-$$
-\hat{x}_i = \frac{x_i - \mu_B}{\sqrt{\sigma_B^2 + \epsilon}}, \quad y_i = \gamma \hat{x}_i + \beta
-$$
-"Durante training, $\mu_B = \frac{1}{m}\sum x_i$ y $\sigma_B^2 = \frac{1}{m}\sum(x_i - \mu_B)^2$ se calculan sobre el mini-batch actual. Durante inference, se usan los running statistics acumulados durante training."
+    <h3>Inferencia: Running Statistics</h3>
+    <p>Durante training se mantienen promedios exponenciales:</p>
+    <p>$$\mu_{\text{running}} = (1 - \text{momentum}) \cdot \mu_{\text{running}} + \text{momentum} \cdot \mu_B$$</p>
+    <p>$$\sigma^2_{\text{running}} = (1 - \text{momentum}) \cdot \sigma^2_{\text{running}} + \text{momentum} \cdot \sigma^2_B$$</p>
+    <p>Durante inference:</p>
+    <p>$$y = \frac{\gamma}{\sqrt{\sigma^2_{\text{running}} + \epsilon}} \cdot x + \left(\beta - \frac{\gamma \mu_{\text{running}}}{\sqrt{\sigma^2_{\text{running}} + \epsilon}}\right)$$</p>
 
-**$\mu_B$** = media del batch actual
-**$\sigma_B^2$** = varianza del batch actual
-**$\gamma$** = parámetro de escala aprendido (inicializado en 1)
-**$\beta$** = parámetro de sesgo aprendido (inicializado en 0)
-**$\epsilon$** = constante pequeña ($10^{-5}$) para evitar división por cero
-
-### Derivación de por qué funciona: Internal Covariate Shift
-El problema original que BatchNorm resuelve:
-$$
-\mu^{(l-1)} \rightarrow \theta^{(l-1)} \rightarrow \mu^{(l)} \rightarrow \theta^{(l)} \rightarrow \ldots
-$$
-Cada actualización de pesos cambia la distribución de activaciones que la capa siguiente recibe. Esto fuerza a cada capa a adaptarse continuamente a una distribución cambiante — ineficiente y lento.
-
-BatchNorm fija la distribución:
-$$
-\mu_B^{(l)} \approx \text{constante}, \quad \sigma_B^{(l)} \approx \text{constante}
-$$
-La red puede ahora concentrar su energía en aprender, no en compensar distribuciones cambiantes.
-
-### Inferencia: Running Statistics
-Durante training se mantienen promedios exponenciales:
-$$
-\mu_{\text{running}} = (1 - \text{momentum}) \cdot \mu_{\text{running}} + \text{momentum} \cdot \mu_B
-$$
-$$
-\sigma^2_{\text{running}} = (1 - \text{momentum}) \cdot \sigma^2_{\text{running}} + \text{momentum} \cdot \sigma^2_B
-$$
-Durante inference:
-$$
-y = \frac{\gamma}{\sqrt{\sigma^2_{\text{running}} + \epsilon}} \cdot x + \left(\beta - \frac{\gamma \mu_{\text{running}}}{\sqrt{\sigma^2_{\text{running}} + \epsilon}}\right)
-$$
-
-Ejemplo numérico concreto:
-```python
+    <h3>Ejemplo Numérico Concreto</h3>
+    <pre><code class="language-python">
 import torch
 import torch.nn as nn
 import logging
@@ -244,103 +236,94 @@ if __name__ == '__main__':
     x = torch.randn(32, 784)
     out = model(x)
     logger.info(f"Output shape: {out.shape}")  # (32, 10)
-```
+    </code></pre>
 
-## 🚨 Errores Comunes (y Cómo No Cagarla)
+    <h2>Errores Comunes (y Cómo No Cagarla)</h2>
 
-**Error 1: BatchNorm en inferencia SIN model.eval()**
-**El problema**: En modo training, BatchNorm usa estadísticas del batch actual. En inferencia, si dejas `model.train()`, cada forward pass calcula media/varianza del batch de inferencia — predicciones inconsistentes para el mismo input.
-❌
-```python
+    <p><strong>Error 1: BatchNorm en Inferencia SIN model.eval()</strong></p>
+    <p><strong>El problema:</strong> En modo training, BatchNorm usa estadísticas del batch actual. En inferencia, si dejas <code>model.train()</code>, cada forward pass calcula media/varianza del batch de inferencia — predicciones inconsistentes para el mismo input.</p>
+    <pre><code class="language-python">
+# ERROR: inference sin cambiar modo
 model.train()  # Modo training
 for batch_x, batch_y in test_loader:
-    output = model(batch_x)  # ¡Usa batch statistics, no running stats!
-```
-**Por qué falla**: Sin `model.eval()`, `BatchNorm` calcula $\mu_B, \sigma_B$ sobre cada mini-batch de inferencia en lugar de usar los `running_mean` y `running_var` acumulados durante training. Las predicciones varían según el batch.
-$$
-y_{\text{inference}} = \gamma \frac{x - \mu_B}{\sqrt{\sigma_B^2 + \epsilon}} + \beta \quad \text{(incorrecto)}
-$$
-✓
-```python
+    output = model(batch_x)  # Usa batch statistics, no running stats!
+    </code></pre>
+    <p><strong>Por qué falla:</strong> Sin <code>model.eval()</code>, BatchNorm calcula μB, σB sobre cada mini-batch de inferencia en lugar de usar los <code>running_mean</code> y <code>running_var</code> acumulados durante training. Las predicciones varían según el batch.</p>
+    <p>$$y_{\text{inference}} = \gamma \frac{x - \mu_B}{\sqrt{\sigma_B^2 + \epsilon}} + \beta \quad \text{(incorrecto)}$$</p>
+    <pre><code class="language-python">
+# CORRECTO: inference con model.eval()
 model.eval()  # CRÍTICO: usa running statistics
 with torch.no_grad():
     for batch_x, batch_y in test_loader:
         output = model(batch_x)  # Consistente, usa running stats
-```
+    </code></pre>
 
-**Error 2: BatchNorm con batch size de 1**
-**El problema**: BatchNorm necesita suficiente samples para estimar media y varianza decentemente. Con batch_size=1, la varianza es esencialmente cero (un solo sample no tiene varianza), y la normalización div / sqrt(0 + eps) explota.
-❌
-```python
-# Dataset de 1 sample por batch
+    <p><strong>Error 2: BatchNorm con Batch Size de 1</strong></p>
+    <p><strong>El problema:</strong> BatchNorm necesita suficiente samples para estimar media y varianza decentemente. Con batch_size=1, la varianza es esencialmente cero, y la normalización explota.</p>
+    <pre><code class="language-python">
+# ERROR: batch_size=1
 for batch_x, batch_y in DataLoader(dataset, batch_size=1):
     output = model(batch_x)  # La normalización explota: σ² ≈ 0
     loss = criterion(output, batch_y)
     loss.backward()
-```
-**Por qué falla**: Con un solo sample, $\sigma_B^2 = 0$. La normalización $x - \mu_B / \sqrt{0 + \epsilon}$ amplifica el valor original por $1/\sqrt{\epsilon} \approx 3162$. Las activaciones explotan o se vuelven NaN.
-$$
-\sigma_B^2 = \frac{1}{1}\sum_{i=1}^{1}(x_i - \mu_B)^2 = 0
-$$
-✓
-```python
-# Batch size mínimo de 32 para BatchNorm
+    </code></pre>
+    <p><strong>Por qué falla:</strong> Con un solo sample, σB² = 0. La normalización x - μB / √(0 + ε) amplifica el valor original por 1/√ε ≈ 3162. Las activaciones explotan o se vuelven NaN.</p>
+    <p>$$\sigma_B^2 = \frac{1}{1}\sum_{i=1}^{1}(x_i - \mu_B)^2 = 0$$</p>
+    <pre><code class="language-python">
+# CORRECTO: batch size mínimo de 32
 for batch_x, batch_y in DataLoader(dataset, batch_size=32):
     output = model(batch_x)
     loss = criterion(output, batch_y)
     loss.backward()
 # Si memoria limitada: usa LayerNorm o GroupNorm que no dependen del batch
-```
+    </code></pre>
 
-**Error 3: Poner BatchNorm después de la activación**
-**El problema**: El paper original de BatchNorm especifica que debe ir antes de la no-linealidad. Si pones BatchNorm después de ReLU, normalizas valores que ya fueron clipped por ReLU — desperdicias la normalización.
-❌
-```python
+    <p><strong>Error 3: Poner BatchNorm Después de la Activación</strong></p>
+    <p><strong>El problema:</strong> El paper original de BatchNorm especifica que debe ir antes de la no-linealidad. Si pones BatchNorm después de ReLU, normalizas valores que ya fueron clipped — desperdicias la normalización.</p>
+    <pre><code class="language-python">
+# ERROR: BatchNorm DESPUÉS de ReLU
 nn.Sequential(
     nn.Linear(256, 256),
     nn.ReLU(),           # Clippa valores negativos a 0
     nn.BatchNorm1d(256), # Normalizar puros ceros y valores positivos — ineficiente
 )
-```
-**Por qué falla**: Después de ReLU, los valores negativos son 0. BatchNorm normaliza esta distribución, pero el scale $\gamma$ y shift $\beta$ tienen que aprender a "des-normalizar" el output. Es un trabajo innecesario.
-✓
-```python
+    </code></pre>
+    <p><strong>Por qué falla:</strong> Después de ReLU, los valores negativos son 0. BatchNorm normaliza esta distribución, pero el scale γ y shift β tienen que aprender a "des-normalizar" el output. Es un trabajo innecesario.</p>
+    <pre><code class="language-python">
+# CORRECTO: BatchNorm ANTES de ReLU
 nn.Sequential(
     nn.Linear(256, 256),
     nn.BatchNorm1d(256), # Normaliza antes de ReLU
-    nn.ReLU(),           # ReLU recibe valores centrados en 0, media ~0
+    nn.ReLU(),           # ReLU recibe valores centrados en 0
 )
-```
+    </code></pre>
 
-**Error 4: Usar momentum default cuando necesitas statistics rápidos**
-**El problema**: El momentum por defecto de BatchNorm es 0.1 (10% del batch actual, 90% del history). Para datasets pequeños o online learning, esto actualiza muy lento los running stats.
-❌
-```python
+    <p><strong>Error 4: Usar Momentum Default Cuando Necesitas Statistics Rápidos</strong></p>
+    <p><strong>El problema:</strong> El momentum por defecto de BatchNorm es 0.1 (10% del batch actual, 90% del history). Para datasets pequeños o online learning, esto actualiza muy lento los running stats.</p>
+    <pre><code class="language-python">
+# ERROR: momentum default muy lento
 nn.BatchNorm1d(256, momentum=0.1)  # Actualiza running stats muy lento
-```
-**Por qué falla**: Con momentum=0.1 y 1000 batches por epoch, cada epoch solo contribute ~10% al running stat update. Necesitas muchas epochs para que los running stats converjan.
-$$
-\mu_{\text{running}} = 0.1 \cdot \mu_B + 0.9 \cdot \mu_{\text{running}}
-$$
-✓
-```python
-# Para datasets pequeños o online: momentum más alto = más peso al batch actual
+    </code></pre>
+    <p><strong>Por qué falla:</strong> Con momentum=0.1 y 1000 batches por epoch, cada epoch solo contribute ~10% al running stat update. Necesitas muchas epochs para que los running stats converjan.</p>
+    <p>$$\mu_{\text{running}} = 0.1 \cdot \mu_B + 0.9 \cdot \mu_{\text{running}}$$</p>
+    <pre><code class="language-python">
+# CORRECTO: momentum más alto para datasets pequeños
 nn.BatchNorm1d(256, momentum=0.5)  # 50% batch actual, 50% history
 # Para datasets grandes donde el batch es representativo: 0.1 default está bien
-```
+    </code></pre>
 
----
-## 🎯 Resumen Ejecutivo
-BatchNorm no es "normalizar los inputs al inicio".
-Es resolver: $$\min_\theta \mathbb{E}[||\nabla_{\hat{x}} \mathcal{L}||^2]$$ mediante: $$\hat{x} = \frac{x - \mu_B}{\sqrt{\sigma_B^2 + \epsilon}}, \quad y = \gamma \hat{x} + \beta$$
-
-- **Internal covariate shift**: Cada capa anterior cambia sus pesos → cambia la distribución de activaciones → la siguiente capa tiene que adaptarse. BatchNorm congela la distribución de cada capa.
-- **Training vs inference**: Training usa $\mu_B, \sigma_B$ del batch. Inference usa `running_mean`, `running_var`. SIEMPRE llama `model.eval()` para inferencia.
-- **Batch size mínimo**: BatchNorm necesita batch_size ≥ 32 para estadísticas decentes. Para batch_size=1, usa LayerNorm o GroupNorm.
-- **Orden correcto**: Linear → BatchNorm → Activation. NO Linear → Activation → BatchNorm.
-- **Momentum**: Controla cuánto pesan los batches nuevos en running stats. Para datasets pequeños, sube el momentum (0.3-0.5).
-
-Parcero, BatchNorm cambió el juego en 2015 y hoy es estándar en prácticamente toda red profunda. Pero como todo, tiene sus detalles: sin `model.eval()` en inferencia estás usando estadísticas del batch equivocado; con batch_size=1 la normalización explota; y si lo ponés después de la activación estás desperdiciando su poder. La próxima vez que copies una arquitectura de GitHub y no entiendas por qué tiene BatchNorm entre cada capa, ya sabés por qué: es lo que permite que esa red de 100 capas converja en vez de quedarse en un plateau desde el minuto uno. ¡Nos vemos en el día 80!
+    <hr>
+    <h2>Resumen Ejecutivo</h2>
+    <p>BatchNorm no es "normalizar los inputs al inicio".</p>
+    <p>Es resolver: $$\min_\theta \mathbb{E}[||\nabla_{\hat{x}} \mathcal{L}||^2]$$ mediante: $$\hat{x} = \frac{x - \mu_B}{\sqrt{\sigma_B^2 + \epsilon}}, \quad y = \gamma \hat{x} + \beta$$</p>
+    <ul>
+      <li><strong>Internal covariate shift:</strong> Cada capa anterior cambia sus pesos → cambia la distribución de activaciones → la siguiente capa tiene que adaptarse. BatchNorm congela la distribución de cada capa.</li>
+      <li><strong>Training vs inference:</strong> Training usa μB, σB del batch. Inference usa <code>running_mean</code>, <code>running_var</code>. SIEMPRE llama <code>model.eval()</code> para inferencia.</li>
+      <li><strong>Batch size mínimo:</strong> BatchNorm necesita batch_size ≥ 32 para estadísticas decentes. Para batch_size=1, usa LayerNorm o GroupNorm.</li>
+      <li><strong>Orden correcto:</strong> Linear → BatchNorm → Activation. NO Linear → Activation → BatchNorm.</li>
+      <li><strong>Momentum:</strong> Controla cuánto pesan los batches nuevos en running stats. Para datasets pequeños, sube el momentum (0.3-0.5).</li>
+    </ul>
+    <p>Parcero, BatchNorm cambió el juego en 2015 y hoy es estándar en prácticamente toda red profunda. Pero como todo, tiene sus detalles: sin <code>model.eval()</code> en inferencia estás usando estadísticas del batch equivocado; con batch_size=1 la normalización explota; y si lo ponés después de la activación estás desperdiciando su poder. La próxima vez que copies una arquitectura de GitHub y no entiendas por qué tiene BatchNorm entre cada capa, ya sabés por qué: es lo que permite que esa red de 100 capas converja en vez de quedarse en un plateau desde el minuto uno. ¡Nos vemos en el día 80!</p>
   </article>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
