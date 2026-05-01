@@ -118,56 +118,255 @@ nav {
   </header>
 
   <article class="article-body">
-    <h1>Mechanistic Interpretability - Desmontando Redes Neuronales</h1>
-<p>Hagale pues, parcero. Dia 269 y hoy hablamos de Mechanistic Interpretability: desmontar redes neuronales capa por capa. Cafe.</p>
+<h2>🎯 Introduction</h2>
+<p>Hagale pues, parcero. Aquí en Medellín cuando empezamos un proyecto con LLMs, el 80% de los equipos se mete en problemas porque trata el LLM como si fuera una función determinista: llama, recibe, usa. Pero resulta que eso no escala, no se prueba, y cuando el modelo cambia de provider o de versión, se rompe todo. El 20% que lo hace bien sigue patrones de arquitectura que ya están probados en la industria — y hoy se los voy a mostrar con código de verdad.</p>
+<p>Construir aplicaciones robustas con LLMs no es solo hacer API calls. Es pensar en abstracción, inyección de dependencias, y estrategias de testing que reconocen que el output del modelo tiene variabilidad inherente. Vamos paso a paso.</p>
 <hr>
-<h2>🎯 Mechanistic Interpretability</h2>
-<p>Mecanistic interpretability busca entender exactamente como los circuitos neuronales implementan algoritmos:</p>
-<ul>
-<li><strong>Circuits</strong>: Patrones de conexion que implementan computo</li>
-<li><strong>Features</strong>: Representaciones internas de conceptos</li>
-<li><strong>Algorithms</strong>: Los pasos computacionales exactos</li>
-</ul>
+<h2>📐 The Math Behind LLM Application Architecture</h2>
+<p>Antes de escribir código, la matemática. Una aplicación LLM procesa secuencias de tokens. La probabilidad de una respuesta completa $R$ dado un prompt $P$ es:</p>
+<p>$$P(R|P) = \prod_{t=1}^{T} P(r_t | r_{<t}, P)$$</p>
+<p>Donde $T$ es el número de tokens en la respuesta. Esto es importante porque significa que el output es una distribución de probabilidad, no un string determinista. Cuando architectureamos nuestra aplicación, necesitamos manejar esta naturaleza estocástica explícitamente.</p>
+<p>El segundo concepto matemático clave es el <strong>reward modeling</strong> en el contexto de RLHF. La función de reward:</p>
+<p>$$R(s, a) = \mathbb{E}[r(s, a)] + \beta \cdot H(\pi_\theta)$$</p>
+<p>Donde $H(\pi_\theta)$ es la entropía de la política, que controla la exploración. Entender esto nos ayuda a diseñar mejores sistemas de evaluación para nuestras aplicaciones.</p>
 <hr>
-<h2>📐 Circuit Analysis</h2>
-<pre><code class="language-python"># Circuiteria en modelos transformer
-# induction head: copia tokens previos
-# superposition: mas features que dimensiones
+<h2>🏗️ Architecture Patterns for LLM Applications</h2>
+<p>El patrón central es el <strong>Provider Abstraction Layer</strong>. En lugar de esto:</p>
+<pre><code class="language-python"># ❌ MAL: Acoplamiento directo al provider
+def generate_response(prompt):
+    response = openai.ChatCompletion.create(
+        model="gpt-4",
+        messages=[{"role": "user", "content": prompt}]
+    )
+    return response.choices[0].message.content</code></pre>
+<p>Hacemos esto:</p>
+<pre><code class="language-python"># ✅ BIEN: Abstracción via Protocolo
+from abc import ABC, abstractmethod
+from typing import AsyncIterator
 
-# Analisis de circuito para induccion
-circuit = {
-    "token_positioning": "QK-circuit del induction head",
-    "previous_token": "V-circuit para copiar",
-    "next_token_bonus": "Attn-pattern especial"
-}
-
-def analyze_circuit(model, behavior):
-    # Activation patching para encontrar circuito
-    clean_cache = model.run(prompt_clean)
-    corrupted_cache = model.run(prompt_corrupted)
+class LLMProvider(ABC):
+    """Interface abstracta para todos los providers de LLM."""
     
-    # Patch cada capa y ver efecto
-    for layer in model.layers:
-        patched = patch(layer, clean_cache, corrupted_cache)
-        if patched.result == behavior:
-            return layer  # Este layer es parte del circuito</code></pre>
-<hr>
-<h2>🚀 Superposition</h2>
-<pre><code class="language-python"># Superposition: representar mas features que neuronas
-# Problema: necesitamos 1000 features pero solo 512 neuronas
+    @abstractmethod
+    async def generate(
+        self,
+        prompt: str,
+        temperature: float = 0.7,
+        max_tokens: int = 2048,
+        **kwargs
+    ) -> str:
+        """Genera una respuesta sincronica."""
+        pass
+    
+    @abstractmethod
+    async def stream_generate(
+        self,
+        prompt: str,
+        temperature: float = 0.7,
+        max_tokens: int = 2048,
+        **kwargs
+    ) -> AsyncIterator[str]:
+        """Genera respuesta en stream token por token."""
+        pass
 
-# Solucion: features que nunca co-ocurren se representan juntos
-# Polysemanticity: una neurona responde a multiples conceptos
+class OpenAIProvider(LLMProvider):
+    def __init__(self, api_key: str, model: str = "gpt-4"):
+        self.client = OpenAI(api_key=api_key)
+        self.model = model
+    
+    async def generate(self, prompt: str, temperature: float = 0.7, max_tokens: int = 2048, **kwargs) -> str:
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=temperature,
+            max_tokens=max_tokens,
+            **kwargs
+        )
+        return response.choices[0].message.content
+    
+    async def stream_generate(self, prompt: str, temperature: float = 0.7, max_tokens: int = 2048, **kwargs) -> AsyncIterator[str]:
+        stream = self.client.chat.completions.create(
+            model=self.model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stream=True,
+            **kwargs
+        )
+        async for chunk in stream:
+            if chunk.choices[0].delta.content:
+                yield chunk.choices[0].delta.content
 
-# Esto causa "interference" y hace interpretability dificil
-# y puede ser fuente de hallucinations</code></pre>
+class AnthropicProvider(LLMProvider):
+    def __init__(self, api_key: str, model: str = "claude-3-opus"):
+        self.client = Anthropic(api_key=api_key)
+        self.model = model
+    
+    async def generate(self, prompt: str, temperature: float = 0.7, max_tokens: int = 2048, **kwargs) -> str:
+        response = self.client.messages.create(
+            model=self.model,
+            max_tokens=max_tokens,
+            messages=[{"role": "user", "content": prompt}],
+            **kwargs
+        )
+        return response.content[0].text
+    
+    async def stream_generate(self, prompt: str, temperature: float = 0.7, max_tokens: int = 2048, **kwargs) -> AsyncIterator[str]:
+        with self.client.messages.stream(
+            model=self.model,
+            max_tokens=max_tokens,
+            messages=[{"role": "user", "content": prompt}],
+            **kwargs
+        ) as stream:
+            async for text_stream_event in stream:
+                if text_stream_event.type == "content_block_delta":
+                    yield text_stream_event.delta.text</code></pre>
 <hr>
-<h2>⚠️ Errores Comunes</h2>
-<h3>Error 1: Circuit Hunting Sin Contexto</h3>
-<p><strong>El problema</strong>: Encontrar circuitos pero no entender su rol.</p>
-<p><strong>La solucion</strong>: Estudiar el circuito completo, no solo partes.</p>
+<h2>💉 Dependency Injection for Testability</h2>
+<p>Ahora viene la magia: inyección de dependencias. Esto nos permite hacer testing real con LLMs simulados:</p>
+<pre><code class="language-python">from dataclasses import dataclass
+from typing import Protocol
+
+# Protocol en lugar de ABC para más flexibilidad
+class LLMClient(Protocol):
+    async def generate(self, prompt: str, **kwargs) -> str: ...
+
+@dataclass
+class EssayGenerator:
+    """Generador de essays que depende de abstracción, no de implementación."""
+    llm_client: LLMClient
+    max_words: int = 1000
+    
+    async def generate(self, topic: str) -> str:
+        prompt = f"Write a {self.max_words}-word essay about: {topic}"
+        return await self.llm_client.generate(prompt)
+
+# Mock para testing - retorna valores deterministas
+class MockLLMClient:
+    def __init__(self, response: str = "Mock response"):
+        self.response = response
+        self.call_count = 0
+        self.last_prompt = None
+    
+    async def generate(self, prompt: str, **kwargs) -> str:
+        self.call_count += 1
+        self.last_prompt = prompt
+        return self.response
+
+# Test con mock
+import pytest
+
+@pytest.mark.asyncio
+async def test_essay_generator():
+    mock_llm = MockLLMClient(response="This is a test essay about AI.")
+    generator = EssayGenerator(llm_client=mock_llm, max_words=100)
+    
+    result = await generator.generate("artificial intelligence")
+    
+    assert "test essay" in result.lower()
+    assert mock_llm.call_count == 1
+    assert "artificial intelligence" in mock_llm.last_prompt
+
+# Fixture para pytest-asyncio
+@pytest.fixture
+def mock_llm():
+    return MockLLMClient(response="Test response")
+
+@pytest.mark.asyncio
+async def test_with_fixture(mock_llm):
+    generator = EssayGenerator(llm_client=mock_llm)
+    result = await generator.generate("test topic")
+    assert result == "Test response"</code></pre>
 <hr>
-<p><em>Eso es todo! Nos vemos en el Dia 270.</em></p>
+<h2>🧪 Testing Strategies for LLM Applications</h2>
+<p>El testing de aplicaciones LLM es diferente al software tradicional porque el output es probabilístico. No podemosassertEqual(output, expected_string). En cambio, usamos:</p>
+<pre><code class="language-python">import pytest
+from hypothesis import given, strategies as st, settings
+
+# Property-based testing para prompts
+@given(st.text(min_size=1, max_size=1000))
+@settings(max_examples=100)
+async def test_prompt_handling(llm_client, prompt):
+    """El LLM debe manejar cualquier prompt sin crashear."""
+    try:
+        result = await llm_client.generate(prompt)
+        assert isinstance(result, str)
+        assert len(result) > 0
+    except ValueError:
+        # Prompts vacíos pueden ser rechazados
+        pass
+
+# Testing con eval metrics
+class ResponseEvaluator:
+    def __init__(self, llm_client: LLMClient):
+        self.llm = llm_client
+    
+    async def evaluate(self, prompt: str, criteria: dict) -> dict:
+        """Evalua respuestas contra criterios específicos."""
+        response = await self.llm.generate(prompt)
+        
+        return {
+            "response": response,
+            "length_ok": len(response.split()) >= criteria.get("min_words", 10),
+            "has_structure": any(marker in response for marker in ["##", "1.", "- ", "* "]),
+            "length": len(response)
+        }
+
+@pytest.mark.asyncio
+async def test_evaluation_criteria():
+    mock = MockLLMClient(response="## Introduction\nThis is a test essay.")
+    evaluator = ResponseEvaluator(mock)
+    
+    result = await evaluator.evaluate(
+        prompt="Write about AI",
+        criteria={"min_words": 5}
+    )
+    
+    assert result["length_ok"] is True
+    assert result["has_structure"] is True
+
+# Integration test con proveedor real (skip en CI)
+@pytest.mark.asyncio
+@pytest.mark.skipif(os.getenv("CI"), reason="No real API calls in CI")
+async def test_real_provider():
+    real_llm = OpenAIProvider(api_key=os.getenv("OPENAI_API_KEY"))
+    generator = EssayGenerator(llm_client=real_llm)
+    
+    result = await generator.generate("climate change")
+    assert len(result) > 100</code></pre>
+<hr>
+<h2>⚠️ Los 3 Errores Más Comunes</h2>
+<h3>Error 1: Hardcoding de LLM Calls Por Todo el Código</h3>
+<p><strong>El problema</strong>: Imagina que tienes 50 archivos con llamadas directas a OpenAI y decides migrar a Anthropic. Tienes que cambiar 50 archivos. Peor aún: los tests requieren API keys reales.</p>
+<p><strong>La solución</strong>: Inyección de dependencias desde el día uno. Usa el patrón Provider que mostré arriba. Siempres inyecta el cliente LLM, nunca lo instancies dentro de las clases que lo usan.</p>
+<pre><code class="language-python"># ❌ MAL: Instanciación directa
+class MyService:
+    def __init__(self):
+        self.llm = OpenAIProvider(api_key="sk-...")  # Coupled!
+    
+# ✅ BIEN: Inyección
+class MyService:
+    def __init__(self, llm_provider: LLMProvider):
+        self.llm = llm_provider  # Decoupled!</code></pre>
+<h3>Error 2: No Tener Capa de Abstracción Sobre el Provider</h3>
+<p><strong>El problema</strong>: Cada provider tiene su propia API. OpenAI usa <code>messages</code>, Anthropic usa <code>messages</code> también pero con estructura diferente. Sin abstracción, cambiar de provider significa reescribir toda tu lógica de prompting.</p>
+<p><strong>La solución</strong>: Unificar la interfaz. El código que usa el LLM solo conoce <code>generate(prompt)</code>. El adapter traduce entre formatos. Agregar un nuevo provider es agregar una clase, no modificar la existente.</p>
+<h3>Error 3: No Testear Aplicaciones LLM de Forma Diferente</h3>
+<p><strong>El problema</strong>: Tratar el LLM como función determinista. Esperar que <code>generate("¿Cuál es 2+2?")</code> siempre retorne <code>"4"</code>. Cuando el modelo cambia de version o temperature, los tests fallan arbitrariamente.</p>
+<p><strong>La solución</strong>: Testing por propiedades, no por valores exactos. Usa mocks deterministiccos para单元 tests. Para integración, evalúa con métricas: ¿la respuesta tiene estructura? ¿tiene longitud razonable? ¿responde al tema? No: ¿contiene exactamente estas palabras?</p>
+<pre><code class="language-python"># ❌ MAL: Test frágil
+assert "4" in generate("¿Cuánto es 2+2?")
+
+# ✅ BIEN: Test por propiedad
+response = generate("¿Cuánto es 2+2?")
+assert any(word in response for word in ["2", "dos", "two", "4"])
+assert len(response) < 50  # Respuesta corta es probable</code></pre>
+<hr>
+<h2>📊 Resumen y Cierre</h2>
+<p>Pues ahí lo tiene, parcero. Para construir aplicaciones LLM que escalen bien, necesita tres cosas: primero, una capa de abstracción sobre el provider para que pueda cambiar de modelo sin reescribir código; segundo, inyección de dependencias para que todo sea testeable sin hacer llamadas reales; tercero, estrategias de testing que acepten la naturaleza probabilística del output.</p>
+<p>La próxima vez que начальничать un proyecto con LLMs, piense en esto: ¿puedo cambiar de GPT-4 a Claude sin cambiar mi código de negocio? Si la respuesta es no, tiene un problema de arquitectura. Arrégielo antes de que sea tarde.</p>
+<p>El que aprende a architecture bien sus aplicaciones LLM, aprende a construir sobre cimientos sólidos. Eso es lo que diferencia un prototype que muere en demo de un producto que escala de verdad.</p>
+<p>Nos vemos en el Día 270.</p>
   </article>
 
   <script>
