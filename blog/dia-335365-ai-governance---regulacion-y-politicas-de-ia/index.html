@@ -118,43 +118,250 @@ nav {
   </header>
 
   <article class="article-body">
-    <h1>AI Governance - Regulacion y Politicas de IA</h1>
-<p>Hagale pues, parcero. Llegamos al Dia 335 y hoy hablamos de AI Governance: como los gobiernos y organizaciones estan regulando la inteligencia artificial. Dejala el cafe.</p>
+<h1>Advanced RAG — Lo Que el 80% Hace Mal y el 20% Hace Bien</h1>
+<p>Hagale pues, parcero. Llegamos al Día 335 y hoy nos metemos de lleno en Advanced RAG: esas técnicas que separan los retrieval平平无奇 de los retrieval de nivel production. Si estás haciendo RAG básico y crees que con eso basta, te tengo malas noticias — el 80% de los sistemas RAG en producción están fallando en algo. Dejala quietro y vamos.</p>
 <hr>
-<h2>🎯 AI Governance</h2>
-<p>AI Governance se refiere al marco de reglas, politicas y procesos que controlan el desarrollo y uso de la IA:</p>
+<h2>🔍 El Problema con RAG Básico</h2>
+<p>RAG (Retrieval-Augmented Generation) empezó siendo sencillo: embedding + cosine similarity + retrieve top-k + generate. Eso funciona... hasta que no funciona. Porque la realidad es que queries complejas, documentos heterogéneos, y usuarios que preguntan de mil formas distintas rompen ese pipeline en pedazos.</p>
+<p>La matemática detrás del retrieval básico es simple. Dada una query $q$ y un documento $d$, calculamos:</p>
+<p>$$\text{score}(q, d) = \frac{q \cdot d}{||q|| \cdot ||d||}$$</p>
+<p>Eso es el coseno de similitud. Y está bien para documentos que son semanticamente similares a la query. Pero qué pasa cuando:</p>
 <ul>
-<li><strong>Regulacion</strong>: Leyes que gobiernan sistemas de IA</li>
-<li><strong>Compliance</strong>: Respetar normas y estandares</li>
-<li><strong>Accountability</strong>: Quien es responsable de las acciones de la IA</li>
-<li><strong>Transparency</strong>: Como se explican las decisiones de IA</li>
+<li>La query tiene múltiples intenciones?</li>
+<li>El documento relevante tiene vocabulario diferente al de la query?</li>
+<li>Necesitas razonar sobre relaciones entre piezas de información?</li>
+</ul>
+<p>Ahí el RAG básico se estrella. Y es exactamente por eso que existen las técnicas de Advanced RAG.</p>
+<hr>
+<h2>🔄 Hybrid Search: La Combinación Ganadora</h2>
+<p>El primer error del 80%:依赖 solo semantic search. Eso es como manejar con un ojo cerrado. La solución es hybrid search — combinar búsqueda lexical (BM25) con búsqueda semántica (dense embeddings).</p>
+<p>La fórmula del hybrid score es:</p>
+<p>$$\text{hybrid\_score}(q, d) = \alpha \cdot \text{BM25}(q, d) + (1-\alpha) \cdot \text{cosine}(q, d)$$</p>
+<p>Donde $\alpha$ es un hyperparámetro que típicamente ajustamos entre 0.3 y 0.7 dependiendo del dominio.</p>
+<pre><code class="language-python">from sentence_transformers import SentenceTransformer
+import rank_bm25
+
+class HybridSearch:
+    def __init__(self, documents: list[str], alpha: float = 0.5):
+        self.documents = documents
+        self.alpha = alpha
+        self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+        self.corpus_embeddings = self.embedding_model.encode(documents)
+        self.tokenized_corpus = [doc.lower().split() for doc in documents]
+        self.bm25 = rank_bm25.BM25Okapi(self.tokenized_corpus)
+    
+    def retrieve(self, query: str, k: int = 10) -> list[tuple[int, float]]:
+        # Dense retrieval: semantic search
+        query_embedding = self.embedding_model.encode([query])[0]
+        dense_scores = np.inner(query_embedding, self.corpus_embeddings)
+        
+        # Sparse retrieval: BM25
+        query_tokens = query.lower().split()
+        bm25_scores = self.bm25.get_scores(query_tokens)
+        
+        # Hybrid combination
+        hybrid_scores = (
+            self.alpha * self._normalize(bm25_scores) +
+            (1 - self.alpha) * dense_scores
+        )
+        
+        top_indices = np.argsort(hybrid_scores)[::-1][:k]
+        return [(idx, hybrid_scores[idx]) for idx in top_indices]
+    
+    def _normalize(self, scores: np.ndarray) -> np.ndarray:
+        if scores.max() == scores.min():
+            return np.zeros_like(scores)
+        return (scores - scores.min()) / (scores.max() - scores.min())</code></pre>
+<hr>
+<h2>🎯 Cross-Encoder Reranking: El Segundo Paso Crítico</h2>
+<p>Segundo error del 80%: no hacer reranking. Después del retrieval inicial, los resultados pasan por un modelo cross-encoder que re-evalúa cada par (query, document) en detalle.</p>
+<p>El cross-encoder toma la query y el documento juntos y los pasa por un transformer, produciendo un score de relevancia más preciso pero más costoso computacionalmente.</p>
+<pre><code class="language-python">from sentence_transformers import CrossEncoder
+
+class Reranker:
+    def __init__(self, model_name: str = 'cross-encoder/ms-marco-MiniLM-L-6-v2'):
+        self.model = CrossEncoder(model_name)
+    
+    def rerank(
+        self,
+        query: str,
+        documents: list[str],
+        top_k: int = 10
+    ) -> list[tuple[int, float]]:
+        pairs = [(query, doc) for doc in documents]
+        scores = self.model.predict(pairs)
+        
+        ranked_indices = np.argsort(scores)[::-1][:top_k]
+        return [(idx, float(scores[idx])) for idx in ranked_indices]
+
+
+class AdvancedRAG:
+    def __init__(self, documents: list[str], alpha: float = 0.5):
+        self.hybrid_search = HybridSearch(documents, alpha)
+        self.reranker = Reranker()
+    
+    def retrieve(self, query: str, initial_k: int = 50, final_k: int = 10) -> list[str]:
+        # Step 1: Hybrid retrieval (broad search)
+        initial_results = self.hybrid_search.retrieve(query, k=initial_k)
+        retrieved_docs = [self.hybrid_search.documents[idx] for idx, _ in initial_results]
+        
+        # Step 2: Cross-encoder reranking (precision)
+        reranked = self.reranker.rerank(query, retrieved_docs, top_k=final_k)
+        
+        return [retrieved_docs[idx] for idx, score in reranked]</code></pre>
+<hr>
+<h2>🧩 Query Decomposition: Rompiendo lo Complejo</h2>
+<p>Tercer error del 80%: no descomponer queries complejas. Cuando un usuario pregunta algo como "¿Cuál fue el impacto ambiental de las políticas climáticas de la Unión Europea entre 2015 y 2020, comparado con Estados Unidos?", no puedes simplemente embeber eso y buscar.</p>
+<p>La solución es query decomposition: dividir la query compleja en sub-queries más simples, recuperar información para cada una, y luego combinar los resultados.</p>
+<pre><code class="language-python">from typing import list
+
+class QueryDecomposer:
+    def __init__(self, llm_client):
+        self.llm = llm_client
+    
+    def decompose(self, query: str) -> list[str]:
+        prompt = f"""Descompón esta query en sub-queries independientes.
+        Cada sub-query debe poder responderse por separado.
+        
+        Query: {query}
+        
+        Responde solo con las sub-queries separadas por newlines.
+        Ejemplo de formato:
+        1. [primera sub-query]
+        2. [segunda sub-query]
+        3. [tercera sub-query]"""
+        
+        response = self.llm.generate(prompt)
+        sub_queries = [q.strip() for q in response.split('\n') if q.strip()]
+        return sub_queries
+
+
+class DecomposedRAG:
+    def __init__(self, documents: list[str], llm_client):
+        self.base_rag = AdvancedRAG(documents)
+        self.decomposer = QueryDecomposer(llm_client)
+    
+    def query(self, complex_query: str, final_k: int = 10) -> dict:
+        # Step 1: Decompose
+        sub_queries = self.decomposer.decompose(complex_query)
+        
+        # Step 2: Retrieve for each sub-query
+        all_results = {}
+        for sq in sub_queries:
+            results = self.base_rag.retrieve(sq, initial_k=20, final_k=5)
+            all_results[sq] = results
+        
+        # Step 3: Merge and dedupe
+        seen = set()
+        merged = []
+        for sq, docs in all_results.items():
+            for doc in docs:
+                doc_hash = hash(doc)
+                if doc_hash not in seen:
+                    seen.add(doc_hash)
+                    merged.append(doc)
+        
+        # Step 4: Final reranking
+        reranked = self.base_rag.reranker.rerank(
+            complex_query, merged, top_k=final_k
+        )
+        
+        return {
+            'sub_queries': sub_queries,
+            'final_documents': [merged[idx] for idx, score in reranked]
+        }</code></pre>
+<hr>
+<h2>📐 La Fórmula Completa del Advanced RAG</h2>
+<p>El pipeline completo de Advanced RAG se puede expresar como:</p>
+<p>$$\text{final\_docs} = \text{TopK}\left( \text{Reranker}\left( \bigcup_i \text{HybridSearch}(sq_i, D) \right) \right)$$</p>
+<p>Donde:</p>
+<ul>
+<li>$sq_i$ = sub-queries de la descomposición</li>
+<li>$D$ = corpus de documentos</li>
+<li>$\cup$ = operación de merge + deduplicación</li>
+<li>Reranker = cross-encoder model</li>
+<li>TopK = top-k final de resultados</li>
 </ul>
 <hr>
-<h2>📐 Niveles de Gobernanza</h2>
-<pre><code class="language-python"># Niveles de governance en IA
-GOVERNANCE_LEVELS = {
-    "international": ["OECD AI Principles", "UN AI Initiatives"],
-    "national": ["EU AI Act", "US AI Bill of Rights", "China AI Regulations"],
-    "corporate": ["Ethics Boards", "AI Councils", "Internal Policies"],
-    "product": ["Model Cards", "Data Sheets", "Impact Assessments"]
-}</code></pre>
+<h2>⚠️ Los 3 Errores del 80%</h2>
+<h3>Error 1: Pure Semantic Search Sin Lexical</h3>
+<p><strong>El problema</strong>: Embeddings capturan significado pero pierden coincidencias exactas de keywords. Una query como "error 403 forbidden" no se recupera bien con solo semántica.</p>
+<p><strong>La solución</strong>: Implementar hybrid search con BM25 + dense embeddings. El componente lexical captura coincidencias exactas, el denso captura similitud semántica.</p>
+<pre><code class="language-python"># ❌ WRONG: Solo semantic
+results = semantic_search(query, top_k=10)
+
+# ✅ CORRECT: Hybrid
+results = hybrid_search(query, alpha=0.5, top_k=10)</code></pre>
+<h3>Error 2: No Usar Reranking</h3>
+<p><strong>El problema</strong>: El retrieval inicial optimiza para coverage (traer muchos docs relevantes) pero no para precision. Los primeros resultados pueden ser "suficientemente buenos" pero no óptimos.</p>
+<p><strong>La solución</strong>: Después del retrieval inicial (k=50-100), aplicar un reranker que evalúa cada par query-document en detalle. Esto cuesta más compute pero mejora dramatically la calidad.</p>
+<pre><code class="language-python"># ❌ WRONG: Solo retrieval directo
+top_docs = retrieve(query, k=10)
+
+# ✅ CORRECT: Retrieve + Rerank
+initial = retrieve(query, k=50)
+top_docs = rerank(query, initial, top_k=10)</code></pre>
+<h3>Error 3: No Descomponer Queries Complejas</h3>
+<p><strong>El problema</strong>: Queries con múltiples entidades, temporalidad, o comparaciones no se mapean bien a un solo vector. El sistema recupera docs que responden partes de la pregunta pero no la pregunta completa.</p>
+<p><strong>La solución</strong>: Usar LLM para descomponer la query en sub-queries, recuperar independientemente, y luego merge. Cada sub-query es más precisa y los resultados se complementan.</p>
+<pre><code class="language-python"># ❌ WRONG: Query compleja directo
+docs = rag.query("impacto ambiental UE vs USA 2015-2020")
+
+# ✅ CORRECT: Query decomposition
+result = decomposed_rag.query("impacto ambiental UE vs USA 2015-2020")
+# sub_queries: ["impacto ambiental UE 2015-2020", "impacto ambiental USA 2015-2020"]
+# docs: merged and reranked results</code></pre>
 <hr>
-<h2>🚀 Stakeholders</h2>
-<pre><code class="language-python"># Stakeholders en AI Governance
-stakeholders = [
-    "governments",      # Reguladores
-    "companies",        # Desarrolladores
-    "academics",        # Investigadores
-    "civil_society",    # Organizaciones publicas
-    "users"             # Usuarios finales
-]</code></pre>
+<h2>📊 Evaluación: ¿Está Funcionando Tu RAG?</h2>
+<p>Para medir si tu Advanced RAG está funcionando, usa métricas como:</p>
+<ul>
+<li><strong>Hit Rate@K</strong>: ¿Cuántas veces el documento relevante está en los top-K?</li>
+<li><strong>MRR (Mean Reciprocal Rank)</strong>: ¿Qué tan arriba está el primer documento relevante?</li>
+<li><strong>NDCG@K</strong>: ¿Cómo ponderas relevancia por posición?</li>
+</ul>
+<pre><code class="language-python">def evaluate_rag(rag_system, test_queries: list[dict]) -> dict:
+    """Evalúa un sistema RAG con queries de prueba.
+    
+    test_queries format: {
+        'query': str,
+        'relevant_docs': list[str]  # documentos que deberían estar
+    }
+    """
+    hit_rates = []
+    mrrs = []
+    
+    for test in test_queries:
+        retrieved = rag_system.retrieve(test['query'], k=10)
+        relevant = set(test['relevant_docs'])
+        
+        # Hit Rate
+        hits = sum(1 for doc in retrieved if doc in relevant)
+        hit_rates.append(hits / len(relevant))
+        
+        # MRR
+        for i, doc in enumerate(retrieved):
+            if doc in relevant:
+                mrrs.append(1 / (i + 1))
+                break
+        else:
+            mrrs.append(0)
+    
+    return {
+        'hit_rate@10': np.mean(hit_rates),
+        'mrr@10': np.mean(mrrs)
+    }</code></pre>
 <hr>
-<h2>⚠️ Errores Comunes</h2>
-<h3>Error 1: Governance Post-Mortem</h3>
-<p><strong>El problema</strong>: Regular despues de que occuren daños.</p>
-<p><strong>La solucion</strong>: Governance proactivo desde el diseño.</p>
-<hr>
-<p><em>Eso es todo! Nos vemos manana en el Dia 336.</em></p>
+<h2>✅ Resumen y Cierre Colombiano</h2>
+<p>Mira, parcero, Advanced RAG no es magia — es disciplina. Lo que el 80% hace mal es justamente lo más fácil de corregir:</p>
+<ul>
+<li>No te limites a semantic search: combina con BM25</li>
+<li>Después de retrieve, rerankea con un cross-encoder</li>
+<li>Si la query es compleja,descompila en sub-queries</li>
+</ul>
+<p>La fórmula es simple:</p>
+<p>$$\text{BUEN RAG} = \underbrace{\text{Hybrid Search}}_{\text{lexical} + \text{semantic}} + \underbrace{\text{Reranking}}_{\text{precision}} + \underbrace{\text{Query Decomp}}_{\text{para queries complejas}}$$</p>
+<p>Y eso es todo pues. Mañana en el Día 336 hablamos de Mixture of Agents — otra técnica que el 75% no conoce pero que el 25% usa para combinar modelos como los mejores. Stay tuned.</p>
+<p><em>Nos vemos en el próximo día. ✌️</em></p>
   </article>
 
   <script>
