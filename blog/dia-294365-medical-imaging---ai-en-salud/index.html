@@ -118,8 +118,592 @@ nav {
   </header>
 
   <article class="article-body">
-    <h1>Medical Imaging - AI En Salud</h1>
-<p>Content for day 294 coming soon.</p>
+<h2>🇨🇴 El Mesero que No Sabe Cocinar</h2>
+
+<p>Piénselo así: usted llega a un restaurante en Medellín, el mesero lo saluda con una sonrisa, usted pide una bandeja paisa, y el mesero le responde "muy buena elección, se la voy a preparar". Pero no sabe dónde está la cocina. No tiene receta. No puede usar los cubiertos. Literalmente solo puede leer el menú que alguien le escribió hace seis meses. Así trabajan el 75% de las integraciones de LLMs con herramientas externas: el modelo dice que va a hacer algo, pero no tiene forma real de ejecutar acciones. En este artículo vamos a ver cómo construir tool integration bien — la forma en que el 25% restante lo hace y que marca la diferencia entre un LLM útil y uno que solo conversa bonito.</p>
+
+<h2>Qué Es Tool Integration y Por Qué Existe</h2>
+
+<p>Un LLM por sí solo solo puede generar texto. Puede describir qué debería pasar, puede explicar un paso a paso, puede hasta dar instrucciones detalladas — pero no puede حقيقة hacer cosas en el mundo real. No puede buscar en Google, no puede ejecutar código, no puede consultar su base de datos, no puede enviar un email. Tool integration es el puente que conecta la capacidad de razonamiento de un LLM con la capacidad de acción de sistemas externos.</p>
+
+<p>La idea central es elegante: describir las capacidades de una herramienta (su schema), dejar que el LLM decida cuándo usarla y con qué parámetros, y luego ejecutar la herramienta y devolver el resultado. Es lo que OpenAI llama function calling y lo que Anthropic llama tool use. El LLM no ejecuta la herramienta directamente — genera una intención de ejecución que su código traduce y ejecuta.</p>
+
+<h2>Tool Schemas: El Contrato Entre LLM y Herramientas</h2>
+
+<p>El tool schema es la descripción que el LLM usa para entender qué puede hacer y cómo invocarlo. Un schema bien diseñado es la diferencia entre un LLM que 调用 la herramienta correcta con los parámetros correctos y uno que falla estrepitosamente.</p>
+
+<p>Estructura de un tool schema en el formato OpenAI:</p>
+
+<pre><code class="language-json">{
+  "type": "function",
+  "function": {
+    "name": "get_weather",
+    "description": "Obtiene el clima actual para una ciudad específica",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "city": {
+          "type": "string",
+          "description": "Nombre de la ciudad (ej: 'Bogotá', 'Medellín')"
+        },
+        "unit": {
+          "type": "string",
+          "enum": ["celsius", "fahrenheit"],
+          "description": "Unidad de temperatura",
+          "default": "celsius"
+        }
+      },
+      "required": ["city"]
+    }
+  }
+}</code></pre>
+
+<p>La clave de un buen schema:</p>
+
+<ul>
+<li><strong>description</strong> debe explicar el propósito y contexto de uso, no solo qué hace la función</li>
+<li><strong>parameters</strong> deben tener tipos claros y descripciones que el LLM pueda interpretar</li>
+<li><strong>required</strong> debe incluir solo los parámetros sin los cuales la herramienta no tiene sentido</li>
+<li><strong>defaults</strong> deben ser inteligentes — el LLM debe poder inferirlos correctamente</li>
+</ul>
+
+<h2>La Matemática del Tool Selection</h2>
+
+<p>Cuando un LLM con tool support recibe un mensaje, técnicamente está haciendo un proceso de decisión: dada la conversación actual y los tool schemas disponibles, ¿debo llamar una herramienta, múltiples herramientas, o simplemente responder con texto?</p>
+
+<p>Para modelos que usan function calling estructurado, el proceso internally es:</p>
+
+<p>Dada una secuencia de tokens $x_1, x_2, ..., x_t$ y $K$ herramientas disponibles, el modelo predice:</p>
+
+<p>$$a^* = \arg\max_{a \in \{None, tool_1, ..., tool_K\}} P(a | x_1, ..., x_t, schemas)$$</p>
+
+<p>donde $a$ es la acción seleccionada. Si $a^* = tool_j$, el modelo simultáneamente genera los parámetros $\theta_j$ para esa herramienta:</p>
+
+<p>$$P(tool_j, \theta_j | x_1, ..., x_t) = P(tool_j | context) \cdot P(\theta_j | tool_j, context)$$</p>
+
+<p>Esto significa que la calidad del schema afecta directamente la distribución de probabilidad sobre tool selection y parameter generation. Un schema ambiguo genera incertidumbre en ambas decisiones.</p>
+
+<h2>Código: Tool Integration Framework Completo</h2>
+
+<pre><code class="language-python">"""
+LLM Tool Integration Framework
+Framework completo para integrar LLMs con herramientas externas.
+"""
+
+from dataclasses import dataclass, field
+from typing import Any, Callable, Optional, list
+from enum import Enum
+from datetime import datetime
+import json
+import re
+
+
+class ToolError(Exception):
+    """Error base para excepciones de herramientas."""
+    def __init__(self, tool_name: str, message: str, recoverable: bool = True):
+        self.tool_name = tool_name
+        self.message = message
+        self.recoverable = recoverable
+        super().__init__(f"[{tool_name}] {message}")
+
+
+class ValidationError(ToolError):
+    """Error de validación de parámetros."""
+    def __init__(self, tool_name: str, message: str):
+        super().__init__(tool_name, message, recoverable=True)
+
+
+class ExecutionError(ToolError):
+    """Error durante ejecución de la herramienta."""
+    def __init__(self, tool_name: str, message: str):
+        super().__init__(tool_name, message, recoverable=True)
+
+
+class AuthenticationError(ToolError):
+    """Error de autenticación con servicio externo."""
+    def __init__(self, tool_name: str, message: str):
+        super().__init__(tool_name, message, recoverable=False)
+
+
+@dataclass
+class ToolDefinition:
+    """
+    Definición formal de una herramienta.
+    Esta definición es el 'schema' que se le pasa al LLM.
+    """
+    name: str
+    description: str
+    parameters: dict  # JSON Schema de los parámetros
+    handler: Callable  # Función que ejecuta la herramienta
+    required_permissions: list[str] = field(default_factory=list)
+    rate_limit: Optional[int] = None  # Llamadas por minuto
+    retryable: bool = True
+    timeout: int = 30  # Segundos antes de timeout
+
+    def to_openai_schema(self) -> dict:
+        """Convierte a formato de schema para OpenAI function calling."""
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": self.parameters
+            }
+        }
+
+    def to_anthropic_schema(self) -> dict:
+        """Convierte a formato Anthropic tool use."""
+        return {
+            "name": self.name,
+            "description": self.description,
+            "input_schema": self.parameters
+        }
+
+
+@dataclass
+class ToolResult:
+    """Resultado de una llamada a herramienta."""
+    tool_name: str
+    success: bool
+    result: Any = None
+    error: Optional[str] = None
+    execution_time_ms: float = 0.0
+    timestamp: datetime = field(default_factory=datetime.now)
+    retry_count: int = 0
+
+    def to_llm_message(self) -> str:
+        """
+        Formatea el resultado para enviarlo de vuelta al LLM.
+        El formato debe ser legible y no ambiguo.
+        """
+        if self.success:
+            result_str = json.dumps(self.result, ensure_ascii=False, indent=2)
+            # Truncar si es muy largo para evitar消费的 tokens
+            if len(result_str) > 2000:
+                result_str = result_str[:2000] + f"\n... (truncado, {len(result_str) - 2000} chars omitidos)"
+            return f"[Tool: {self.tool_name}] Resultado:\n{result_str}"
+        else:
+            return f"[Tool: {self.tool_name}] Error: {self.error}"
+
+
+class ToolRegistry:
+    """
+    Registro central de herramientas disponibles.
+    Mantiene el mapping entre nombres de herramientas y sus definiciones.
+    """
+
+    def __init__(self):
+        self._tools: dict[str, ToolDefinition] = {}
+        self._call_history: list[ToolResult] = []
+
+    def register(self, tool: ToolDefinition):
+        """Registra una nueva herramienta."""
+        if tool.name in self._tools:
+            raise ValueError(f"Tool '{tool.name}' ya está registrada")
+        self._tools[tool.name] = tool
+
+    def get(self, name: str) -> Optional[ToolDefinition]:
+        """Obtiene una herramienta por nombre."""
+        return self._tools.get(name)
+
+    def list_tools(self) -> list[ToolDefinition]:
+        """Lista todas las herramientas registradas."""
+        return list(self._tools.values())
+
+    def get_schemas(self, provider: str = "openai") -> list[dict]:
+        """Retorna los schemas para todos los providers soportados."""
+        converters = {
+            "openai": lambda t: t.to_openai_schema(),
+            "anthropic": lambda t: t.to_anthropic_schema(),
+        }
+        converter = converters.get(provider, converters["openai"])
+        return [converter(t) for t in self._tools.values()]
+
+    def record_call(self, result: ToolResult):
+        """Registra una llamada para logging y analytics."""
+        self._call_history.append(result)
+
+
+class ToolExecutor:
+    """
+    Ejecutor de herramientas con validación, manejo de errores y retries.
+    """
+
+    def __init__(self, registry: ToolRegistry):
+        self.registry = registry
+
+    def validate_params(
+        self,
+        tool_def: ToolDefinition,
+        params: dict
+    ) -> tuple[bool, Optional[str]]:
+        """
+        Valida los parámetros contra el schema de la herramienta.
+        Retorna (es_válido, mensaje_error).
+        """
+        schema = tool_def.parameters
+        required = schema.get("required", [])
+        properties = schema.get("properties", {})
+
+        # 1. Verificar requeridos
+        for req in required:
+            if req not in params:
+                return False, f"Parámetro requerido faltante: '{req}'"
+
+        # 2. Verificar tipos
+        for param_name, param_value in params.items():
+            if param_name not in properties:
+                return False, f"Parámetro desconocido: '{param_name}'"
+
+            expected_type = properties[param_name].get("type")
+            if not self._validate_type(param_value, expected_type):
+                return False, (
+                    f"Tipo incorrecto para '{param_name}': "
+                    f"esperado {expected_type}, recibido {type(param_value).__name__}"
+                )
+
+            # 3. Validar enum si existe
+            if "enum" in properties[param_name]:
+                if param_value not in properties[param_name]["enum"]:
+                    return False, (
+                        f"Valor inválido para '{param_name}': "
+                        f"debe ser uno de {properties[param_name]['enum']}"
+                    )
+
+        return True, None
+
+    def _validate_type(self, value: Any, expected: str) -> bool:
+        """Valida que un valor corresponda a un tipo JSON Schema."""
+        type_map = {
+            "string": str,
+            "number": (int, float),
+            "integer": int,
+            "boolean": bool,
+            "array": list,
+            "object": dict,
+        }
+        if expected not in type_map:
+            return True  # Tipo desconocido, no validar
+        return isinstance(value, type_map[expected])
+
+    def execute(
+        self,
+        tool_name: str,
+        params: dict,
+        retry_count: int = 0,
+        max_retries: int = 3
+    ) -> ToolResult:
+        """
+        Ejecuta una herramienta con manejo de errores y retries.
+        """
+        import time
+
+        tool_def = self.registry.get(tool_name)
+        if not tool_def:
+            return ToolResult(
+                tool_name=tool_name,
+                success=False,
+                error=f"Herramienta '{tool_name}' no encontrada"
+            )
+
+        start = time.time()
+
+        # Validar parámetros antes de ejecutar
+        is_valid, error_msg = self.validate_params(tool_def, params)
+        if not is_valid:
+            return ToolResult(
+                tool_name=tool_name,
+                success=False,
+                error=f"Validación fallida: {error_msg}"
+            )
+
+        # Ejecutar con manejo de errores
+        try:
+            result = tool_def.handler(**params)
+            execution_time = (time.time() - start) * 1000
+            tool_result = ToolResult(
+                tool_name=tool_name,
+                success=True,
+                result=result,
+                execution_time_ms=execution_time
+            )
+            self.registry.record_call(tool_result)
+            return tool_result
+
+        except ValidationError as e:
+            # Errores de validación no se reintentan
+            return ToolResult(
+                tool_name=tool_name,
+                success=False,
+                error=str(e)
+            )
+
+        except AuthenticationError as e:
+            # Errores de auth no son recuperables
+            return ToolResult(
+                tool_name=tool_name,
+                success=False,
+                error=f"Error de autenticación (no recuperable): {e.message}"
+            )
+
+        except Exception as e:
+            # Otros errores: retry si está habilitado
+            if retry_count < max_retries and tool_def.retryable:
+                time.sleep(2 ** retry_count)  # Exponential backoff
+                return self.execute(
+                    tool_name, params,
+                    retry_count=retry_count + 1,
+                    max_retries=max_retries
+                )
+
+            return ToolResult(
+                tool_name=tool_name,
+                success=False,
+                error=f"Error en ejecución: {type(e).__name__}: {str(e)}",
+                retry_count=retry_count
+            )
+
+
+# ============================================================
+# Ejemplo: Definición de herramientas reales
+# ============================================================
+
+def search_google(query: str, num_results: int = 10) -> list[dict]:
+    """
+    Busca en Google y retorna resultados.
+    En producción usar Google Custom Search API o SerpAPI.
+    """
+    # Simulación
+    return [
+        {"title": f"Resultado para '{query}'", "url": f"https://example.com/{i}", "snippet": "..."}
+        for i in range(num_results)
+    ]
+
+
+def send_email(to: str, subject: str, body: str) -> dict:
+    """
+    Envía un email vía SMTP o API de email.
+    Requiere credenciales configuradas en el ambiente.
+    """
+    # En producción: usar SendGrid, AWS SES, o smtplib
+    print(f"Enviando email a {to}: {subject}")
+    return {"status": "sent", "message_id": "abc123"}
+
+
+def execute_code(code: str, language: str = "python") -> dict:
+    """
+    Ejecuta código en un sandbox.
+    En producción usar servicios como Piston o CodeExec.
+    """
+    if language != "python":
+        return {"error": f"Lenguaje '{language}' no soportado"}
+    # Simulación de ejecución
+    return {"output": "Hello from executed code!", "exit_code": 0}
+
+
+# ============================================================
+# Construcción del registry y demo
+# ============================================================
+
+def build_tool_registry() -> ToolRegistry:
+    """Construye un registry con herramientas de ejemplo."""
+    registry = ToolRegistry()
+
+    # Herramienta de búsqueda
+    registry.register(ToolDefinition(
+        name="google_search",
+        description=(
+            "Busca información en Google. Úsala cuando necesites información "
+            "actual, hechos, noticias, o datos que no estés seguro. "
+            "No la uses para preguntas de opinión o matemáticas."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Consulta de búsqueda (usa términos precisos)"
+                },
+                "num_results": {
+                    "type": "integer",
+                    "description": "Número de resultados a retornar (default: 10)"
+                }
+            },
+            "required": ["query"]
+        },
+        handler=search_google,
+        timeout=15
+    ))
+
+    # Herramienta de email
+    registry.register(ToolDefinition(
+        name="send_email",
+        description=(
+            "Envía un email a un destinatario específico. "
+            "Usa esta herramienta cuando el usuario quiera contactar a alguien "
+            "por email. Requiere dirección, asunto y cuerpo del mensaje."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "to": {"type": "string", "description": "Dirección de email del destinatario"},
+                "subject": {"type": "string", "description": "Asunto del email"},
+                "body": {"type": "string", "description": "Cuerpo del mensaje (puede ser HTML)"}
+            },
+            "required": ["to", "subject", "body"]
+        },
+        handler=send_email,
+        required_permissions=["email:send"]
+    ))
+
+    # Herramienta de ejecución de código
+    registry.register(ToolDefinition(
+        name="execute_code",
+        description=(
+            "Ejecuta código Python en un sandbox. "
+            "Úsala para cálculos matemáticos, procesamiento de datos, "
+            "o para verificar código que quieras validar. "
+            "Retorna la salida estándar y el código de salida."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "code": {"type": "string", "description": "Código Python a ejecutar"},
+                "language": {
+                    "type": "string",
+                    "enum": ["python", "javascript"],
+                    "description": "Lenguaje de programación",
+                    "default": "python"
+                }
+            },
+            "required": ["code"]
+        },
+        handler=execute_code,
+        timeout=30,
+        retryable=False  # La ejecución de código no se reintenta
+    ))
+
+    return registry
+
+
+# --- Demo de uso ---
+if __name__ == "__main__":
+    # Construir registry
+    registry = build_tool_registry()
+    executor = ToolExecutor(registry)
+
+    # Listar herramientas disponibles
+    print("=== Herramientas disponibles ===")
+    for tool in registry.list_tools():
+        print(f"- {tool.name}: {tool.description[:60]}...")
+
+    # Obtener schemas para OpenAI
+    print("\n=== OpenAI Schemas ===")
+    schemas = registry.get_schemas("openai")
+    print(json.dumps(schemas[0], indent=2, ensure_ascii=False)[:500])
+
+    # Ejecutar una llamada
+    print("\n=== Ejecutar google_search ===")
+    result = executor.execute("google_search", {"query": "test", "num_results": 5})
+    print(result.to_llm_message()[:200])
+
+    # Probar manejo de errores
+    print("\n=== Validación de parámetros ===")
+    bad_result = executor.execute("send_email", {"to": "invalid"})  # Falta subject y body
+    print(bad_result.to_llm_message())
+</code></pre>
+
+<h2>Los 3 Errores Comunes (y Sus Soluciones)</h2>
+
+<h3>Error 1: Tool Schemas Mal Definidos</h3>
+
+<p>El error más frecuente y más costoso. Descriptions vagos, parámetros sin tipos claros, sin información de qué valores son válidos. El resultado: el LLM inventa parámetros, llama la herramienta con el tipo errado, o simplemente no la llama cuando debería.</p>
+
+<p><strong>Solución</strong>: Tratar los schemas como contracts de API. Cada parámetro necesita:</p>
+
+<ul>
+<li>Tipo explícito (<code>string</code>, <code>number</code>, <code>boolean</code>, <code>array</code>, <code>object</code>)</li>
+<li>Descripción que explique el contenido esperado, no solo el nombre</li>
+<li>Valores válidos documentados (enums, ranges, patterns)</li>
+<li>Cuál es el default y cuándo inferirlo</li>
+</ul>
+
+<pre><code class="language-json">// Mal: descripción vaga
+"city": { "type": "string", "description": "La ciudad" }
+
+// Bien: descripción con contexto y ejemplos
+"city": {
+  "type": "string",
+  "description": "Ciudad para la consulta de clima (ej: 'Bogotá', 'Medellín', 'Cali'). No usar abreviaturas."
+}
+</code></pre>
+
+<h3>Error 2: No Manejar Errores de Herramientas</h3>
+
+<p>Asumir que las herramientas siempre funcionan. Pero las APIs fallan, los servicios se caen, los permisos expiran, los rate limits se agotan. Si su código no maneja estos casos, el LLM recibe un error críptico y no sabe qué hacer.</p>
+
+<p><strong>Solución</strong>: Implementar manejo de errores estructurado con categorías claras:</p>
+
+<ul>
+<li><strong>ValidationError</strong>: parámetros inválidos — no reintentar, retornar error claro</li>
+<li><strong>AuthenticationError</strong>: credenciales inválidas — no reintentar, el LLM debe notificar al usuario</li>
+<li><strong>RateLimitError</strong>: límite de llamadas — esperar y reintentar con backoff</li>
+<li><strong>ExecutionError</strong>: errores inesperados — reintentar con exponential backoff</li>
+</ul>
+
+<pre><code class="language-python">result = executor.execute(tool_name, params)
+if not result.success:
+    if "Rate limit" in result.error:
+        # El LLM debe saber que puede reintentar en X segundos
+        return f"Rate limit alcanzado. Reintentar en 60 segundos."
+    elif "Authentication" in result.error:
+        # Informar al usuario, no reintentar
+        return "Error de autenticación. Por favor verificar credenciales."
+    else:
+        # Error desconocido, sugerir alternativas
+        return f"Error: {result.error}. Sugerencia: intentar con parámetros diferentes."
+</code></pre>
+
+<h3>Error 3: Llamar Herramientas Sin Validación</h3>
+
+<p>Pasar los parámetros que el LLM genera directamente a la función sin validar. Esto es un riesgo de seguridad enorme: un LLM podría generar parámetros malicious que su función no espera, o simplemente parámetros con tipos incorrectos que crashean el sistema.</p>
+
+<p><strong>Solución</strong>: SIEMPRE validar antes de ejecutar. El framework arriba implementa <code>validate_params</code> que verifica:</p>
+
+<ol>
+<li>Todos los parámetros requeridos están presentes</li>
+<li>Los tipos de datos son correctos</li>
+<li>Los valores están dentro de los enum permitidos</li>
+<li>No hay parámetros extra no definidos en el schema</li>
+</ol>
+
+<pre><code class="language-python"># Nunca hacer esto:
+result = tool.handler(**llm_generated_params)  # PELIGROSO
+
+# Siempre hacer esto:
+is_valid, error = executor.validate_params(tool_def, params)
+if not is_valid:
+    return ToolResult(success=False, error=f"Parámetros inválidos: {error}")
+result = tool_def.handler(**params)
+</code></pre>
+
+<h2>Resumen y Cierre</h2>
+
+<p>Tool integration es lo que separa un LLM que conversa de uno que realmente actúa. Sin ella, usted tiene un sistema que puede describirle cómo resolver un problema pero no puede hacerlo por usted. Con ella, tiene un agente que puede buscar, calcular, enviar, ejecutar — y hacer el trabajo real.</p>
+
+<p>Los puntos clave para implementarlo bien:</p>
+
+<ul>
+<li>Definir schemas completos con tipos, descripciones claras y valores válidos</li>
+<li>Manejar errores estructuradamente según el tipo de falla</li>
+<li>Validar TODOS los parámetros antes de ejecutar — nunca confiar ciegamente en el LLM</li>
+<li>Implementar retries con backoff exponencial para errores transitorios</li>
+<li>Dar feedback claro al LLM para que pueda recuperarse o informar al usuario</li>
+</ul>
+
+<p>En Colombia tenemos una frase que aplica perfectamente: "del dicho al hecho hay un trecho". El LLM puede decir qué herramienta quiere llamar, pero si usted no tiene la tubería bien construida para ejecutar esa llamada, validar los parámetros, manejar el error, y retornar el resultado — al final del día solo tiene un modelo muy caro que le dice cosas bonitas. El 25% que lo hace bien no solo tiene la intención sino la ejecución. Esa es la diferencia.</p>
+
+<p>Mañana continuamos con más temas de AI agents, autonomous systems, y todo lo que necesitamos para construir aplicaciones que realmente trabajen — no solo que hablen.</p>
   </article>
 
   <script>
