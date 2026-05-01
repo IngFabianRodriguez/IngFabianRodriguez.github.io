@@ -118,69 +118,251 @@ nav {
   </header>
 
   <article class="article-body">
-    <h1>Memory Systems - Persistencia En Agentes</h1>
-<p>Hagale pues, parcero. Dia 261 y hoy hablamos de Memory Systems: como los agentes guardan y usan informacion de interacciones pasadas. Cafe.</p>
+<h1>Multimodal RAG — El 80% No Lo Hace y Sus Sistemas Son 10x Menos Potentes</h1>
+<p>Hagale pues, parcero. Café en mano, hoy vamos a hablar de algo que el 80% de los equipos ignora cuando construyen sistemas RAG: <strong>Multimodal RAG</strong>. Esto no es solo poner texto en un vector database. No sire. Aquí hablamos de imágenes, audio, video, y cómo hacer que todo eso se reconozca, se recupere y se genere en una sola cadena coherente. Eso es lo que separa un sistema RAG mediocre de uno que realmente entiende el mundo.</p>
 <hr>
-<h2>🎯 Memory in Agents</h2>
-<p>Los agentes necesitan memoria para:</p>
+<h2>🎯 Por Qué Multimodal RAG?</h2>
+<p>Piensa en esto: tienes un catálogo de productos con fotos, manuales en PDF, videos tutoriales, y reseñas en audio. Un RAG tradicional solo indexa texto. Estás perdiendo el 80% de la información. La imagen del producto, el tono del cliente en la reseña de audio, el contexto visual del tutorial en video — todo eso se pierde.</p>
+<p>La fórmula de similaridad en RAG multimodal:</p>
+<p>$$\text{Sim}(\mathbf{e}_q, \mathbf{e}_d) = \frac{\mathbf{e}_q \cdot \mathbf{e}_d}{\|\mathbf{e}_q\| \|\mathbf{e}_d\|}$$</p>
+<p>Donde $\mathbf{e}_q$ y $\mathbf{e}_d$ son embeddings que viven en el <em>mismo espacio latente</em>, independientemente de si vinieron de texto, imagen o audio.</p>
+<hr>
+<h2>📐 CLIP: El Puente Entre Modalidades</h2>
+<p>CLIP (Contrastive Language-Image Pre-training) de OpenAI es el backbone de multimodal RAG moderno. La idea es simple pero poderosa: aprender embeddings joint de imagen y texto en el mismo espacio vectorial.</p>
+<pre><code class="language-python">import torch
+from PIL import Image
+import clip
+
+class MultimodalIndexer:
+    def __init__(self, model_name="ViT-B/32"):
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.model, self.preprocess = clip.load(model_name, device=self.device)
+
+    def encode_image(self, image_path: str) -> torch.Tensor:
+        """Convierte imagen a embedding vectorial."""
+        image = Image.open(image_path).convert("RGB")
+        image_input = self.preprocess(image).unsqueeze(0).to(self.device)
+        with torch.no_grad():
+            image_features = self.model.encode_image(image_input)
+        # L2 normalize para cosine similarity
+        return torch.nn.functional.normalize(image_features, dim=-1)
+
+    def encode_text(self, text: str) -> torch.Tensor:
+        """Convierte texto a embedding vectorial."""
+        text_input = clip.tokenize([text]).to(self.device)
+        with torch.no_grad():
+            text_features = self.model.encode_text(text_input)
+        return torch.nn.functional.normalize(text_features, dim=-1)
+
+    def index_image(self, image_path: str, metadata: dict) -> dict:
+        """Indexa una imagen con su embedding y metadatos."""
+        embedding = self.encode_image(image_path)
+        return {
+            "embedding": embedding.cpu().numpy().flatten(),
+            "metadata": metadata,
+            "modality": "image"
+        }
+
+    def index_video_frame(self, frame_path: str, timestamp: float, metadata: dict) -> dict:
+        """Indexa un frame de video con timestamp para contexto temporal."""
+        embedding = self.encode_image(frame_path)
+        return {
+            "embedding": embedding.cpu().numpy().flatten(),
+            "metadata": {**metadata, "timestamp": timestamp},
+            "modality": "video_frame"
+        }
+
+    def index_audio(self, audio_embedding: np.ndarray, transcript: str, metadata: dict) -> dict:
+        """Indexa audio usando transcript como puente textual."""
+        text_embedding = self.encode_text(transcript)
+        return {
+            "embedding": text_embedding.cpu().numpy().flatten(),
+            "metadata": {**metadata, "transcript": transcript},
+            "modality": "audio"
+        }</code></pre>
+<hr>
+<h2>🔍 Retrieval Multimodal Chain</h2>
+<p>Aquí es donde la magia sucede. La chain de retrieval multimodal debe manejar queries que cruzan modalidades:</p>
+<pre><code class="language-python">from typing import List, Union
+import numpy as np
+
+class MultimodalRetriever:
+    def __init__(self, indexer: MultimodalIndexer, vector_store):
+        self.indexer = indexer
+        self.store = vector_store
+
+    def retrieve(
+        self,
+        query: Union[str, np.ndarray],
+        query_modality: str = "text",
+        top_k: int = 5,
+        filters: dict = None
+    ) -> List[dict]:
+        """Recupera documentos multimodales relevantes a la query."""
+
+        # Si la query es texto, encode a embedding
+        if isinstance(query, str):
+            if query_modality == "text":
+                query_emb = self.indexer.encode_text(query)
+            elif query_modality == "image":
+                query_emb = self.indexer.encode_image(query)
+            else:
+                raise ValueError(f"Modalidad no soportada: {query_modality}")
+        else:
+            query_emb = query
+
+        # Búsqueda en vector store
+        results = self.store.similarity_search(
+            query_emb.flatten(),
+            k=top_k,
+            filter=filters
+        )
+
+        # Re-ranking por modalidad si hay filtros
+        if filters and "modality" in filters:
+            results = [r for r in results if r["modality"] == filters["modality"]]
+
+        return results
+
+    def multimodal_query(
+        self,
+        text_query: str,
+        image_query: str = None,
+        top_k: int = 5
+    ) -> List[dict]:
+        """Query que combina texto e imagen — fusión en early stage."""
+        # Embeddings de ambas modalidades
+        text_emb = self.indexer.encode_text(text_query)
+        if image_query:
+            image_emb = self.indexer.encode_image(image_query)
+            # Fusión: promedio ponderado de embeddings
+            fused_emb = 0.6 * text_emb + 0.4 * image_emb
+        else:
+            fused_emb = text_emb
+
+        return self.store.similarity_search(fused_emb.flatten(), k=top_k)</code></pre>
+<hr>
+<h2>⚠️ Errores Comunes (y Cómo Evitarlos)</h2>
+<h3>Error 1: No Soportar Queries Multimodales Cuando Hay Contenido Multimodal</h3>
+<p><strong>El problema</strong>: Tienes un dataset con imágenes y texto, pero solo permites queries en texto. El usuario sube una imagen y dice "¿qué producto es este?" y tu sistema no tiene idea.</p>
+<p><strong>La solución</strong>: Implementar un <code>multimodal_query</code> que acepte tanto texto como imagen como input:</p>
+<pre><code class="language-python"># Mal: solo aceita texto
+def retrieve_text_only(query: str, top_k: int) -> List[dict]:
+    return vector_store.search(embed_text(query), k=top_k)
+
+# Bien: acepta múltiples modalidades de input
+def retrieve_multimodal(
+    query: Union[str, Image.Image],
+    query_type: str,  # "text" o "image"
+    top_k: int
+) -> List[dict]:
+    if query_type == "image":
+        emb = encode_image(query)
+    else:
+        emb = encode_text(query)
+    return vector_store.search(emb, k=top_k)</code></pre>
+<hr>
+<h3>Error 2: Mezclar Embeddings de Diferentes Modalidades Sin Alinear Espacios</h3>
+<p><strong>El problema</strong>: Usas un modelo para embeddings de texto (OpenAI) y otro para imágenes (CLIP) y los pones en el mismo vector store sin verificar que vivan en espacios comparables. Resultado: retrieved garbage.</p>
+<p><strong>La solución</strong>: Usar un modelo joint como CLIP que produce embeddings en el mismo espacio, o alinear espacios con MUSE (Multimodal Semantic Embeddings):</p>
+<p>$$\mathbf{e}_{text}^{aligned} = \mathbf{W} \cdot \mathbf{e}_{text}^{raw} + \mathbf{b}$$</p>
+<p>donde $\mathbf{W}$ y $\mathbf{b}$ se aprenden para alinear el espacio de texto al espacio de imagen.</p>
+<pre><code class="language-python">class AlignedMultimodalIndexer:
+    def __init__(self):
+        # CLIP produce embeddings alineados nativamente
+        self.clip_model, self.preprocess = clip.load("ViT-B/32", device="cuda")
+        # NO mezcles con OpenAI text-embedding-3-large sin alineación
+
+    def index(self, content: Union[str, Image.Image], modality: str) -> dict:
+        if modality == "text":
+            emb = self.clip_model.encode_text(clip.tokenize([content]))
+        elif modality == "image":
+            img = self.preprocess(content).unsqueeze(0)
+            emb = self.clip_model.encode_image(img)
+        # Los embeddings YA están alineados
+        return normalize(emb)</code></pre>
+<hr>
+<h3>Error 3: Tratar Video Como Imagen Estática (Ignorando la Dimensión Temporal)</h3>
+<p><strong>El problema</strong>: Extraes un frame de un video y lo tratas como una imagen estática. Pero el video tiene tiempo: la acción de 0:30s importa, no solo el frame 150.</p>
+<p><strong>La solución</strong>: Indexar video con timestamps y usar retrieval temporal:</p>
+<pre><code class="language-python">import cv2
+
+class VideoIndexer:
+    def __init__(self, clip_model):
+        self.model = clip_model
+        self.fps = 1  # 1 frame por segundo para retrieval
+
+    def index_video(self, video_path: str, max_frames: int = 30) -> List[dict]:
+        """Indexa video extrayendo frames con contexto temporal."""
+        cap = cv2.VideoCapture(video_path)
+        frames = []
+        timestamps = []
+        frame_num = 0
+
+        while len(frames) < max_frames:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            if frame_num % int(cap.get(cv2.CAP_PROP_FPS)) == 0:
+                # Guardar timestamp en segundos
+                timestamp = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
+                frames.append(frame)
+                timestamps.append(timestamp)
+            frame_num += 1
+
+        cap.release()
+
+        # Crear chunks con contexto temporal
+        chunks = []
+        for i, (frame, ts) in enumerate(zip(frames, timestamps)):
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            emb = self.model.encode_image(preprocess(frame_rgb).unsqueeze(0))
+
+            chunks.append({
+                "embedding": normalize(emb).cpu().numpy().flatten(),
+                "timestamp": ts,
+                "frame_idx": i,
+                "video_path": video_path,
+                "modality": "video"
+            })
+
+        return chunks
+
+    def retrieve_with_temporal_context(
+        self,
+        query: str,
+        chunks: List[dict],
+        window_seconds: float = 5.0
+    ) -> List[dict]:
+        """Recupera frames considerando contexto temporal cercano."""
+        query_emb = self.model.encode_text(clip.tokenize([query]))
+
+        results = []
+        for chunk in chunks:
+            # Similitud base
+            sim = cosine_sim(query_emb, chunk["embedding"])
+
+            # Bonus por contexto: si hay múltiples chunks cercanos con alta similitud
+            nearby_high_sim = sum(
+                1 for c in chunks
+                if abs(c["timestamp"] - chunk["timestamp"]) < window_seconds
+                and cosine_sim(query_emb, c["embedding"]) > 0.7
+            )
+            # Boost si hay coherencia temporal
+            temporal_boost = 1.0 + (nearby_high_sim * 0.1)
+            results.append({**chunk, "score": sim * temporal_boost})
+
+        return sorted(results, key=lambda x: x["score"], reverse=True)</code></pre>
+<hr>
+<h2>📊 Resumen</h2>
 <ul>
-<li><strong>Mantener contexto</strong>: A traves de conversaciones largas</li>
-<li><strong>Aprender</strong>: De experiencias previas</li>
-<li><strong>Personalizar</strong>: Recordar preferencias del usuario</li>
+<li><strong>Multimodal RAG</strong> indexa y recupera texto, imagen, audio y video en un espacio de embeddings unificado.</li>
+<li><strong>CLIP</strong> es el estándar para crear embeddings joint de imagen y texto.</li>
+<li><strong>Video</strong> requiere tratamiento temporal: timestamps y contexto, no solo frames estáticos.</li>
+<li><strong>Errores comunes</strong>: no soportar queries multimodales, mezclar espacios de embeddings no alineados, y tratar video como imagen.</li>
 </ul>
 <hr>
-<h2>📐 Tipos De Memoria</h2>
-<pre><code class="language-python">class AgentMemory:
-    def __init__(self):
-        # Memoria a corto plazo: conversacion actual
-        self.short_term = []
-        
-        # Memoria a largo plazo: informacion persistente
-        self.long_term = []
-        
-        # Memoria episodica: experiencias pasadas
-        self.episodic = []
-    
-    def remember(self, experience):
-        self.short_term.append(experience)
-        
-        if len(self.short_term) > 10:
-            # Consolidar a largo plazo
-            summary = self.summarize(self.short_term)
-            self.long_term.append(summary)
-            self.short_term = []
-    
-    def retrieve(self, query):
-        # Buscar en todas las memorias
-        results = (
-            self.search(self.short_term, query) +
-            self.search(self.long_term, query) +
-            self.search(self.episodic, query)
-        )
-        return self.rerank(results)</code></pre>
-<hr>
-<h2>🚀 Vector Memory</h2>
-<pre><code class="language-python"># Usar embeddings para memoria
-memory_store = VectorStore()
-
-def add_to_memory(agent_id, content):
-    embedding = embed(content)
-    memory_store.add(
-        id=f"{agent_id}_{len(agent.memory)}",
-        vector=embedding,
-        content=content
-    )
-
-def retrieve_memories(agent_id, query, k=5):
-    query_emb = embed(query)
-    return memory_store.search(query_emb, k=k)</code></pre>
-<hr>
-<h2>⚠️ Errores Comunes</h2>
-<h3>Error 1: Memoria Sin Filtrar</h3>
-<p><strong>El problema</strong>: Demasiada informacion irrelevante.</p>
-<p><strong>La solucion</strong>: Resumir y consolidar regularmente.</p>
-<hr>
-<p><em>Eso es todo! Nos vemos en el Dia 262.</em></p>
+<p><em>Hagale pues, eso es todo por hoy. El que no está haciendo Multimodal RAG está dejando el 80% de su información sin indexing. Nos vemos en el Día 262.</em></p>
   </article>
 
   <script>
