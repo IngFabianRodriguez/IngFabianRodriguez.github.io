@@ -118,61 +118,305 @@ nav {
   </header>
 
   <article class="article-body">
-    <h1>EU AI Act - La Primera Ley Integral de IA</h1>
-<p>Hagale pues, parcero. Hoy es el Dia 336 y hablamos del EU AI Act: la primera ley integral de inteligencia artificial del mundo. Cafe.</p>
+<h1>Mixture of Agents — Lo Que el 75% No Conoce y el 25% Usa Para Combinar Modelos</h1>
+<p>Hagale pues, parcero. Día 336 y hoy llegamos con otra joyita que pocos conocen: Mixture of Agents (MoA). Si todavía estás dependiendo de un solo modelo para todo, estas noticias no son para ti. Pero si quieres saber cómo los que saben combinan múltiples LLMs para obtener lo mejor de cada uno, quédate quietro que aquí te cuento.</p>
 <hr>
-<h2>🎯 EU AI Act</h2>
-<p>El EU AI Act es el primer marco legal completo para regular IA:</p>
+<h2>🤔 Qué Es Mixture of Agents</h2>
+<p>Mixture of Agents es un patrón arquitectónico donde múltiples LLMs especializados trabajan juntos para resolver una tarea. En lugar de un modelo único que intenta hacerlo todo, delegas a diferentes modelos según sus fortalezas.</p>
+<p>La intuición viene de la ingeniería de software clásica: <em>separation of concerns</em>. Cada modelo tiene sus fortalezas. Un modelo puede ser mejor razonando, otro mejor siguiendo instrucciones, otro mejor generando código. MoA orchestration permite explotar esas fortalezas específicas.</p>
+<p>Matemáticamente, si tenemos un conjunto de modelos $\mathcal{M} = \{m_1, m_2, ..., m_n\}$ y una tarea $t$, el output del sistema es:</p>
+<p>$$\text{MoA}(t) = \ aggregator\left( \bigcup_{i=1}^{n} m_i(t_i) \right)$$</p>
+<p>Donde $t_i$ es la porción de la tarea asignada al modelo $i$, y el agregador combina las respuestas parciales en una respuesta final coherente.</p>
+<hr>
+<h2>🧠 El Patrón Básico de MoA</h2>
+<pre><code class="language-python">from abc import ABC, abstractmethod
+from typing import TypeVar, Generic
+import anthropic
+
+T = TypeVar('T')
+
+class LLMClient(ABC):
+    @abstractmethod
+    def generate(self, prompt: str, **kwargs) -> str:
+        pass
+
+class AnthropicClient(LLMClient):
+    def __init__(self, model: str = "claude-opus-4-5"):
+        self.client = anthropic.Anthropic()
+        self.model = model
+    
+    def generate(self, prompt: str, **kwargs) -> str:
+        response = self.client.messages.create(
+            model=self.model,
+            max_tokens=kwargs.get('max_tokens', 4096),
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return response.content[0].text
+
+class OpenAIClient(LLMClient):
+    def __init__(self, model: str = "gpt-4o"):
+        self.client = openai.OpenAI()
+        self.model = model
+    
+    def generate(self, prompt: str, **kwargs) -> str:
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[{"role": "user", "content": prompt}],
+            **kwargs
+        )
+        return response.choices[0].message.content</code></pre>
+<hr>
+<h2>🎯 Routing: A Dónde Va Cada Query</h2>
+<p>El componente crítico de MoA es el router: decides qué modelo responde qué. Esto es exactamente lo que el 75% hace mal — usan un solo modelo para todo o routen mal.</p>
+<p>El routing puede ser:</p>
 <ul>
-<li><strong>Risk-based approach</strong>: Clasificacion por niveles de riesgo</li>
-<li><strong>Transparency</strong>: Requisitos de divulgacion</li>
-<li><strong>Human oversight</strong>: Supervision humana requerida</li>
-<li><strong>Enforcement</strong>: Multas de hasta 6% del revenue global</li>
+<li><strong>Basado en reglas</strong>: Si la query es de código → modelo especializado en código</li>
+<li><strong>Basado en embedding</strong>: Clasificar la query por temática y enviar al modelo óptimo</li>
+<li><strong>Dynamic routing</strong>: Múltiples modelos responden, el agregador decide cuál confiar</li>
+</ul>
+<pre><code class="language-python">class Router:
+    def __init__(self, models: dict[str, LLMClient]):
+        self.models = models
+        self.classifier = sentence_transformers.SentenceTransformer(
+            'all-MiniLM-L6-v2'
+        )
+        # Definimos los dominios de especialización
+        self.domains = {
+            'code': ['python', 'javascript', 'coding', 'function', 'algorithm'],
+            'reasoning': ['logic', 'reasoning', 'analyze', 'compare', 'evaluate'],
+            'creative': ['story', 'creative', 'write', 'narrative', 'imagine'],
+            'factual': ['fact', 'information', 'definition', 'what is', 'who is']
+        }
+    
+    def route(self, query: str) -> str:
+        """Determina qué modelo usar basado en la query."""
+        query_lower = query.lower()
+        
+        # Routing basado en keywords de dominio
+        for domain, keywords in self.domains.items():
+            if any(kw in query_lower for kw in keywords):
+                return self._model_for_domain(domain)
+        
+        # Default: reasoning models son los más versátiles
+        return 'claude'
+    
+    def _model_for_domain(self, domain: str) -> str:
+        domain_to_model = {
+            'code': 'gpt-4o',          # GPT-4o es fuerte en código
+            'reasoning': 'claude',     # Claude para razonamiento complejo
+            'creative': 'gemini',      # Gemini para creatividad
+            'factual': 'llama'          # Modelos abiertos para hechos
+        }
+        return domain_to_model.get(domain, 'claude')
+
+
+class MixtureOfAgents:
+    def __init__(self, models: dict[str, LLMClient]):
+        self.router = Router(models)
+        self.models = models
+        self.aggregator = Aggregator()
+    
+    def generate(self, query: str, use_aggregation: bool = False) -> str:
+        if not use_aggregation:
+            # Simple routing: un modelo
+            target = self.router.route(query)
+            return self.models[target].generate(query)
+        
+        # MoA: múltiples modelos, agregación
+        candidates = self._get_candidate_models(query)
+        responses = [model.generate(query) for model in candidates]
+        return self.aggregatoraggregate(responses)</code></pre>
+<hr>
+<h2>⚖️ Cost-Quality Tradeoff: La Matemática Importante</h2>
+<p>Aquí está la verdad que el 75% ignora: no todos los modelos cuestan igual y no todos son iguales en calidad. El tradeoff es real y debes gestionarlo activamente.</p>
+<p>Definimos el <em>cost-quality ratio</em> como:</p>
+<p>$$CQ_i = \frac{Q_i}{C_i}$$</p>
+<p>Donde $Q_i$ es la calidad del modelo $i$ (medida en benchmarks) y $C_i$ es el costo por token. Quieres maximizar $CQ$ — máxima calidad por mínimo costo.</p>
+<pre><code class="language-python">MODEL_COSTS = {
+    'gpt-4o': {'cost_per_1k': 0.015, 'quality_score': 0.92},
+    'claude': {'cost_per_1k': 0.012, 'quality_score': 0.90},
+    'gemini': {'cost_per_1k': 0.008, 'quality_score': 0.85},
+    'llama':  {'cost_per_1k': 0.001, 'quality_score': 0.72},
+}
+
+def compute_cost_quality_ratio(models: dict) -> dict:
+    """Calcula CQ ratio para cada modelo."""
+    ratios = {}
+    for name, info in models.items():
+        ratio = info['quality_score'] / info['cost_per_1k']
+        ratios[name] = ratio
+    return ratios
+
+# Resultado:
+# llama: 720 (barato y "aceptable")
+# gemini: 106 (buen balance)
+# claude: 75 (cara pero buena)
+# gpt-4o: 61 (la más cara)</code></pre>
+<p>La conclusión: para tareas simples, usa modelos baratos con alto CQ (como LLama para hechos básicos). Para tareas complejas, los modelos caros siguen valiendo la pena porque la diferencia de calidad justifica el costo.</p>
+<hr>
+<h2>🔧 Aggregator: Cómo Combinar Respuestas</h2>
+<p>Cuando usas múltiples modelos, necesitas combinar sus respuestas. El agregador puede ser:</p>
+<ul>
+<li><strong>Voting</strong>: Majority vote entre respuestas similares</li>
+<li><strong>Weighted</strong>: Ponderar por quality score del modelo</li>
+<li><strong>LLM Judge</strong>: Usar otro LLM para evaluar y combinar</li>
+</ul>
+<pre><code class="language-python">class Aggregator:
+    def __init__(self, judge_model: LLMClient = None):
+        self.judge = judge_model or AnthropicClient('claude-opus-4-5')
+    
+    def aggregate(self, responses: list[str], method: str = 'llm_judge') -> str:
+        if method == 'voting':
+            return self._majority_vote(responses)
+        elif method == 'weighted':
+            return self._weighted_vote(responses)
+        elif method == 'llm_judge':
+            return self._llm_judge(responses)
+        else:
+            return responses[0]
+    
+    def _majority_vote(self, responses: list[str]) -> str:
+        # Simplified: return longest response (proxy for detail)
+        return max(responses, key=len)
+    
+    def _weighted_vote(self, responses: list[str]) -> str:
+        """Ponderar por quality score del modelo origen."""
+        # En un sistema real,trackearías qué modelo generó cada respuesta
+        # Por ahora,simulamos:
+        scored = [(len(r), MODEL_COSTS[get_model_for_response(r)]) 
+                   for r in responses]
+        weights = [s[1]['quality_score'] for s in scored]
+        return responses[np.argmax(weights)]
+    
+    def _llm_judge(self, responses: list[str]) -> str:
+        prompt = f"""Analiza las siguientes respuestas de diferentes LLMs 
+        y combina la información más precisa y completa.
+        
+        Respuestas:
+        {'='*50}
+        1. {responses[0]}
+        {'='*50}
+        2. {responses[1]}
+        {'='*50}
+        3. {responses[2]}
+        
+        Responde con una síntesis que capture lo mejor de cada una."""
+        
+        return self.judge.generate(prompt)</code></pre>
+<hr>
+<h2>⚠️ Los 3 Errores del 75%</h2>
+<h3>Error 1: No Usar Mixture de Modelos</h3>
+<p><strong>El problema</strong>: Un solo modelo intenta hacerlo todo. Código, razonamiento, creatividad, hechos. Ningún modelo es óptimo en todo.</p>
+<p><strong>La solución</strong>: Implementar MoA básico con 2-3 modelos especializados. Routing por dominio de la query.</p>
+<pre><code class="language-python"># ❌ WRONG: Solo un modelo
+response = gpt4.generate(query)
+
+# ✅ CORRECT: Mixture — routing por tipo
+model = router.route(query)  # "code" → gpt4, "reasoning" → claude
+response = models[model].generate(query)</code></pre>
+<h3>Error 2: No Tener Proper Routing</h3>
+<p><strong>El problema</strong>: Routing aleatorio o sin criterio. Mandar una query de código a un modelo débil en código produce resultados malos.</p>
+<p><strong>La solución</strong>: Clasificar la query y routear al modelo óptimo para ese dominio. Invertir en un buen clasificador o embedding-based routing.</p>
+<pre><code class="language-python"># ❌ WRONG: Sin routing (random)
+import random
+model = random.choice(['gpt4', 'claude', 'llama'])
+response = models[model].generate(query)
+
+# ✅ CORRECT: Routing inteligente
+model = router.route(query)  # Clasifica y selecciona óptimo
+response = models[model].generate(query)</code></pre>
+<h3>Error 3: No Considerar Cost-Quality Tradeoff</h3>
+<p><strong>El problema</strong>: Usar GPT-4o para todo porque "es el mejor". Cuesta una fortuna cuando un modelo más barato haría el trabajo igual de bien.</p>
+<p><strong>La solución</strong>: Calcular CQ ratio. Para tareas simples, modelos baratos con alto CQ ratio. Reservar modelos caros solo para tareas complejas que lo justifican.</p>
+<pre><code class="language-python"># ❌ WRONG: Siempre el más caro
+response = gpt4o.generate("¿Qué es Python?")  # Cuesta 100x más que necesaria
+
+# ✅ CORRECT: CQ-aware routing
+if is_simple_factual_query(query):
+    response = llama.generate(query)  # CQ alto para hechos simples
+else:
+    response = gpt4o.generate(query)    # Reservar para compleja</code></pre>
+<hr>
+<h2>📐 La Arquitectura Completa de MoA</h2>
+<p>La arquitectura completa del sistema MoA:</p>
+<p>$$\text{Input} \xrightarrow{\text{Router}} \begin{cases} m_1(t_1) & \rightarrow \text{respuesta}_1 \\ m_2(t_2) & \rightarrow \text{respuesta}_2 \\ ... \\ m_n(t_n) & \rightarrow \text{respuesta}_n \end{cases} \xrightarrow{\text{Aggregator}} \text{Output}$$</p>
+<p>Donde:</p>
+<ul>
+<li>Router = clasificador que decide qué modelo para qué query</li>
+<li>$m_i$ = modelo especializado</li>
+<li>$t_i$ = sub-tarea asignada</li>
+<li>Aggregator = combina respuestas parciales</li>
 </ul>
 <hr>
-<h2>📐 Clasificacion de Riesgo</h2>
-<pre><code class="language-python"># EU AI Act Risk Categories
-RISK_CATEGORIES = {
-    "unacceptable_risk": [
-        "Social scoring by governments",
-        "Real-time biometric surveillance",
-        "Manipulation through subliminal techniques"
-    ],
-    "high_risk": [
-        "Critical infrastructure",
-        "Education and vocational training",
-        "Employment and HR management",
-        "Essential services and credit",
-        "Law enforcement and justice",
-        "Migration and border control"
-    ],
-    "limited_risk": [
-        "Chatbots",
-        "Deepfakes",
-        "Emotion recognition"
-    ],
-    "minimal_risk": [
-        "Spam filters",
-        "AI in video games",
-        "Inventory management"
-    ]
-}</code></pre>
+<h2>🚀 Implementación Completa de Ejemplo</h2>
+<pre><code class="language-python">class ProductionMoA:
+    """Sistema MoA production-ready."""
+    
+    def __init__(self):
+        self.models = {
+            'gpt4': OpenAIClient('gpt-4o'),
+            'claude': AnthropicClient('claude-opus-4-5'),
+            'gemini': GeminiClient('gemini-pro'),
+            'llama': OllamaClient('llama3.1:8b')
+        }
+        self.router = Router(self.models)
+        self.aggregator = Aggregator(self.models['claude'])
+        self.cost_tracker = CostTracker()
+    
+    def generate(self, query: str) -> dict:
+        # Verificar complejidad para decide si usar MoA
+        if self._is_simple_query(query):
+            # Query simple: modelo barato directo
+            model = 'llama'
+            response = self.models[model].generate(query)
+            return {'response': response, 'model': model, 'cost': 0.001}
+        
+        # Query compleja: MoA
+        target_model = self.router.route(query)
+        
+        # Si es medianamente compleja: single model routing
+        if self._is_medium_complexity(query):
+            response = self.models[target_model].generate(query)
+            return {'response': response, 'model': target_model, 'cost': MODEL_COSTS[target_model]}
+        
+        # Query muy compleja: full MoA
+        candidates = self._get_top_models(query, n=3)
+        responses = {m: self.models[m].generate(query) for m in candidates}
+        
+        final_response = self.aggregator.llm_judge(list(responses.values()))
+        
+        return {
+            'response': final_response,
+            'models_used': candidates,
+            'cost': sum(MODEL_COSTS[m] for m in candidates),
+            'aggregation': 'llm_judge'
+        }
+    
+    def _is_simple_query(self, query: str) -> bool:
+        simple_patterns = ['qué es', 'definición', 'quién es', 'fecha', 'número']
+        return any(p in query.lower() for p in simple_patterns)
+    
+    def _is_medium_complexity(self, query: str) -> bool:
+        medium_patterns = ['explica', 'cómo', 'compara', 'analiza']
+        return any(p in query.lower() for p in medium_patterns)
+    
+    def _get_top_models(self, query: str, n: int = 3) -> list[str]:
+        """Retorna los top-n modelos por CQ ratio."""
+        cq = compute_cost_quality_ratio(MODEL_COSTS)
+        sorted_models = sorted(cq.items(), key=lambda x: x[1], reverse=True)
+        return [m[0] for m in sorted_models[:n]]</code></pre>
 <hr>
-<h2>🚀 Timeline</h2>
-<pre><code class="language-python"># Fases de implementacion
-IMPLEMENTATION = {
-    "2024": "Prohibiciones entran en vigor",
-    "2025": "Codigos de conducta y transparencia",
-    "2026": "Requirements para high-risk systems",
-    "2027": "Todas las obligaciones aplican"
-}</code></pre>
-<hr>
-<h2>⚠️ Errores Comunes</h2>
-<h3>Error 1: Ignorar el Act</h3>
-<p><strong>El problema</strong>: Multas astronomicas por no compliance.</p>
-<p><strong>La solucion</strong>: Audit trail desde el diseño.</p>
-<hr>
-<p><em>Eso es todo! Nos vemos en el Dia 337.</em></p>
+<h2>✅ Resumen y Cierre Colombiano</h2>
+<p>Mira, parcero, MoA no es ciencia espacial — es sentido común aplicado. Lo que el 75% hace mal es justamente lo más obvio:</p>
+<ul>
+<li>No usar múltiples modelos especializados</li>
+<li>No tener routing inteligente</li>
+<li>No considerar que los modelos caros no siempre valen la pena</li>
+</ul>
+<p>La fórmula es simple:</p>
+<p>$$\text{BUEN MoA} = \underbrace{\text{Routing}}_{\text{¿Qué modelo para qué?}} + \underbrace{\text{Specialization}}_{\text{Cada modelo en lo suyo}} + \underbrace{\text{Aggregation}}_{\text{Combinar lo mejor}}$$</p>
+<p>Y eso es todo pues. Mañana en el Día 337 seguimos con más contenido del proyecto #365DaysOfAI. Si esto te sirvió, compártelo con alguien que esté usando un solo modelo para todo y necesite abrir los ojos.</p>
+<p><em>Nos vemos en el próximo día. ✌️</em></p>
   </article>
 
   <script>
