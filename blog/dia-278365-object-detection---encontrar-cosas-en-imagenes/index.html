@@ -118,8 +118,457 @@ nav {
   </header>
 
   <article class="article-body">
-    <h1>Object Detection - Encontrar Cosas En Imagenes</h1>
-<p>Content for day 278 coming soon.</p>
+<h2>El problema que nadie quiere ver</h2>
+
+<p>Imagina que tienes un Ferrari pero lo usas solo para ir al mercado de la esquina a comprar un baguette. Eso es exactamente lo que hace el 75% de los equipos con sus modelos de ML en producción: dejan que el modelo compute attention sobre tokens que ya procesaron hace 20 tokens, no usan batching porque "es más simple así", y asumen que el bottleneck está donde parece estar y no donde realmente está.</p>
+
+<p>En una máquina de inference, cada milisegundo cuenta. Si tu modelo tarda 500ms en responder, el usuario se va. Si tardas 50ms, el usuario se queda. Y la diferencia entre 500ms y 50ms no es un modelo más grande o más pequeño — es cómo le sacas el jugo a lo que ya tienes. Eso es efficient inference: aprender a correr más rápido sin cambiar el motor.</p>
+
+<h2>La anatomía del inference: dónde se va el tiempo</h2>
+
+<p>Antes de optimizar, hay que entender. El inference de un transformer tiene这几个 componentes:</p>
+
+<ul>
+<li><strong>Embedding lookup</strong>: convertir tokens a vectores — típicamente 5-10% del tiempo</li>
+<li><strong>Attention computation</strong>: el famoso O(n²) sobre la secuencia — 30-60% del tiempo</li>
+<li><strong>FFN (Feed-Forward Network)</strong>: las capas densas — 30-50% del tiempo</li>
+<li><strong>Output projection</strong>: convertir logits a probabilidades — negligible</li>
+</ul>
+
+<p>El attention es el villain usual. Para una secuencia de longitud 2048, estás computando 2048² = 4 millones de parejas de tokens. Para 4096, son 16 millones. Y cada una de esas parejas requiere una multiplication de matrices que consume tiempo y VRAM.</p>
+
+<h3>KV Cache: el atajo que cambia todo</h3>
+
+<p>Durante autoregressive generation, para generar el token t, el modelo ya calculó attention para los tokens 1 hasta t-1. Pero si no guardas esos valores, tienes que recalcularlos cada vez. El KV cache guarda los keys y values ya computados para no recalcularlos.</p>
+
+<p>Sin KV cache, generar 100 tokens significa compute attention para 1+2+3+...+100 = 5050 posiciones. Con KV cache, solo computas attention para 100 posiciones nuevas. Eso es 50x menos compute para una secuencia de 100 tokens.</p>
+
+<h3>Continuous Batching: aprovechando cada GPU cycle</h3>
+
+<p>El batching tradicional espera a que TODAS las secuencias en el batch terminen antes de procesar el siguiente token. Si tienes un batch de 8 secuencias y una tiene longitud 50 y otra longitud 500, las 7 cortas esperan a que la larga termine.</p>
+
+<p>Continuous batching (también llamado iteration-level scheduling) permite que nuevas secuencias entren al batch cuando otras terminan. El throughput mejora 5-10x porque la GPU nunca está ociosa esperando.</p>
+
+<h2>Implementación de profiling y optimización</h2>
+
+<pre><code>import torch
+import time
+from typing import Dict, List, Tuple
+import matplotlib.pyplot as plt
+
+class InferenceProfiler:
+    """
+    Profile inference para identificar bottlenecks reales.
+    No asumas nada — mide todo.
+    """
+    def __init__(self, model, device='cuda'):
+        self.model = model
+        self.device = device
+        self.timings = {}
+        self.activations = {}
+    
+    def profile_single_forward(
+        self, 
+        input_ids: torch.Tensor, 
+        num_tokens_to_generate: int = 50
+    ) -> Dict[str, float]:
+        """
+        Profile una forward pass completa con KV cache.
+        Retorna tiempos desglosados por componente.
+        """
+        self.model.eval()
+        
+        # Warm-up para evitar cold-start artifacts
+        with torch.no_grad():
+            _ = self.model(input_ids[:, :10])
+        
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        
+        timings = {}
+        
+        # Solo el embedding primero
+        start = time.perf_counter()
+        with torch.no_grad():
+            embeds = self.model.embed_tokens(input_ids)
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        timings['embedding'] = time.perf_counter() - start
+        
+        # Forward completo sin generation
+        start = time.perf_counter()
+        with torch.no_grad():
+            outputs = self.model(inputs_embeds=embeds, use_cache=True)
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        timings['first_forward'] = time.perf_counter() - start
+        
+        # Cada token subsiguiente (con KV cache)
+        past_key_values = outputs.past_key_values
+        next_token_logits = outputs.logits[:, -1, :]
+        
+        token_times = []
+        for i in range(num_tokens_to_generate - 1):
+            start = time.perf_counter()
+            with torch.no_grad():
+                outputs = self.model(
+                    input_ids=next_token_logits.argmax(dim=-1).unsqueeze(-1),
+                    past_key_values=past_key_values,
+                    use_cache=True
+                )
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            token_times.append(time.perf_counter() - start)
+            past_key_values = outputs.past_key_values
+            next_token_logits = outputs.logits
+        
+        timings['per_token_avg'] = sum(token_times) / len(token_times)
+        timings['per_token_p50'] = sorted(token_times)[len(token_times)//2]
+        timings['per_token_p99'] = sorted(token_times)[int(len(token_times)*0.99)]
+        
+        return timings
+
+
+def profile_attention_bottleneck(
+    model, 
+    input_ids: torch.Tensor, 
+    seq_lengths: List[int] = [128, 256, 512, 1024, 2048]
+) -> Dict[int, float]:
+    """
+    Mide cómo escala el attention con la longitud de secuencia.
+    Esto te dice si attention ES tu bottleneck.
+    """
+    results = {}
+    
+    for seq_len in seq_lengths:
+        # Truncar o padding según sea necesario
+        if input_ids.shape[1] < seq_len:
+            # Padding con zeros
+            padded = torch.zeros(
+                input_ids.shape[0], seq_len, 
+                dtype=input_ids.dtype, device=input_ids.device
+            )
+            padded[:, :input_ids.shape[1]] = input_ids
+            ids = padded
+        else:
+            ids = input_ids[:, :seq_len]
+        
+        model.eval()
+        
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        
+        start = time.perf_counter()
+        with torch.no_grad():
+            _ = model(ids, use_cache=False)
+        
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        
+        elapsed = time.perf_counter() - start
+        results[seq_len] = elapsed
+        
+        print(f"Seq len {seq_len:5d}: {elapsed*1000:8.2f}ms")
+    
+    return results
+
+
+def optimize_attention_with_flash_attention(
+    model, 
+    enable_flash: bool = True,
+    enable_gradient_checkpointing: bool = False
+):
+    """
+    Optimizaciones de attention que pueden 2-4x speedup.
+    """
+    if enable_flash:
+        # Flash Attention 2: atención exacta 2-4x más rápida
+        # Requiere hardware compatible (A100, H100, etc.)
+        if hasattr(model, 'config'):
+            model.config.use_flash_attention_2 = True
+            print("Flash Attention 2 enabled")
+    
+    if enable_gradient_checkpointing:
+        # Gradient checkpointing: guarda menos activations durante forward
+        # tradeoff: 20-30% más lento forward, 50% menos VRAM
+        model.gradient_checkpointing_enable()
+        print("Gradient checkpointing enabled")
+    
+    return model
+
+
+class ContinuousBatchingScheduler:
+    """
+    Implementación simplificada de continuous batching.
+    En producción usar vLLM o TensorRT-LLM que lo hacen bien.
+    """
+    def __init__(self, max_batch_size=32, max_seq_len=4096):
+        self.max_batch_size = max_batch_size
+        self.max_seq_len = max_seq_len
+        self.running_sequences = []  # (seq_id, current_len, generated_token)
+        self.completed = []
+        self.results = {}
+    
+    def add_sequences(self, prompts: List[torch.Tensor]):
+        """Añade nuevas secuencias al batch."""
+        for i, prompt in enumerate(prompts):
+            seq_len = prompt.shape[0]
+            if seq_len < self.max_seq_len and len(self.running_sequences) < self.max_batch_size:
+                self.running_sequences.append((i, seq_len, prompt))
+    
+    def step(self, model) -> Dict[int, int]:
+        """
+        Un step de inference con continuous batching.
+        Retorna {seq_id: generated_token} para las secuencias activas.
+        """
+        if not self.running_sequences:
+            return {}
+        
+        # Pad todas las secuencias a la misma longitud
+        max_len = max(len(seq[2]) for seq in self.running_sequences)
+        
+        batch_ids = []
+        seq_ids = []
+        active_mask = []
+        
+        for seq_id, current_len, tokens in self.running_sequences:
+            # Padding
+            padded = tokens
+            if len(tokens) < max_len:
+                padded = torch.cat([
+                    tokens,
+                    torch.zeros(max_len - len(tokens), dtype=tokens.dtype, device=tokens.device)
+                ])
+            batch_ids.append(padded)
+            seq_ids.append(seq_id)
+            active_mask.append(True)
+        
+        # Forward pass con el batch completo
+        batch_tensor = torch.stack(batch_ids).to(model.device)
+        
+        with torch.no_grad():
+            outputs = model(batch_ids)  # Simplified
+        
+        # Extraer el siguiente token para cada secuencia
+        next_tokens = {}
+        still_running = []
+        
+        for i, (seq_id, current_len, tokens) in enumerate(self.running_sequences):
+            if current_len >= self.max_seq_len:
+                # Secuencia llegó al límite — marcarla como completada
+                self.completed.append(seq_id)
+                continue
+            
+            next_token = outputs[i, current_len-1].argmax().item()
+            next_tokens[seq_id] = next_token
+            
+            # Actualizar tokens
+            new_tokens = torch.cat([tokens, torch.tensor([next_token], device=tokens.device)])
+            
+            if next_token == 2:  # EOS token (asumiendo id=2)
+                self.completed.append(seq_id)
+                self.results[seq_id] = new_tokens
+            else:
+                still_running.append((seq_id, len(new_tokens), new_tokens))
+        
+        self.running_sequences = still_running
+        
+        return next_tokens
+
+
+def benchmark_batching_speedup(
+    model,
+    input_ids: torch.Tensor,
+    num_tokens: int = 100
+) -> Dict[str, float]:
+    """
+    Compara throughput: batch_size=1 vs batch_size=8 vs batch_size=16.
+    """
+    results = {}
+    
+    for batch_size in [1, 4, 8, 16]:
+        # Crear batch
+        batch = input_ids.repeat(batch_size, 1)
+        
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        
+        start = time.perf_counter()
+        
+        model.eval()
+        with torch.no_grad():
+            # Simular generation
+            seq_len = input_ids.shape[1]
+            past = None
+            
+            for _ in range(num_tokens):
+                if past is None:
+                    out = model(batch[:, :seq_len], use_cache=True)
+                else:
+                    out = model(
+                        batch[:, seq_len-1:seq_len],
+                        past_key_values=past,
+                        use_cache=True
+                    )
+                past = out.past_key_values
+        
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        
+        elapsed = time.perf_counter() - start
+        throughput = (batch_size * num_tokens) / elapsed
+        
+        results[f'batch_{batch_size}'] = {
+            'total_time': elapsed,
+            'throughput_tokens_per_sec': throughput,
+            'latency_per_token': elapsed / num_tokens
+        }
+        
+        print(f"Batch {batch_size}: {elapsed:.2f}s total, "
+              f"{throughput:.0f} tok/s, {elapsed/num_tokens*1000:.1f}ms/token")
+    
+    return results</code></pre>
+
+<h2>Los 3 errores más comunes</h2>
+
+<h3>Error 1: No perfilar inference y asumir que sabes dónde está el bottleneck</h3>
+
+<p><strong>El error:</strong> "Sé que el attention es lento" — pero no lo mides. En la práctica, el bottleneck real puede ser el embedding lookup, el CPU-GPU data transfer, o incluso el softmax si la implementación es ineficiente. En un caso real que vi, el equipo optimizó attention por semanas cuando el problema real era que estaban haciendo CPU-GPU sync en cada token para logging.</p>
+
+<p><strong>La solución:</strong> Usa el profiler ANTES de optimizar. Mide cada componente por separado:</p>
+
+<pre><code># Primero: perfil general para identificar en qué se va el tiempo
+profiler = InferenceProfiler(model)
+timings = profiler.profile_single_forward(test_input, num_tokens_to_generate=50)
+
+print("=== TIME BREAKDOWN ===")
+for component, t in sorted(timings.items(), key=lambda x: -x[1]):
+    print(f"{component:20s}: {t*1000:8.2f}ms")
+
+# Segundo: si attention escala mal, perfil específicamente attention
+# Si embedding es más lento de lo esperado, puede ser CPU bottleneck
+if timings['embedding'] > 0.1 * sum(timings.values()):
+    print("⚠️ Embedding es unexpectedly alto — verificar CPU-GPU transfer")
+
+# Tercero: para modelos grandes, usar nsys (NVIDIA) o PyTorch profiler
+# nsys profile -o inference_report ./inference_script.py</code></pre>
+
+<h3>Error 2: No usar KV cache cuando puede dar 2x throughput</h3>
+
+<p><strong>El error:</strong> Algunos equipos NO usan KV cache en generación porque "es más simple sin él" o porque no saben cómo manejar secuencias de longitud variable. El resultado: 50x más compute para generar secuencias largas de lo necesario.</p>
+
+<p><strong>La solución:</strong> Casi todos los frameworks modernos soportan KV cache nativamente. Solo necesitas pasar <code>use_cache=True</code> y <code>past_key_values</code> entre pasos:</p>
+
+<pre><code># Wrong: recalcula todo cada vez (50x más lento)
+for i in range(num_new_tokens):
+    outputs = model(full_sequence_with_new_token)
+    full_sequence = torch.cat([full_sequence, new_token])
+
+# Correct: usa KV cache (2x-50x speedup dependiendo de seq length)
+past_key_values = None
+for i in range(num_new_tokens):
+    if past_key_values is None:
+        # Primer token: full context
+        outputs = model(input_ids[:, :-1], use_cache=True)
+    else:
+        # Tokens subsiguientes: solo el nuevo token
+        outputs = model(
+            input_ids=new_token.unsqueeze(-1),
+            past_key_values=past_key_values,
+            use_cache=True
+        )
+    past_key_values = outputs.past_key_values
+    new_token = outputs.logits[:, -1, :].argmax()</code></pre>
+
+<h3>Error 3: No usar batching cuando puede dar 10x throughput</h3>
+
+<p><strong>El error:</strong> Procesar solicitudes una por una ("batch_size=1") porque "es más fácil de implementar" o porque "las solicitudes llegan en momentos diferentes". Cada forward pass tiene overhead fijo de GPU kernel launch y memory access. Con batch_size=1, ese overhead domina. Con batch_size=8, el overhead se amortiza 8 veces.</p>
+
+<p><strong>La solución:</strong> Implementa batching dinámico con cola de solicitudes. Si llegan 10 requests casi al mismo tiempo, processalos juntos. Si llegan uno por uno espaciados, procesalos inmediatamente — no esperando más de X ms:</p>
+
+<pre><code>from collections import deque
+import threading
+import time
+
+class RequestBatcher:
+    """
+    Cola que agrupa requests en batches dinámicamente.
+    Espera max_wait_ms para acumular más requests antes de procesar.
+    """
+    def __init__(self, model, max_batch_size=16, max_wait_ms=50):
+        self.model = model
+        self.max_batch_size = max_batch_size
+        self.max_wait_ms = max_wait_ms
+        self.queue = deque()
+        self.lock = threading.Lock()
+    
+    def add_request(self, prompt: str) -> torch.Tensor:
+        """Añade un request y retorna el result future."""
+        # En producción usar async/await, esto es simplificado
+        event = threading.Event()
+        with self.lock:
+            self.queue.append((prompt, event))
+        return event
+    
+    def process_loop(self):
+        """Loop que procesa batches continuamente."""
+        while True:
+            # Esperar hasta tener requests
+            time.sleep(self.max_wait_ms / 1000)
+            
+            with self.lock:
+                if not self.queue:
+                    continue
+                
+                # Tomar hasta max_batch_size requests
+                batch = []
+                while self.queue and len(batch) < self.max_batch_size:
+                    batch.append(self.queue.popleft())
+            
+            # Procesar batch juntos
+            prompts = [item[0] for item in batch]
+            events = [item[1] for item in batch]
+            
+            # Tokenizar batch completo
+            inputs = tokenize_batch(prompts)
+            
+            # Forward pass único para todos
+            outputs = self.model(inputs)
+            
+            # Separar resultados
+            for i, event in enumerate(events):
+                event.result = outputs[i]
+                event.set()
+
+# Uso:
+batcher = RequestBatcher(model, max_batch_size=8, max_wait_ms=50)
+threading.Thread(target=batcher.process_loop, daemon=True).start()
+
+# Request arrives → goes to batch automatically
+result_event = batcher.add_request("¿Cómo estás?")
+result_event.wait()  # Espera a que se procese con el batch
+result = result_event.result</code></pre>
+
+<h2>Más allá: técnicas avanzadas de optimización</h2>
+
+<p>Una vez tienes profiling, KV cache, y batching básicos, hay más técnicas:</p>
+
+<ul>
+<li><strong>Speculative decoding</strong>: un small model drafts tokens, large model verifica — hasta 3x speedup</li>
+<li><strong>Paged Attention</strong> (vLLM): maneja KV cache en páginas de memoria, evita fragmentation — hasta 2x throughput</li>
+<li><strong>Quantization durante inference</strong>: INT8 o FP16 durante generación — hasta 2x throughput con poco accuracy loss</li>
+<li><strong>CUDA graphs</strong>: elimina Python overhead en el inference loop — 10-20% speedup</li>
+</ul>
+
+<h2>Resumen y cierre</h2>
+
+<p>Efficient inference no es magia ni es difícil. Es disciplina: medir antes de optimizar, usar KV cache siempre, usar batching siempre, y conocer las herramientas que tienes (Flash Attention, continuous batching, paged attention) antes de inventar la rueda.</p>
+
+<p>El 75% que no conoce estas técnicas está dejando dinero en la mesa. GPUs ociosas esperando, secuencias recalculándose, batches de tamaño 1 cuando podrían ser 16. No es que no se pueda — es que no se sabe. Y en este país, como dice el dicho, "el que no sabe es como el que no ve".</p>
+
+<p>Así que la próxima vez que tu modelo esté lento, no pienses en cambiar a un modelo más pequeño. Piensa en sacarle el jugo a lo que ya tienes. Eso es ser eficiente. Eso es intelligent inference.</p>
+
+<p><strong>Hasta el próximo día.</strong></p>
   </article>
 
   <script>
