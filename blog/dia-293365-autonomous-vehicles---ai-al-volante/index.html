@@ -118,8 +118,444 @@ nav {
   </header>
 
   <article class="article-body">
-    <h1>Autonomous Vehicles - AI Al Volante</h1>
-<p>Content for day 293 coming soon.</p>
+<h2>🇨🇴 La Pecera Sin Memoria</h2>
+
+<p>Imagine que cada vez que usted entra a hablar con un LLM es como llegar a una cafetería en Bogotá donde el mesero no lo reconoce. No importa que ayer le contó sus problemas con el servidor de producción, hoy empieza de cero. Usted repite la historia completa otra vez. El mesero escucha atento, pero no recuerda nada. Así trabajan el 85% de las aplicaciones LLM hoy: cada request llega vacío, sin contexto previo, reconstruyendo todo desde el principio. En este artículo vamos a ver cómo cambiar eso con un sistema de memory management bien diseñado — y por qué el 85% de los desarrolladores no lo hace bien.</p>
+
+<h2>Short-Term vs Long-Term Memory en LLMs</h2>
+
+<p>Un LLM sin memoria es como un estudiante que cada vez que abre un libro nuevo no recuerda nada de lo que leyó ayer. Técnicamente, un LLM standard tiene un <strong>context window</strong> que actúa como su memoria de corto plazo: puede ver los últimos N tokens de la conversación y usarlos como referencia inmediata. Pero cuando la conversación se extiende o se necesita información de días o semanas anteriores, esa memoria de corto plazo simplemente no alcanza.</p>
+
+<p>La <strong>short-term memory</strong> es el contexto que se mantiene dentro de una sesión: los mensajes recientes, el hilo de la conversación actual, los datos que acaban de pasarse. Se mide en tokens y tiene un límite físico impuesto por la arquitectura del modelo. Si usted está en un chat que lleva 50 mensajes, probablemente ya esté perdiendo información de los primeros.</p>
+
+<p>La <strong>long-term memory</strong> es otra historia. Es el conocimiento acumulado sobre el usuario, preferencias, interacciones pasadas, facts relevantes. Esta información no cabe en el context window y necesita vivir en algún lugar externo: una base de datos, un vector store, un archivo. Sin long-term memory, cada conversación es un陌生人 (desconocido) para el modelo.</p>
+
+<h2>La Matemática de la Recuperación de Memoria</h2>
+
+<p>El retrieval de información en memory systems se basa principalmente en <strong>similarity search</strong> sobre embeddings. La idea central: convertir texto en vectores numéricos y encontrar los vectores más similares a la query actual.</p>
+
+<p>Dados dos vectores $u$ y $v$ en $\mathbb{R}^d$, la <strong>similitud coseno</strong> se define como:</p>
+
+<p>$$\text{sim}(u, v) = \frac{u \cdot v}{||u|| \cdot ||v||} = \frac{\sum_{i=1}^d u_i v_i}{\sqrt{\sum_{i=1}^d u_i^2} \cdot \sqrt{\sum_{i=1}^d v_i^2}}$$</p>
+
+<p>Esta métrica produce valores en $[-1, 1]$, donde 1 significa vectores idénticos y valores cercanos a 0 significan ortogonales (sin relación semántica). En la práctica, para retrieval usamos embeddings como <code>text-embedding-3-small</code> de OpenAI que producen vectores de 1536 dimensiones.</p>
+
+<p>Alternativamente, la <strong>distancia euclidiana</strong>:</p>
+
+<p>$$d(u, v) = ||u - v||_2 = \sqrt{\sum_{i=1}^d (u_i - v_i)^2}$$</p>
+
+<p>Para vectores normalizados, ambas métricas sonmonótonas entre sí (mayor similitud coseno = menor distancia euclidiana). En un vector store como FAISS o Chroma, el retrieval más cercano se hace con algoritmos aproximados como HNSW (Hierarchical Navigable Small World) que logran $O(\log N)$ en lugar de $O(N)$ para búsqueda exacta.</p>
+
+<h2>Arquitectura de un Memory Management System</h2>
+
+<p>Un sistema completo de memory management tiene cuatro componentes fundamentales:</p>
+
+<ul>
+<li><strong>Memory Store</strong>: dónde se persiste la información (vector DB, SQL, Redis)</li>
+<li><strong>Embedding Layer</strong>: convierte texto a vectores para similarity search</li>
+<li><strong>Retrieval Layer</strong>: dada una query, encuentra la información más relevante</li>
+<li><strong>Memory Lifecycle Manager</strong>: decide qué guardar, cuándo actualizar, cuándo borrar</li>
+</ul>
+
+<p>El flujo básico es:</p>
+
+<ol>
+<li><strong>Guardar</strong>: cada interacción relevante se embeddea y se almacena en el vector store junto con metadata (timestamp, tipo, usuario)</li>
+<li><strong>Recuperar</strong>: cuando llega un request nuevo, la query se embeddea y se buscan los k documentos más similares</li>
+<li><strong>Rankear</strong>: los resultados se reordenan por relevancia, recencia, u otros factores</li>
+<li><strong>Insertar en contexto</strong>: los documentos más relevantes se incluyen en el prompt que va al LLM</li>
+</ol>
+
+<h2>Código: Implementando un Memory Management System</h2>
+
+<pre><code class="language-python">"""
+LLM Memory Management System
+Sistema de gestión de memoria para aplicaciones LLM.
+"""
+
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Optional
+from enum import Enum
+import numpy as np
+import json
+
+
+class MemoryType(Enum):
+    SHORT_TERM = "short_term"      # Memoria de la sesión actual
+    LONG_TERM = "long_term"        # Memoria persistente entre sesiones
+    EPISODIC = "episodic"           # Eventos o interacciones específicas
+    SEMANTIC = "semantic"           # Conocimiento factual persistente
+
+
+@dataclass
+class MemoryItem:
+    """Un item individual de memoria."""
+    content: str                    # Texto o información almacenada
+    memory_type: MemoryType         # Tipo de memoria
+    embedding: Optional[np.ndarray] = None  # Vector del embedding
+    created_at: datetime = field(default_factory=datetime.now)
+    last_accessed: datetime = field(default_factory=datetime.now)
+    access_count: int = 0
+    importance_score: float = 1.0  # 0.0 a 1.0
+    metadata: dict = field(default_factory=dict)
+
+    def access(self):
+        """Registra un acceso a esta memoria."""
+        self.last_accessed = datetime.now()
+        self.access_count += 1
+
+
+class VectorStore:
+    """
+    Vector store simple para similarity search.
+    En producción usar: FAISS, Chroma, Pinecone, Weaviate.
+    """
+
+    def __init__(self, dimension: int = 1536, threshold: float = 0.7):
+        self.dimension = dimension
+        self.threshold = threshold
+        self.vectors: list[np.ndarray] = []
+        self.items: list[MemoryItem] = []
+
+    def add(self, item: MemoryItem):
+        """Agrega un item al vector store."""
+        self.items.append(item)
+        self.vectors.append(item.embedding)
+
+    def search(self, query_embedding: np.ndarray, top_k: int = 5) -> list[MemoryItem]:
+        """
+        Búsqueda por similitud coseno.
+        Retorna los top_k items más similares sobre el threshold.
+        """
+        if not self.vectors:
+            return []
+
+        # Calcular similitud coseno con todos los vectores
+        similarities = []
+        query_norm = np.linalg.norm(query_embedding)
+        if query_norm == 0:
+            return []
+
+        for vec in self.vectors:
+            vec_norm = np.linalg.norm(vec)
+            if vec_norm == 0:
+                similarities.append(0.0)
+                continue
+            sim = np.dot(query_embedding, vec) / (query_norm * vec_norm)
+            similarities.append(sim)
+
+        # Ordenar por similitud y retornar top_k sobre threshold
+        indexed = [(i, sim) for i, sim in enumerate(similarities)]
+        indexed.sort(key=lambda x: x[1], reverse=True)
+
+        results = []
+        for idx, sim in indexed[:top_k]:
+            if sim >= self.threshold:
+                self.items[idx].access()  # Registrar acceso
+                results.append(self.items[idx])
+
+        return results
+
+    def delete(self, item_id: str):
+        """Elimina un item del store."""
+        # En un sistema real usar id como índice
+        pass
+
+
+class MemoryManager:
+    """
+    Gestor central de memoria para aplicaciones LLM.
+    Maneja el ciclo de vida completo: guardar, recuperar, olvidar.
+    """
+
+    def __init__(
+        self,
+        vector_store: VectorStore,
+        short_term_limit: int = 10,       # Máx items en short-term
+        long_term_threshold: float = 0.8,  # Score mínimo para guardar en long-term
+        forget_after_days: int = 30        # Días antes de considerar olvidado
+    ):
+        self.vector_store = vector_store
+        self.short_term_limit = short_term_limit
+        self.long_term_threshold = long_term_threshold
+        self.forget_after_days = forget_after_days
+
+        self.short_term_memory: list[MemoryItem] = []
+        self.long_term_memory: VectorStore = VectorStore(threshold=0.6)
+
+    def store_interaction(
+        self,
+        content: str,
+        memory_type: MemoryType,
+        embedding: np.ndarray,
+        importance: float = 1.0,
+        metadata: dict = None
+    ):
+        """
+        Almacena una nueva interacción en el sistema de memoria.
+        Decide automáticamente si va a short-term o long-term.
+        """
+        item = MemoryItem(
+            content=content,
+            memory_type=memory_type,
+            embedding=embedding,
+            importance_score=importance,
+            metadata=metadata or {}
+        )
+
+        if memory_type == MemoryType.SHORT_TERM:
+            self._add_short_term(item)
+        else:
+            self._add_long_term(item, embedding)
+
+    def _add_short_term(self, item: MemoryItem):
+        """Agrega a memoria de corto plazo con gestión de límite."""
+        self.short_term_memory.append(item)
+        # Si excede el límite, comprimir (agregar a long-term los menos importantes)
+        if len(self.short_term_memory) > self.short_term_limit:
+            self._compress_short_term()
+
+    def _compress_short_term(self):
+        """Comprime short-term: los items menos importantes van a long-term."""
+        # Ordenar por importance_score * log(access_count + 1)
+        scored = [
+            (item, item.importance_score * np.log1p(item.access_count))
+            for item in self.short_term_memory
+        ]
+        scored.sort(key=lambda x: x[1])
+
+        # Los del fondo van a long-term
+        to_promote = scored[:2]  # Promover los 2 menos importantes
+        self.short_term_memory = [item for item, _ in scored[2:]]
+
+        for item, _ in to_promote:
+            if item.embedding is not None:
+                item.memory_type = MemoryType.LONG_TERM
+                self._add_long_term(item, item.embedding)
+
+    def _add_long_term(self, item: MemoryItem, embedding: np.ndarray):
+        """Agrega a memoria de largo plazo en el vector store."""
+        self.long_term_memory.add(item)
+
+    def retrieve(
+        self,
+        query_embedding: np.ndarray,
+        top_k: int = 5,
+        include_short_term: bool = True
+    ) -> list[MemoryItem]:
+        """
+        Recupera memorias relevantes para la query actual.
+        Combina resultados de short-term y long-term.
+        """
+        results = []
+
+        # Short-term: búsqueda directa por relevancia semántica
+        if include_short_term and self.short_term_memory:
+            # Embed short-term items para buscar
+            st_embeddings = [item.embedding for item in self.short_term_memory
+                           if item.embedding is not None]
+            if st_embeddings:
+                # Buscar en short-term con threshold más bajo
+                st_store = VectorStore(threshold=0.0)
+                for item in self.short_term_memory:
+                    if item.embedding is not None:
+                        st_store.add(item)
+                st_results = st_store.search(query_embedding, top_k=top_k)
+                results.extend(st_results)
+
+        # Long-term: similarity search en vector store
+        lt_results = self.vector_store.search(query_embedding, top_k=top_k)
+        results.extend(lt_results)
+
+        # Deduplicación y reordenamiento
+        seen = set()
+        unique_results = []
+        for item in results:
+            if item.content not in seen:
+                seen.add(item.content)
+                unique_results.append(item)
+
+        # Reordenar: short-term primero, luego por score combinado
+        unique_results.sort(
+            key=lambda x: (
+                x.memory_type == MemoryType.SHORT_TERM,
+                x.importance_score * np.log1p(x.access_count),
+                x.last_accessed
+            ),
+            reverse=True
+        )
+
+        return unique_results[:top_k]
+
+    def build_context(self, query_embedding: np.ndarray, max_tokens: int = 4000) -> str:
+        """
+        Construye el contexto de memoria para insertar en el prompt del LLM.
+        """
+        memories = self.retrieve(query_embedding, top_k=10)
+        context_parts = []
+
+        for mem in memories:
+            age = (datetime.now() - mem.created_at).days
+            type_label = mem.memory_type.value.upper()
+            context_parts.append(
+                f"[{type_label} ({age}d ago)]: {mem.content}"
+            )
+
+        return "\n\n".join(context_parts)
+
+    def forget_old_memories(self):
+        """
+        Elimina memorias que han pasado el umbral de olvido.
+        Implementa el ciclo de vida: store → age → forget.
+        """
+        cutoff = datetime.now()
+        items_to_remove = []
+
+        for item in self.short_term_memory:
+            age = (cutoff - item.created_at).days
+            if age > self.forget_after_days and item.access_count < 3:
+                items_to_remove.append(item)
+
+        for item in items_to_remove:
+            self.short_term_memory.remove(item)
+
+
+# ============================================================
+# Ejemplo de uso completo con embeddings simulados
+# ============================================================
+
+def simulate_embedding(text: str) -> np.ndarray:
+    """Simula un embedding. En producción usar OpenAI/HuggingFace."""
+    # Hash simple para reproducibilidad
+    np.random.seed(hash(text) % (2**32))
+    vec = np.random.randn(1536)
+    return vec / np.linalg.norm(vec)
+
+
+# --- Demo del sistema ---
+if __name__ == "__main__":
+    # Inicializar
+    memory = MemoryManager(
+        vector_store=VectorStore(dimension=1536, threshold=0.7),
+        short_term_limit=5,
+        forget_after_days=30
+    )
+
+    # Simular interacciones del usuario
+    interactions = [
+        ("El usuario Prefiere respuestas cortas y técnicas", MemoryType.SEMANTIC, 0.9),
+        ("Preguntó sobre cómo implementar RAG en producción", MemoryType.EPISODIC, 0.8),
+        ("Mencionó que usa LangChain para sus prototipos", MemoryType.SEMANTIC, 0.7),
+        ("Tuvo problemas con ChromaDB en local", MemoryType.EPISODIC, 0.85),
+        ("Está evaluando Pinecone para producción", MemoryType.SEMANTIC, 0.75),
+    ]
+
+    for text, mem_type, importance in interactions:
+        emb = simulate_embedding(text)
+        memory.store_interaction(text, mem_type, emb, importance)
+
+    # Simular nueva query
+    query = "¿Cómo solucioné los problemas con ChromaDB?"
+    query_emb = simulate_embedding(query)
+
+    # Recuperar memorias relevantes
+    relevant = memory.retrieve(query_emb, top_k=3)
+
+    print("=== Memorias recuperadas ===")
+    for mem in relevant:
+        print(f"[{mem.memory_type.value}] {mem.content[:60]}... (score: {mem.importance_score:.2f})")
+
+    # Construir contexto para el prompt
+    context = memory.build_context(query_emb)
+    print("\n=== Contexto para LLM ===")
+    print(context[:300] + "..." if len(context) > 300 else context)
+</code></pre>
+
+<h2>Los 3 Errores Comunes (y Sus Soluciones)</h2>
+
+<h3>Error 1: Empezar de Cero en Cada Request</h3>
+
+<p>El error más frecuente. Cada vez que llega un mensaje, la aplicación no tiene forma de saber quién es el usuario, qué ha pedido antes, o qué preferencias tiene. El resultado: conversaciones repetitivas, prompts inflados con contexto redundante, y un LLM que actúa como si fuera la primera vez que habla con usted.</p>
+
+<p><strong>Solución</strong>: Implementar un <code>MemoryManager</code> centralizado que persista interacciones relevantes entre requests. Usar una sesión o user_id para mantener continuidad. Antes de procesar cada request nuevo, llamar a <code>retrieve()</code> para traer contexto previo e incluirlo en el prompt.</p>
+
+<pre><code class="language-python"># Antes de cada request: recuperar contexto
+user_id = get_current_user_id()
+query_embedding = get_embedding(current_message)
+memories = memory_manager.retrieve(query_embedding, user_id=user_id)
+context = format_memories_for_prompt(memories)
+full_prompt = system_prompt + context + current_message
+</code></pre>
+
+<h3>Error 2: Guardar Todo Sin Gestión</h3>
+
+<p>El extremo opuesto. Guardar cada mensaje, cada token, cada interacción sin filtro ni lifecycle management. Esto genera un vector store que crece descontroladamente, retrieval lento y ruidoso (recuperando basura irrelevante), y costos de almacenamiento que se disparan.</p>
+
+<p><strong>Solución</strong>: Implementar importancia scores y políticas de retención. No todo merece ser recordado. Los facts sobre preferencias del usuario sí; el "¿hola cómo estás?" no. Usar <code>importance_score</code> y <code>access_count</code> para decidir qué promoted a long-term y qué se olvida. Definir un <code>forget_after_days</code> con criterios claros.</p>
+
+<pre><code class="language-python"># Solo guardar si supera umbral de importancia
+if importance_score > 0.6:
+    memory_manager.store_interaction(
+        content, memory_type, embedding, importance_score
+    )
+
+# Olvidar memorias viejas y poco accedidas
+memory_manager.forget_old_memories()
+</code></pre>
+
+<h3>Error 3: No Usar Vector Databases para Retrieval</h3>
+
+<p>Intentar hacer retrieval por búsqueda exacta de keywords, expresiones regulares, o simplesmente pasar todo el historial como contexto. Esto es computacionalmente costoso (O(N) por query), no escala, y no entiende semántica — si el usuario pregunta por "el problema con la base de datos" y guardó "error conectando a PostgreSQL", una búsqueda por keywords no lo encuentra.</p>
+
+<p><strong>Solución</strong>: Usar un vector database real. Opciones:</p>
+
+<ul>
+<li><strong>FAISS</strong> (Facebook): extremadamente rápido, local, great para producción</li>
+<li><strong>Chroma</strong>: simple de usar, good para prototyping</li>
+<li><strong>Pinecone/Weaviate</strong>: cloud-native, escala automática</li>
+<li><strong>Qdrant</strong>: Rust-based, performante y con filtering avanzado</li>
+</ul>
+
+<pre><code class="language-python"># Production-grade retrieval con FAISS
+import faiss
+import numpy as np
+
+class FAISSVectorStore:
+    def __init__(self, dimension: int = 1536):
+        self.index = faiss.IndexFlatIP(dimension)  # Inner product = cos similarity
+        self.items = []
+
+    def add(self, item: MemoryItem):
+        # Normalizar para similitud coseno
+        vec = item.embedding.reshape(1, -1).astype('float32')
+        faiss.normalize_L2(vec)
+        self.index.add(vec)
+        self.items.append(item)
+
+    def search(self, query: np.ndarray, k: int = 5) -> list[MemoryItem]:
+        q = query.reshape(1, -1).astype('float32')
+        faiss.normalize_L2(q)
+        distances, indices = self.index.search(q, k)
+        return [self.items[i] for i in indices[0] if i < len(self.items)]
+</code></pre>
+
+<h2>Resumen y Cierre</h2>
+
+<p>El memory management en LLMs no es un lujo — es una necesidad para aplicaciones que quieren sentirse inteligentes y personalizadas. La diferencia entre una app que empieza de cero cada vez y una que recuerda está en la arquitectura de memoria que usted diseña.</p>
+
+<p>Los puntos clave:</p>
+
+<ul>
+<li>Distinguir entre short-term (sesión actual) y long-term (persistente)</li>
+<li>Usar similarity search sobre embeddings para retrieval, no keywords</li>
+<li>Implementar lifecycle management: no guardar todo, no olvidar todo</li>
+<li>Medir retrieval latency y precision para iterar sobre el sistema</li>
+</ul>
+
+<p>En Bogotá tenemos una frase: "lo que no se recuerda, se vuelve a vivir". Para las aplicaciones LLM, cada vez que empieza de cero es tiempo perdido, dinero desperdiciado en tokens redundantes, y una experiencia de usuario que se siente tonta. Construya su memory system bien desde el principio — el 85% de las apps no lo hace, y eso es exactamente lo que separa una herramienta decente de una que realmente funciona.</p>
+
+<p>En el próximo artículo vamos a ver cómo conectar los LLMs con herramientas externas: tool integration, function calling, y cómo hacer que su modelo de lenguaje realmente actúe sobre el mundo. Eso sí que es interesante.</p>
   </article>
 
   <script>
