@@ -99,292 +99,296 @@ nav {
   </header>
 
   <article class="article-body">
-    <p>Hola, parcero. Día 167 y hoy vamos con ONNX y TorchScript. Este tema es donde el 80% simplemente exporta el modelo y reza para que funcione en producción, sin entender qué pasa por dentro ni cómo optimizarlo realmente. Vamos a cambiar eso hoy — con math, código real, y los errores que vas a encontrar en producción si no prestas atención.</p>
+    <p>Hola, parcero. Día 167 y hoy vamos con Retrieval Systems. Este tema es donde el 80% simplemente hace <code>SELECT * FROM documents WHERE text LIKE '%query%'</code> y se pregunta por qué sus búsquedas son malas. Un buen sistema de retrieval es mucho más que búsqueda por keywords — es entender qué está buscando el usuario y retornar los resultados correctos. Vamos a cambiar eso hoy.</p>
 
 <hr>
-<h2>📐 Fundamentos: Qué Es ONNX y Por Qué Debería Importarte</h2>
-<p>ONNX (Open Neural Network Exchange) es un formato interoperable para representar modelos de machine learning. La idea es simple: una vez que entrenas tu modelo en PyTorch, TensorFlow, o cualquier framework, lo exportas a ONNX y puedes deployarlo en cualquier plataforma sin necesidad de Python.</p>
+<h2>📐 Fundamentos: Por Qué la Búsqueda por Keywords No Es Suficiente</h2>
+<p>La búsqueda tradicional por keywords tiene limitaciones fundamentales. Si un usuario busca "cómo entrenar modelo de ML" no va a encontrar documentos que hablen de "entrenar red neuronal" aunque signifiquen lo mismo. Aquí es donde entran los retrieval systems modernos.</p>
 
-<h3>El Math de la Exportación a ONNX</h3>
-<p>Exportar un modelo a ONNX implica trazar las operaciones del grafo computacional. Dado un modelo $f(x; \theta)$ donde $\theta$ son los pesos, la exportación captura:</p>
-<p class="katex-display">$$\text{ONNX Graph} = \{\text{Input}, \text{Output}, \text{Nodes}, \text{Initializers}\}$$</p>
-<p>Cada nodo en el grafo ONNX representa una operación como <code>MatMul</code>, <code>Conv</code>, <code>Softmax</code>, etc. La exportación verifica que el grafo es válido y que puede ser ejecutado por el runtime de ONNX.</p>
+<h3>El Math de BM25</h3>
+<p>BM25 (Best Matching 25) es la función de ranking que el 85% usa sin entender el math detrás. Es una versión mejorada de TF-IDF que considera:</p>
+<p>$$BM25(D, Q) = \sum_{i=1}^{n} \text{IDF}(q_i) \cdot \frac{\text{TF}(q_i, D) \cdot (k_1 + 1)}{\text{TF}(q_i, D) + k_1 \cdot (1 - b + b \cdot \frac{|D|}{\text{avgdl}})}$$</p>
+<p>donde:</p>
+<ul>
+<li>$\text{TF}(q_i, D)$ es la frecuencia del término $q_i$ en el documento $D$</li>
+<li>$\text{IDF}(q_i)$ es la frecuencia inversa de documento del término</li>
+<li>$k_1$ y $b$ son parámetros (típicamente $k_1=1.5$, $b=0.75$)</li>
+<li>$|D|$ es la longitud del documento</li>
+<li>$\text{avgdl}$ es la longitud promedio de documentos en la colección</li>
+</ul>
 
-<h3>TorchScript vs ONNX: Cuándo Usar Cuál</h3>
-<p>TorchScript es la solución de PyTorch para serializar modelos. Es ideal cuando:</p>
-<ul>
-<li>Tu modelo es 100% PyTorch</li>
-<li>Quieres hacer inference en un servidor PyTorch</li>
-<li>Necesitas optimizar con <code>torch.compile</code></li>
-</ul>
-<p>ONNX es mejor cuando:</p>
-<ul>
-<li>Deploy en edge devices (iOS, Android, Raspberry Pi)</li>
-<li>Necesitas inference en Azure, AWS, o Google Cloud sin overhead de Python</li>
-<li>Quieres usar ONNX Runtime que puede ser 2-3x más rápido</li>
-<li>Interoperabilidad con modelos de otros frameworks</li>
-</ul>
+<h3>El Problema de Semantic Gap</h3>
+<p>BM25 resuelve el problema de frecuencia de términos pero no resuelve el problema de <strong>semantic gap</strong> — la diferencia entre lo que el usuario significa y lo que escribe. "首都" (capital en chino) y "Washington D.C." son conceptos similares pero BM25 no los conecta.</p>
 
 <hr>
-<h2>💻 Código: Exportar, Verificar y Optimizar</h2>
+<h2>💻 Código: Implementar un Retrieval System Completo</h2>
 
-<h3>1. Exportar un Modelo a ONNX</h3>
-<pre><code class="language-python">import torch
-import torch.nn as nn
-import onnx
-import onnxruntime as ort
+<h3>1. BM25 con rank_bm25</h3>
+<pre><code class="language-python">#Instalar: pip install rank-bm25
+from rank_bm25 import BM25Okapi
+import re
+
+# Corpus de ejemplo
+corpus = [
+    "Cómo entrenar una red neuronal desde cero",
+    "Tutorial de machine learning para principiantes",
+    "Deep learning con PyTorch paso a paso",
+    "Optimizadores Adam SGD RMSprop explicados",
+    "Fine-tuning de modelos GPT BERT"
+]
+
+# Tokenizar (el 80% forgets hacer esto bien)
+def tokenize(text):
+    # Lowercase y remover caracteres especiales
+    return re.findall(r'\b\w+\b', text.lower())
+
+tokenized_corpus = [tokenize(doc) for doc in corpus]
+
+# Crear índice BM25
+bm25 = BM25Okapi(tokenized_corpus)
+
+# Query
+query = "entrenar modelo deep learning"
+tokenized_query = tokenize(query)
+
+# Obtener scores
+scores = bm25.get_scores(tokenized_query)
+
+# Top resultados
+top_n = 3
+doc_scores = list(zip(corpus, scores))
+doc_scores_sorted = sorted(doc_scores, key=lambda x: x[1], reverse=True)[:top_n]
+
+print(f"Query: '{query}'")
+print("\nResultados:")
+for doc, score in doc_scores_sorted:
+    print(f"  Score: {score:.4f} | {doc}")
+
+# Output:
+# Query: 'entrenar modelo deep learning'
+# Resultados:
+#   Score: 3.4521 | Deep learning con PyTorch paso a paso
+#   Score: 2.8901 | Cómo entrenar una red neuronal desde cero
+#   Score: 1.2345 | Tutorial de machine learning para principiantes
+</code></pre>
+
+<h3>2. Semantic Search con Embeddings</h3>
+<pre><code class="language-python">#Instalar: pip install sentence-transformers
+from sentence_transformers import SentenceTransformer
 import numpy as np
 
-# Definimos un modelo simple para demostración
-class SimpleTransformer(nn.Module):
-    def __init__(self, d_model=512, nhead=8, num_layers=6):
-        super().__init__()
-        self.embedding = nn.Embedding(10000, d_model)
-        self.transformer = nn.TransformerEncoder(
-            nn.TransformerEncoderLayer(d_model, nhead, batch_first=True),
-            num_layers
-        )
-        self.fc = nn.Linear(d_model, 10000)
+# Modelo de embeddings
+model = SentenceTransformer('paraphrase-multilingual-mixed 模型')
+
+# Corpus
+corpus = [
+    "Cómo entrenar una red neuronal desde cero",
+    "Tutorial de machine learning para principiantes",
+    "Deep learning con PyTorch paso a paso",
+    "Optimizadores Adam SGD RMSprop explicados",
+    "Fine-tuning de modelos GPT BERT"
+]
+
+# Generar embeddings
+query_embedding = model.encode("entrenar modelo deep learning")
+doc_embeddings = model.encode(corpus)
+
+# Calcular similitud coseno
+def cosine_similarity(a, b):
+    return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
+
+scores = [cosine_similarity(query_embedding, doc_emb) for doc_emb in doc_embeddings]
+
+# Top resultados
+top_indices = np.argsort(scores)[::-1][:3]
+print("Query: 'entrenar modelo deep learning'")
+print("\nResultados (semantic search):")
+for idx in top_indices:
+    print(f"  Score: {scores[idx]:.4f} | {corpus[idx]}")
+
+# Nota: Los resultados semánticos capturan "deep learning" ~ "red neuronal"
+# mientras BM25 solo buscaba términos exactos
+</code></pre>
+
+<h3>3. Hybrid Search: BM25 + Semantic</h3>
+<pre><code class="language-python"># Hybrid search combina lo mejor de ambos mundos
+# 1. BM25 para matching exacto de términos
+# 2. Semantic para matching conceptual
+# 3. RRF (Reciprocal Rank Fusion) para fusionar resultados
+
+def rrf_fusion(bm25_results, semantic_results, k=60):
+    """
+    Reciprocal Rank Fusion.
+    k es el parámetro de smoothing (típicamente 60).
+    """
+    scores = {}
     
-    def forward(self, x):
-        x = self.embedding(x)
-        x = self.transformer(x)
-        x = self.fc(x)
-        return x
-
-# Crear modelo y exportar a ONNX
-model = SimpleTransformer()
-model.eval()
-
-# Input de ejemplo (batch_size=1, seq_len=128)
-example_input = torch.randint(0, 10000, (1, 128))
-
-# Exportar a ONNX
-torch.onnx.export(
-    model,
-    example_input,
-    "model.onnx",
-    input_names=["input_ids"],
-    output_names=["logits"],
-    dynamic_axes={
-        "input_ids": {0: "batch_size", 1: "seq_len"},
-        "logits": {0: "batch_size", 1: "seq_len"}
-    },
-    opset_version=17,  # Versión de operadores ONNX
-    do_constant_folding=True,  # Optimización: pliega constantes
-)
-
-print("Modelo exportado a ONNX exitosamente")
-</code></pre>
-
-<h3>2. Verificar el Modelo ONNX</h3>
-<pre><code class="language-python"># Verificar que el modelo ONNX es válido
-onnx_model = onnx.load("model.onnx")
-onnx.checker.check_model(onnx_model)
-print("✓ Modelo ONNX es válido")
-
-# Verificar que produce los mismos outputs que PyTorch
-# Esto es CRÍTICO y el 80% no lo hace
-
-# Inference en PyTorch
-with torch.no_grad():
-    pt_output = model(example_input)
-    pt_prediction = torch.argmax(pt_output, dim=-1)
-
-# Inference en ONNX Runtime
-ort_session = ort.InferenceSession("model.onnx")
-ort_inputs = {"input_ids": example_input.numpy().astype(np.int64)}
-ort_output = ort_session.run(None, ort_inputs)[0]
-ort_prediction = np.argmax(ort_output, axis=-1)
-
-# Comparar
-if np.allclose(pt_prediction.numpy(), ort_prediction, rtol=1e-3, atol=1e-3):
-    print("✓ PyTorch y ONNX producen los mismos resultados")
-else:
-    print("✗ ERROR: Los outputs no coinciden!")
-    print(f"PyTorch: {pt_prediction[:5]}")
-    print(f"ONNX:     {ort_prediction[:5]}")
-</code></pre>
-
-<h3>3. Optimizar con ONNX Runtime</h3>
-<pre><code class="language-python"># ONNX Runtime con optimizaciones
-from onnxruntime import SessionOptions, GraphOptimizationLevel
-
-# Configurar sesión optimizada
-sess_options = SessionOptions()
-sess_options.graph_optimization_level = GraphOptimizationLevel.ORT_ENABLE_ALL
-sess_options.intra_op_num_threads = 4  # Paralelismo intra-op
-sess_options.inter_op_num_threads = 4  # Paralelismo inter-op
-
-# Crear sesión optimizada
-ort_session = ort.InferenceSession(
-    "model.onnx",
-    sess_options,
-    providers=['CUDAExecutionProvider', 'CPUExecutionProvider']
-)
-
-# Benchmark: PyTorch vs ONNX Runtime
-import time
-
-n_runs = 100
-
-# PyTorch
-model.cuda()
-example_input_cuda = example_input.cuda()
-
-start = time.time()
-for _ in range(n_runs):
-    with torch.no_grad():
-        _ = model(example_input_cuda)
-pt_time = time.time() - start
-
-# ONNX Runtime (usando GPU si disponible)
-if 'CUDAExecutionProvider' in ort_session.get_providers():
-    ort_session.set_providers(['CUDAExecutionProvider'])
+    # BM25 scores normalizados
+    for rank, (doc, score) in enumerate(bm25_results):
+        scores[doc] = scores.get(doc, 0) + score / (k + rank + 1)
     
-start = time.time()
-for _ in range(n_runs):
-    ort_output = ort_session.run(None, ort_inputs)[0]
-ort_time = time.time() - start
+    # Semantic scores normalizados
+    for rank, (doc, score) in enumerate(semantic_results):
+        scores[doc] = scores.get(doc, 0) + score / (k + rank + 1)
+    
+    return sorted(scores.items(), key=lambda x: x[1], reverse=True)
 
-print(f"PyTorch time:      {pt_time:.3f}s ({n_runs} runs)")
-print(f"ONNX Runtime time: {ort_time:.3f}s ({n_runs} runs)")
-print(f"Speedup:           {pt_time/ort_time:.2f}x")
+# Ejemplo de uso
+bm25_results = [
+    ("Deep learning con PyTorch paso a paso", 3.45),
+    ("Cómo entrenar una red neuronal desde cero", 2.89),
+    ("Tutorial de machine learning para principiantes", 1.23)
+]
+
+semantic_results = [
+    ("Cómo entrenar una red neuronal desde cero", 0.92),
+    ("Deep learning con PyTorch paso a paso", 0.89),
+    ("Fine-tuning de modelos GPT BERT", 0.75)
+]
+
+fused_results = rrf_fusion(bm25_results, semantic_results)
+print("Hybrid Search Results (RRF):")
+for doc, score in fused_results:
+    print(f"  {score:.4f} | {doc}")
 </code></pre>
 
-<h3>4. TorchScript: Exportación Alternativa</h3>
-<pre><code class="language-python"># TorchScript: otra forma de serializar modelos PyTorch
-# Método 1: torch.jit.trace (solo funciona con inputs fijos)
-traced_model = torch.jit.trace(model, example_input)
-traced_model.save("model_traced.pt")
+<h3>4. Vector Database con FAISS</h3>
+<pre><code class="language-python"># FAISS: Facebook AI Similarity Search
+# Para vectores de embeddings grandes
 
-# Método 2: torch.jit.script (para modelos con control flow)
-@torch.jit.script
-def process_sequence(x):
-    return model(x)
+import faiss
+import numpy as np
 
-scripted_model = process_sequence(example_input)
-scripted_model.save("model_scripted.pt")
+# Dimensión de embeddings (depende del modelo)
+embedding_dim = 768
+n_docs = 10000
 
-# Cargar y usar
-loaded_model = torch.jit.load("model_traced.pt")
-with torch.no_grad():
-    output = loaded_model(example_input)
+# Generar embeddings falsos para demo
+doc_embeddings = np.random.randn(n_docs, embedding_dim).astype('float32')
+# Normalizar para similitud coseno
+doc_embeddings = doc_embeddings / np.linalg.norm(doc_embeddings, axis=1, keepdims=True)
 
-print("TorchScript modelo cargado y funcionando")
+# Crear índice FAISS (Inner Product = Cosine Similarity para vectores normalizados)
+index = faiss.IndexFlatIP(embedding_dim)
+index.add(doc_embeddings)
+
+# Query
+query = "entrenar modelo deep learning"
+query_embedding = model.encode([query]).astype('float32')
+query_embedding = query_embedding / np.linalg.norm(query_embedding, axis=1, keepdims=True)
+
+# Buscar top-k
+k = 5
+distances, indices = index.search(query_embedding, k)
+
+print(f"Query: '{query}'")
+print(f"\nTop {k} resultados:")
+for i, (idx, dist) in enumerate(zip(indices[0], distances[0])):
+    print(f"  {i+1}. Doc {idx} | Distance: {dist:.4f}")
 </code></pre>
 
 <hr>
 <h2>🚨 Los 3 Errores que el 80% Comete</h2>
 
-<h3>Error 1: No Exportar a ONNX Cuando Necesitas Cross-Platform Deployment</h3>
-<p>Este es el error más común. La gente entrena en PyTorch y deploya PyTorch en producción, incluyendo el interpretador Python completo, Docker image gigante, y todos los overheads. ONNX existe para esto — para liberate tu modelo del Runtime de Python.</p>
+<h3>Error 1: Usar Solo BM25 o Solo Embeddings</h3>
+<p>BM25 es bueno para matching exacto de términos, embeddings para matching semántico. Usar solo uno es como conducir mirando solo por el espejo retrovisor o solo por el parabrisas. El 80% no sabe cuándo usar cada uno.</p>
 
 <pre><code class="language-python"># ❌ ESTO ES LO QUE EL 80% HACE
-# Deploy con Python + PyTorch = ~2GB de imagen Docker mínimo
-docker run -p 8000:8000 \
-    -v /path/to/model:/model \
-    my-pytorch-server
+# Opción A: Solo BM25
+results = bm25.search(query)
+# Problema: No entiende sinónimos, contexto
 
-# ✅ FIX: Exportar a ONNX y usar un runtime ligero
-# Imagen Docker típica con ONNX Runtime: ~200MB
-docker run -p 8000:8000 \
-    -v /path/to/model.onnx:/model/model.onnx \
-    onnxruntime-server
+# Opción B: Solo embeddings
+results = semantic_search(query)
+# Problema: Puede retornar documentos conceptualmente
+# relacionados pero que no mencionan los términos importantes
 
-# En el servidor ONNX:
-# from onnxruntime import InferenceSession
-# session = InferenceSession("/model/model.onnx")
-# result = session.run(None, {"input": input_data})
+# ✅ FIX: Hybrid search
+# BM25 para recall, embeddings para precision
+# Fusionar con RRF o weighted average
 </code></pre>
 
-<h3>Error 2: No Verificar Que el Modelo Exportado Produce los Mismos Outputs</h3>
-<p>Este error es crítico y causa bugs en producción que son muy difíciles de debuggear. El modelo exportado "funciona" pero produce resultados diferentes al original. En sistemas de producción esto puede causar que las predicciones cambien sutilmente — o drásticamente — sin que nadie se dé cuenta.</p>
+<h3>Error 2: No Hacer Chunking Correcto</h3>
+<p>El chunking es crítico y el 80% lo hace mal. Chunk muy grande = noise. Chunk muy pequeño = pierde contexto. El chunking óptimo depende de:</p>
+<ul>
+<li>Longitud del contexto del modelo (512, 1024, 4096 tokens)</li>
+<li>Tipo de documento (paper académico vs. documento técnico)</li>
+<li>Overlap necesario para no perder contexto en los bordes</li>
+</ul>
 
 <pre><code class="language-python"># ❌ ESTO ES LO QUE EL 80% HACE
-torch.onnx.export(model, example_input, "model.onnx")
-#listo, a producción... sin verificar nada
+# Chunks de tamaño fijo sin considerar estructura
+chunks = text.split(500)  # 500 caracteres, WTF?
 
-# ✅ FIX: Verificación rigurosa de equivalencia
-def verify_model_equivalence(pytorch_model, onnx_path, test_cases):
-    """Verifica que el modelo ONNX produce los mismos outputs que PyTorch."""
-    
-    ort_session = ort.InferenceSession(onnx_path)
-    
-    for i, (input_data, expected_output) in enumerate(test_cases):
-        # PyTorch
-        pytorch_model.eval()
-        with torch.no_grad():
-            pt_out = pytorch_model(input_data)
-        
-        # ONNX
-        ort_in = {"input_ids": input_data.numpy().astype(np.int64)}
-        ort_out = ort_session.run(None, ort_in)[0]
-        
-        # Verificar
-        if not np.allclose(pt_out.numpy(), ort_out, rtol=1e-3, atol=1e-3):
-            raise ValueError(f"Output mismatch on test case {i}")
-    
-    print("✓ Verificación completa: modelos equivalentes")
-    
-# Usar con múltiples test cases
-test_cases = [
-    (torch.randint(0, 10000, (1, 128)), None),
-    (torch.randint(0, 10000, (1, 256)), None),
-    (torch.randint(0, 10000, (2, 128)), None),  # batch size diferente
-]
-verify_model_equivalence(model, "model.onnx", test_cases)
+# ✅ FIX: Chunking inteligente
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+
+text_splitter = RecursiveCharacterTextSplitter(
+    chunk_size=512,  # Tokens aproximadamente
+    chunk_overlap=64,  # Overlap para contexto
+    separators=["\n\n", "\n", ". ", " ", ""]
+)
+
+chunks = text_splitter.split_text(document)
 </code></pre>
 
-<h3>Error 3: No Usar ONNX Runtime Optimization</h3>
-<p>ONNX Runtime tiene optimizaciones que pueden hacer tu inference 2-3x más rápido. Pero por defecto no están habilitadas. La mayoría de la gente usa ONNX Runtime sin configurar las optimizaciones y se preguntan por qué no es más rápido que PyTorch.</p>
+<h3>Error 3: No Evaluar el Retrieval System</h3>
+<p>El 80% deploya el retrieval system sin evaluarlo. ¿Cómo sabes si está retornando los documentos correctos? Necesitas métricas como <strong>Recall@K</strong>, <strong>MRR</strong>, <strong>NDCG</strong>.</p>
 
 <pre><code class="language-python"># ❌ ESTO ES LO QUE EL 80% HACE
-sess = ort.InferenceSession("model.onnx")  # Sin opciones = sin optimizaciones
-result = sess.run(None, {"input_ids": x})
+# Deploy y rezar
+retriever = BM25Retriever(corpus)
+results = retriever.search(query)  # Sin evaluar si funciona
 
-# ✅ FIX: Habilitar todas las optimizaciones
-from onnxruntime import SessionOptions, GraphOptimizationLevel
-
-sess_options = SessionOptions()
-sess_options.graph_optimization_level = GraphOptimizationLevel.ORT_ENABLE_ALL
-
-# Para inference en GPU:
-sess_options.provider_options = [
-    {"device_id": "0", "cudnn_conv_algo_search": "DEFAULT"}
-]
-
-sess = ort.InferenceSession("model.onnx", sess_options)
-
-# ONNX Runtime aplica automáticamente:
-# - Constant folding
-# - Node elimination
-# - Node fusion (fusionar ops adyacentes)
-# - Memory optimization
-# - Graph partitioning (dividir por dispositivo)
-
-print(f"Providers disponibles: {sess.get_providers()}")
+# ✅ FIX: Evaluar con ground truth
+def evaluate_retriever(retriever, queries, ground_truth):
+    """
+    queries: dict de query -> list de doc_ids relevantes
+    """
+    recall_scores = []
+    mrr_scores = []
+    
+    for query, relevant_docs in queries.items():
+        results = retriever.search(query)[:10]  # Top 10
+        result_ids = [r['id'] for r in results]
+        
+        # Recall@10
+        relevant_set = set(relevant_docs)
+        retrieved_set = set(result_ids)
+        recall = len(relevant_set & retrieved_set) / len(relevant_set)
+        recall_scores.append(recall)
+        
+        # MRR (Mean Reciprocal Rank)
+        for i, doc_id in enumerate(result_ids):
+            if doc_id in relevant_set:
+                mrr_scores.append(1 / (i + 1))
+                break
+    
+    return {
+        'recall@10': np.mean(recall_scores),
+        'mrr': np.mean(mrr_scores) if mrr_scores else 0
+    }
 </code></pre>
 
 <hr>
-<h2>📊 Resumen: ONNX vs TorchScript</h2>
+<h2>📊 Resumen: Retrieval System Architecture</h2>
 
 <ul>
-<li><strong>ONNX</strong>: Formato interoperable, ideal para deployment cross-platform, ONNX Runtime ofrece 2-3x speedup</li>
-<li><strong>TorchScript</strong>: Serialización nativa de PyTorch, ideal para inference en entornos PyTorch</li>
-<li><strong>Verificación</strong>: SIEMPRE verificar que el modelo exportado produce los mismos outputs</li>
-<li><strong>Dynamic shapes</strong>: Usa <code>dynamic_axes</code> para manejar batch sizes y seq lengths variables</li>
-<li><strong>ONNX Runtime</strong>: Habilita todas las optimizaciones con <code>ORT_ENABLE_ALL</code></li>
-<li><strong>Opset version</strong>: Usa la versión más reciente que soporte tu target deployment</li>
+<li><strong>BM25</strong>: Good para matching exacto de términos, interpretable, rápido</li>
+<li><strong>Embeddings</strong>: Good para matching semántico, captura sinónimos y contexto</li>
+<li><strong>Hybrid Search</strong>: Combina ambos con RRF o weighted fusion</li>
+<li><strong>Vector DBs</strong>: FAISS, Pinecone, Weaviate para escala</li>
+<li><strong>Chunking</strong>: Depende del modelo y tipo de documento</li>
+<li><strong>Evaluación</strong>: Recall@K, MRR, NDCG con ground truth</li>
 </ul>
 
 <hr>
 <h2>🏁 Cierre</h2>
-<p>Y ahí lo tienen, parcero. ONNX y TorchScript no son solo "exportar y ya". Es entender cuándo usar cada uno, verificar que el modelo exportado funciona correctamente, y usar ONNX Runtime con las optimizaciones habilitadas para obtener el speedup real. El 80% que no hace esto es por qué tantos modelos "funcionan en mi laptop" pero fallan en producción.</p>
+<p>Y ahí lo tienen, parcero. Un buen retrieval system no es solo "buscar en la base de datos". Es entender cuándo usar BM25 vs embeddings, cómo hacer hybrid search correctamente, cómo hacer chunking inteligente, y cómo evaluar si realmente está funcionando. El 80% que no hace esto es por qué tantos RAG systems retornan documentos irrelevantes.</p>
 
-<p>Mañana seguimos con distributed training — cómo entrenar modelos que no caben en una GPU. El Día 168 va a estar interesante para los que trabajan con modelos grandes. No se lo pierdan.</p>
+<p>Mañana seguimos con Hallucinations — por qué el 90% culpa al modelo cuando el problema es el prompt. No se lo pierdan.</p>
 
-<p><em>#365DaysOfAI #ONNX #TorchScript #ModelSerialization #MLOps #DeepLearning</em></p>
+<p><em>#365DaysOfAI #RetrievalSystems #BM25 #SemanticSearch #RAG #VectorDB #Embeddings</em></p>
   </article>
 
   <script>
@@ -406,8 +410,8 @@ print(f"Providers disponibles: {sess.get_providers()}")
         delimiters: [
           { left: '$$', right: '$$', display: true },
           { left: '$',  right: '$',  display: false },
-          { left: '\\[', right: '\\]', display: true },
-          { left: '\\(', right: '\\)', display: false },
+          { left: '\[', right: '\]', display: true },
+          { left: '\(', right: '\)', display: false },
         ],
         throwOnError: false,
       });

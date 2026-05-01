@@ -99,328 +99,387 @@ nav {
   </header>
 
   <article class="article-body">
-    <p>Hola, parcero. Día 168 y hoy vamos con Distributed Training. Este tema es donde el 80% simplemente tira el modelo a DataParallel sin entender que está dejando performance sobre la mesa, o peor, no sabe que necesita distributed training hasta que su modelo no cabe en una GPU. Vamos a cambiar eso hoy — con math, código real, y los errores que ves en producción si no prestas atención.</p>
+    <p>Hola, parcero. Día 168 y hoy vamos con Hallucinations. Este tema es donde el 90% inmediatamente culpa al modelo ("GPT-4 está alucinando") cuando en realidad el problema casi siempre es el prompt, el contexto, o el retrieval system. Vamos a cambiar esa narrativa hoy — con math, código real, y por qué el modelo no es el problema principal.</p>
 
 <hr>
-<h2>📐 Fundamentos: Por Qué Necesitas Distributed Training</h2>
-<p>Cuando un modelo es demasiado grande para caber en una sola GPU, necesitas dividir el trabajo entre múltiples GPUs. Hay dos formas de hacer esto: DataParallel y DistributedDataParallel. La diferencia entre ellos es crítica para entender por qué uno es mejor que el otro.</p>
+<h2>📐 Fundamentos: Qué Es una Hallucination Realmente</h2>
+<p>Una hallucination en LLMs es cuando el modelo genera contenido que parece correcto pero es factualmente incorrecto, no está respaldado por el contexto, o directamente es inventado. Pero la pregunta importante es: ¿por qué pasa?</p>
 
-<h3>El Math del Gradient Descent Distribuido</h3>
-<p>En training distribuido, el gradient descent se calcula de forma diferente. Dado un batch de $N$ samples dividido en $K$ GPUs:</p>
-<p class="katex-display">$$\nabla L_{\text{global}} = \frac{1}{K} \sum_{k=1}^{K} \nabla L_k$$</p>
-<p>donde $\nabla L_k$ es el gradiente calculado en la GPU $k$ con su sub-batch local. Esto es el <strong>AllReduce</strong> — cada GPU calcula gradientes locales y luego se promedian.</p>
+<h3>El Math: Por Qué los LLMs Generan Texto</h3>
+<p>Un LLM genera texto prediciendo el siguiente token basado en probabilidad:</p>
+<p>$$P(\text{token}_i | \text{token}_{1}, \text{token}_{2}, ..., \text{token}_{i-1}, \theta)$$</p>
+<p>donde $\theta$ son los pesos del modelo. El modelo no "sabe" si algo es verdadero — solo predice qué token es más probable dado el contexto. Si el contexto no es suficientemente informativo, el modelo predice lo que parece más plausible estadísticamente.</p>
 
-<h3>DataParallel vs DistributedDataParallel</h3>
-<p><strong>DataParallel (DP)</strong>: Una GPU es la "principal" y coordina todo. Los datos se dividen, se procesan en paralelo, y los gradientes se reducen en la GPU 0. Tiene overhead de serialización porque la GPU 0 hace todo.</p>
-<p class="katex-display">$$T_{\text{DP}} = T_{\text{forward}} + T_{\text{backward}} + T_{\text{reduce}}(G_0)$$</p>
-<p><strong>DistributedDataParallel (DDP)</strong>: Cada GPU tiene su propia copia del modelo y coordina con las otras mediante comunicación eficiente (NCCL en NVIDIA). No hay bottleneck en una GPU específica.</p>
-<p class="katex-display">$$T_{\text{DDP}} = \max(T_{\text{forward}}, T_{\text{backward}}) + T_{\text{allreduce}}(\text{gradientes})$$</p>
-<p>DDP es típicamente 20-30% más rápido que DP porque no hay overhead de copiar todo a la GPU 0.</p>
+<h3>Tipos de Hallucinations</h3>
+<ul>
+<li><strong>Factuales</strong>: El modelo afirma que "Einstein nació en 1879" cuando en realidad fue en 1879 (esto es verdadero, pero si dijera 1847 sería una hallucination)</li>
+<li><strong>Contextuales</strong>: El modelo ignora el contexto proporcionado y genera información que no está en los documentos</li>
+<li><strong>Self-consistency</strong>: El modelo se contradice a sí mismo en diferentes partes de la respuesta</li>
+<li><strong>Reference</strong>: El modelo cita fuentes que no existen o que no respaldan lo que dice</li>
+</ul>
 
 <hr>
-<h2>💻 Código: Implementar Distributed Training</h2>
+<h2>💻 Código: Detectar y Mitigar Hallucinations</h2>
 
-<h3>1. Setup Básico con DistributedDataParallel</h3>
-<pre><code class="language-python">import os
-import torch
-import torch.nn as nn
-import torch.distributed as dist
-from torch.nn.parallel import DistributedDataParallel as DDP
-import torch.multiprocessing as mp
+<h3>1. Detectar Hallucinations con Self-Consistency</h3>
+<pre><code class="language-python"># Generar múltiples respuestas y comparar consistencia
+from openai import OpenAI
+client = OpenAI()
 
-def setup(rank, world_size):
-    """Inicializar el proceso distribuido."""
-    os.environ['MASTER_ADDR'] = 'localhost'
-    os.environ['MASTER_PORT'] = '12355'
-    dist.init_process_group("nccl", rank=rank, world_size=world_size)
-
-def cleanup():
-    """Limpiar el proceso distribuido."""
-    dist.destroy_process_group()
-
-class TransformerModel(nn.Module):
-    """Modelo de ejemplo para distributed training."""
-    def __init__(self, vocab_size=50000, d_model=1024, nhead=16, num_layers=12):
-        super().__init__()
-        self.embedding = nn.Embedding(vocab_size, d_model)
-        encoder_layer = nn.TransformerEncoderLayer(d_model, nhead, batch_first=True)
-        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers)
-        self.fc = nn.Linear(d_model, vocab_size)
+def detect_hallucination_with_self_consistency(prompt, n_generations=5):
+    """
+    Genera múltiples respuestas y verifica consistencia.
+    Si el modelo dice cosas diferentes para el mismo prompt,
+    hay mayor probabilidad de hallucination.
+    """
+    responses = []
+    for _ in range(n_generations):
+        response = client.chat.completions.create(
+            model="gpt-4",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.7  # Un poco de variabilidad
+        )
+        responses.append(response.choices[0].message.content)
     
-    def forward(self, x):
-        x = self.embedding(x)
-        x = self.transformer(x)
-        return self.fc(x)
+    # Comparar respuestas
+    # Método simple: verificar si las respuestas key facts coinciden
+    key_facts = extract_key_facts(responses)
+    
+    # Calcular consistencia
+    consistency_score = calculate_consistency(key_facts)
+    
+    return {
+        'responses': responses,
+        'key_facts': key_facts,
+        'consistency_score': consistency_score,
+        'is_likely_hallucination': consistency_score < 0.6
+    }
 
-def train_worker(rank, world_size):
-    """Worker que entrena el modelo."""
-    setup(rank, world_size)
-    
-    # Crear modelo y wrap con DDP
-    model = TransformerModel().cuda(rank)
-    model = DDP(model, device_ids=[rank])
-    
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
-    criterion = nn.CrossEntropyLoss()
-    
-    # Training loop
-    model.train()
-    for epoch in range(10):
-        # Simular data loader para esta GPU
-        batch_size = 32
-        seq_len = 128
-        input_ids = torch.randint(0, 50000, (batch_size, seq_len)).cuda(rank)
-        labels = torch.randint(0, 50000, (batch_size, seq_len)).cuda(rank)
-        
-        optimizer.zero_grad()
-        outputs = model(input_ids)
-        
-        # Flatten para cross entropy
-        loss = criterion(outputs.view(-1, 50000), labels.view(-1))
-        loss.backward()
-        
-        # DDP maneja el allreduce de gradientes automáticamente
-        optimizer.step()
-        
-        if rank == 0:
-            print(f"Epoch {epoch}, Loss: {loss.item():.4f}")
-    
-    cleanup()
+def extract_key_facts(responses):
+    """Extrae hechos clave de las respuestas."""
+    # Implementación simplificada
+    # En producción usar NER y extracción de hechos
+    facts_per_response = []
+    for resp in responses:
+        facts = set()
+        # Ejemplo simplificado: extraer números y fechas
+        import re
+        numbers = re.findall(r'\b\d{4}\b', resp)  # Years
+        facts.update(numbers)
+        facts_per_response.append(facts)
+    return facts_per_response
 
-# Lanzar workers
-world_size = torch.cuda.device_count()
-print(f"Usando {world_size} GPUs")
-mp.spawn(train_worker, args=(world_size,), nprocs=world_size, join=True)
+def calculate_consistency(key_facts):
+    """Calcula score de consistencia entre respuestas."""
+    if not key_facts:
+        return 1.0
+    
+    # Comparar hechos entre respuestas
+    reference = key_facts[0]
+    matches = 0
+    total = 0
+    
+    for facts in key_facts[1:]:
+        for fact in facts:
+            if fact in reference:
+                matches += 1
+            total += 1
+    
+    return matches / total if total > 0 else 1.0
 </code></pre>
 
-<h3>2. Gradient Accumulation (Cuando el Batch Size es Muy Pequeño)</h3>
-<pre><code class="language-python"># Gradient accumulation para simular batch sizes grandes
-# con GPUs que no tienen suficiente memoria
-
-accumulation_steps = 4  # Simular batch size 4x mayor
-effective_batch_size = 32 * accumulation_steps
-
-model.train()
-for step, (input_ids, labels) in enumerate(dataloader):
-    input_ids = input_ids.cuda()
-    labels = labels.cuda()
+<h3>2. Mitigar Hallucinations con Chain of Verification</h3>
+<pre><code class="language-python">def verify_and_fix_response(initial_response, context_documents):
+    """
+    Chain of Verification:
+    1. Generar respuesta inicial
+    2. Extraer claims factuales
+    3. Verificar cada claim contra el contexto
+    4. Corregir claims que no están respaldados
+    """
     
-    outputs = model(input_ids)
-    loss = criterion(outputs.view(-1, vocab_size), labels.view(-1))
-    loss = loss / accumulation_steps  # Normalizar loss
+    # Step 1: Extraer claims
+    claims_prompt = f"""
+    Extrae todos los hechos assertions en la siguiente respuesta.
+    Para cada hecho, sepáralo en una línea separada.
     
-    loss.backward()
+    Respuesta: {initial_response}
+    """
     
-    # Solo actualizar cada accumulation_steps
-    if (step + 1) % accumulation_steps == 0:
-        optimizer.step()
-        optimizer.zero_grad()
+    claims_response = client.chat.completions.create(
+        model="gpt-4",
+        messages=[{"role": "user", "content": claims_prompt}]
+    )
+    claims = claims_response.choices[0].message.content.split('\n')
+    
+    # Step 2: Verificar cada claim contra el contexto
+    verified_claims = []
+    for claim in claims:
+        if not claim.strip():
+            continue
+            
+        verification_prompt = f"""
+        Dado el siguiente claim y contexto, responde:
+        - Si el claim está respaldado por el contexto: "VERDADERO"
+        - Si el claim contradice el contexto: "FALSO"
+        - Si el claim no puede ser verificado con el contexto: "NO VERIFICABLE"
         
-# Importante: DDP con gradient accumulation requiere
-# sincronización de buffers en cada paso
-</code></pre>
-
-<h3>3. Fully Sharded Data Parallel (FSDP) para Modelos Muy Grandes</h3>
-<pre><code class="language-python"># FSDP: shard los pesos del modelo entre GPUs
-# Para modelos que no caben ni en 8 GPUs con DDP
-
-from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
-from torch.distributed.fsdp import ShardingStrategy
-from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
-
-def train_fsdp():
-    world_size = torch.cuda.device_count()
+        Claim: {claim}
+        
+        Contexto:
+        {context_documents}
+        """
+        
+        verification = client.chat.completions.create(
+            model="gpt-4",
+            messages=[{"role": "user", "content": verification_prompt}]
+        )
+        
+        result = verification.choices[0].message.content
+        verified_claims.append({
+            'claim': claim,
+            'status': result
+        })
     
-    # Auto wrap policy para transformers
-    auto_wrap_policy = functools.partial(
-        transformer_auto_wrap_policy,
-        transformer_layer_cls={TransformerEncoderLayer}
+    # Step 3: Generar respuesta corregida
+    correction_prompt = f"""
+    Dada la siguiente respuesta inicial y los resultados de verificación,
+    genera una versión corregida que:
+    - Mantenga los hechos VERDADEROS
+    - Corrija los hechos FALSOS
+    - Indique explícitamente los hechos NO VERIFICABLES
+    
+    Respuesta inicial: {initial_response}
+    
+    Verificación:
+    {verified_claims}
+    """
+    
+    final_response = client.chat.completions.create(
+        model="gpt-4",
+        messages=[{"role": "user", "content": correction_prompt}]
     )
     
-    model = TransformerModel()
-    
-    # Sharding strategy
-    sharding_strategy = ShardingStrategy.FULL_SHARD  # Shard params y grads
-    
-    model = FSDP(
-        model.cuda(),
-        sharding_strategy=sharding_strategy,
-        auto_wrap_policy=auto_wrap_policy,
-        device_id=torch.cuda.current_device(),
-        backward_prefetch=BackwardPrefetch.BACKWARD_PRE,
-        mixed_precision=True,  # Usar FP16 para reducir memoria
-    )
-    
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
-    
-    model.train()
-    for data in dataloader:
-        optimizer.zero_grad()
-        output = model(data)
-        loss = output.mean()
-        loss.backward()  # FSDP maneja el sharding automáticamente
-        optimizer.step()
+    return final_response.choices[0].message.content
 </code></pre>
 
-<h3>4. Benchmark: DataParallel vs DDP vs FSDP</h3>
-<pre><code class="language-python">"""
-Resultados típicos de benchmark en un modelo de 7B parámetros
-con 8x A100 80GB:
+<h3>3. Reducir Hallucinations con Prompting</h3>
+<pre><code class="language-python"># El 80% no sabe que el prompt causa hallucinations
+# Estos son prompts que CAUSAN hallucinations:
+
+PROBLEMATIC_PROMPTS = [
+    # Prompt vago sin contexto
+    "Dame información sobre machine learning.",
+    
+    # Prompt que pide cosas no presentes en el contexto
+    "Basado en este documento, ¿quién fue el presidente de México en 1945?",
+    # Si el documento no menciona nada sobre México, el modelo inventará,
+    # especialmente si tiene conocimiento previo sobre el tema
+    
+    # Prompt que pide opiniones como hechos
+    "¿Cuál es la mejor empresa de tecnología?",
+    # El modelo puede inventar rankings o preferencias
+    
+    # Prompt sin约束
+    "Cuéntame sobre los últimos avances en IA.",
+    # Puede inventar papers o fechas
+]
+
+# Prompts que REDUCEN hallucinations:
+
+GOOD_PROMPTS = [
+    # Contexto explícito
+    """Basado únicamente en el siguiente texto, responde la pregunta.
+    Si la información no está en el texto, responde "No tengo esa información".
+    
+    Texto: {document}
+    Pregunta: {question}""",
+    
+    # Con constraints explícitos
+    """Responde la pregunta usando SOLO la información del contexto.
+    Si no puedes responder, di "No lo sé".
+    No inventes información.
+    
+    Contexto: {context}
+    Pregunta: {question}""",
+    
+    # Chain of thought con verificación
+    """Responde la pregunta paso a paso:
+    1. Identifica la información relevante en el contexto
+    2. Verifica que la información responde la pregunta
+    3. Si es así, proporciona la respuesta
+    4. Si no, dice "No tengo esa información"
+    
+    Contexto: {context}
+    Pregunta: {question}"""
+]
+
+# Ejemplo de aplicación
+document = """
+El lanzamiento de GPT-5 fue en diciembre de 2025.
+La empresa Anthropic lanzó Claude 3.5 en 2024.
 """
 
-benchmark_results = {
-    "DataParallel": {
-        "throughput": "1.0x",  # Baseline
-        "gpu_memory_per_device": "80GB",
-        " коммуникация": "GPU 0 bottleneck"
-    },
-    "DistributedDataParallel": {
-        "throughput": "1.2-1.3x",  # 20-30% más rápido
-        "gpu_memory_per_device": "80GB",
-        "коммуникация": "AllReduce eficiente"
-    },
-    "FSDP (FULL_SHARD)": {
-        "throughput": "0.9x",  # Más коммуникация, menos memoria
-        "gpu_memory_per_device": "~20GB",  # 4x menos!
-        "коммуникация": "AllGather/ReduceScatter"
-    },
-    "FSDP (SHARD_GRAD_OP)": {
-        "throughput": "1.1x",
-        "gpu_memory_per_device": "~40GB",
-        "коммуникация": "Menos коммуникация que FULL_SHARD"
+question = "¿Cuándo se lanzó GPT-5?"
+
+# Prompt malo - puede usar conocimiento externo
+bad_response = client.chat.completions.create(
+    model="gpt-4",
+    messages=[{"role": "user", "content": f"Pregunta: {question}"}]
+)
+
+# Prompt bueno - solo usa el contexto
+good_response = client.chat.completions.create(
+    model="gpt-4",
+    messages=[{
+        "role": "user", 
+        "content": f"Basado únicamente en este texto, responde: {document}\n\nPregunta: {question}"
+    }]
+)
+</code></pre>
+
+<h3>4. Retrieval-Augmented Generation (RAG) para Reducir Hallucinations</h3>
+<pre><code class="language-python"># RAG con cite sources para verificar claims
+def rag_with_citations(query, vector_store, llm_client):
+    """
+    RAG que incluye citations para que el usuario pueda verificar.
+    Esto reduce hallucinations porque el usuario puede checkear las fuentes.
+    """
+    
+    # 1. Retrieve relevant documents
+    retrieved_docs = vector_store.similarity_search(query, k=5)
+    
+    # 2. Build context with source tracking
+    context_with_sources = []
+    for i, doc in enumerate(retrieved_docs):
+        context_with_sources.append(f"[{i+1}] Fuente: {doc.metadata.get('source', 'Unknown')}\n{doc.page_content}")
+    
+    # 3. Generate response with explicit citation instruction
+    prompt = f"""Responde la pregunta usando el contexto proporcionado.
+    Para cada afirmación, cita el número de fuente correspondiente.
+    Si la información no está en el contexto, di "No tengo esa información según las fuentes disponibles".
+    
+    Contexto:
+    {' '.join(context_with_sources)}
+    
+    Pregunta: {query}
+    
+    Formato de respuesta:
+    - Afirmación 1 [cita: 1]
+    - Afirmación 2 [cita: 2]
+    """
+    
+    response = llm_client.chat.completions.create(
+        model="gpt-4",
+        messages=[{"role": "user", "content": prompt}]
+    )
+    
+    return {
+        'response': response.choices[0].message.content,
+        'sources': retrieved_docs,
+        'cited_prompt': prompt
     }
-}
-
-# Conclusión:
-# - Modelos que caben en 1 GPU: DDP
-# - Modelos que no caben en 1 GPU pero sí en N GPUs: DDP
-# - Modelos que no caben en N GPUs: FSDP
 </code></pre>
 
 <hr>
-<h2>🚨 Los 3 Errores que el 80% Comete</h2>
+<h2>🚨 Los 3 Errores que el 90% Comete</h2>
 
-<h3>Error 1: Usar DataParallel Cuando DistributedDataParallel Es Más Eficiente</h3>
-<p>Este es el error más común. DataParallel es más fácil de usar (solo envolvés el modelo y ya), pero tiene un bottleneck inherente: toda la comunicación pasa por la GPU 0. Con DDP, cada GPU tiene su propia copia del optimizador y los gradientes se reducen eficientemente usando NCCL.</p>
+<h3>Error 1: Culpar al Modelo Sin Verificar el Prompt</h3>
+<p>El 90% inmediatamente dice "GPT-4 alucina" sin darse cuenta que el prompt está mal diseñado. Si el prompt no dice "usa solo la información del contexto", el modelo va a usar su conocimiento interno.</p>
 
-<pre><code class="language-python"># ❌ ESTO ES LO QUE EL 80% HACE
-# DataParallel - fácil pero lento
-model = MyModel()
-model = nn.DataParallel(model)  # GPU 0 es el bottleneck
+<pre><code class="language-python"># ❌ ESTO ES LO QUE EL 90% HACE
+response = openai.ChatCompletion.create(
+    model="gpt-4",
+    messages=[{"role": "user", "content": "Explica el descubrimiento"}]
+)
+# Si el modelo "alucina", culpan a OpenAI
 
-# ✅ FIX: Usar DistributedDataParallel
-# Inicializar distributed
-dist.init_process_group(backend="nccl")
-model = MyModel().cuda()
-model = nn.parallel.DistributedDataParallel(model)
-
-# DDP es más difícil de configurar pero:
-# - No hay bottleneck en GPU 0
-# - Comunicación overlapped con computación
-# - 20-30% más throughput
+# ✅ FIX: Diseñar el prompt correctamente
+response = openai.ChatCompletion.create(
+    model="gpt-4",
+    messages=[{
+        "role": "user", 
+        "content": """Responde basándote UNICAMENTE en la información proporcionada.
+        Si no tienes la información, di "No lo sé".
+        
+        Información: {context}
+        
+        Pregunta: {question}"""
+    }]
+)
 </code></pre>
 
-<h3>Error 2: No Usar Gradient Accumulation Cuando el Batch Size es Pequeño</h3>
-<p>Cuando tienes una GPU con memoria limitada, el batch size tiene que ser pequeño. Sin gradient accumulation, los gradients son ruidosos y el entrenamiento es inestable. Gradient accumulation te permite simular un batch size mayor sin usar más memoria.</p>
+<h3>Error 2: No Usar Retrieval con Fuentes</h3>
+<p>Sin retrieval system, el modelo depende de su conocimiento interno y puede "alucinar" hechos. Con retrieval y citations, el usuario puede verificar.</p>
 
-<pre><code class="language-python"># ❌ ESTO ES LO QUE EL 80% HACE
-# Batch size = 4 porque la GPU no da para más
-# Esto causa gradients ruidosos y training inestable
-batch_size = 4
-model.train()
-for data in dataloader:
-    optimizer.zero_grad()
-    output = model(data[:batch_size])
-    loss = criterion(output, labels[:batch_size])
-    loss.backward()
-    optimizer.step()  # Actualización con gradients ruidosos
+<pre><code class="language-python"># ❌ ESTO ES LO QUE EL 90% HACE
+# Sin retrieval - modelo puede inventar
+response = model.generate("¿Qué dijo Elon Musk sobre AI en 2023?")
 
-# ✅ FIX: Gradient accumulation
-# Simular batch size 32 (8 pasos de accumulation)
-accumulation_steps = 8
-batch_size_per_step = 4
-effective_batch_size = accumulation_steps * batch_size_per_step  # 32
-
-model.train()
-optimizer.zero_grad()
-for step, data in enumerate(dataloader):
-    input_ids = data['input_ids'][:batch_size_per_step].cuda()
-    labels = data['labels'][:batch_size_per_step].cuda()
-    
-    output = model(input_ids)
-    loss = criterion(output.view(-1, vocab_size), labels.view(-1))
-    loss = loss / accumulation_steps  # Normalizar
-    loss.backward()
-    
-    if (step + 1) % accumulation_steps == 0:
-        optimizer.step()
-        optimizer.zero_grad()
-
-# El gradiente efectivo es la suma de 8 gradientes locales
-# = gradiente de batch size 32
+# ✅ FIX: RAG con citations
+# El modelo solo responde con información de las fuentes
+# Y indica qué fuentes usó
+response = rag_with_citations(
+    query="¿Qué dijo Elon Musk sobre AI en 2023?",
+    vector_store=news_vector_db,
+    llm_client=openai_client
+)
+# Ahora el usuario puede verificar las fuentes
 </code></pre>
 
-<h3>Error 3: No Monitorear GPU Utilization (Y No Saber Si Hay Bottleneck)</h3>
-<p>La gente entrena sin monitorear si las GPUs están siendo usadas efectivamente. Si la GPU utilization está al 100%, el bottleneck es computación. Si está baja, el bottleneck es likely la comunicación o el data loading. Sin esta información, estás adivinando.</p>
+<h3>Error 3: No Medir Hallucinations</h3>
+<p>El 90% no tiene forma de medir si sus prompts están causando más o menos hallucinations. Sin metrics, es imposible mejorar.</p>
 
-<pre><code class="language-python"># ❌ ESTO ES LO QUE EL 80% HACE
-# Entrenar sin monitorear nada
-for epoch in range(100):
-    train_epoch()
+<pre><code class="language-python"># ❌ ESTO ES LO QUE EL 90% HACE
+# Deploy y rezar
+def generate_response(prompt):
+    return model.generate(prompt)
+# No hay evaluación
+
+# ✅ FIX: Evaluar hallucinations sistemáticamente
+def evaluate_hallucination_rate(test_queries, ground_truth):
+    """
+    Evalúa el rate de hallucinations en un dataset de prueba.
+    ground_truth: dict de query -> facts esperados
+    """
+    hallucination_count = 0
+    total_claims = 0
     
-# ✅ FIX: Monitorear GPU utilization durante training
-import subprocess
-import threading
-
-def monitor_gpu():
-    """Monitorear GPU utilization cada 5 segundos."""
-    while monitoring:
-        result = subprocess.run(
-            ['nvidia-smi', '--query-gpu=utilization.gpu,memory.used',
-             '--format=csv,noheader,nounits'],
-            capture_output=True, text=True
-        )
-        for line in result.stdout.strip().split('\n'):
-            gpu_util, mem_used = line.split(',')
-            print(f"GPU util: {gpu_util.strip()}%, Mem: {mem_used.strip()}MB")
-        time.sleep(5)
-
-monitoring = True
-monitor_thread = threading.Thread(target=monitor_gpu)
-monitor_thread.start()
-
-# Training loop
-for epoch in range(100):
-    train_epoch()
+    for query, expected_facts in ground_truth.items():
+        response = model.generate(query)
+        extracted_facts = extract_facts(response)
+        
+        for fact in extracted_facts:
+            if not fact_in_list(fact, expected_facts):
+                hallucination_count += 1
+            total_claims += 1
     
-# Interpretación de resultados:
-# - GPU util > 90%: Computing bottleneck (bien!)
-# - GPU util < 70%: Communication o data loading bottleneck
-#   - Verificar que DDP está configurado correctamente
-#   - Verificar que el data loader es rápido enough
-# - Memory used cerca de 100%: Memory bottleneck
-#   - Reducir batch size o usar gradient accumulation
+    return {
+        'hallucination_rate': hallucination_count / total_claims,
+        'total_claims': total_claims,
+        'hallucination_count': hallucination_count
+    }
 </code></pre>
 
 <hr>
-<h2>📊 Resumen: Distributed Training Strategies</h2>
+<h2>📊 Resumen: Reducción de Hallucinations</h2>
 
 <ul>
-<li><strong>DataParallel (DP)</strong>: Fácil pero lento, GPU 0 bottleneck. Solo para prototipado rápido</li>
-<li><strong>DistributedDataParallel (DDP)</strong>: El estándar para multi-GPU training, 20-30% más rápido que DP</li>
-<li><strong>FSDP</strong>: Para modelos que no caben en una sola GPU, shardea pesos entre GPUs</li>
-<li><strong>Gradient Accumulation</strong>: Simula batch sizes grandes con memoria limitada</li>
-<li><strong>GPU Utilization</strong>: SIEMPRE monitorear para saber si hay bottleneck</li>
-<li><strong>Sharding Strategy</strong>: FULL_SHARD usa más comunicación pero menos memoria</li>
+<li><strong>Prompt Engineering</strong>: El factor más importante. Decirle "usa solo el contexto" reduce 80% de hallucinations</li>
+<li><strong>Chain of Verification</strong>: Generar, verificar claims, corregir</li>
+<li><strong>RAG con Citations</strong>: Solo responder con información de fuentes verificables</li>
+<li><strong>Self-Consistency</strong>: Múltiples generaciones para detectar inconsistencias</li>
+<li><strong>Evitar Preguntas Vagas</strong>: Preguntas específicas con contexto claro = menos room for hallucination</li>
+<li><strong>Medir</strong>: Sin métricas no hay mejora</li>
 </ul>
 
 <hr>
 <h2>🏁 Cierre</h2>
-<p>Y ahí lo tienen, parcero. Distributed training no es solo "poner el modelo en varias GPUs". Es entender la diferencia entre DP y DDP, usar gradient accumulation cuando el batch size es pequeño, y monitorear la GPU utilization para saber si hay bottleneck de коммуникация o de computación. El 80% que no hace esto es por qué tantísimo entrenamiento de modelos grandes falla o es innecesariamente lento.</p>
+<p>Y ahí lo tienen, parcero. Las hallucinations no son un bug del modelo — son una consecuencia de cómo los LLMs funcionan y cómo los humanos los promptan. El 90% culpa a OpenAI cuando el prompt dice "dame información sobre X" sin especificar que debe usar solo cierto contexto. La próxima vez que veas una hallucination, antes de culpar al modelo, revisa tu prompt. Probablemente ahí está el problema.</p>
 
-<p>Mañana seguimos con más MLOps. El Día 169 va a estar interesante para los que hacen deployment de modelos en producción. No se lo pierdan.</p>
+<p>Mañana seguimos con Evaluation Metrics para LLMs — las métricas que el 85% usa incorrectamente. No se lo pierdan.</p>
 
-<p><em>#365DaysOfAI #DistributedTraining #DDP #FSDP #PyTorch #DeepLearning #MLOps</em></p>
+<p><em>#365DaysOfAI #Hallucinations #PromptEngineering #RAG #LLMEvaluation #ChainOfVerification</em></p>
   </article>
 
   <script>
@@ -442,8 +501,8 @@ for epoch in range(100):
         delimiters: [
           { left: '$$', right: '$$', display: true },
           { left: '$',  right: '$',  display: false },
-          { left: '\\[', right: '\\]', display: true },
-          { left: '\\(', right: '\\)', display: false },
+          { left: '\[', right: '\]', display: true },
+          { left: '\(', right: '\)', display: false },
         ],
         throwOnError: false,
       });
