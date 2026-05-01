@@ -118,510 +118,524 @@ nav {
   </header>
 
   <article class="article-body">
-<p>Parcero, día 175 y hoy我们来聊聊 Tool Use y Function Calling en LLMs. Si pensabas que los LLMs solo podían generar texto, esta vaina te va a volar la cabeza. La posibilidad de que un LLM llame funciones reales — APIs, cálculos, bases de datos — convierte a estos modelos en agentes capaces de hacer cosas en el mundo real. El 80% de las apps LLM avanzadas usan function calling y la mayoría lo implementa mal. De una.</p>
+<h2>🎯 Por Que Early Stopping Es Mas Importante De Lo Que Crees</h2>
 
-<p>Function calling es la capacidad de un LLM para identificar cuándo necesita ejecutar una acción externa y generar los parámetros correctamente estructurados para调用 esa función. No es magia — es un fine-tuning especial que enseña al modelo a outputear JSON estructurado que matchea un schema de función definido.</p>
+<p>Parcero, dia 176. Vamos a聊聊 Early Stopping - cuando parar el entrenamiento. Si pensabas que entrenar mas epochs siempre es mejor, esta vaina te va a sauver la vida y el GPU time. El 85% de los practitioners paran el entrenamiento muy tarde, perdiendo horas de GPU y obteniendo modelos que overfittean. De una.</p>
+
+<p>Early stopping es la tecnica mas simple y efectiva para prevenir overfitting. No necesitas cambiar la arquitectura, no necesitas data augmentation compleja. Solo necesitas parar en el momento correcto. Y ese momento no es cuando el training loss deja de bajar.</p>
 
 <hr>
-<h2>🎯 Por Qué Function Calling Es Game-Changer</h2>
+<h2>📐 La Matematica Detras Del Momento Justo</h2>
 
-<p>Sin function calling, un LLM es un chatbot muy sofisticado pero pasivo. Con function calling, se convierte en un agente activo que puede:</p>
+<p>El principio fundamental: el modelo pasa por tres fases durante training:</p>
 
 <ul>
-<li><strong>Consultar APIs reales</strong>: Weather, stocks, flights, cualquier API REST.</li>
-<li><strong>Ejecutar código</strong>: Python, SQL, cálculos matemáticos.</li>
-<li><strong>Consultar bases de datos</strong>: Extraer, insertar, actualizar datos.</li>
-<li><strong>Interactuar con servicios</strong>: Enviar emails, crear eventos, gestionar archivos.</li>
+<li><strong>Fase 1 - Underfitting</strong>: Tanto train como val loss bajan. El modelo esta aprendiendo.</li>
+<li><strong>Fase 2 - Optimal</strong>: Train loss sigue bajando, val loss empieza a subir levemente. Este es el sweet spot.</li>
+<li><strong>Fase 3 - Overfitting</strong>: Train loss sigue bajando pero val loss sube consistentemente. El modelo memoriza el training data.</li>
 </ul>
 
-<p>La diferencia conceptual: sin function calling, el modelo solo puede razonar sobre información en su training data. Con function calling, puede obtener información fresh y tomar acciones en tiempo real. Eso cierra el gap entre "conocimiento" y "acción".</p>
+<p>El objetivo es parar justo al final de la Fase 2, cuando el val loss alcanza su minimum. Matematicamente:</p>
+
+<p>$$p^* = \arg\min_{p} \mathcal{L}_{val}(p)$$</p>
+
+<p>Donde $p$ son los parametros del modelo y $\mathcal{L}_{val}$ es la loss en validation set.</p>
+
+<p>El challenge es que no sabemos cuando es el minimum hasta que ya pasamos de largo. Por eso usamos patience - esperamos $k$ epochs sin mejora antes de parar.</p>
 
 <hr>
-<h2>📐 Cómo Funciona el Function Calling</h2>
+<h2>💻 Implementacion Production-Grade De Early Stopping</h2>
 
-<p>El proceso tiene 4 pasos:</p>
-
-<p><strong>1. Definir funciones disponibles</strong></p>
-<p>El developer define un schema de funciones en formato JSON Schema:</p>
-
-<pre><code>{
-  "name": "get_weather",
-  "description": "Obtiene el clima actual de una ciudad",
-  "parameters": {
-    "type": "object",
-    "properties": {
-      "city": {
-        "type": "string",
-        "description": "Nombre de la ciudad"
-      },
-      "unit": {
-        "type": "string",
-        "enum": ["celsius", "fahrenheit"],
-        "description": "Unidad de temperatura"
-      }
-    },
-    "required": ["city"]
-  }
-}</code></pre>
-
-<p><strong>2. LLM decide cuándo llamar</strong></p>
-<p>Cuando el user pregunta algo como "¿Cómo está el clima en Bogotá?", el modelo identifica que necesita llamar <code>get_weather</code> y genera los argumentos correctos.</p>
-
-<p><strong>3. Backend ejecuta la función</strong></p>
-<p>El código del developer recibe la llamada, ejecuta la función real, retorna el resultado.</p>
-
-<p><strong>4. LLM responde con el resultado</strong></p>
-<p>El modelo recibe la respuesta de la función y genera una respuesta natural al usuario.</p>
-
-<hr>
-<h2>💻 Código Production-Grade de Function Calling</h2>
-
-<pre><code>"""
-Sistema de Function Calling con OpenAI API.
-Maneja múltiples funciones, parsing robusto, y errores.
+<pre><code class="language-python">"""
+Early Stopping Callback con múltiples estrategias.
+Incluye: Classic, Gradual, Snapshot, dan Adaptive patience.
 """
-import json
+import torch
+import torch.nn as nn
+import numpy as np
+import copy
 import logging
+from typing import Optional, Callable, Dict, Any, List
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Any, Callable, Union
 from enum import Enum
-import asyncio
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-class FunctionCallResult:
-    """Resultado de una llamada a función."""
-    def __init__(
-        self,
-        function_name: str,
-        arguments: Dict[str, Any],
-        success: bool,
-        result: Optional[Any] = None,
-        error: Optional[str] = None,
-    ):
-        self.function_name = function_name
-        self.arguments = arguments
-        self.success = success
-        self.result = result
-        self.error = error
+class EarlyStoppingMode(Enum):
+    """Modos de early stopping."""
+    MIN = "min"           # Parar cuando metric baja
+    MAX = "max"           # Parar cuando metric sube
+
+
+class RestorationStrategy(Enum):
+    """Estrategia para restaurar el mejor modelo."""
+    BEST = "best"              # Restaurar el mejor modelo guardado
+    LAST = "last"              # Usar el ultimo modelo
+    AVERAGE = "average"        # Promedio de ultimos k modelos
 
 
 @dataclass
-class FunctionDefinition:
-    """Definición de una función disponible para el LLM."""
-    name: str
-    description: str
-    parameters: Dict[str, Any]  # JSON Schema
-    handler: Callable[..., Any]  # Función real a ejecutar
-    requires_confirmation: bool = False  # Para acciones destructivas
+class EarlyStoppingConfig:
+    """Configuracion del early stopping."""
+    patience: int = 10          # Epochs sin mejora antes de parar
+    min_delta: float = 1e-4     # Cambio minimo para considerar "mejora"
+    mode: EarlyStoppingMode = EarlyStoppingMode.MIN
+    restore_best: RestorationStrategy = RestorationStrategy.BEST
+    baseline: Optional[float] = None  # Baseline para comparar
+    warmup_epochs: int = 0      # No activar early stopping en las primeras epochs
+    
+    # Opciones avanzadas
+    use_gradual_patience: bool = False  # Aumentar patience conforme progresamos
+    gradual_patience_factor: float = 1.5  # Factor de aumento por epoch
+    use_val_loss_ewma: bool = True       # Usar media movil exponencial del val loss
+    ewma_span: int = 5                   # Span para EWMA
+    
+    # Para snapshot ensemble
+    save_snapshots: bool = False
+    snapshot_interval: int = 5
+    num_snapshots: int = 3
+    
+    # Threshold absoluto
+    min_metric_value: Optional[float] = None  # Parar si la metric alcanza este valor
 
 
-class FunctionCallingSystem:
+class EarlyStopping:
     """
-    Sistema de function calling que conecta el LLM con funciones reales.
+    Early stopping callback completo con múltiples estrategias.
+    
+    Mantiene registro del mejor modelo y lo restaura cuando detecta overfitting.
     """
     
-    def __init__(self):
-        self.functions: Dict[str, FunctionDefinition] = {}
-        self.call_history: List[Dict] = []
-        logger.info("FunctionCallingSystem inicializado")
-    
-    def register_function(self, func_def: FunctionDefinition) -> None:
-        """Registra una nueva función."""
-        self.functions[func_def.name] = func_def
-        logger.info(f"Función registrada: {func_def.name}")
-    
-    def get_functions_schema(self) -> List[Dict]:
-        """Retorna el schema de todas las funciones para el LLM."""
-        return [
-            {
-                "name": f.name,
-                "description": f.description,
-                "parameters": f.parameters,
-            }
-            for f in self.functions.values()
-        ]
-    
-    def parse_function_call(
-        self, 
-        function_call: Dict
-    ) -> FunctionCallResult:
-        """
-        Parsea y ejecuta una llamada a función desde el LLM.
+    def __init__(self, config: EarlyStoppingConfig, metric_name: str = "val_loss"):
+        self.config = config
+        self.metric_name = metric_name
         
-        Args:
-            function_call: Dict con 'name' y 'arguments' del LLM
-            
-        Returns:
-            FunctionCallResult con el resultado de la ejecución
-        """
-        func_name = function_call.get("name")
-        raw_args = function_call.get("arguments", {})
+        # Estado interno
+        self.best_metric: Optional[float] = None
+        self.best_epoch: int = 0
+        self.best_model_state: Optional[Dict[str, torch.Tensor]] = None
+        self.counter: int = 0  # Epochs sin mejora
+        self.status: str = "initialized"
+        self.history: List[Dict[str, float]] = []
+        self.snapshots: List[Dict[str, torch.Tensor]] = []
         
-        # Convertir argumentos string a dict si es necesario
-        if isinstance(raw_args, str):
-            try:
-                arguments = json.loads(raw_args)
-            except json.JSONDecodeError as e:
-                return FunctionCallResult(
-                    function_name=func_name,
-                    arguments=raw_args,
-                    success=False,
-                    error=f"JSON parse error: {e}"
-                )
+        # EWMA para val loss (mas estable que valor puntual)
+        self.ewma_value: Optional[float] = None
+        self.ewma_values: List[float] = []
+        
+        # Gradual patience
+        self.current_patience = config.patience
+        
+        logger.info(f"EarlyStopping inicializado: patience={config.patience}, mode={config.mode.value}")
+    
+    def _compute_ewma(self, value: float) -> float:
+        """Computa exponential weighted moving average."""
+        alpha = 2.0 / (self.config.ewma_span + 1)
+        
+        if self.ewma_value is None:
+            self.ewma_value = value
         else:
-            arguments = raw_args
+            self.ewma_value = alpha * value + (1 - alpha) * self.ewma_value
         
-        # Verificar que la función existe
-        if func_name not in self.functions:
-            return FunctionCallResult(
-                function_name=func_name,
-                arguments=arguments,
-                success=False,
-                error=f"Función desconocida: {func_name}"
-            )
-        
-        func_def = self.functions[func_name]
-        
-        # Validar argumentos contra el schema
-        validation_error = self._validate_arguments(arguments, func_def.parameters)
-        if validation_error:
-            return FunctionCallResult(
-                function_name=func_name,
-                arguments=arguments,
-                success=False,
-                error=f"Validación falló: {validation_error}"
-            )
-        
-        # Ejecutar la función
-        try:
-            logger.info(f"Llamando función {func_name} con args: {arguments}")
-            result = func_def.handler(**arguments)
-            
-            self.call_history.append({
-                "function": func_name,
-                "arguments": arguments,
-                "success": True,
-            })
-            
-            return FunctionCallResult(
-                function_name=func_name,
-                arguments=arguments,
-                success=True,
-                result=result,
-            )
-            
-        except Exception as e:
-            logger.error(f"Error ejecutando {func_name}: {e}")
-            self.call_history.append({
-                "function": func_name,
-                "arguments": arguments,
-                "success": False,
-                "error": str(e),
-            })
-            
-            return FunctionCallResult(
-                function_name=func_name,
-                arguments=arguments,
-                success=False,
-                error=str(e)
-            )
+        return self.ewma_value
     
-    def _validate_arguments(
-        self, 
-        arguments: Dict, 
-        schema: Dict
-    ) -> Optional[str]:
-        """Valida argumentos contra JSON Schema simplificado."""
-        required = schema.get("required", [])
+    def _is_improvement(self, metric: float) -> bool:
+        """Determina si hay mejora significativa."""
+        if self.best_metric is None:
+            return True
         
-        # Check required fields
-        for field_name in required:
-            if field_name not in arguments:
-                return f"Campo requerido faltante: {field_name}"
+        if self.config.mode == EarlyStoppingMode.MIN:
+            improved = metric < self.best_metric - self.config.min_delta
+        else:
+            improved = metric > self.best_metric + self.config.min_delta
         
-        # Check types
-        properties = schema.get("properties", {})
-        for field_name, value in arguments.items():
-            if field_name in properties:
-                expected_type = properties[field_name].get("type")
-                if expected_type == "string" and not isinstance(value, str):
-                    return f"{field_name} debe ser string"
-                elif expected_type == "number" and not isinstance(value, (int, float)):
-                    return f"{field_name} debe ser number"
-                elif expected_type == "boolean" and not isinstance(value, bool):
-                    return f"{field_name} debe ser boolean"
-                elif expected_type == "array" and not isinstance(value, list):
-                    return f"{field_name} debe ser array"
+        return improved
+    
+    def _update_best(self, model: nn.Module, epoch: int, metric: float) -> None:
+        """Actualiza el mejor modelo conocido."""
+        self.best_metric = metric
+        self.best_epoch = epoch
+        self.best_model_state = copy.deepcopy(model.state_dict())
+        self.counter = 0
         
-        return None
-
-
-# Ejemplo de funciones reales
-def get_weather(city: str, unit: str = "celsius") -> Dict[str, Any]:
-    """Función real que consulta weather API."""
-    # En producción, esto llamaría una API real como OpenWeatherMap
-    return {
-        "city": city,
-        "temperature": 18 if unit == "celsius" else 64,
-        "condition": "partly_cloudy",
-        "humidity": 65,
-        "unit": unit,
-    }
-
-
-def calculateMortgage(
-    principal: float,
-    interest_rate: float,
-    years: int,
-    down_payment: float = 0
-) -> Dict[str, float]:
-    """Calcula pagos de hipoteca."""
-    p = principal - down_payment
-    r = interest_rate / 100 / 12  # Monthly rate
-    n = years * 12
+        # Guardar snapshot si esta habilitado
+        if self.config.save_snapshots and epoch % self.config.snapshot_interval == 0:
+            if len(self.snapshots) >= self.config.num_snapshots:
+                self.snapshots.pop(0)  # Remover el mas antiguo
+            self.snapshots.append(copy.deepcopy(model.state_dict()))
+            logger.info(f"Snapshot guardado en epoch {epoch}")
+        
+        logger.info(f"Nuevo mejor modelo: {metric:.6f} en epoch {epoch}")
     
-    if r == 0:
-        monthly_payment = p / n
-    else:
-        monthly_payment = p * (r * (1 + r)**n) / ((1 + r)**n - 1)
-    
-    total_payment = monthly_payment * n
-    
-    return {
-        "monthly_payment": round(monthly_payment, 2),
-        "total_payment": round(total_payment, 2),
-        "total_interest": round(total_payment - p, 2),
-        "principal": p,
-    }
-
-
-def search_database(query: str, table: str = "products") -> List[Dict]:
-    """Busca en la base de datos."""
-    # Simulación — en producción usar SQL real
-    return [
-        {"id": 1, "name": "Producto A", "price": 29.99},
-        {"id": 2, "name": "Producto B", "price": 49.99},
-    ]
-
-
-class OpenAIFunctionCaller:
-    """
-    Cliente que maneja el flujo completo de function calling con OpenAI.
-    """
-    
-    def __init__(self, api_key: str, system: FunctionCallingSystem):
-        self.api_key = api_key
-        self.function_system = system
-    
-    def build_messages(
+    def step(
         self,
-        user_query: str,
-        conversation_history: Optional[List[Dict]] = None,
-        function_results: Optional[List[Dict]] = None,
-    ) -> List[Dict]:
-        """Construye el array de messages para la API."""
-        messages = []
-        
-        # System prompt
-        messages.append({
-            "role": "system",
-            "content": """Eres un asistente que puede llamar funciones cuando necesitas información adicional.
-Solo llamas funciones cuando es necesario para responder la pregunta del usuario.
-Si tienes suficiente información, respondes directamente sin llamar funciones."""
-        })
-        
-        # Historial de conversación
-        if conversation_history:
-            messages.extend(conversation_history)
-        
-        # Resultados de funciones previas
-        if function_results:
-            for fr in function_results:
-                if fr["success"]:
-                    messages.append({
-                        "role": "system",
-                        "content": f"[Función {fr['function_name']} retornó: {json.dumps(fr['result'])}]"
-                    })
-                else:
-                    messages.append({
-                        "role": "system", 
-                        "content": f"[Error en función {fr['function_name']}: {fr['error']}]"
-                    })
-        
-        # Query actual
-        messages.append({"role": "user", "content": user_query})
-        
-        return messages
-    
-    def process_query(
-        self,
-        user_query: str,
-        model: str = "gpt-4-turbo",
-        conversation_history: Optional[List[Dict]] = None,
-        max_turns: int = 5,
+        model: nn.Module,
+        epoch: int,
+        metric: float,
+        train_metric: Optional[float] = None,
     ) -> Dict[str, Any]:
         """
-        Procesa una query del usuario con function calling.
+        Evalua si se debe parar el entrenamiento.
         
         Args:
-            user_query: Pregunta del usuario
-            model: Modelo a usar
-            conversation_history: Historial previo de mensajes
-            max_turns: Máximo de llamadas a funciones por query
-            
+            model: El modelo a evaluar
+            epoch: Epoch actual
+            metric: Valor de la metrica de validacion
+            train_metric: Valor de la metrica de training (opcional, para logging)
+        
         Returns:
-            Dict con 'response' y 'function_calls' realizados
+            Dict con decision y metadata
         """
-        import openai
-        openai.api_key = self.api_key
+        self.history.append({
+            "epoch": epoch,
+            "metric": metric,
+            "train_metric": train_metric,
+        })
         
-        messages = self.build_messages(user_query, conversation_history)
-        function_results = []
-        turns = 0
+        # Warmup - no hacer nada
+        if epoch < self.config.warmup_epochs:
+            self.status = "warmup"
+            return {
+                "should_stop": False,
+                "status": self.status,
+                "reason": "warmup period",
+            }
         
-        while turns < max_turns:
-            # Llamar a la API
-            response = openai.ChatCompletion.create(
-                model=model,
-                messages=messages,
-                functions=self.function_system.get_functions_schema(),
-                function_call="auto",
-                temperature=0.7,
+        # Check baseline
+        if self.config.baseline is not None:
+            if self.config.mode == EarlyStoppingMode.MIN and metric <= self.config.baseline:
+                return self._create_stop_response(
+                    model, epoch, "baseline reached",
+                    {"baseline": self.config.baseline, "metric": metric}
+                )
+            elif self.config.mode == EarlyStoppingMode.MAX and metric >= self.config.baseline:
+                return self._create_stop_response(
+                    model, epoch, "baseline reached",
+                    {"baseline": self.config.baseline, "metric": metric}
+                )
+        
+        # Check min metric value
+        if self.config.min_metric_value is not None:
+            if self.config.mode == EarlyStoppingMode.MIN and metric <= self.config.min_metric_value:
+                return self._create_stop_response(
+                    model, epoch, "min metric value reached",
+                    {"min_value": self.config.min_metric_value, "metric": metric}
+                )
+        
+        # Usar EWMA si esta habilitado
+        eval_metric = self._compute_ewma(metric) if self.config.use_val_loss_ewma else metric
+        self.ewma_values.append(eval_metric)
+        
+        # Verificar si hay mejora
+        if self._is_improvement(eval_metric):
+            self._update_best(model, epoch, metric)
+        else:
+            self.counter += 1
+            logger.debug(f"Epoch {epoch}: sin mejora por {self.counter} epochs (EWMA: {eval_metric:.6f})")
+        
+        # Gradual patience: aumentar patience conforme progresamos
+        if self.config.use_gradual_patience:
+            # Mientras mas epochs sin mejora, mas paciente nos volvemos
+            self.current_patience = int(
+                self.config.patience * (self.config.gradual_patience_factor ** (self.counter / self.config.patience))
             )
-            
-            assistant_message = response.choices[0].message
-            messages.append(assistant_message)
-            
-            # Verificar si hay function call
-            if assistant_message.get("function_call"):
-                func_call = assistant_message["function_call"]
-                logger.info(f"Function call detectado: {func_call['name']}")
-                
-                # Ejecutar la función
-                result = self.function_system.parse_function_call(func_call)
-                function_results.append({
-                    "function_name": result.function_name,
-                    "arguments": result.arguments,
-                    "success": result.success,
-                    "result": result.result,
-                    "error": result.error,
-                })
-                
-                # Agregar resultado al mensaje
-                if result.success:
-                    messages.append({
-                        "role": "function",
-                        "name": result.function_name,
-                        "content": json.dumps(result.result),
-                    })
-                else:
-                    messages.append({
-                        "role": "function",
-                        "name": result.function_name,
-                        "content": f"ERROR: {result.error}",
-                    })
-                
-                turns += 1
-            else:
-                # No hay más function calls, retornar respuesta final
-                return {
-                    "response": assistant_message["content"],
-                    "function_calls": function_results,
-                    "turns_used": turns,
-                }
         
-        # Se alcanzó max_turns
+        # Verificar si debemos parar
+        if self.counter >= self.current_patience:
+            return self._create_stop_response(
+                model, epoch, f"no improvement for {self.counter} epochs",
+                {"counter": self.counter, "patience": self.current_patience, "ewma": eval_metric}
+            )
+        
+        self.status = "training"
         return {
-            "response": "达到最大 número de llamadas a funciones. No pude completar la request.",
-            "function_calls": function_results,
-            "turns_used": turns,
+            "should_stop": False,
+            "status": self.status,
+            "best_epoch": self.best_epoch,
+            "best_metric": self.best_metric,
+            "counter": self.counter,
+            "patience": self.current_patience,
+            "ewma": eval_metric,
+        }
+    
+    def _create_stop_response(
+        self,
+        model: nn.Module,
+        epoch: int,
+        reason: str,
+        details: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Crea la respuesta de parada."""
+        self.status = "stopped"
+        
+        # Restaurar el mejor modelo si esta habilitado
+        restored = False
+        if self.config.restore_best == RestorationStrategy.BEST and self.best_model_state:
+            model.load_state_dict(self.best_model_state)
+            restored = True
+            logger.info(f"Mejor modelo restaurado del epoch {self.best_epoch}")
+        elif self.config.restore_best == RestorationStrategy.AVERAGE and self.snapshots:
+            # Cargar snapshots y promediarlos
+            averaged_state = self._average_snapshots()
+            model.load_state_dict(averaged_state)
+            restored = True
+            logger.info(f"Ensemble de {len(self.snapshots)} snapshots restaurado")
+        
+        return {
+            "should_stop": True,
+            "status": self.status,
+            "reason": reason,
+            "details": details,
+            "best_epoch": self.best_epoch,
+            "best_metric": self.best_metric,
+            "total_epochs": epoch,
+            "model_restored": restored,
+        }
+    
+    def _average_snapshots(self) -> Dict[str, torch.Tensor]:
+        """Promedia los estados de los snapshots guardados."""
+        averaged = {}
+        for key in self.snapshots[0].keys():
+            averaged[key] = torch.stack([s[key] for s in self.snapshots]).mean(dim=0)
+        return averaged
+    
+    def get_best_model(self) -> Optional[Dict[str, torch.Tensor]]:
+        """Retorna el estado del mejor modelo."""
+        return self.best_model_state
+    
+    def get_history(self) -> List[Dict[str, float]]:
+        """Retorna el historial de metricas."""
+        return self.history
+    
+    def plot_history(self) -> Dict[str, List]:
+        """Retorna datos para graficar el historial."""
+        epochs = [h["epoch"] for h in self.history]
+        metrics = [h["metric"] for h in self.history]
+        train_metrics = [h["train_metric"] for h in self.history if h.get("train_metric") is not None]
+        
+        return {
+            "epochs": epochs,
+            "val_metrics": metrics,
+            "train_metrics": train_metrics,
+            "best_epoch": self.best_epoch,
+            "ewma_values": self.ewma_values,
         }
 
 
-# Setup
-if __name__ == "__main__":
-    # Inicializar sistema
-    func_system = FunctionCallingSystem()
+class TriangularCLRScheduler:
+    """
+    Cyclical Learning Rate con early stopping integrado.
+    Detecta cuando el learning rate optimo cambio y sugiere ajustes.
+    """
     
-    # Registrar funciones
-    func_system.register_function(FunctionDefinition(
-        name="get_weather",
-        description="Obtiene el clima actual de una ciudad",
-        parameters={
-            "type": "object",
-            "properties": {
-                "city": {"type": "string", "description": "Nombre de la ciudad"},
-                "unit": {
-                    "type": "string",
-                    "enum": ["celsius", "fahrenheit"],
-                    "description": "Unidad de temperatura"
-                }
-            },
-            "required": ["city"]
-        },
-        handler=get_weather,
-    ))
+    def __init__(
+        self,
+        optimizer: torch.optim.Optimizer,
+        base_lr: float = 1e-5,
+        max_lr: float = 1e-3,
+        step_size: int = 2000,
+    ):
+        self.optimizer = optimizer
+        self.base_lr = base_lr
+        self.max_lr = max_lr
+        self.step_size = step_size
+        self.history: List[Dict[str, float]] = []
     
-    func_system.register_function(FunctionDefinition(
-        name="calculate_mortgage",
-        description="Calcula pagos de hipoteca dados los parámetros del préstamo",
-        parameters={
-            "type": "object",
-            "properties": {
-                "principal": {"type": "number", "description": "Monto del préstamo principal"},
-                "interest_rate": {"type": "number", "description": "Tasa de interés anual (%)"},
-                "years": {"type": "number", "description": "Plazo en años"},
-                "down_payment": {"type": "number", "description": "Enganche/pago inicial"},
-            },
-            "required": ["principal", "interest_rate", "years"]
-        },
-        handler=calculateMortgage,
-    ))
+    def step(self, batch: int, loss: float) -> float:
+        """Calcula el learning rate para este batch."""
+        cycle = batch // self.step_size
+        x = batch % self.step_size
+        
+        # Triangular schedule
+        lr = self.base_lr + (self.max_lr - self.base_lr) * max(0, 1 - abs(x / self.step_size - 0.5) * 2)
+        
+        # Actualizar lr
+        for param_group in self.optimizer.param_groups:
+            param_group['lr'] = lr
+        
+        self.history.append({"batch": batch, "lr": lr, "loss": loss})
+        
+        return lr
+
+
+# Ejemplo de uso integrado con training loop
+def train_with_early_stopping(
+    model: nn.Module,
+    train_loader,
+    val_loader,
+    num_epochs: int,
+    device: str = "cuda",
+):
+    """Training loop con early stopping completo."""
     
-    # Usar el sistema
-    caller = OpenAIFunctionCaller("your-api-key", func_system)
+    model = model.to(device)
     
-    # Query que dispara function calling
-    result = caller.process_query(
-        "¿Cuánto pagaría monthly si pido $200,000 a 30 años con 7% interés?"
+    # Configurar early stopping
+    es_config = EarlyStoppingConfig(
+        patience=10,
+        min_delta=1e-5,
+        mode=EarlyStoppingMode.MIN,
+        restore_best=RestorationStrategy.BEST,
+        use_gradual_patience=True,
+        gradual_patience_factor=1.5,
+        save_snapshots=True,
+        snapshot_interval=5,
+        num_snapshots=3,
     )
     
-    print(f"Respuesta: {result['response']}")
-    print(f"Function calls: {len(result['function_calls'])}")
+    early_stopping = EarlyStopping(es_config, metric_name="val_loss")
+    
+    # Optimizer
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.01)
+    
+    # Scheduler opcional
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode='min', factor=0.5, patience=3
+    )
+    
+    for epoch in range(num_epochs):
+        # Training
+        model.train()
+        train_loss = 0.0
+        
+        for batch_idx, (data, target) in enumerate(train_loader):
+            data, target = data.to(device), target.to(device)
+            
+            optimizer.zero_grad()
+            output = model(data)
+            loss = nn.functional.cross_entropy(output, target)
+            loss.backward()
+            optimizer.step()
+            
+            train_loss += loss.item()
+        
+        train_loss /= len(train_loader)
+        
+        # Validation
+        model.eval()
+        val_loss = 0.0
+        correct = 0
+        total = 0
+        
+        with torch.no_grad():
+            for data, target in val_loader:
+                data, target = data.to(device), target.to(device)
+                output = model(data)
+                val_loss += nn.functional.cross_entropy(output, target, reduction='sum').item()
+                pred = output.argmax(dim=1)
+                correct += (pred == target).sum().item()
+                total += target.size(0)
+        
+        val_loss /= len(val_loader.dataset)
+        val_acc = correct / total
+        
+        # Early stopping check
+        result = early_stopping.step(model, epoch, val_loss, train_loss)
+        
+        # LR scheduling
+        scheduler.step(val_loss)
+        
+        # Logging
+        logger.info(
+            f"Epoch {epoch}: train_loss={train_loss:.4f}, "
+            f"val_loss={val_loss:.4f}, val_acc={val_acc:.4f}, "
+            f"status={result['status']}"
+        )
+        
+        if result["should_stop"]:
+            logger.info(f"Early stopping triggered: {result['reason']}")
+            logger.info(f"Mejor epoch: {result['best_epoch']}, mejor metric: {result['best_metric']:.6f}")
+            break
+    
+    # Restaurar mejor modelo
+    best_state = early_stopping.get_best_model()
+    if best_state:
+        model.load_state_dict(best_state)
+    
+    return model, early_stopping.get_history()
+
+
+# Test
+if __name__ == "__main__":
+    # Dummy model
+    model = nn.Sequential(
+        nn.Linear(784, 256),
+        nn.ReLU(),
+        nn.Dropout(0.2),
+        nn.Linear(256, 128),
+        nn.ReLU(),
+        nn.Dropout(0.2),
+        nn.Linear(128, 10),
+    )
+    
+    # Dummy data
+    x = torch.randn(100, 784)
+    y = torch.randint(0, 10, (100,))
+    dataset = torch.utils.data.TensorDataset(x, y)
+    loader = torch.utils.data.DataLoader(dataset, batch_size=32)
+    
+    # Dummy training
+    es_config = EarlyStoppingConfig(
+        patience=5,
+        min_delta=1e-4,
+        mode=EarlyStoppingMode.MIN,
+    )
+    
+    early_stopping = EarlyStopping(es_config)
+    
+    for epoch in range(20):
+        model.train()
+        for batch_x, batch_y in loader:
+            # Simular training
+            output = model(batch_x)
+            loss = nn.functional.cross_entropy(output, batch_y)
+            
+            # Backward pass simulado
+            loss.backward()
+        
+        # Simular val loss
+        val_loss = 0.5 + 0.05 * np.sin(epoch) + 0.1 * np.random.random()
+        
+        result = early_stopping.step(model, epoch, val_loss, loss.item())
+        
+        print(f"Epoch {epoch}: val_loss={val_loss:.4f}, should_stop={result['should_stop']}")
+        
+        if result['should_stop']:
+            break
 </code></pre>
 
 <hr>
-<h2>⚠️ Errores Comunes con Function Calling</h2>
+<h2>⚠️ Errores Comunes Con Early Stopping</h2>
 
-<h3>Error 1: No validar los argumentos antes de ejecutar</h3>
-<p><strong>El problema</strong>: Confiar ciegamente en los argumentos que el LLM genera y ejecutarlos directamente puede ser peligroso. Un LLM puede generar argumentos inesperados que causan errores o, en casos extremos, injection attacks. El 75% de implementaciones saltan la validación.</p>
-<p><strong>Fix:</strong> SIEMPRE validar argumentos contra el JSON Schema antes de pasarlos a la función handler. Implementar type checking, range validation, y sanitization de strings.</p>
+<h3>Error 1: Usar validation set pequeno</h3>
+<p><strong>El problema</strong>: Con pocos datos de validacion, la metrica tiene alta varianza y puedes parar prematuramente o muy tarde. Un validation set de 100 ejemplos puede tener noise que hace que el early stopping reaccione a fluctuaciones aleatorias.</p>
+<p><strong>Fix</strong>: Usar al menos 1000-5000 ejemplos en validation. Si los datos son limitados, usar cross-validation para early stopping.</p>
 
-<h3>Error 2: Function descriptions vagas</h3>
-<p><strong>El problema</strong>: Si la descripción de la función es ambigua o缺少 detalles, el modelo puede misunderstander cuándo llamar la función o con qué argumentos. Típicamente resulta en llamadas innecesarias o con parámetros incorrectos.</p>
-<p><strong>Fix:</strong>: Escribir descripciones detalladas que incluyan: qué hace la función, cuándo es apropiada, y qué significan los parámetros. Incluir ejemplos en la descripción si es necesario.</p>
+<h3>Error 2: No restaurar el mejor modelo</h3>
+<p><strong>El problema</strong>: El modelo al momento de parar no es necesariamente el mejor. Podria tener 10 epochs de overfitting encima. El 60% de implementaciones usan el modelo del ultimo epoch.</p>
+<p><strong>Fix</strong>: SIEMPRE guardar el mejor modelo y restaurarlo al terminar. Usar RestorationStrategy.BEST o AVERAGE de snapshots.</p>
 
-<h3>Error 3: No manejar timeouts ni errores de red</h3>
-<p><strong>El problema</strong>: Cuando la función llama a una API externa, puede fallar por timeout, rate limiting, o errores de red. Si no manejas esto, el usuario queda con una respuesta incompleta o un error críptico.</p>
-<p><strong>Fix:</strong>: Wrappear las llamadas a funciones con try/catch, implementar retry con backoff, y retornar mensajes de error claros que el LLM pueda usar para explicar el problema al usuario.</p>
+<h3>Error 3: Patience muy pequena o muy grande</h3>
+<p><strong>El problema</strong>: Patience de 3 es muy agresiva - cualquier fluctuacion para el training. Patience de 50 es demasiado permisiva - puedes overfittear por muchas epochs antes de parar.</p>
+<p><strong>Fix</strong>: Patience = 10-20 es un buen starting point para la mayoria de casos. Para modelos pequenos o datasets grandes, menor patience. Para modelos grandes o datasets pequenos, mayor patience.</p>
 
 <hr>
-<h2>✅ Resumen y Cierre</h2>
+<h2>✅ Resumen Y Cierre</h2>
 
 <ul>
-<li><strong>Function calling</strong> convierte LLMs pasivos en agentes activos capaces de actuar en el mundo real.</li>
-<li><strong>El flujo</strong>: Define funciones → LLM decide cuándo llamar → Ejecuta → LLM responde con resultado.</li>
-<li><strong>Validación de argumentos</strong> es crítica — nunca confiar ciegamente en output del LLM.</li>
-<li><strong>Descriptions claras</strong> mejoran significativamente la calidad de las llamadas.</li>
-<li><strong>Manejo de errores</strong> robusto es essential para producción.</li>
+<li><strong>Early stopping previene overfitting</strong> sin cambiar arquitectura ni perdida.</li>
+<li><strong>El validation loss minimum marca el sweet spot</strong> -parar ahi.</li>
+<li><strong>Patience de 10-20</strong> es buena practica para la mayoria de casos.</li>
+<li><strong>SIEMPRE restaurar el mejor modelo</strong> - no el ultimo.</li>
+<li><strong>EWMA del validation loss</strong> es mas estable que valores puntuales.</li>
+<li><strong>Gradual patience</strong> ayuda cuando el entrenamiento es largo.</li>
 </ul>
 
-<p>Hágale que function calling es lo que separa una app LLM rudimentaria de una verdaderamente útil. La próxima vez que preguntes el clima y obtengas una respuesta accurate con datos reales, ahí hay function calling funcionando, parcero.</p>
+<p>Hagale que early stopping es la tecnica mas low-effort, high-impact para mejorar tus modelos. No pierdan GPU time entrenando cuando el modelo ya dejo de aprender, parcero.</p>
 
-<p><em>Eso es todo. Día 176 viene con más.</em></p>
+<p><em>Eso es todo. Dia 177 viene con mas.</em></p>
   </article>
 
   <script>

@@ -118,497 +118,403 @@ nav {
   </header>
 
   <article class="article-body">
-<p>Parcero, día 174 y hoy我们来聊聊 Cost Optimization en aplicaciones LLM. Si tu startup está quemando dinero en APIs de OpenAI y no tiene una estrategia de costos clara, esta vaina se va a poner fea. El 90% de las empresas que usan LLMs en producción están pagando más de lo necesario. De una.</p>
+<h2>🎯 Por Que La Regularizacion En Transformers Es Critica</h2>
 
-<p>Hagamos las cuentas:假设 una app con 100K usuarios activos mensuales, cada usuario hace 10 requests/día de ~500 tokens de output. Eso son 100K × 10 × 30 = 30M requests/mes. Si usas GPT-4 a $0.03/1K tokens output, eso son $450/mes solo en output tokens. Con caching agresivo y optimización de contexto, puedes reducir eso a $50-100/mes. Eso es 5-10x de ahorro.</p>
+<p>Parcero, dia 175. Vamos a聊聊 Regularizacion en Transformers. Si pensabas que dropout era solo apagar neuronas al azar, esta vaina te va a expandir la mente. Los transformers tienen problemas de regularizacion unicos debido a su arquitectura, y el 80% de las implementaciones aplican dropout incorrectamente o no usan las tecnicas correctas. De una.</p>
 
-<hr>
-<h2>🎯 La Anatomía del Costo LLM</h2>
-
-<p>Para optimizar costos, primero hay que entender de dónde vienen los costos. Cada API call tiene dos componentes:</p>
-
-<ul>
-<li><strong>Input tokens</strong>: Tu prompt + conversation history + system prompt. Se cobra por 1K tokens.</li>
-<li><strong>Output tokens</strong>: La respuesta del modelo. Típicamente 10-50x más caro que input en modelos recientes.</li>
-</ul>
-
-<p>Los levers para reducir costos:</p>
-
-<ul>
-<li><strong>Reducir input tokens</strong>: Comprimir prompts, resumir history, usar context window más pequeño.</li>
-<li><strong>Reducir output tokens</strong>: lower max_tokens, usar modelos más baratos para tareas simples.</li>
-<li><strong>Cachear outputs</strong>: Semantic cache para queries repetidas (ver Día 173).</li>
-<li><strong>Routing inteligente</strong>: Enviar requests baratos a modelos baratos cuando sea posible.</li>
-</ul>
+<p>Los transformers son modelos enorme con millones o miles de millones de parametros. Con datasets relativamente pequenos comparado con el numero de parametros, el overfitting es el problema numero uno. La diferencia entre un transformer que generaliza bien y uno que memoriza el training data esta en como aplicas regularizacion.</p>
 
 <hr>
-<h2>📐 Estrategias de Optimización de Costos</h2>
+<h2>📐 El Problema Unico De Los Transformers</h2>
 
-<p><strong>1. Prompt Compression</strong></p>
-<p>No necesitas上下文 completo en cada request. Técnicas:</p>
+<p>Antes de hablar de tecnicas, entendamos por que los transformers son especiales:</p>
 
 <ul>
-<li><strong>Truncate old messages</strong>: Cuando el conversation history crece, eliminar los mensajes más antiguos manteniendo los últimos N.</li>
-<li><strong>Summarize + retain</strong>: Resumir el history anterior y solo guardar el summary + últimos mensajes.</li>
-<li><strong>Semantic compression</strong>: Usar embeddings para identificar qué partes del contexto son realmente relevantes para la query actual.</li>
+<li><strong>Attention mechanisms</strong>: Crean conexiones entre TODOS los tokens, lo que puede llevar a que el modelo aprenda correlaciones espurias en el training data.</li>
+<li><strong>Embedding layers enormes</strong>: Especialmente problematicas cuando hay banyak tokens en el vocabulario.</li>
+<li><strong>Positional encodings</strong>: Si no se regularizan bien, el modelo puede depender excesivamente de posiciones en lugar de contenido.</li>
+<li><strong>Depth extrema</strong>: Modelos de 100+ capas son comunes, cada capa puede overfittear de manera diferente.</li>
 </ul>
 
-<p><strong>2. Model Routing</strong></p>
+<p>La receta de regularizacion para transformers incluye:</p>
 
-<p>No toda query necesita GPT-4. Clasifica la query y envía a modelo apropiado:</p>
-
-$$Cost_{router}(q) = \min_{m \in Models} \mathbb{1}[quality(m, q) \geq threshold] \cdot cost(m, q)$$
-
-<p>Un clasificador simple puede routing el 70-80% de queries a modelos más baratos (GPT-3.5, Llama-2, etc.) manteniendo 95%+ de calidad percibida.</p>
+<ul>
+<li><strong>Dropout</strong>: Especialmente en attention y FFN layers.</li>
+<li><strong>Label Smoothing</strong>: Para分類 tasks.</li>
+<li><strong>Weight Decay</strong>: L2 regularization en los pesos.</li>
+<li><strong>Data Augmentation</strong>: Especialmente para NLP.</li>
+<li><strong>Stochastic Depth</strong>: Similar a dropout pero para capas.</li>
+</ul>
 
 <hr>
-<h2>💻 Código Production-Grade de Cost Optimizer</h2>
+<h2>💻 Implementacion De Regularizacion En PyTorch</h2>
 
-<pre><code>"""
-Cost Optimizer para LLM API que implementa:
-1. Prompt compression
-2. Smart routing  
-3. Budget management y alerting
-4. Token tracking por usuario/endpoint
+<pre><code class="language-python">"""
+Regularizacion avanzada para Transformers.
+Incluye: Dropout adaptativo, Label Smoothing, Stochastic Depth, Weight Decay.
 """
-import logging
-import time
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Any, Tuple
-from enum import Enum
-from collections import defaultdict
-import hashlib
-
-import tiktoken
-from transformers import AutoTokenizer
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import math
+from typing import Optional, Tuple
 
 
-class ModelTier(Enum):
-    """Tiers de modelos por costo/capacidad."""
-    CHEAP = "cheap"      # gpt-3.5-turbo, llama-2-7b
-    MEDIUM = "medium"    # claude-instant, gpt-4-32k
-    EXPENSIVE = "expensive"  # gpt-4, claude-2
-
-
-@dataclass
-class ModelConfig:
-    """Configuración de un modelo específico."""
-    name: str
-    provider: str  # openai, anthropic, local
-    input_cost_per_1k: float  # USD
-    output_cost_per_1k: float  # USD
-    max_tokens: int
-    tier: ModelTier
-    capabilities: List[str] = field(default_factory=list)
-    avg_latency_ms: float = 1000.0
-
-
-# Catálogo de modelos
-MODEL_CATALOG = {
-    "gpt-3.5-turbo": ModelConfig(
-        name="gpt-3.5-turbo",
-        provider="openai",
-        input_cost_per_1k=0.0015,
-        output_cost_per_1k=0.002,
-        max_tokens=4096,
-        tier=ModelTier.CHEAP,
-        capabilities=["chat", "code", "reasoning"],
-        avg_latency_ms=800,
-    ),
-    "gpt-4": ModelConfig(
-        name="gpt-4",
-        provider="openai",
-        input_cost_per_1k=0.03,
-        output_cost_per_1k=0.06,
-        max_tokens=8192,
-        tier=ModelTier.EXPENSIVE,
-        capabilities=["chat", "code", "reasoning", "complex"],
-        avg_latency_ms=3000,
-    ),
-    "claude-instant": ModelConfig(
-        name="claude-instant",
-        provider="anthropic",
-        input_cost_per_1k=0.00163,
-        output_cost_per_1k=0.00551,
-        max_tokens=100_000,
-        tier=ModelTier.MEDIUM,
-        capabilities=["chat", "long_context"],
-        avg_latency_ms=1000,
-    ),
-    "llama-2-7b-chat": ModelConfig(
-        name="llama-2-7b-chat",
-        provider="local",
-        input_cost_per_1k=0.0,  # Solo costo de GPU
-        output_cost_per_1k=0.0,
-        max_tokens=4096,
-        tier=ModelTier.CHEAP,
-        capabilities=["chat", "code"],
-        avg_latency_ms=500,
-    ),
-}
-
-
-@dataclass
-class TokenBudget:
-    """Presupuesto de tokens para un usuario/endpoint."""
-    user_id: str
-    monthly_limit: int = 100_000
-    current_usage: int = 0
-    reset_day: int = 1  # Día del mes para reset
-    
-    def remaining(self) -> int:
-        return max(0, self.monthly_limit - self.current_usage)
-    
-    def is_exhausted(self) -> bool:
-        return self.current_usage >= self.monthly_limit
-
-
-class PromptCompressor:
+class AdaptiveDropout(nn.Module):
     """
-    Comprime prompts para reducir tokens mientras preserva información clave.
+    Dropout que se adapta based on the layer depth.
+    Capas mas profundas reciben dropout mas agresivo.
     """
+    def __init__(self, base_p: float = 0.1, max_p: float = 0.3, num_layers: int = 12):
+        super().__init__()
+        self.base_p = base_p
+        self.max_p = max_p
+        self.num_layers = num_layers
     
-    def __init__(self, model_name: str = "gpt-3.5-turbo"):
-        self.encoding = tiktoken.encoding_for_model(model_name)
-    
-    def count_tokens(self, text: str) -> int:
-        """Cuenta tokens en un texto."""
-        return len(self.encoding.encode(text))
-    
-    def compress_by_tokens(
-        self, 
-        messages: List[Dict], 
-        max_tokens: int,
-        preserve_recent: int = 6
-    ) -> List[Dict]:
-        """
-        Comprime mensajes manteniendo solo los últimos N y resumiendo el resto.
+    def forward(self, x: torch.Tensor, layer_idx: int) -> torch.Tensor:
+        # Interpolacion lineal de dropout rate segun profundidad
+        alpha = layer_idx / max(1, self.num_layers - 1)
+        p = self.base_p + alpha * (self.max_p - self.base_p)
         
+        if self.training:
+            return F.dropout(x, p=p)
+        return x
+
+
+class LabelSmoothingLoss(nn.Module):
+    """
+    Label Smoothing Loss - previene overconfidence.
+    En lugar de hard labels [0, 0, 1, 0], usa [0.1, 0.1, 0.7, 0.1].
+    """
+    def __init__(self, num_classes: int, smoothing: float = 0.1):
+        super().__init__()
+        self.num_classes = num_classes
+        self.smoothing = smoothing
+        self.confidence = 1.0 - smoothing
+    
+    def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        """
         Args:
-            messages: Lista de mensajes de conversación
-            max_tokens: Máximo de tokens permitidos
-            preserve_recent: Número de mensajes recientes a preservar intactos
+            pred: Logits de shape (batch, num_classes)
+            target: Labels de shape (batch,)
         """
-        if not messages:
-            return []
+        # Crear distribution suave
+        smooth_target = torch.zeros_like(pred)
+        smooth_target.fill_(self.smoothing / (self.num_classes - 1))
+        smooth_target.scatter_(1, target.unsqueeze(1), self.confidence)
         
-        # Preservar últimos mensajes
-        recent = messages[-preserve_recent:] if len(messages) > preserve_recent else messages
+        # Cross entropy con distribution suave
+        log_prob = F.log_softmax(pred, dim=-1)
+        loss = (-smooth_target * log_prob).sum(dim=-1).mean()
         
-        # Calcular tokens de mensajes recientes
-        recent_text = "\n".join([f"{m['role']}: {m['content']}" for m in recent])
-        recent_tokens = self.count_tokens(recent_text)
-        
-        if recent_tokens <= max_tokens:
-            #还有 espacio para algunos mensajes antiguos
-            old_messages = messages[:-preserve_recent]
-            if old_messages:
-                # Mantener solo system y primeros mensajes del older
-                system = [m for m in messages if m.get("role") == "system"]
-                others = [m for m in messages if m.get("role") != "system"]
-                
-                available = max_tokens - recent_tokens
-                kept_old = []
-                kept_tokens = 0
-                
-                for m in others[:-preserve_recent]:
-                    m_tokens = self.count_tokens(m['content'])
-                    if kept_tokens + m_tokens <= available:
-                        kept_old.append(m)
-                        kept_tokens += m_tokens
-                
-                return system + kept_old + recent
-        
-        return recent
+        return loss
 
 
-class CostOptimizer:
+class StochasticDepth(nn.Module):
     """
-    Optimizador de costos que routing inteligente + compression + budgets.
+    Stochastic Depth - "dropout" para capas completas.
+    En lugar de apagar neuronas, salta capas enteras durante training.
+    Reduce sobreajuste en redes profundas.
     """
+    def __init__(self, drop_prob: float = 0.2, mode: str = 'row'):
+        super().__init__()
+        self.drop_prob = drop_prob
+        self.mode = mode
     
+    def forward(self, x: torch.Tensor, layer_idx: Optional[int] = None) -> torch.Tensor:
+        if not self.training:
+            return x
+        
+        # Binary survival variable
+        if layer_idx is not None:
+            # Probabilidad de supervivencia decrece con profundidad
+            survival_prob = 1.0 - (layer_idx / 12.0) * self.drop_prob
+        else:
+            survival_prob = 1.0 - self.drop_prob
+        
+        survival = torch.bernoulli(torch.tensor([survival_prob])).item()
+        
+        if survival:
+            return x / survival_prob  # Escala para mantener expectation
+        else:
+            return torch.zeros_like(x)
+
+
+class TransformerBlockWithRegularization(nn.Module):
+    """
+    Transformer Block con regularizacion completa.
+    Incluye: Adaptive Dropout, Stochastic Depth, FFN dropout.
+    """
     def __init__(
         self,
-        monthly_budget_usd: float = 1000.0,
-        enable_compression: bool = True,
-        enable_routing: bool = True,
+        d_model: int,
+        num_heads: int,
+        d_ff: int,
+        dropout: float = 0.1,
+        use_stochastic_depth: bool = True,
+        layer_idx: int = 0,
+        total_layers: int = 12,
     ):
-        self.monthly_budget = monthly_budget_usd
-        self.current_spend = 0.0
-        self.enable_compression = enable_compression
-        self.enable_routing = enable_routing
+        super().__init__()
+        self.layer_idx = layer_idx
+        self.use_stochastic_depth = use_stochastic_depth
         
-        self.compressor = PromptCompressor()
-        self.user_budgets: Dict[str, TokenBudget] = {}
-        self.tokenizer = AutoTokenizer.from_pretrained("gpt2")  # Fallback
+        # Multi-head attention
+        self.attention = nn.MultiheadAttention(d_model, num_heads, dropout=dropout, batch_first=True)
+        self.attention_norm = nn.LayerNorm(d_model)
         
-        # Métricas
-        self.metrics = defaultdict(lambda: {
-            "requests": 0,
-            "tokens_in": 0,
-            "tokens_out": 0,
-            "cost": 0.0,
-            "cache_hits": 0,
-        })
+        # FFN con dropout
+        self.ffn = nn.Sequential(
+            nn.Linear(d_model, d_ff),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(d_ff, d_model),
+            nn.Dropout(dropout),
+        )
+        self.ffn_norm = nn.LayerNorm(d_model)
         
-        logger.info(f"CostOptimizer inicializado. Budget: ${monthly_budget_usd}/mes")
-    
-    def estimate_cost(
-        self,
-        model: str,
-        input_tokens: int,
-        output_tokens: int
-    ) -> float:
-        """Estima costo de un request."""
-        if model not in MODEL_CATALOG:
-            logger.warning(f"Modelo {model} no en catálogo, asumiendo gpt-3.5-turbo")
-            model = "gpt-3.5-turbo"
-        
-        config = MODEL_CATALOG[model]
-        input_cost = (input_tokens / 1000) * config.input_cost_per_1k
-        output_cost = (output_tokens / 1000) * config.output_cost_per_1k
-        return input_cost + output_cost
-    
-    def route_request(
-        self,
-        query: str,
-        required_capabilities: List[str],
-        quality_threshold: float = 0.9
-    ) -> str:
-        """
-        Routing inteligente: selecciona el modelo más barato que satisface los requisitos.
-        
-        Args:
-            query: Texto de la query
-            required_capabilities: Capacidades requeridas
-            quality_threshold: Threshold mínimo de calidad aceptable
-            
-        Returns:
-            Nombre del modelo seleccionado
-        """
-        if not self.enable_routing:
-            return "gpt-3.5-turbo"
-        
-        # Filtrar modelos que tienen las capabilities requeridas
-        candidates = [
-            (name, config) for name, config in MODEL_CATALOG.items()
-            if all(cap in config.capabilities for cap in required_capabilities)
-        ]
-        
-        if not candidates:
-            logger.warning("No se encontró modelo con capabilities requeridas, usando gpt-4")
-            return "gpt-4"
-        
-        # Ordenar por costo
-        candidates.sort(key=lambda x: x[1].input_cost_per_1k + x[1].output_cost_per_1k)
-        
-        # Para queries simples (short, sin complexity), usar el más barato
-        query_len = len(query.split())
-        if query_len < 50 and "complex" not in required_capabilities:
-            return candidates[0][0]  # Más barato
-        
-        # Para queries complejas, ir al menos dos tiers arriba del más barato
-        if len(candidates) > 1:
-            return candidates[min(1, len(candidates) - 1)][0]
-        
-        return candidates[0][0]
-    
-    def check_user_budget(self, user_id: str) -> Tuple[bool, int]:
-        """
-        Verifica si el usuario tiene presupuesto restante.
-        
-        Returns:
-            (has_budget, remaining_tokens)
-        """
-        if user_id not in self.user_budgets:
-            self.user_budgets[user_id] = TokenBudget(user_id=user_id)
-        
-        budget = self.user_budgets[user_id]
-        return not budget.is_exhausted(), budget.remaining()
-    
-    def process_request(
-        self,
-        user_id: str,
-        messages: List[Dict],
-        model: Optional[str] = None,
-        capabilities: Optional[List[str]] = None,
-        max_response_tokens: int = 500,
-    ) -> Dict[str, Any]:
-        """
-        Procesa un request con optimization de costos.
-        
-        Returns:
-            Dict con request modificado y metadata de costos
-        """
-        start_time = time.time()
-        
-        # 1. Determinar modelo
-        required_caps = capabilities or ["chat"]
-        selected_model = model or self.route_request(
-            messages[-1]["content"] if messages else "",
-            required_caps
+        # Regularizacion
+        self.adaptive_dropout = AdaptiveDropout(
+            base_p=dropout,
+            max_p=dropout * 3,  # Capas profundas hasta 3x dropout
+            num_layers=total_layers,
         )
         
-        # 2. Comprimir si necesario
-        model_config = MODEL_CATALOG.get(selected_model, MODEL_CATALOG["gpt-3.5-turbo"])
-        compressed_messages = messages
+        self.stochastic_depth = StochasticDepth(drop_prob=0.2) if use_stochastic_depth else None
+    
+    def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+        # Pre-norm attention (mejor que post-norm para regularizacion)
+        attn_input = self.attention_norm(x)
+        attn_output, _ = self.attention(attn_input, attn_input, attn_input, attn_mask=mask)
         
-        if self.enable_compression:
-            compressed_messages = self.compressor.compress_by_tokens(
-                messages,
-                max_tokens=model_config.max_tokens - max_response_tokens
+        # Adaptive dropout en attention
+        attn_output = self.adaptive_dropout(attn_output, self.layer_idx)
+        
+        # Stochastic depth en skip connection
+        if self.use_stochastic_depth and self.stochastic_depth:
+            x = self.stochastic_depth(x + attn_output, self.layer_idx)
+        else:
+            x = x + attn_output
+        
+        # Pre-norm FFN
+        ffn_input = self.ffn_norm(x)
+        ffn_output = self.ffn(ffn_input)
+        
+        # Dropout en FFN
+        ffn_output = self.adaptive_dropout(ffn_output, self.layer_idx)
+        
+        # Skip connection
+        x = x + ffn_output
+        
+        return x
+
+
+class TransformerEncoderRegularized(nn.Module):
+    """
+    Transformer Encoder completo con regularizacion multi-nivel.
+    """
+    def __init__(
+        self,
+        vocab_size: int,
+        d_model: int = 512,
+        num_heads: int = 8,
+        num_layers: int = 6,
+        d_ff: int = 2048,
+        dropout: float = 0.1,
+        label_smoothing: float = 0.1,
+        max_seq_length: int = 512,
+    ):
+        super().__init__()
+        
+        # Embeddings
+        self.token_embedding = nn.Embedding(vocab_size, d_model)
+        self.position_embedding = nn.Embedding(max_seq_length, d_model)
+        self.embedding_dropout = nn.Dropout(dropout)
+        
+        # Regularizacion de embeddings
+        self.embed_norm = nn.LayerNorm(d_model)
+        
+        # Capas del transformer
+        self.layers = nn.ModuleList([
+            TransformerBlockWithRegularization(
+                d_model=d_model,
+                num_heads=num_heads,
+                d_ff=d_ff,
+                dropout=dropout,
+                use_stochastic_depth=True,
+                layer_idx=i,
+                total_layers=num_layers,
             )
+            for i in range(num_layers)
+        ])
         
-        # 3. Estimar tokens
-        messages_text = "\n".join([f"{m['role']}: {m['content']}" for m in compressed_messages])
-        input_tokens = self.compressor.count_tokens(messages_text)
-        estimated_output = min(max_response_tokens, model_config.max_tokens)
+        # Output head
+        self.output_norm = nn.LayerNorm(d_model)
+        self.classifier = nn.Linear(d_model, vocab_size)
         
-        # 4. Estimar costo
-        estimated_cost = self.estimate_cost(selected_model, input_tokens, estimated_output)
+        # Loss con label smoothing
+        self.criterion = LabelSmoothingLoss(vocab_size, label_smoothing)
         
-        # 5. Check budget
-        has_budget, remaining = self.check_user_budget(user_id)
-        if not has_budget:
-            return {
-                "error": "Budget exhausted",
-                "estimated_cost": estimated_cost,
-                "user_budget_remaining": remaining,
-            }
-        
-        # 6. Verificar budget del sistema
-        if self.current_spend + estimated_cost > self.monthly_budget:
-            return {
-                "error": "Monthly budget exhausted",
-                "current_spend": self.current_spend,
-                "monthly_budget": self.monthly_budget,
-            }
-        
-        return {
-            "model": selected_model,
-            "messages": compressed_messages,
-            "estimated_cost": estimated_cost,
-            "estimated_tokens_in": input_tokens,
-            "estimated_tokens_out": estimated_output,
-            "user_budget_remaining": remaining,
-            "processing_time_ms": (time.time() - start_time) * 1000,
-        }
+        # Weight decay parameter
+        self.weight_decay = 0.01
     
-    def record_usage(
+    def forward(
         self,
-        user_id: str,
-        model: str,
-        tokens_in: int,
-        tokens_out: int,
-        actual_cost: float,
-    ) -> None:
-        """Registra usage después de un request completado."""
-        # Update user budget
-        if user_id in self.user_budgets:
-            self.user_budgets[user_id].current_usage += tokens_in + tokens_out
+        input_ids: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        labels: Optional[torch.Tensor] = None,
+    ) -> dict:
+        """
+        Returns:
+            dict con 'logits', 'loss' (si labels proporcionado), 'attentions'
+        """
+        batch_size, seq_len = input_ids.shape
         
-        # Update global spend
-        self.current_spend += actual_cost
+        # Embeddings + positional
+        positions = torch.arange(seq_len, device=input_ids.device).unsqueeze(0)
+        x = self.token_embedding(input_ids) + self.position_embedding(positions)
+        x = self.embed_norm(x)
+        x = self.embedding_dropout(x)
         
-        # Update metrics
-        self.metrics[model]["requests"] += 1
-        self.metrics[model]["tokens_in"] += tokens_in
-        self.metrics[model]["tokens_out"] += tokens_out
-        self.metrics[model]["cost"] += actual_cost
+        # Crear causal mask si es necesario
+        if attention_mask is not None:
+            # Convertir mask a format para attention
+            mask = attention_mask.float()
+            mask = mask.masked_fill(mask == 0, float('-inf')).masked_fill(mask == 1, 0.0)
+        else:
+            mask = None
+        
+        # Pass por capas
+        attentions = []
+        for layer in self.layers:
+            x = layer(x, mask)
+            if layer.layer_idx == len(self.layers) - 1:
+                # Guardar attention del ultimo layer
+                attentions.append(x)
+        
+        # Output
+        x = self.output_norm(x)
+        logits = self.classifier(x)
+        
+        result = {'logits': logits, 'attentions': attentions}
+        
+        # Calcular loss si hay labels
+        if labels is not None:
+            # Shift for language modeling
+            shift_logits = logits[:, :-1, :].contiguous()
+            shift_labels = labels[:, 1:].contiguous()
+            
+            # Flatten
+            loss = self.criterion(
+                shift_logits.view(-1, shift_logits.size(-1)),
+                shift_labels.view(-1)
+            )
+            result['loss'] = loss
+        
+        return result
     
-    def get_cost_report(self) -> Dict[str, Any]:
-        """Genera reporte de costos."""
-        total_cost = sum(m["cost"] for m in self.metrics.values())
-        total_tokens = sum(m["tokens_in"] + m["tokens_out"] for m in self.metrics.values())
+    def get_weight_decay_params(self) -> list:
+        """
+        Retorna parametros para weight decay selectivo.
+        No aplica weight decay a biases y LayerNorms.
+        """
+        decay = []
+        no_decay = ['bias', 'LayerNorm', 'layer_norm', 'norm']
         
-        return {
-            "total_spend_usd": self.current_spend,
-            "monthly_budget_usd": self.monthly_budget,
-            "budget_remaining_usd": self.monthly_budget - self.current_spend,
-            "budget_utilization_pct": (self.current_spend / self.monthly_budget * 100) if self.monthly_budget > 0 else 0,
-            "total_tokens": total_tokens,
-            "by_model": dict(self.metrics),
-            "cost_per_user": {
-                uid: {
-                    "tokens_used": budget.current_usage,
-                    "budget_limit": budget.monthly_limit,
-                    "utilization_pct": budget.current_usage / budget.monthly_limit * 100 if budget.monthly_limit > 0 else 0,
-                }
-                for uid, budget in self.user_budgets.items()
-            },
-        }
+        for name, param in self.named_parameters():
+            if not any(nd in name for nd in no_decay):
+                decay.append(param)
+            else:
+                pass  # No decay para biases y norms
+        
+        return decay
 
 
-# Usage example
+def create_optimizer_with_weight_decay(
+    model: TransformerEncoderRegularized,
+    learning_rate: float = 1e-4,
+    weight_decay: float = 0.01,
+) -> torch.optim.Optimizer:
+    """
+    Crea optimizer con weight decay selectivo.
+    AdamW con different decay rates para diferentes parametros.
+    """
+    # Parametros con decay
+    decay_params = model.get_weight_decay_params()
+    
+    # Parametros sin decay
+    no_decay_params = []
+    no_decay_names = ['bias', 'LayerNorm', 'layer_norm', 'norm']
+    for name, param in model.named_parameters():
+        if any(nd in name for nd in no_decay_names):
+            no_decay_params.append(param)
+    
+    optimizer = torch.optim.AdamW([
+        {'params': decay_params, 'weight_decay': weight_decay},
+        {'params': no_decay_params, 'weight_decay': 0.0},
+    ], lr=learning_rate)
+    
+    return optimizer
+
+
+# Example usage
 if __name__ == "__main__":
-    optimizer = CostOptimizer(
-        monthly_budget_usd=1000.0,
-        enable_compression=True,
-        enable_routing=True,
+    # Crear modelo
+    model = TransformerEncoderRegularized(
+        vocab_size=30000,
+        d_model=512,
+        num_heads=8,
+        num_layers=6,
+        d_ff=2048,
+        dropout=0.1,
+        label_smoothing=0.1,
     )
     
-    # Simular request
-    result = optimizer.process_request(
-        user_id="user_123",
-        messages=[
-            {"role": "system", "content": "Eres un asistente útil."},
-            {"role": "user", "content": "Explica qué es blockchain en 2 oraciones."},
-        ],
-        capabilities=["chat"],
-    )
+    # Dummy input
+    batch_size = 4
+    seq_len = 128
+    input_ids = torch.randint(0, 30000, (batch_size, seq_len))
+    labels = torch.randint(0, 30000, (batch_size, seq_len))
     
-    if "error" not in result:
-        print(f"Model: {result['model']}")
-        print(f"Estimated cost: ${result['estimated_cost']:.4f}")
-        print(f"Input tokens: {result['estimated_tokens_in']}")
-        
-        # Simular completado
-        optimizer.record_usage(
-            user_id="user_123",
-            model=result["model"],
-            tokens_in=result["estimated_tokens_in"],
-            tokens_out=result["estimated_tokens_out"],
-            actual_cost=result["estimated_cost"],
-        )
+    # Forward pass
+    output = model(input_ids, labels=labels)
+    print(f"Loss: {output['loss'].item():.4f}")
+    print(f"Logits shape: {output['logits'].shape}")
     
-    # Reporte
-    report = optimizer.get_cost_report()
-    print(f"\nTotal spend: ${report['total_spend_usd']:.2f}")
-    print(f"Budget remaining: ${report['budget_remaining_usd']:.2f}")
+    # Crear optimizer
+    optimizer = create_optimizer_with_weight_decay(model)
+    print(f"Optimizer created with {len(list(model.parameters()))} parameters")
 </code></pre>
 
 <hr>
-<h2>⚠️ Errores Comunes en Cost Optimization</h2>
+<h2>⚠️ Errores Comunes En Regularizacion De Transformers</h2>
 
-<h3>Error 1: No trackear costos por usuario/endpoint</h3>
-<p><strong>El problema</strong>: Sin visibility de quién está generando los costos, no puedes identificar who's burning money. Un solo usuario o endpoint puede representar 80% del costo. El 85% de companies no hacen este tracking.</p>
-<p><strong>Fix:</strong> Implementar token accounting por user_id y endpoint desde el día uno. Usar la estructura de CostOptimizer de arriba o servicios como Helicone, LangSmith para logging detallado.</p>
+<h3>Error 1: Usar dropout igual en todas las capas</h3>
+<p><strong>El problema</strong>: Aplicar el mismo dropout rate en todas las capas ignora que capas profundas tienden a overfittear mas. El 70% de implementaciones usan dropout uniforme.</p>
+<p><strong>Fix</strong>: Implementar adaptive dropout que aumenta el dropout rate en capas mas profundas, o usar stochastic depth para saltarse capas enteras.</p>
 
-<h3>Error 2: Usar siempre el modelo más capaz</h3>
-<p><strong>El problema</strong>: GPT-4 para una tarea que pudo haber sido resuelta con GPT-3.5 es tirar dinero. La diferencia de costo es 10-20x por request. Queries simples (clasificaciones, extracciones, preguntas directas) típicamente no necesitan modelos frontier.</p>
-<p><strong>Fix:</strong> Implementar model routing basado en clasificación de query. Un classifier simple entrenado en-house puede routing el 70%+ de queries a modelos más baratos manteniendo calidad.</p>
+<h3>Error 2: No usar label smoothing</h3>
+<p><strong>El problema</strong>: Con cross-entropy standard, el modelo puede volverse sobreconfident, asignando probabilidades cercanas a 0 o 1. Esto lleva a poor calibration y overfitting a labels especificos.</p>
+<p><strong>Fix</strong>: Usar label smoothing (0.1 es un buen default). En lugar de 100% certeza en la clase correcta, usar 90% para la clase correcta y 10% distribuido entre las demas.</p>
 
-<h3>Error 3: No comprimir conversation history</h3>
-<p><strong>El problema</strong>: Cada mensaje en el conversation history se cobra como input tokens. Después de 20 mensajes de ~100 tokens cada uno, ya son 2,000 tokens por request solo en history, antes del prompt real.</p>
-<p><strong>Fix:</strong> Implementar truncation strategies: mantener últimos N mensajes, o summarization del history antiguo. Con 10 conversaciones de 20 mensajes cada una, puedes ahorrar 50%+ en input tokens.</p>
+<h3>Error 3: Aplicar weight decay a todo</h3>
+<p><strong>El problema</strong>: Aplicar weight decay a biases y LayerNorms puede dañar el entrenamiento. Estos parametros necesitan ser pequenos para funcionar bien. El 60% de implementaciones aplican decay a todo.</p>
+<p><strong>Fix</strong>: Separar explicitamente los parametros en grupos con y sin decay. Solo aplicar weight decay a weights de matrices densas y embeddings.</p>
 
 <hr>
-<h2>✅ Resumen y Cierre</h2>
+<h2>✅ Resumen Y Cierre</h2>
 
 <ul>
-<li><strong>Cost = input_tokens × price_in + output_tokens × price_out</strong>. Optimizar ambos lados.</li>
-<li><strong>Model routing</strong> puede ahorrar 70%+ sin sacrificar calidad.</li>
-<li><strong>Prompt compression</strong> (history truncation) reduce input tokens 30-50%.</li>
-<li><strong>Per-user budgeting</strong> previene que un solo usuario queme todo el budget.</li>
-<li><strong>Tracking y reportes</strong> son esenciales para identificar optimización opportunities.</li>
+<li><strong>Adaptive Dropout</strong>: Capas profundas necesitan mas regularizacion.</li>
+<li><strong>Stochastic Depth</strong>: Salta capas aleatoriamente - muy efectivo para transformers profundos.</li>
+<li><strong>Label Smoothing</strong>: Previene overconfidence y mejora generalizacion.</li>
+<li><strong>Weight Decay Selectivo</strong>: Solo decay en weights, no en biases ni norms.</li>
+<li><strong>Pre-norm vs Post-norm</strong>: Pre-norm es mas estable para training de transformers profundos.</li>
 </ul>
 
-<p>Hágale que la diferencia entre una app LLM rentable y una que quema money está en estos detalles. No es glamour, pero es survival. Implementen cost optimization desde el principio, parcero.</p>
+<p>Hagale que la regularizacion en transformers no es "apagar cosas al azar". Es una ciencia que requiere entender como la informacion fluye por el modelo. Implementen estas tecnicas desde el principio, parcero.</p>
 
-<p><em>Eso es todo. Día 175 viene con más.</em></p>
+<p><em>Eso es todo. Dia 176 viene con mas.</em></p>
   </article>
 
   <script>
