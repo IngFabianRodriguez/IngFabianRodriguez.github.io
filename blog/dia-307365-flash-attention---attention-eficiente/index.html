@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="Flash Attention - Attention Eficiente | #365DaysOfAI por Fabian Rodriguez">
-  <title>Flash Attention - Attention Eficiente | #365DaysOfAI</title>
+  <meta name="description" content="LLM Semantic Search — el 80% hace mal la búsqueda de texto y el 20% hace bien | #365DaysOfAI por Fabian Rodriguez">
+  <title>LLM Semantic Search — El 80% Hace Mal y el 20% Hace Bien | #365DaysOfAI</title>
   
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
@@ -110,52 +110,285 @@ nav {
 
   <header class="article-hero">
     <div class="day-badge">Dia 307 / 365 &nbsp;·&nbsp; #365DaysOfAI</div>
-    <h1 class="article-title">Flash Attention - Attention Eficiente</h1>
+    <h1 class="article-title">LLM Semantic Search — El 80% Hace Mal y el 20% Hace Bien para Buscar Texto</h1>
     <div class="article-meta">
       <time class="article-date">03 de noviembre de 2026</time>
-      <div class="tags"><span class="tag">flash-attention</span><span class="tag">efficiency</span><span class="tag">optimization</span><span class="tag">transformers</span></div>
+      <div class="tags"><span class="tag">semantic-search</span><span class="tag">embeddings</span><span class="tag">rag</span><span class="tag">faiss</span><span class="tag">llm</span></div>
     </div>
   </header>
 
   <article class="article-body">
-    <h1>Flash Attention - Attention Eficiente</h1>
-<p>Hagale pues, parcero. Dia 307 y hoy hablamos de Flash Attention, el algoritmo que hace attention viable. Cafe.</p>
-<hr>
-<h2>🎯 Que Es Flash Attention?</h2>
-<p>Flash Attention es una implementacion de attention que usa memoria GPU eficientemente. Logra speedup de 2-4x sin perder precision.</p>
-<h3>Como funciona:</h3>
-<ul>
-<li><strong>Tiling</strong>: Bloques pequenos que caben en SRAM</li>
-<li><strong>Online softmax</strong>: Computacion incremental</li>
-<li><strong>Recomputation</strong>: Guarda computacion en lugar de memoria</li>
-</ul>
-<hr>
-<h2>📐 Flash Attention</h2>
-<pre><code class="language-python"># Con PyTorch moderno (2.0+)
-import torch.nn.functional as F
+    <h2>🎯 Introducción: Por Qué el 80% Hace Mal la Búsqueda de Texto</h2>
+    <p>Hagale pues, parcero. Aquí en Bogotá, cuando uno busca algo en google, le funciona pues el 80% de las veces. Pero cuando implementamos RAG o sistemas de búsqueda con LLMs, el 80% de los desarrolladores cometen los mismos errores: usan búsqueda puramente léxica (BM25), no usan reranking, y no miden recall. Hoy el Día 307 y vamos a aprender a buscar bien —semántico, con embeddings, hybrid search y reranking. Sirvamelo con café.</p>
 
-# Flash attention automatico
-output = F.scaled_dot_product_attention(
-    Q, K, V,
-    attn_mask=mask,
-    is_causal=True
-)
+    <h2>📐 La Matemática de Semantic Search</h2>
+    <p>La búsqueda semántica representa textos como vectores en un espacio de alta dimensión donde documentos similares quedan cerca. La similaridad se mide con coseno:</p>
+    <p><code>similarity(a, b) = cos(θ) = (a · b) / (||a|| ||b||)</code></p>
+    <p>Para embeddings de dimensión d=1536 (OpenAI text-embedding-3-small), el espacio tiene 2^1536 posibles vectores. La clave: embeddings capturan significado semántico, no solo palabras exactas.</p>
+    <p>La búsqueda en este espacio es un problema de nearest neighbor aproximado (ANN). FAISS usa IVF-PQ (Inverted File Index + Product Quantization) para索引 millones de vectores en milisegundos.</p>
 
-# Forzar uso de flash
-output = F.scaled_dot_product_attention(
-    Q, K, V,
-    attn_mask=mask,
-    is_causal=True,
-    attn_bias=None
-)</code></pre>
-<hr>
-<h2>🚀 Impacto</h2>
-<p>Flash Attention permite contexts de 128k+ tokens. Es fundamental para LLM inference eficiente.</p>
-<hr>
-<h2>⚠️ Requisitos</h2>
-<p>Necesita GPU con compute capability 8.0+. older GPUs usan implementaciones alternativas.</p>
-<hr>
-<p><em>Eso es todo! Nos vemos en el Dia 308.</em></p>
+    <h2>🔧 El Framework de Semantic Search con FAISS</h2>
+    <pre><code class="language-python">import numpy as np
+from sentence_transformers import SentenceTransformer
+import faiss
+
+class SemanticSearchEngine:
+    def __init__(self, model_name="all-MiniLM-L6-v2", dimension=384):
+        self.model = SentenceTransformer(model_name)
+        self.dimension = dimension
+        self.index = None
+        self.documents = []
+        
+    def build_index(self, documents, batch_size=32):
+        """Construir índice FAISS con embeddings de documentos."""
+        self.documents = documents
+        
+        # Generar embeddings por batches
+        embeddings = self.model.encode(
+            documents, 
+            batch_size=batch_size,
+            show_progress_bar=True
+        )
+        
+        # Normalizar para similaridad coseno
+        embeddings = embeddings / np.linalg.norm(embeddings, axis=1, keepdims=True)
+        
+        # Índice FAISS: IVF-PQ para ANN a escala
+        nlist = min(100, len(documents) // 10)
+        quantizer = faiss.IndexFlatIP(dimension)
+        self.index = faiss.IndexIVFFlat(quantizer, dimension, nlist, faiss.METRIC_INNER_PRODUCT)
+        self.index.train(embeddings.astype(np.float32))
+        self.index.add(embeddings.astype(np.float32))
+        self.index.nprobe = 10  # Número de clusters a explorar
+        
+        return self
+    
+    def search(self, query, top_k=10):
+        """Búsqueda semántica pura."""
+        query_embedding = self.model.encode([query])
+        query_embedding = query_embedding / np.linalg.norm(query_embedding, axis=1, keepdims=True)
+        
+        distances, indices = self.index.search(
+            query_embedding.astype(np.float32), 
+            top_k
+        )
+        
+        return [
+            {"document": self.documents[idx], "score": float(dist)}
+            for dist, idx in zip(distances[0], indices[0])
+        ]
+
+# Uso:
+engine = SemanticSearchEngine()
+engine.build_index(documents)
+results = engine.search("consultas SQL con JOIN", top_k=5)</code></pre>
+
+    <h2>🔄 Hybrid Search: Combinando Lexical + Semantic</h2>
+    <p>El error común: usar solo búsqueda semántica o solo BM25. La solución: hybrid search con Reciprocal Rank Fusion (RRF).</p>
+    <pre><code class="language-python">from rank_bm25 import BM25Okapi
+import numpy as np
+
+class HybridSearchEngine:
+    def __init__(self, semantic_engine: SemanticSearchEngine):
+        self.semantic_engine = semantic_engine
+        self.bm25 = None
+        self.tokenized_docs = []
+        
+    def build_bm25_index(self, documents):
+        """Construir índice BM25 para búsqueda léxica."""
+        self.tokenized_docs = [doc.lower().split() for doc in documents]
+        self.bm25 = BM25Okapi(self.tokenized_docs)
+        return self
+    
+    def search(self, query, top_k=20, alpha=0.5):
+        """
+        Búsqueda híbrida con RRF.
+        
+        alpha: peso para búsqueda semántica (0.5 = igual peso)
+        RRF formula: 1 / (k + rank) donde k=60 y rank=posición en lista
+        """
+        # Búsqueda semántica
+        semantic_results = self.semantic_engine.search(query, top_k=top_k * 2)
+        
+        # Búsqueda léxica BM25
+        tokenized_query = query.lower().split()
+        bm25_scores = self.bm25.get_scores(tokenized_query)
+        top_bm25_indices = np.argsort(bm25_scores)[::-1][:top_k * 2]
+        lexical_results = [
+            {"document": self.semantic_engine.documents[idx], "score": float(bm25_scores[idx])}
+            for idx in top_bm25_indices
+        ]
+        
+        # Reciprocal Rank Fusion
+        fused_scores = {}
+        k = 60  # Constante RRF
+        
+        for rank, result in enumerate(semantic_results):
+            doc_id = result["document"]
+            fused_scores[doc_id] = fused_scores.get(doc_id, 0) + alpha * (1 / (k + rank + 1))
+            
+        for rank, result in enumerate(lexical_results):
+            doc_id = result["document"]
+            fused_scores[doc_id] = fused_scores.get(doc_id, 0) + (1 - alpha) * (1 / (k + rank + 1))
+        
+        # Ordenar por score fusionado
+        ranked = sorted(fused_scores.items(), key=lambda x: x[1], reverse=True)
+        return [{"document": doc, "score": score} for doc, score in ranked[:top_k]]
+
+# Uso:
+hybrid = HybridSearchEngine(engine)
+hybrid.build_bm25_index(documents)
+results = hybrid.search("optimización queries PostgreSQL", top_k=10, alpha=0.6)</code></pre>
+
+    <h2>🎯 Reranking con Cross-Encoders</h2>
+    <p>Después del retrieval inicial, usamos cross-encoders para reranquear con mejor precisión. El error del 70%: saltarse este paso.</p>
+    <pre><code class="language-python">from sentence_transformers import CrossEncoder
+
+class Reranker:
+    def __init__(self, model="cross-encoder/ms-marco-MiniLM-L-6-v2"):
+        self.model = CrossEncoder(model)
+    
+    def rerank(self, query, documents, top_k=10):
+        """
+        Rerankea documentos usando cross-encoder.
+        Cross-encoder: más preciso pero más lento que bi-encoder.
+        """
+        # Crear pares query-document para el cross-encoder
+        pairs = [(query, doc) for doc in documents]
+        
+        # Obtener scores de relevancia
+        scores = self.model.predict(pairs)
+        
+        # Ordenar por score
+        doc_scores = sorted(
+            zip(documents, scores),
+            key=lambda x: x[1],
+            reverse=True
+        )
+        
+        return [
+            {"document": doc, "score": float(score)}
+            for doc, score in doc_scores[:top_k]
+        ]
+
+# Pipeline completo: retrieval + reranking
+class SemanticSearchPipeline:
+    def __init__(self):
+        self.retriever = None
+        self.reranker = Reranker()
+    
+    def search(self, query, initial_k=50, final_k=10):
+        # 1. Retrieval híbrido
+        candidates = self.retriever.search(query, top_k=initial_k)
+        
+        # 2. Extraer documentos
+        docs = [c["document"] for c in candidates]
+        
+        # 3. Reranking con cross-encoder
+        reranked = self.reranker.rerank(query, docs, top_k=final_k)
+        
+        return reranked
+
+pipeline = SemanticSearchPipeline()
+pipeline.retriever = hybrid
+results = pipeline.search("patrones de diseño en microservices", initial_k=30, final_k=5)</code></pre>
+
+    <h2>📊 Evaluando Search Quality: Recall@K y MRR</h2>
+    <pre><code class="language-python">def evaluate_search(pipeline, queries, relevant_docs, k_values=[5, 10, 20, 50]):
+    """
+    Evaluar con Recall@K y Mean Reciprocal Rank (MRR).
+    
+    Recall@K: fracción de documentos relevantes encontrados en top K
+    MRR: 1/rank promedio donde r es el rank del primer resultado relevante
+    """
+    results = {"recall": {}, "mrr": {}}
+    
+    for k in k_values:
+        recalls = []
+        mrrs = []
+        
+        for query, relevant in zip(queries, relevant_docs):
+            # Obtener resultados del pipeline
+            search_results = pipeline.search(query, initial_k=k, final_k=k)
+            retrieved = [r["document"] for r in search_results]
+            
+            # Recall@K
+            relevant_set = set(relevant)
+            retrieved_set = set(retrieved)
+            recall = len(relevant_set & retrieved_set) / len(relevant_set)
+            recalls.append(recall)
+            
+            # MRR
+            for rank, doc in enumerate(retrieved, 1):
+                if doc in relevant_set:
+                    mrrs.append(1 / rank)
+                    break
+            else:
+                mrrs.append(0)
+        
+        results["recall"][f"@{k}"] = np.mean(recalls)
+        results["mrr"][f"@{k}"] = np.mean(mrrs)
+    
+    return results
+
+# Ejemplo de evaluación
+queries = [
+    "SQL JOIN performance optimization",
+    "React useEffect cleanup",
+    "Docker multi-stage builds"
+]
+
+relevant_docs = [
+    ["doc1", "doc5", "doc12"],
+    ["doc3", "doc7"],
+    ["doc2", "doc9", "doc15"]
+]
+
+metrics = evaluate_search(pipeline, queries, relevant_docs)
+print(f"Recall@10: {metrics['recall']['@10']:.3f}")
+print(f"MRR@10: {metrics['mrr']['@10']:.3f}")</code></pre>
+
+    <h2>⚠️ Los 3 Errores Comunes y Sus Arreglos</h2>
+    
+    <h3>❌ Error 1: Usar Solo Búsqueda Léxica (BM25 Solo)</h3>
+    <p><strong>El problema:</strong> BM25 solo encuentra documentos con palabras exactas. "Terapia cognitiva" no encuentra "tratamiento psicológico para la mente".</p>
+    <p><strong>La solución:</strong> Hybrid search que combine BM25 + semántico con RRF como权重.</p>
+    <pre><code class="language-python"># Wrong: solo BM25
+results = bm25.search(query)
+
+# Correct: hybrid search
+results = hybrid.search(query, alpha=0.5)  # 50% semántico, 50% léxico</code></pre>
+
+    <h3>❌ Error 2: No Usar Reranking</h3>
+    <p><strong>El problema:</strong> El retrieval inicial prioriza velocidad sobre precisión. Un documento relevante puede quedar en posición 15.</p>
+    <p><strong>La solución:</strong> Post-fetch reranking con cross-encoder para afinar el orden.</p>
+    <pre><code class="language-python"># Wrong: solo retrieval, sin reranking
+results = hybrid.search(query, top_k=10)
+
+# Correct: retrieval + reranking
+results = pipeline.search(query, initial_k=50, final_k=10)</code></pre>
+
+    <h3>❌ Error 3: No Evaluar Recall</h3>
+    <p><strong>El problema:</strong> Sin métricas, no sabes cuántos relevantes estás perdiendo. Un sistema puede tener 95% precision pero 30% recall.</p>
+    <p><strong>La solución:</strong> Evaluar siempre Recall@K y MRR con ground truth.</p>
+    <pre><code class="language-python"># Wrong: evaluar sin ground truth
+print(f"Found {len(results)} results")
+
+# Correct: evaluar con recall y MRR
+metrics = evaluate_search(pipeline, queries, relevant_docs)
+print(f"Recall@10: {metrics['recall']['@10']:.3f} — target: >0.8")</code></pre>
+
+    <h2>📝 Resumen y Cierre Colombiano</h2>
+    <p>Pues ahí lo tiene, parcero. Semantic search no es solo poner embeddings en FAISS. Es un pipeline completo:</p>
+    <ul>
+      <li><strong>Embeddings</strong> con bi-encoders para retrieval rápido</li>
+      <li><strong>Hybrid search</strong> combinando BM25 + semántico con RRF</li>
+      <li><strong>Reranking</strong> con cross-encoders para precisión</li>
+      <li><strong>Evaluación</strong> con Recall@K y MRR</li>
+    </ul>
+    <p>El 80% de los que implementan RAG solo usan búsqueda léxica. Usted ya sabe cómo hacerlo bien. Practique en sus proyectos, mida siempre, y cuando el recall esté bajo 0.7, añada reranking.</p>
+    <p>Ahí nos vemos. Estoy tomando café con arepas de choclú. ¡Hagámoslo! 🇨🇴</p>
+    <p><em>Eso es todo por hoy. Día 307 completado. #365DaysOfAI</em></p>
   </article>
 
   <script>
