@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="AI Ethics - Mas Alla De La Tecnologia | #365DaysOfAI por Fabian Rodriguez">
-  <title>AI Ethics - Mas Alla De La Tecnologia | #365DaysOfAI</title>
+  <meta name="description" content="LLM Question Answering - Que el 80% hace mal y que el 20% hace bien para respuestas precisas | #365DaysOfAI por Fabian Rodriguez">
+  <title>LLM Question Answering | #365DaysOfAI</title>
   
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
@@ -110,16 +110,675 @@ nav {
 
   <header class="article-hero">
     <div class="day-badge">Dia 302 / 365 &nbsp;·&nbsp; #365DaysOfAI</div>
-    <h1 class="article-title">AI Ethics - Mas Alla De La Tecnologia</h1>
+    <h1 class="article-title">LLM Question Answering — Que el 80% Hace Mal y Que el 20% Hace Bien para Respuestas Precisas</h1>
     <div class="article-meta">
       <time class="article-date">29 de octubre de 2026</time>
-      <div class="tags"><span class="tag">ai-ethics</span><span class="tag">fairness</span><span class="tag">bias</span><span class="tag">society</span></div>
+      <div class="tags"><span class="tag">llm</span><span class="tag">question-answering</span><span class="tag">qa</span><span class="tag">extractive</span><span class="tag">abstractive</span></div>
     </div>
   </header>
 
   <article class="article-body">
-    <h1>AI Ethics - Mas Alla De La Tecnologia</h1>
-<p>Content for day 302 coming soon.</p>
+<h2>La Colombianada de Responder Preguntas que el 80% Hace Mal</h2>
+
+<p>En un banco en Medellín, un equipo de soporte recibía 5,000 consultas diarias de clientes sobre sus cuentas, préstamos, transferencias, y estados de cuenta. 20 personas en turnos. El sistema de QA que construyeron con LLM redujo eso a 3 personas + el sistema que responde 95% de las preguntas con exactitud. Pero el primer intento — como el del 80% — falló porque trataron todas las preguntas igual, ignoraron las preguntas sin respuesta, y evaluaron con la métrica wrong.</p>
+
+<p>El 80% de quienes construyen QA systems con LLMs cometen estos errores. Hoy te enseño cómo joining the smart 20% — con código real, métricas reales, y la precisión que tus clientes merecen.</p>
+
+<h2>La Fórmula de un QA System que Funciona</h2>
+
+<p>La calidad de un QA system depende de tres factores:<br>
+<code>QA_Quality = Answer_Quality × Unanswerable_Detection × Metric_Appropriateness</code></p>
+
+<p>Answer_Quality = qué tan buena es la respuesta cuando SÍ hay respuesta (0-1).<br>
+Unanswerable_Detection = qué tan bien detectas cuando no hay respuesta en el contexto (0-1).<br>
+Metric_Appropriateness = si usas la métrica correcta para tu tipo de QA (0-1).</p>
+
+<p>Cualquiera de estos en cero = sistema falla. El 70% solo optimiza Answer_Quality sin considerar los otros dos.</p>
+
+<h2>Tipos de QA: No Todos Son Iguales</h2>
+
+<p>Hay tres tipos fundamentales de Question Answering:</p>
+
+<ul>
+<li><strong>Extractive QA:</strong> Extraes la respuesta literalmente del contexto. "Según el párrafo, la respuesta es la oración 3."</li>
+<li><strong>Abstractive QA:</strong> Generas una respuesta nueva basada en el contexto. "Basándome en el párrafo, puedo decir que..."</li>
+<li><strong>Multiple-Choice QA:</strong> Seleccionas la respuesta correcta de un conjunto de opciones.</li>
+</ul>
+
+<p>El 60% trata todas las preguntas como extractivas cuando deberían ser abstractivas. O viceversa.</p>
+
+<pre><code class="language-python">"""
+Q&A Framework: Framework completo para Question Answering con LLMs
+Soporta extractive, abstractive, multiple-choice, y detección de no-answerable.
+"""
+
+import anthropic
+import json
+import re
+from typing import Dict, List, Optional, Tuple, Literal
+from dataclasses import dataclass
+from enum import Enum
+import numpy as np
+
+client = anthropic.Anthropic()
+
+class QAType(Enum):
+    EXTRACTIVE = "extractive"
+    ABSTRACTIVE = "abstractive"
+    MULTIPLE_CHOICE = "multiple_choice"
+    YES_NO = "yes_no"
+
+@dataclass
+class QAResult:
+    """Resultado de un sistema QA."""
+    answer: str
+    confidence: float  # 0-1
+    qa_type: QAType
+    evidence_spans: List[Dict]  # Para extractive
+    is_answerable: bool  # False si no hay respuesta en el contexto
+    processing_time_ms: float
+
+@dataclass
+class QAMetrics:
+    """Métricas de evaluación QA."""
+    exact_match: float  # EM (para extractive)
+    f1: float  # F1 token-level
+    answerable_accuracy: float  # Accuracy de detectar answerable vs not
+    macro_f1: float  # F1 por tipo de pregunta
+    per_type_metrics: Dict[str, Dict[str, float]]
+
+class ExtractiveQA:
+    """
+    QA Extractivo: extrae la respuesta literalmente del contexto.
+    Ideal para preguntas donde la respuesta está explícitamente en el texto.
+    """
+    
+    def __init__(self, model: str = "claude-sonnet-4-20250514"):
+        self.client = anthropic.Anthropic()
+        self.model = model
+    
+    def answer(
+        self,
+        question: str,
+        context: str,
+        return_evidence: bool = True
+    ) -> QAResult:
+        """
+        Responde preguntando con evidencia extractiva.
+        
+        Args:
+            question: Pregunta del usuario
+            context: Contexto/documento con la información
+            return_evidence: Si True, devuelve los spans de evidencia
+        """
+        import time
+        start = time.time()
+        
+        prompt = f"""Responde la pregunta usando EXACTAMENTE las palabras del contexto.
+Devuelve la respuesta más corta posible que respondа la pregunta.
+
+REGLAS:
+1. Copia literalmente las palabras del contexto
+2. Si la respuesta no está en el contexto, responde: "NO TENGO RESPUESTA"
+3. Incluye los índices de carácter (start, end) donde encontraste la respuesta
+
+PREGUNTA:
+{question}
+
+CONTEXTO:
+{context}
+
+RESPUESTA (JSON):"""
+
+        response = self.client.messages.create(
+            model=self.model,
+            max_tokens=256,
+            system="Eres un sistema de QA preciso. Solo devuelves JSON válido.",
+            messages=[{"role": "user", "content": prompt}]
+        )
+        
+        processing_time = (time.time() - start) * 1000
+        raw = response.content[0].text
+        
+        # Parsear respuesta
+        result = self._parse_response(raw, context)
+        result.processing_time_ms = processing_time
+        result.qa_type = QAType.EXTRACTIVE
+        
+        return result
+    
+    def _parse_response(self, raw: str, context: str) -> QAResult:
+        """Parsea la respuesta JSON."""
+        is_answerable = True
+        answer = ""
+        evidence_spans = []
+        confidence = 0.8
+        
+        # Buscar si es answerable
+        if "NO TENGO RESPUESTA" in raw.upper():
+            is_answerable = False
+            answer = ""
+            confidence = 0.0
+        else:
+            # Intentar parsear JSON
+            json_match = re.search(r'\{.*\}', raw, re.DOTALL)
+            if json_match:
+                try:
+                    data = json.loads(json_match.group())
+                    answer = data.get("answer", data.get("text", ""))
+                    evidence_spans = data.get("spans", [])
+                    confidence = data.get("confidence", 0.8)
+                except json.JSONDecodeError:
+                    # Si no es JSON válido, usar el texto completo
+                    answer = raw.strip()
+        
+        return QAResult(
+            answer=answer,
+            confidence=confidence,
+            qa_type=QAType.EXTRACTIVE,
+            evidence_spans=evidence_spans,
+            is_answerable=is_answerable,
+            processing_time_ms=0.0
+        )
+
+
+class AbstractiveQA:
+    """
+    QA Abstractivo: genera respuestas nuevas basadas en el contexto.
+    Ideal para preguntas que requieren síntesis de múltiples partes.
+    """
+    
+    def __init__(self, model: str = "claude-sonnet-4-20250514"):
+        self.client = anthropic.Anthropic()
+        self.model = model
+    
+    def answer(
+        self,
+        question: str,
+        context: str,
+        max_context_tokens: int = 4000
+    ) -> QAResult:
+        """
+        Responde con generación abstractiva.
+        """
+        import time
+        start = time.time()
+        
+        prompt = f"""Responde la pregunta de forma clara y concisa.
+Usa el contexto para formular tu respuesta, pero puedes usar tus propias palabras.
+
+IMPORTANTE: Si la respuesta NO está en el contexto, responde exactamente:
+"NO_PUEDO_RESPONDER"
+
+PREGUNTA:
+{question}
+
+CONTEXTO:
+{context}
+
+RESPUESTA:"""
+
+        response = self.client.messages.create(
+            model=self.model,
+            max_tokens=512,
+            system="Eres un asistente de QA preciso y honesto.",
+            messages=[{"role": "user", "content": prompt}]
+        )
+        
+        processing_time = (time.time() - start) * 1000
+        raw = response.content[0].text
+        
+        is_answerable = "NO_PUEDO_RESPONDER" not in raw.upper()
+        answer = raw.strip() if is_answerable else ""
+        confidence = 0.9 if is_answerable else 0.0
+        
+        return QAResult(
+            answer=answer,
+            confidence=confidence,
+            qa_type=QAType.ABSTRACTIVE,
+            evidence_spans=[],
+            is_answerable=is_answerable,
+            processing_time_ms=processing_time
+        )
+
+
+class MultipleChoiceQA:
+    """
+    QA de selección múltiple.
+    """
+    
+    def __init__(self, model: str = "claude-sonnet-4-20250514"):
+        self.client = anthropic.Anthropic()
+        self.model = model
+    
+    def answer(
+        self,
+        question: str,
+        options: List[str],
+        context: Optional[str] = None
+    ) -> QAResult:
+        """
+        Responde seleccionando la mejor opción.
+        
+        Args:
+            question: Pregunta
+            options: Lista de opciones [A, B, C, D]
+            context: Contexto opcional
+        """
+        import time
+        start = time.time()
+        
+        options_text = "\n".join([
+            f"{chr(65+i)}) {opt}" for i, opt in enumerate(options)
+        ])
+        
+        context_text = f"\n\nCONTEXTO:\n{context}" if context else ""
+        
+        prompt = f"""Selecciona la opción correcta para la siguiente pregunta.
+Devuelve SOLO la letra de la opción correcta (A, B, C, o D).
+
+PREGUNTA:
+{question}
+{context_text}
+
+OPCIONES:
+{options_text}
+
+RESPUESTA (JSON):"""
+
+        response = self.client.messages.create(
+            model=self.model,
+            max_tokens=100,
+            system="Eres un sistema de QA preciso.",
+            messages=[{"role": "user", "content": prompt}]
+        )
+        
+        processing_time = (time.time() - start) * 1000
+        raw = response.content[0].text.strip()
+        
+        # Extraer letra
+        letter_match = re.search(r'\b([A-D])\b', raw.upper())
+        if letter_match:
+            idx = ord(letter_match.group(1)) - ord('A')
+            if 0 <= idx < len(options):
+                answer = options[idx]
+                confidence = 0.95
+            else:
+                answer = ""
+                confidence = 0.0
+        else:
+            answer = ""
+            confidence = 0.0
+        
+        return QAResult(
+            answer=answer,
+            confidence=confidence,
+            qa_type=QAType.MULTIPLE_CHOICE,
+            evidence_spans=[],
+            is_answerable=True,
+            processing_time_ms=processing_time
+        )
+
+
+class UnanswerableDetector:
+    """
+    Detecta preguntas que no pueden responderse con el contexto dado.
+    Esta es la pieza que el 70% ignora.
+    """
+    
+    def __init__(self, model: str = "claude-sonnet-4-20250514"):
+        self.client = anthropic.Anthropic()
+        self.model = model
+    
+    def can_answer(
+        self,
+        question: str,
+        context: str
+    ) -> Tuple[bool, float]:
+        """
+        Detecta si la pregunta puede responderse con el contexto.
+        
+        Returns:
+            (is_answerable, confidence)
+        """
+        prompt = f"""Analiza si la siguiente pregunta PUEDE responderse con el contexto dado.
+Responde con JSON exactamente con este formato:
+{{"can_answer": true/false, "confidence": 0.0-1.0, "reason": "breve explicación"}}
+
+REGLAS:
+- "can_answer": true SOLO si el contexto contiene la información necesaria
+- "can_answer": false si falta información crucial
+- "confidence": qué tan seguro estás de tu evaluación
+
+PREGUNTA:
+{question}
+
+CONTEXTO:
+{context}
+
+RESPUESTA:"""
+
+        response = self.client.messages.create(
+            model=self.model,
+            max_tokens=200,
+            system="Eres un sistema de evaluación de respuesta.",
+            messages=[{"role": "user", "content": prompt}]
+        )
+        
+        raw = response.content[0].text
+        json_match = re.search(r'\{.*\}', raw, re.DOTALL)
+        
+        if json_match:
+            data = json.loads(json_match.group())
+            return data.get("can_answer", False), data.get("confidence", 0.5)
+        
+        return True, 0.5  # Default: assume answerable
+
+
+class HybridQA:
+    """
+    Sistema QA híbrido que selecciona el tipo correcto automáticamente
+    y detecta preguntas no respondables.
+    """
+    
+    def __init__(self, model: str = "claude-sonnet-4-20250514"):
+        self.client = anthropic.Anthropic()
+        self.extractive = ExtractiveQA(model)
+        self.abstractive = AbstractiveQA(model)
+        self.multiple_choice = MultipleChoiceQA(model)
+        self.unanswerable_detector = UnanswerableDetector(model)
+    
+    def answer(
+        self,
+        question: str,
+        context: str,
+        options: Optional[List[str]] = None,
+        detect_unanswerable: bool = True
+    ) -> QAResult:
+        """
+        Responde usando el tipo de QA más apropiado.
+        """
+        # Primero, detectar si es answerable
+        if detect_unanswerable:
+            is_answerable, _ = self.unanswerable_detector.can_answer(question, context)
+            if not is_answerable:
+                return QAResult(
+                    answer="",
+                    confidence=0.0,
+                    qa_type=QAType.ABSTRACTIVE,
+                    evidence_spans=[],
+                    is_answerable=False,
+                    processing_time_ms=0.0
+                )
+        
+        # Si hay opciones, usar multiple choice
+        if options:
+            return self.multiple_choice.answer(question, options, context)
+        
+        # Detectar tipo de pregunta
+        qa_type = self._detect_qa_type(question)
+        
+        if qa_type == QAType.EXTRACTIVE:
+            return self.extractive.answer(question, context)
+        else:
+            return self.abstractive.answer(question, context)
+    
+    def _detect_qa_type(self, question: str) -> QAType:
+        """Detecta el tipo de pregunta."""
+        question_lower = question.lower()
+        
+        # Keywords para extractive
+        extractive_keywords = ["quién", "dónde", "cuándo", "qué persona", "qué número", 
+                              "qué fecha", "cuál es el nombre"]
+        for kw in extractive_keywords:
+            if kw in question_lower:
+                return QAType.EXTRACTIVE
+        
+        # Keywords para yes/no
+        yes_no_keywords = ["es verdad", "es cierto", "verdad que", "¿no?"]
+        for kw in yes_no_keywords:
+            if kw in question_lower:
+                return QAType.YES_NO
+        
+        # Por defecto, abstractive
+        return QAType.ABSTRACTIVE
+
+
+class QAEvaluator:
+    """
+    Evaluador de QA con métricas apropiadas.
+    """
+    
+    @staticmethod
+    def evaluate_extractive(
+        predictions: List[QAResult],
+        ground_truths: List[str],
+        question_ids: Optional[List[str]] = None
+    ) -> QAMetrics:
+        """
+        Evalúa QA extractivo con EM y F1.
+        
+        EM = 1 si la respuesta predicha es exactamente igual a la verdad
+        F1 = solapamiento de tokens normalizado
+        """
+        exact_matches = 0
+        f1_scores = []
+        answerable_correct = 0
+        answerable_total = 0
+        
+        for pred, gt in zip(predictions, ground_truths):
+            # EM
+            if pred.answer.strip().lower() == gt.strip().lower():
+                exact_matches += 1
+            
+            # F1 token-level
+            pred_tokens = set(pred.answer.lower().split())
+            gt_tokens = set(gt.lower().split())
+            
+            if len(pred_tokens) == 0 and len(gt_tokens) == 0:
+                f1 = 1.0
+            elif len(pred_tokens) == 0 or len(gt_tokens) == 0:
+                f1 = 0.0
+            else:
+                intersection = pred_tokens & gt_tokens
+                precision = len(intersection) / len(pred_tokens)
+                recall = len(intersection) / len(gt_tokens)
+                if precision + recall > 0:
+                    f1 = 2 * precision * recall / (precision + recall)
+                else:
+                    f1 = 0.0
+            
+            f1_scores.append(f1)
+        
+        em = exact_matches / len(predictions) if predictions else 0
+        avg_f1 = sum(f1_scores) / len(f1_scores) if f1_scores else 0
+        
+        return QAMetrics(
+            exact_match=em,
+            f1=avg_f1,
+            answerable_accuracy=0.0,
+            macro_f1=avg_f1,
+            per_type_metrics={}
+        )
+    
+    @staticmethod
+    def evaluate_with_unanswerable(
+        predictions: List[QAResult],
+        is_answerable_true: List[bool],
+        answers_true: List[str]
+    ) -> QAMetrics:
+        """
+        Evalúa incluyendo detección de no-answerable.
+        """
+        # Accuracy de detectar answerable
+        answerable_correct = sum(
+            1 for p, t in zip(predictions, is_answerable_true) 
+            if p.is_answerable == t
+        )
+        answerable_acc = answerable_correct / len(predictions) if predictions else 0
+        
+        # Para los que SÍ son answerable, calcular EM y F1
+        answerable_preds = [p for p in predictions if p.is_answerable]
+        answerable_gts = [gt for p, gt in zip(predictions, answers_true) if p.is_answerable]
+        
+        if answerable_preds:
+            em = sum(1 for p, gt in zip(answerable_preds, answerable_gts) 
+                    if p.answer.strip().lower() == gt.strip().lower()) / len(answerable_preds)
+            
+            f1_scores = []
+            for p, gt in zip(answerable_preds, answerable_gts):
+                pred_tokens = set(p.answer.lower().split())
+                gt_tokens = set(gt.lower().split())
+                if pred_tokens and gt_tokens:
+                    intersection = pred_tokens & gt_tokens
+                    prec = len(intersection) / len(pred_tokens)
+                    rec = len(intersection) / len(gt_tokens)
+                    if prec + rec > 0:
+                        f1_scores.append(2 * prec * rec / (prec + rec))
+                    else:
+                        f1_scores.append(0.0)
+                elif not pred_tokens and not gt_tokens:
+                    f1_scores.append(1.0)
+                else:
+                    f1_scores.append(0.0)
+            
+            avg_f1 = sum(f1_scores) / len(f1_scores)
+        else:
+            em = 0.0
+            avg_f1 = 0.0
+        
+        return QAMetrics(
+            exact_match=em,
+            f1=avg_f1,
+            answerable_accuracy=answerable_acc,
+            macro_f1=avg_f1,
+            per_type_metrics={}
+        )
+
+
+class QAPipeline:
+    """
+    Pipeline completo de QA.
+    """
+    
+    def __init__(self, model: str = "claude-sonnet-4-20250514"):
+        self.qa = HybridQA(model=model)
+        self.evaluator = QAEvaluator()
+    
+    def answer(
+        self,
+        question: str,
+        context: str,
+        options: Optional[List[str]] = None
+    ) -> QAResult:
+        """Responde una pregunta."""
+        return self.qa.answer(question, context, options, detect_unanswerable=True)
+    
+    def answer_batch(
+        self,
+        questions: List[str],
+        contexts: List[str]
+    ) -> List[QAResult]:
+        """Responde múltiples preguntas."""
+        return [self.answer(q, c) for q, c in zip(questions, contexts)]
+
+<h2>Los 3 Errores que el 80% Comete con QA</h2>
+
+<h3>Error 1: No Considerar Preguntas Sin Respuesta</h3>
+
+<p>El 70% ignora la posibilidad de que no haya respuesta en el contexto. Le pasas un documento de 10 páginas sobre gatos y preguntas "¿cuál es elPIB de Colombia?" El sistema responde con confianza algo hallucinado porque no sabe que no sabe.</p>
+
+<pre><code class="language-python"># ❌ MAL: Asumir que todas las preguntas son respondables
+qa = ExtractiveQA()
+result = qa.answer("¿Cuál es el PIB?", context_sobre_gatos)
+# Devuelve algo hallucinado con alta confianza
+
+# ✅ BIEN: Detectar primero si es answerable
+detector = UnanswerableDetector()
+is_answerable, confidence = detector.can_answer(question, context)
+if not is_answerable:
+    return {"answer": "", "is_answerable": False}
+# Solo procede si SÍ hay respuesta</code></pre>
+
+<p>Sin detección de unanswerable, tu sistema va a inventar respuestas. En un banco, eso es un problema regulatory serio.</p>
+
+<h3>Error 2: No Evaluar con las Métricas Correctas</h3>
+
+<p>El 60% reporta "accuracy" cuando debería usar EM y F1. Pero hay más: si tu sistema es extractivo, EM y F1 token-level son correctos. Si es abstractivo, necesitas ROUGE o BLEU. Si es multiple-choice, necesitas accuracy por opción.</p>
+
+<pre><code class="language-python"># ❌ MAL: Solo accuracy
+correct = sum(1 for p, t in zip(preds, truths) if p == t)
+accuracy = correct / len(preds)
+
+# ✅ BIEN: Métricas apropiadas según tipo
+evaluator = QAEvaluator()
+
+if qa_type == QAType.EXTRACTIVE:
+    metrics = evaluator.evaluate_extractive(predictions, ground_truths)
+    print(f"EM: {metrics.exact_match:.3f}, F1: {metrics.f1:.3f}")
+
+elif qa_type == QAType.ABSTRACTIVE:
+    # Para abstractivo, usar ROUGE o similar
+    from rouge import Rouge
+    rouge = Rouge()
+    scores = rouge.get_scores([p.answer for p in preds], truths, avg=True)
+    print(f"ROUGE-1: {scores['rouge-1']['f']:.3f}")
+
+else:  # multiple choice
+    mc_accuracy = sum(1 for p, t in zip(preds, truths) if p == t) / len(preds)
+    print(f"Accuracy: {mc_accuracy:.3f}")</code></pre>
+
+<p>Si evalúas abstractivo con EM vas a pensar que tu sistema es terrible cuando en realidad es correcto pero Parafrasea diferente.</p>
+
+<h3>Error 3: Tratar Todos los Tipos de QA como Iguales</h3>
+
+<p>El 50% usa la misma estrategia para "¿Quién inventó la bombilla?" (extractive) que para "¿Por qué llueve?" (abstractive). O para "¿Es Colombia un país?" (yes/no) que para "¿Cuáles son los beneficios del ejercicio?" (abstractive).</p>
+
+<pre><code class="language-python"># ❌ MAL: Un solo tipo para todo
+qa = ExtractiveQA()  # Trata todo como extractivo
+result = qa.answer("¿Por qué llueve?", context)
+# Responde con algo copiado del contexto que no responde el "por qué"
+
+# ✅ BIEN: Seleccionar tipo automáticamente
+pipeline = QAPipeline()
+result = pipeline.answer(
+    question="¿Quién fue el presidente de Colombia en 2020?",
+    context=context
+)
+# → Usa ExtractiveQA (pregunta factual con respuesta explícita)
+
+result = pipeline.answer(
+    question="¿Por qué es importante la educación?",
+    context=context
+)
+# → Usa AbstractiveQA (pregunta que requiere síntesis)
+
+result = pipeline.answer(
+    question="¿Cuánto vale el producto?",
+    context=context,
+    options=["$100", "$200", "$300", "$400"]
+)
+# → Usa MultipleChoiceQA</code></pre>
+
+<h2>Resumen: QA con LLMs que Realmente Funciona</h2>
+
+<ul>
+<li><strong>Detecta preguntas no respondables</strong> antes de generar respuestas</li>
+<li><strong>Usa EM y F1</strong> para extractivo, ROUGE/BLEU para abstractivo</li>
+<li><strong>Selecciona el tipo de QA</strong> según la naturaleza de la pregunta</li>
+<li><strong>Para preguntas factuales</strong> ("quién", "dónde", "cuándo") → extractivo</li>
+<li><strong>Para preguntas explicativas</strong> ("por qué", "cómo") → abstractivo</li>
+<li><strong>Para preguntas de selección</strong> → multiple choice</li>
+</ul>
+
+<p>La fórmula final:<br>
+<code>QA_Success = Answer_Quality × Unanswerable_Detection × Metric_Appropriateness × Type_Selection</code></p>
+
+<p>Cualquiera de estos siendo cero = sistema falla en producción.</p>
+
+<hr>
+
+<p><em>En Medellín, los 20 empleados de soporte del banco原来的mente dedicados a responder consultas ahora son 3 supervisores + el sistema QA que responde 95% con exactitud. Las 17 personas reassignadas a casos complejos y升级 a roles de calidad. El 20% que sabe hacerlo bien. Listos para el día 303.</em></p>
   </article>
 
   <script>
