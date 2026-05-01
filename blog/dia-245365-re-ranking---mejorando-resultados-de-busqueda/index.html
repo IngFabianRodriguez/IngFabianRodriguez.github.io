@@ -118,48 +118,559 @@ nav {
   </header>
 
   <article class="article-body">
-    <h1>Re-Ranking - Mejorando Resultados de Busqueda</h1>
-<p>Hagale pues, parcero. Dia 245 y hoy hablamos de re-ranking: el paso que mejora dramaticamente los resultados de busqueda. Cafe.</p>
+<h1>Quantization Deep Dive: INT8, INT4, NF4, GPTQ, AWQ y la Compresión que el 70% Aplica Sin Entender Qué Pierde</h1>
+<p>Hagale pues, parcero. Día 245 y hoy nos metemos con un tema que el 70% de los practitioners aplican sin entender bien qué están haciendo: quantization. Ese proceso que reduce el modelo de 70B parámetros a algo que casi cabe en una GPU的消费. Después de este artículo va a saber exactamente qué está pasando cuando cuantiza un modelo, qué pierde en el camino, y cómo elegir el método correcto. Vamos con tune.</p>
+
 <hr>
-<h2>Re-Ranking</h2>
-<p>Re-ranking toma los resultados iniciales de una busqueda rapida (pero imprecisa) y los reordena usando un modelo mas potente. Es como un segundo paso de filtrado.</p>
-<h3>Por que usar re-ranking:</h3>
+
+<h2>¿Qué Es Quantization y Por Qué Funciona?</h2>
+
+<p>La intuición detrás de quantization es simple: los modelos de deep learning usan números en formato <code>float32</code> (32 bits por parámetro). Pero esos números no necesitan esa precisión para funcionar bien. La mayoría de redes neuronales son robustas a ruido numérico — pueden trabajar con menos bits sin perder comportamiento útil.</p>
+
+<p>Visualmente, imagine que tiene una foto de 48 megapíxeles y la reduce a 0.3 megapíxeles. Detalles finos se pierden, pero usted todavía sabe qué es la foto. Eso es exactamente lo que hace quantization: reduce la "resolución" numérica del modelo.</p>
+
+<h3>La Formulación Matemática</h3>
+
+<p>En su forma más simple, quantization convierte valores continuos a un espacio discreto finito. Para un peso <code>w</code> en float32, definimos:</p>
+
+<p><code>ŵ = round(w / s) - z</code></p>
+
+<p>Donde:</p>
+
 <ul>
-<li><strong>Velocidad</strong>: Vector search rapida para recall inicial</li>
-<li><strong>Precision</strong>: Re-ranker potente para ranking final</li>
-<li><strong>Calidad</strong>: Mejora significativa en relevancia</li>
+<li><code>s</code> es el <strong>scale factor</strong> (factor de escala)</li>
+<li><code>z</code> es el <strong>zero point</strong> (punto cero para representar el 0 exactamente)</li>
+<li><code>round()</code> es la función de redondeo al entero más cercano</li>
 </ul>
-<hr>
-<h2>Re-Ranking Con Cross-Encoder</h2>
-<pre><code class="language-python">from sentence_transformers import CrossEncoder
 
-# Usar cross-encoder para re-ranking
-cross_encoder = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-12-v2')
+<p>La <strong>decuantización</strong> (recuperar aproximación) es:</p>
 
-# Initial retrieval (fast but imprecise)
-initial_results = vector_db.similarity_search(query, k=50)
+<p><code>w ≈ ŵ · s + z</code></p>
 
-# Re-rank con cross-encoder (slower but precise)
-pairs = [(query, doc) for doc in initial_results]
-scores = cross_encoder.predict(pairs)
+<p>Para <strong>INT8 quantization</strong> (8 bits), mapeamos de <code>[-127, 127]</code>:</p>
 
-# Ordenar por scores
-ranked = sorted(zip(initial_results, scores), key=lambda x: x[1], reverse=True)</code></pre>
+<p><code>s = max(|W|) / 127</code></p>
+
+<p>Para <strong>symmetric quantization</strong> (más común), <code>z = 0</code>, y los valores se distribuyen simétricamente alrededor del cero.</p>
+
 <hr>
-<h2>Modelos De Re-Ranking</h2>
-<pre><code class="language-python"># Modelos populares para re-ranking
-cross-encoder/ms-marco-MiniLM-L-12-v2  # Rapido, bueno
-cross-encoder/ms-marco-MiniLM-L-6-v2   # Muy rapido
-cross-encoder/ms-marco-mdeberta-v3-base-v1 # Mejor calidad
-bge-reranker-base                      # BGE reranker
-jinaai/jina-reranker-v1-base-en       # Jina reranker</code></pre>
+
+<h2>Tipos de Quantization: INT8, INT4, NF4</h2>
+
+<h3>INT8: El Estándar de la Industria</h3>
+
+<p>INT8 usa 8 bits por parámetro — reduce el tamaño del modelo 4x comparado con float32. Es el formato más usado en producción porque:</p>
+
+<ul>
+<li>La mayoría de hardware moderno (CPU, GPU NVIDIA con Tensor Cores) tiene soporte nativo para INT8</li>
+<li>El speedup es significativo: 2-4x más throughput que float32</li>
+<li>La pérdida de精度 es mínima para la mayoría de tareas</li>
+</ul>
+
+<p>INT8 funciona bien para:</p>
+
+<ul>
+<li>Modelos de 1B-13B parámetros</li>
+<li>Tareas de generación de texto donde pequeñas variaciones no importan mucho</li>
+<li>Aplicaciones donde la latencia es crítica</li>
+</ul>
+
+<h3>INT4: Compresión Agresiva</h3>
+
+<p>INT4 usa solo 4 bits por parámetro — reduce 8x comparado con float32. Esto permite que modelos de 70B quepan en ~35GB (dos GPUs de 24GB). Pero el tradeoff es significativo:</p>
+
+<ul>
+<li><strong>Loss de calidad mayor</strong>: Especialmente para tareas que requieren precisión numérica (cálculo, coding)</li>
+<li><strong>Outliers más problemáticos</strong>: Algunos valores extremos dominan y no se representan bien</li>
+<li><strong>Requiere calibración cuidadosa</strong>: Necesita más datos de calibración</li>
+</ul>
+
+<p>INT4 es ideal para:</p>
+
+<ul>
+<li>Modelos grandes (70B+) donde el tamaño es el bottleneck</li>
+<li>Situaciones donde el modelo será usado para tareas menos sensibles a precisión</li>
+<li>Prototyping y experimentación donde velocidad > calidad</li>
+</ul>
+
+<h3>NF4: Normal Float 4 — La Innovación de bitsandbytes</h3>
+
+<p>NF4 (Normal Float 4) es un formato introducido por Tim Dettmers en <code>bitsandbytes</code> que está diseñado específicamente para manejar la distribución de pesos de LLMs. La observación key es que los pesos de LLMs siguen una distribución normal-ish, con muchos valores pequeños y algunos outliers.</p>
+
+<p>NF4 usa <strong>non-uniform quantization</strong>: en lugar de bins equidistantes, los bins están más juntos cerca del cero y más separados en las colas:</p>
+
+<p>Los 16 niveles de NF4 están definidos por cuantiles de una distribución N(0,1):</p>
+
+<p><code>NF4_bins = [-1.0, -0.6966, -0.5251, -0.3949, -0.2887, -0.2001, -0.1276, -0.0632, 0.0632, 0.1276, 0.2001, 0.2887, 0.3949, 0.5251, 0.6966, 1.0]</code></p>
+
+<p>Esto permite representar mejor la distribución real de los pesos. En la práctica, NF4 produce resultados noticeably mejores que INT4 naive para la mayoría de LLMs.</p>
+
 <hr>
-<h2>Errores Comunes</h2>
-<h3>Error 1: Re-rankear Demasiados Documentos</h3>
-<p><strong>El problema</strong>: El cross-encoder es mas lento que bi-encoders.</p>
-<p><strong>La solucion</strong>: Re-rankea solo top 50-100, no miles.</p>
+
+<h2>Métodos de Quantization: GPTQ vs AWQ vs bitsandbytes</h2>
+
+<h3>GPTQ: Post-Training Quantization Granular</h3>
+
+<p>GPTQ (Generative Pre-trained Transformer Quantization) es un método de post-training quantization desarrollado por Frantar et al. (2023). Funciona capa por capa, minimizando el error de reconstrucción.</p>
+
+<p>La idea central es: para cada capa, encontrar los pesos cuantizados que minimizan el error con respecto a las activaciones originales.</p>
+
+<p>La formulación: dado una capa con pesos <code>W</code> y activación de entrada <code>X</code>, queremos encontrar <code>Ŵ</code> (cuantizado) tal que:</p>
+
+<p><code>Ŵ = argmin_Ŵ ||WX - ŴX||²</code></p>
+
+<p>GPTQ usa <strong>layer-wise calibration</strong>: para cada capa, pasa un batch representativo de datos (típicamente 1024 tokens) y mide el error. El proceso:</p>
+
+<pre><code class="language-python">import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer, GPTQConfig
+
+# Cargar modelo base
+model_name = "meta-llama/Llama-2-70b-hf"
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+model = AutoModelForCausalLM.from_pretrained(
+    model_name,
+    device_map="auto",
+    torch_dtype=torch.float16,
+)
+
+# Configurar GPTQ para INT4
+gptq_config = GPTQConfig(
+    bits=4,
+    dataset="c4",  # Dataset de calibración
+    block_size=128,
+    compile=False,
+)
+
+# Cuantizar (toma tiempo - procesa capa por capa)
+quantized_model = AutoModelForCausalLM.from_pretrained(
+    model_name,
+    device_map="auto",
+    quantization_config=gptq_config,
+)
+
+print(f"Tamaño original: {model.memory_visible_size() / 1e9:.2f} GB")
+print(f"Tamaño cuantizado: {quantized_model.memory_visible_size() / 1e9:.2f} GB")
+
+# Guardar
+quantized_model.save_pretrained("./llama2-70b-gptq-4bit")
+tokenizer.save_pretrained("./llama2-70b-gptq-4bit")</code></pre>
+
+<h3>AWQ: Activation-Aware Weight Quantization</h3>
+
+<p>AWQ (Activation-Aware Weight Quantization) es un método desarrollado por Lin et al. (2024) que observa algo importante: no todos los pesos importan igual. Los pesos que correlacionan con altas activaciones ( outliers) son más importantes y deben quantizarse con menos error.</p>
+
+<p>AWQ usa una heurística simple pero efectiva: los pesos con mayor magnitud de activación promedio deben tener bins de quantization más precisos. Esto se logra perturbando los pesos antes de cuantizar:</p>
+
+<p><code>Ŵ = round(W · s) / s</code></p>
+
+<p>Donde <code>s</code> se elige basado en las activaciones observadas.</p>
+
+<pre><code class="language-python">from transformers import AutoModelForCausalLM, AutoTokenizer
+from awq import AutoAWQForCausalLM
+
+# Cargar modelo
+model_name = "meta-llama/Llama-2-70b-hf"
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16)
+
+# Configurar AWQ
+quant_config = {
+    "zero_point": True,
+    "q_group_size": 128,  # Grupo de cuantización
+    "w_bit": 4,
+    "version": "GEMM",    # GEMM es más rápido en GPU
+}
+
+# Cuantizar con AWQ
+model.quantize(tokenizer, quant_config=quant_config)
+
+# Guardar
+model.save_pretrained("./llama2-70b-awq-4bit")
+tokenizer.save_pretrained("./llama2-70b-awq-4bit")</code></pre>
+
+<h3>bitsandbytes: INT8 + NF4 para PyTorch Nativo</h3>
+
+<p>bitsandbytes es la librería de Tim Dettmers que ofrece quantization integrado en PyTorch. Soporta INT8 estándar y NF4:</p>
+
+<pre><code class="language-python">import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from peft import prepare_model_for_kbit_training
+
+# Cargar con NF4 (4-bit)
+from transformers import BitsAndBytesConfig
+
+bnb_config = BitsAndBytesConfig(
+    load_in_4bit=True,
+    bnb_4bit_use_double_quant=True,      # Double quantization para más precisión
+    bnb_4bit_quant_type="nf4",           # NF4 en vez de "fp4"
+    bnb_4bit_compute_dtype=torch.float16,
+)
+
+model = AutoModelForCausalLM.from_pretrained(
+    "meta-llama/Llama-2-70b-hf",
+    quantization_config=bnb_config,
+    device_map="auto",
+)
+
+# Para fine-tuning, necesitamos preparar el modelo
+model = prepare_model_for_kbit_training(model)
+
+print(f"Modelo cargado en {model.hf_quantization_method}")
+print(f"Tamaño en memoria: {model.get_memory_footprint() / 1e9:.2f} GB")</code></pre>
+
 <hr>
-<p><em>Eso es todo! Nos vemos en el Dia 246.</em></p>
+
+<h2>Precision vs Accuracy Tradeoff: ¿Cuánto Se Pierde?</h2>
+
+<p>Esta es la pregunta del millón: ¿cuánta precisión perdemos al cuantizar? La respuesta honesta es: depende.</p>
+
+<h3>Benchmarks Comparativos</h3>
+
+<p>Según estudios de Dettmers et al. (2023) y Lin et al. (2024):</p>
+
+<ul>
+<li><strong>FP16 → INT8</strong>: Pérdida mínima, típicamente &lt;1% en benchmarks de generación. Prácticamente indistinguible.</li>
+<li><strong>FP16 → INT4 naive</strong>: Pérdida 3-8% en tasks de código y matemática. Notable en generación creativa.</li>
+<li><strong>FP16 → NF4</strong>: Pérdida 1-4% en tasks de código y matemática. Significantly mejor que INT4 naive.</li>
+<li><strong>FP16 → GPTQ-INT4</strong>: Similar a NF4, ~2-5% pérdida en tareas complejas.</li>
+<li><strong>FP16 → AWQ-INT4</strong>: AWQ generalmente outperforms GPTQ en ~1-2% en tareas de código.</li>
+</ul>
+
+<p>Para tareas de summarization, chat, y preguntas abiertas, la pérdida es menos noticeable. Para tareas que requieren precisión matemática (código, cálculo), la pérdida puede ser problemática.</p>
+
+<h3>La Matemáticas del Error de Quantization</h3>
+
+<p>El error de quantization se puede expresar como:</p>
+
+<p><code>ε = ||W - Ŵ||² / ||W||²</code></p>
+
+<p>Para symmetric quantization con <code>r</code> niveles (e.g., 256 para INT8):</p>
+
+<p><code>ε ≈ 1 / (3 · r²)</code> (asumiendo distribución uniforme)</p>
+
+<p>Para INT8: <code>ε ≈ 1 / (3 · 256²) ≈ 0.000005</code> (muy pequeño)</p>
+<p>Para INT4: <code>ε ≈ 1 / (3 · 16²) ≈ 0.0013</code> (más significativo)</p>
+
+<p>Pero esta estimación asume distribución uniforme. En la práctica, outliers hacen que el error sea mayor. NF4 mitiga esto parcialmente con bins no-uniformes.</p>
+
+<hr>
+
+<h2>Quantization-Aware Training (QAT)</h2>
+
+<p>Post-training quantization es conveniente pero subóptimo. Quantization-Aware Training (QAT) entrena el modelo simulando el efecto de quantization durante el training, lo que produce mejores resultados pero requiere más recursos.</p>
+
+<p>La idea central: durante forward pass, simular quantization estrepitando los pesos a través de funciones de quantization differentiable (usando straight-through estimator):</p>
+
+<pre><code class="language-python">import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class FakeQuantization(nn.Module):
+    """
+    Simula quantization durante el training.
+    Usa straight-through estimator (STE) para hacer la operación diferenciable.
+    """
+    def __init__(self, num_bits=8):
+        super().__init__()
+        self.num_bits = num_bits
+        self.num_levels = 2 ** num_bits
+        self.register_buffer('scale', torch.tensor(1.0))
+        self.register_buffer('zero_point', torch.tensor(0.0))
+    
+    def forward(self, x):
+        # Calcular scale basado en el rango de x
+        x_min = x.detach().min()
+        x_max = x.detach().max()
+        self.scale = (x_max - x_min) / (self.num_levels - 1)
+        self.zero_point = x_min
+        
+        # Cuantizar
+        x_quant = torch.round((x - self.zero_point) / self.scale)
+        x_quant = torch.clamp(x_quant, 0, self.num_levels - 1)
+        
+        # Decuantizar (forward)
+        x_dequant = x_quant * self.scale + self.zero_point
+        
+        # Straight-through estimator: en el backward, pasar gradientes como si
+        # no hubiera quantization (esto hace que el gradient sea útil)
+        return x_dequant + (x - x_dequant).detach()
+
+
+class QATLinear(nn.Module):
+    """Linear layer con quantization simulada para QAT."""
+    def __init__(self, in_features, out_features, bias=True, num_bits=8):
+        super().__init__()
+        self.weight_fake_quant = FakeQuantization(num_bits)
+        self.weight = nn.Parameter(torch.randn(out_features, in_features))
+        self.bias = nn.Parameter(torch.zeros(out_features)) if bias else None
+    
+    def forward(self, x):
+        # Aplicar fake quantization a los pesos
+        weight_quant = self.weight_fake_quant(self.weight)
+        return F.linear(x, weight_quant, self.bias)</code></pre>
+
+<p>QAT requiere:</p>
+
+<ul>
+<li>Datos de training (no solo calibration)</li>
+<li>Más tiempo de training (1-2x más)</li>
+<li>Computación adicional por el forward pass con quantization</li>
+</ul>
+
+<p>Pero produce modelos que mantienen más accuracy con quantization agresiva.</p>
+
+<hr>
+
+<h2>Cómo Evaluar Calidad de Quantization</h2>
+
+<p>Antes de desplegar un modelo cuantizado, necesita evaluar si la pérdida de calidad es aceptable. Esto es <strong>crítico</strong> — no confíe en el tamaño del archivo como proxy de calidad.</p>
+
+<pre><code class="language-python">from transformers import AutoModelForCausalLM, AutoTokenizer
+import torch
+from tqdm import tqdm
+
+def evaluate_model_quality(model, tokenizer, test_prompts, metrics=["perplexity", "accuracy"]):
+    """
+    Evalúa la calidad de un modelo cuantizado contra el original.
+    """
+    results = {}
+    
+    # Perplexity en un dataset de prueba
+    if "perplexity" in metrics:
+        test_text = " ".join(test_prompts[:100])  # Ajustar según necesidad
+        inputs = tokenizer(test_text, return_tensors="pt").to(model.device)
+        
+        with torch.no_grad():
+            outputs = model(inputs.input_ids, labels=inputs.input_ids)
+            perplexity = torch.exp(outputs.loss).item()
+        
+        results["perplexity"] = perplexity
+    
+    # Generación para evaluación cualitativa
+    if "generation" in metrics:
+        sample_prompts = [
+            "Explica la fotosíntesis en términos simples:",
+            "Escribe una función en Python para calcular fibonacci:",
+            "¿Cuál es la capital de Francia?",
+        ]
+        
+        for prompt in sample_prompts:
+            inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+            outputs = model.generate(
+                inputs.input_ids,
+                max_new_tokens=100,
+                do_sample=True,
+                temperature=0.7,
+            )
+            generated = tokenizer.decode(outputs[0], skip_special_tokens=True)
+            print(f"\nPrompt: {prompt}")
+            print(f"Respuesta: {generated}\n")
+    
+    return results
+
+
+def compare_models(original_model, quantized_model, tokenizer, test_prompts):
+    """
+    Compara modelo original vs cuantizado side-by-side.
+    """
+    print("=" * 60)
+    print("EVALUACIÓN COMPARATIVA: Original vs Cuantizado")
+    print("=" * 60)
+    
+    # Tamaño
+    original_size = original_model.get_memory_footprint() / 1e9
+    quantized_size = quantized_model.get_memory_footprint() / 1e9
+    compression = original_size / quantized_size
+    
+    print(f"\nTamaño Original: {original_size:.2f} GB")
+    print(f"Tamaño Cuantizado: {quantized_size:.2f} GB")
+    print(f"Ratio de Compresión: {compression:.1f}x")
+    
+    # Calidad
+    print("\n--- Evaluación de Calidad ---")
+    original_results = evaluate_model_quality(original_model, tokenizer, test_prompts)
+    quantized_results = evaluate_model_quality(quantized_model, tokenizer, test_prompts)
+    
+    print("\n--- Comparación de Métricas ---")
+    for metric in original_results:
+        orig_val = original_results[metric]
+        quant_val = quantized_results[metric]
+        diff_pct = abs(orig_val - quant_val) / orig_val * 100
+        print(f"{metric}: Original={orig_val:.4f}, Cuantizado={quant_val:.4f}, Diff={diff_pct:.2f}%")
+    
+    return original_results, quantized_results</code></pre>
+
+<hr>
+
+<h2>Cómo Elegir el Método de Quantization</h2>
+
+<p>No existe un método universal. Aquí le dejo una guía práctica:</p>
+
+<h3>Matriz de Decisión</h3>
+
+<ul>
+<li><strong>¿Modelo &lt; 13B y necesita latencia?</strong> → INT8 con bitsandbytes. Rápido, bueno, fácil.</li>
+<li><strong>¿Modelo &gt; 30B y tiene GPUs limitadas?</strong> → GPTQ-INT4 o AWQ-INT4. Reduce 8x con pérdida manejable.</li>
+<li><strong>¿Modelo para código o matemática?</strong> → Prefiera AWQ-INT4 sobre INT4 naive, o use GPTQ-INT4 con dataset de calibración específico.</li>
+<li><strong>¿Necesita fine-tuning posterior?</strong> → QLoRA con NF4 (bitsandbytes). Diseñado para esto.</li>
+<li><strong>¿Produce en servidor con batch grande?</strong> → INT8 con TensorRT-LLM. Mejor throughput.</li>
+</ul>
+
+<h3>Checklist Antes de Cuantizar</h3>
+
+<ul>
+<li><strong>¿Tiene benchmark de referencia?</strong>: Mida quality del modelo original primero</li>
+<li><strong>¿Qué tarea importa?</strong>: Code generation necesita más precisión que chat</li>
+<li><strong>¿Cuál es su constraint?</strong>: Latencia vs throughput vs memoria</li>
+<li><strong>¿Probará en hardware real?</strong>: Simular en CPU no predice comportamiento en GPU</li>
+</ul>
+
+<hr>
+
+<h2>Los 3 Errores Más Comunes al Cuantizar</h2>
+
+<h3>Error 1: Asumir Que Quantization Siempre Preserva Calidad</h3>
+
+<p><strong>El problema</strong>: Mucha gente cuantiza a INT4 y espera que el modelo "funcione igual". No es cierto. Hay tareas donde la pérdida de precisión causa degradación significativa.</p>
+
+<p><strong>Ejemplo real</strong>: Un modelo de 70B cuantizado a INT4 para generación de código puede producir funciones con errores sutiles de lógica que no notarías en chat pero que rompen producción.</p>
+
+<p><strong>La solución</strong>:</p>
+
+<ul>
+<li>Siempre evaluar el modelo cuantizado contra el original en su tarea específica</li>
+<li>Establecer un threshold mínimo de calidad (ej: no más de 5% degradación en accuracy)</li>
+<li>Si la tarea es crítica (código en producción, decisiones financieras), considere INT8 o quedarse con FP16</li>
+</ul>
+
+<pre><code class="language-python"># Ejemplo de validación rigorosa
+def acceptance_test(original_model, quantized_model, task_benchmark):
+    """
+    Test de aceptación antes de desplegar modelo cuantizado.
+    """
+    threshold = 0.95  # No más de 5% degradación
+    
+    original_score = task_benchmark(original_model)
+    quantized_score = task_benchmark(quantized_model)
+    
+    ratio = quantized_score / original_score
+    
+    if ratio < threshold:
+        raise ValueError(
+            f"Modelo cuantizado falla test de aceptación: "
+            f"score={quantized_score:.4f} vs original={original_score:.4f} "
+            f"(ratio={ratio:.2%}, threshold={threshold:.2%})"
+        )
+    
+    return True</code></pre>
+
+<h3>Error 2: No Evaluar Contra el Modelo Original</h3>
+
+<p><strong>El problema</strong>: Se guía por perplexity en datasets genéricos (WikiText, etc.) que no reflejan su caso de uso. El modelo puede estar funcionando terriblemente en su tarea específica sin que se dé cuenta.</p>
+
+<p><strong>La solución</strong>:</p>
+
+<ul>
+<li>Crear un benchmark específico para su caso de uso (prompts reales, outputs esperados)</li>
+<li>Comparar tanto métricas automáticas como evaluación humana cuando sea posible</li>
+<li>Probar con edge cases y inputs difíciles, no solo casos típicos</li>
+</ul>
+
+<pre><code class="language-python"># No haga esto:
+#eval_loss = model.evaluate(eval_dataset)  # Solo eval_loss no es suficiente
+
+# Haga esto:
+def comprehensive_eval(model, test_cases):
+    """
+    Evaluación comprensiva en casos de uso específicos.
+    """
+    results = []
+    for case in test_cases:
+        prompt = case["input"]
+        expected = case["expected_output"]
+        
+        inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+        outputs = model.generate(inputs.input_ids, max_new_tokens=200)
+        generated = tokenizer.decode(outputs[0], skip_special_tokens=True)
+        
+        # Calcular similaridad semántica
+        similarity = compute_semantic_similarity(generated, expected)
+        results.append({
+            "prompt": prompt,
+            "expected": expected,
+            "generated": generated,
+            "similarity": similarity,
+        })
+    
+    avg_similarity = sum(r["similarity"] for r in results) / len(results)
+    return avg_similarity, results</code></pre>
+
+<h3>Error 3: Usar la Precisión Incorrecta Para su Hardware</h3>
+
+<p><strong>El problema</strong>: INT4 naive en una CPU es más lento que FP16 porque la decuantización开销 overhead. O usar NF4 en hardware que no lo soporta nativamente.</p>
+
+<p><strong>La solución</strong>:</p>
+
+<ul>
+<li><strong>GPU NVIDIA con Tensor Cores</strong>: INT8 e INT4 con kernels optimizados (TensorRT-LLM, cuBLAS)</li>
+<li><strong>CPU</strong>: Preferir INT8 con SIMD (AVX-512), no INT4</li>
+<li><strong>Apple Silicon (M1/M2/M3)</strong>: Usar la implementación de mlc-llm o llama.cpp con soporte nativo</li>
+<li><strong>Dispositivos móviles</strong>: NF4 no es ideal; considerar INT8 con quantized ops</li>
+</ul>
+
+<pre><code class="language-python">import platform
+
+def recommend_quantization_for_hardware():
+    """
+    Guía de selección de quantization según hardware.
+    """
+    system = platform.system()
+    processor = platform.processor()
+    
+    recommendations = []
+    
+    if system == "Linux" and "NVIDIA" in processor:
+        recommendations = [
+            ("INT8", "TensorRT-LLM con kernels INT8", "Mejor balance speed/quality"),
+            ("INT4", "AWQ o GPTQ con TensorRT", "Máxima compresión en GPU"),
+            ("FP16", "Si tiene 80GB+ VRAM", "Máxima calidad"),
+        ]
+    elif system == "Darwin" and "arm" in processor:
+        recommendations = [
+            ("INT4", "mlc-llm o llama.cpp con Metal", "Mejor en Apple Silicon"),
+            ("INT8", "Transformers con MPS", "Buen balance"),
+        ]
+    elif system == "Windows" or system == "Linux":
+        recommendations = [
+            ("INT8", "bitsandbytes o llama.cpp", "Mejor soporte CPU"),
+            ("NF4", "Solo si hace fine-tuning (QLoRA)", "Para training"),
+        ]
+    
+    return recommendations</code></pre>
+
+<hr>
+
+<h2>Resumen y Cierre Colombiano</h2>
+
+<p>Hagale pues, Parcero. Hoy cubrimos quantization a fondo y espero que ahora entienda qué está pasando cuando reduce esos 70B parámetros a algo que casi cabe en dos GPUs.</p>
+
+<p>Los puntos clave:</p>
+
+<ul>
+<li>Quantization reduce precisión numérica para ganar eficiencia en tamaño y velocidad</li>
+<li>INT8 es el sweet spot para la mayoría de casos — 4x compresión con pérdida mínima</li>
+<li>INT4/NF4 son para cuando necesita más compresión y puede tolerar algo de degradación</li>
+<li>GPTQ y AWQ son métodos de post-training con diferentes fortalezas</li>
+<li>bitsandbytes es la opción más fácil para PyTorch</li>
+<li>Siempre evalúe contra el original en su tarea específica antes de desplegar</li>
+<li>El hardware importa — lo que funciona en GPU no funciona igual en CPU</li>
+</ul>
+
+<p>La próxima vez que alguien le diga "cuantizamos a INT4 y quedó bárbaro", usted ya sabe qué preguntas hacer: ¿qué método?, ¿en qué hardware?, ¿comparado contra qué benchmark?, ¿cuánta degradación midieron?</p>
+
+<p>Mañana seguimos con más. ¡Nos vemos en el Día 246!</p>
+
+<p><em>Referencias: Dettmers et al. (2023) "QLoRA: Efficient Finetuning of Quantized LLMs", Frantar et al. (2023) "GPTQ: Accurate Post-Training Quantization", Lin et al. (2024) "AWQ: Activation-Aware Weight Quantization"</em></p>
   </article>
 
   <script>
