@@ -110,753 +110,536 @@ nav {
 
   <header class="article-hero">
     <div class="day-badge">Dia 284 / 365 &nbsp;·&nbsp; #365DaysOfAI</div>
-    <h1 class="article-title">LLM Evaluation Metrics — Que el 85% Confunde y Que el 15% Entiende Para Medir Calidad</h1>
+    <h1 class="article-title">Video Understanding - Frames Y Temporalidad</h1>
     <div class="article-meta">
       <time class="article-date">11 de octubre de 2026</time>
-      <div class="tags"><span class="tag">llm</span><span class="tag">evaluation</span><span class="tag">bleu</span><span class="tag">rouge</span><span class="tag">bertscore</span></div>
+      <div class="tags"><span class="tag">video</span><span class="tag">temporal</span><span class="tag">3d-cnn</span><span class="tag">lstm</span></div>
     </div>
   </header>
 
   <article class="article-body">
-<h2>Métricas de Evaluación: El Problema de Medir Qualité</h2>
+<h2>El Problema Del Video</h2>
 
-<p>Mano, hoy vamos a hablar de algo que el 85% de la gente que trabaja con LLMs no entiende bien: <strong>cómo demonios medir si tu modelo está funcionando bien o no</strong>. Y no, no es simplemente preguntar "¿te parece bien?" y ya.</p>
+<p>Una imagen vale mas que mil palabras, pero un video vale mas que mil imagenes. El problema es que analizar video es exponencialmente mas dificil que analizar imagenes estaticas.</p>
 
-<p>En Colombia decimos que "lo que no se mide, no se mejora". Y en el mundo de los LLMs, esto es más cierto que nunca. Si no sabes qué métricas usar, estás básicamente volando a ciegas cuando decides si tu modelo mejoró o empeoró después de un cambio.</p>
+<p>Un video de 30 segundos a 30 FPS son 900 frames. Cada frame es una imagen de potentially millones de pixeles. Y no solo tienes que entender cada frame, sino que tienes que entender la <strong>relacion temporal</strong> entre ellos.</p>
 
-<h2>Por Qué Una Sola Métrica No Es Suficiente</h2>
+<p>Como dice el dicho: "el video es la sucesion temporal de imagenes que cuenta una historia". Entender esa historia es el objetivo del Video Understanding.</p>
 
-<p>El error más común es decir "vamos a usar BLEU score" y punto. Error fatal. <strong>Cada métrica tiene limitaciones</strong>, y si solo usas una, estás ignorando aspectos importantes de la calidad. Necesitas un portfolio de métricas que se complementen.</p>
+<h2>El Desafio De La Temporalidad</h2>
 
-<p>Vamos a ver las métricas más importantes y cómo implementarlas, incluyendo cómo diseñar las tuyas propias cuando las existentes no sirven.</p>
-
-<h2>BLEU Score: El Clásico de NLP</h2>
-
-<h3>Qué Es y Cómo Funciona</h3>
-
-<p>BLEU (Bilingual Evaluation Understudy) fue propuesto por Google en 2002 para evaluar traducciones automáticas. Mide la <strong>precisión de n-gramas</strong> entre el texto generado y referencias humanas.</p>
-
-<p>La fórmula básica de precisión de n-gramas:</p>
-
-<p><code>Precision_n = (n-gramas en común con refs) / (total de n-gramas en output)</code></p>
-
-<p>BLEU usa precisión modificada con penalización por brevedad (brevity penalty):</p>
-
-<p><code>BLEU = BP * exp(sum_{n=1 to N} w_n * log(precision_n))</code></p>
-
-<p>Donde <code>BP = min(1, |output| / |ref_más_cercana|)</code></p>
-
-<pre><code class="language-python">from collections import Counter
-import math
-
-def modified_precision(candidate: str, reference: str, n: int) -> float:
-    """
-    Calcula precisión modificada para n-gramas.
-    Cuenta cuántas veces aparece cada n-grama en el candidato
-    vs. el máximo que aparece en cualquier referencia.
-    """
-    cand_ngrams = Counter(ngrams(candidate, n))
-    ref_ngrams = Counter(ngrams(reference, n))
-    
-    numerator = 0
-    denominator = 0
-    
-    for ngram, count in cand_ngrams.items():
-        numerator += min(count, ref_ngrams.get(ngram, 0))
-        denominator += count
-    
-    return numerator / denominator if denominator > 0 else 0
-
-def ngrams(text: str, n: int):
-    """Genera n-gramas de un texto."""
-    tokens = text.split()
-    return tuple(tokens[i:i+n] for i in range(len(tokens) - n + 1))
-
-def brevity_penalty(candidate: str, reference: str) -> float:
-    """
-    Penaliza outputs más cortos que la referencia.
-    Si el candidato es más largo, no hay penalización.
-    """
-    c_len = len(candidate.split())
-    r_len = len(reference.split())
-    
-    if c_len > r_len:
-        return 1.0
-    elif c_len == 0:
-        return 0.0
-    else:
-        return math.exp(1 - r_len / c_len)
-
-def bleu_score(candidate: str, reference: str, weights=(0.25, 0.25, 0.25, 0.25)) -> float:
-    """
-    Calcula BLEU score con pesos para 1-gram a 4-gram.
-    Por defecto usa pesos uniformes.
-    """
-    precisions = []
-    for i, w in enumerate(weights, 1):
-        if i > 4:
-            break
-        p = modified_precision(candidate, reference, i)
-        precisions.append(p)
-    
-    # Si alguna precisión es 0, BLEU es 0
-    if any(p == 0 for p in precisions):
-        return 0.0
-    
-    log_precisions = [math.log(p) for p in precisions]
-    geometric_mean = math.exp(sum(w * lp for w, lp in zip(weights, log_precisions)))
-    bp = brevity_penalty(candidate, reference)
-    
-    return geometric_mean * bp
-
-# Ejemplo de uso
-ref = "El gato está sentado sobre la mesa."
-cand = "El gato está en la mesa."
-
-print(f"BLEU: {bleu_score(cand, ref):.4f}")
-</code></pre>
-
-<h3>Limitaciones de BLEU</h3>
+<p>Las CNNs standard funcionan bien para imagenes porque asumen que los pixeles tienen relaciones espaciales fijas. Para video, tienes que capturar:</p>
 
 <ul>
-<li><strong>No captura semántica</strong>: "El perro persigue al gato" y "El gato es perseguido por el perro" tienen BLEU bajo pero son semánticamente equivalentes</li>
-<li><strong>Sensible a tokens exactos</strong>: variaciones de puntuación o mayúsculas afectan el score</li>
-<li><strong>No funciona bien para generación creativa</strong>: traduce bien pero mal para resúmenes o chat</li>
+<li><strong>Motion</strong>: como se mueven los objetos entre frames</li>
+<li><strong>Action</strong>: que accion esta ocurriendo en el video</li>
+<li><strong>Sequence</strong>: el orden de los eventos importa</li>
+<li><strong>Context</strong>: el significado depende del historial</li>
 </ul>
 
-<h2>ROUGE Score: Recall-Oriented</h2>
+<p>La matematica basica para video es extension 3D de imagenes:</p>
 
-<h3>Qué Es y Por Qué Importa</h3>
+<p><code>I(x, y, t) -> I(x, y, z, t)</code></p>
 
-<p>ROUGE (Recall-Oriented Understudy for Gisting Evaluation) mide <strong>recall</strong>: qué tanto del texto de referencia aparece en el output generado. A diferencia de BLEU que mide precisión.</p>
+<p>Donde anadimos la dimension temporal z (o t, pero ya tenemos t para tiempo, entonces usualmente llamamos frames como z).</p>
 
-<p>Las variantes principales:</p>
+<h2>Arquitecturas 3D-CNN</h2>
 
-<ul>
-<li><strong>ROUGE-N</strong>: overlap de n-gramas (similar a BLEU pero recall)</li>
-<li><strong>ROUGE-L</strong>: longest common subsequence</li>
-<li><strong>ROUGE-S</strong>: skip-bigram co-occurrence</li>
-</ul>
+<p>La manera mas directa de procesar video es reemplazar convoluciones 2D con <strong>convoluciones 3D</strong> que operan sobre volumenes espaciotemporales.</p>
 
-<pre><code class="language-python">def rouge_n(candidate: str, reference: str, n: int = 1) -> float:
-    """
-    ROUGE-N: fracción de n-gramas de referencia que aparecen en candidato.
-    Mide recall, no precisión.
-    """
-    cand_ngrams = Counter(ngrams(candidate, n))
-    ref_ngrams = Counter(ngrams(reference, n))
+<pre><code class="language-python">import torch
+import torch.nn as nn
+
+class Conv3DBlock(nn.Module):
+    """Bloque convolutional 3D para video."""
     
-    overlap = sum(min(cand_ngrams.get(ng, 0), ref_ngrams[ng]) for ng in ref_ngrams)
-    total_ref = sum(ref_ngrams.values())
-    
-    return overlap / total_ref if total_ref > 0 else 0.0
-
-def lcs_length(s1: str, s2: str) -> int:
-    """Longest common subsequence - algorithm."""
-    m, n = len(s1), len(s2)
-    dp = [[0] * (n + 1) for _ in range(m + 1)]
-    
-    for i in range(1, m + 1):
-        for j in range(1, n + 1):
-            if s1[i-1] == s2[j-1]:
-                dp[i][j] = dp[i-1][j-1] + 1
-            else:
-                dp[i][j] = max(dp[i-1][j], dp[i][j-1])
-    
-    return dp[m][n]
-
-def rouge_l(candidate: str, reference: str) -> float:
-    """
-    ROUGE-L: longest common subsequence ratio.
-    Captura estructura de secuencias.
-    """
-    ref_tokens = reference.split()
-    cand_tokens = candidate.split()
-    
-    lcs = lcs_length(ref_tokens, cand_tokens)
-    
-    return (2 * lcs) / (len(ref_tokens) + len(cand_tokens)) if (len(ref_tokens) + len(cand_tokens)) > 0 else 0.0
-
-def rouge_s(candidate: str, reference: str) -> float:
-    """
-    ROUGE-S: skip-bigram co-occurrence.
-    Permite gaps entre palabras (ordén parcial).
-    """
-    def skip_bigrams(tokens):
-        return [(tokens[i], tokens[j]) for i in range(len(tokens)) for j in range(i+1, len(tokens))]
-    
-    cand_sb = set(skip_bigrams(candidate.split()))
-    ref_sb = set(skip_bigrams(reference.split()))
-    
-    overlap = len(cand_sb & ref_sb)
-    total_ref = len(ref_sb)
-    
-    return overlap / total_ref if total_ref > 0 else 0.0
-
-# Ejemplo de uso
-ref = "El gato está sentado sobre la mesa."
-cand = "El gato está en la mesa."
-
-print(f"ROUGE-1: {rouge_n(cand, ref, 1):.4f}")
-print(f"ROUGE-2: {rouge_n(cand, ref, 2):.4f}")
-print(f"ROUGE-L: {rouge_l(cand, ref):.4f}")
-print(f"ROUGE-S: {rouge_s(cand, ref):.4f}")
-</code></pre>
-
-<h2>METEOR: La Evolución de BLEU</h2>
-
-<p>METEOR (Metric for Evaluation of Translation with Explicit ORdering) aborda varias limitaciones de BLEU:</p>
-
-<ul>
-<li><strong>Usa sinónimos</strong> via WordNet</li>
-<li><strong>Alignment más flexible</strong>: permite mappings no contiguos</li>
-<li><strong>Combina precisión y recall</strong></li>
-</ul>
-
-<pre><code class="language-python"># Versión simplificada de METEOR
-# La versión completa usa WordNet para sinónimos y stemming
-
-def meteor_score(candidate: str, reference: str, stemming: bool = False) -> float:
-    """
-    METEOR simplificado: combinación de precisión y recall con alignment.
-    """
-    cand_tokens = candidate.lower().split()
-    ref_tokens = reference.lower().split()
-    
-    # Alignment con tolerancia a reordenamiento
-    aligned = []
-    ref_used = [False] * len(ref_tokens)
-    cand_used = [False] * len(cand_tokens)
-    
-    # Unigrams alignment (greedy, mejor match primero)
-    for c_idx, c_tok in enumerate(cand_tokens):
-        best_match = None
-        best_r_idx = None
-        for r_idx, r_tok in enumerate(ref_tokens):
-            if not ref_used[r_idx]:
-                if c_tok == r_tok:  # Match exacto
-                    best_match = c_tok
-                    best_r_idx = r_idx
-                    break
-        if best_match:
-            aligned.append((c_tok, r_idx))
-            cand_used[c_idx] = True
-            ref_used[r_idx] = True
-    
-    # Calcular precisión y recall
-    matches = len(aligned)
-    precision = matches / len(cand_tokens) if cand_tokens else 0
-    recall = matches / len(ref_tokens) if ref_tokens else 0
-    
-    if precision + recall == 0:
-        return 0.0
-    
-    f_mean = 10 * precision * recall / (recall + 25 * precision)
-    
-    # Penalty por fragmentación (how jumbled the alignment is)
-    penalty = 0.5 * (len(aligned) / len(cand_used)) ** 3 if aligned else 0
-    
-    return f_mean * (1 - penalty)
-
-# Ejemplo
-print(f"METEOR: {meteor_score(cand, ref):.4f}")
-</code></pre>
-
-<h2>BERTScore: La Revolución Contextual</h2>
-
-<h3>Por Qué Es Diferente</h3>
-
-<p>BLEU y ROUGE usan coincidencia literal de tokens. <strong>BERTScore usa embeddings contextuales</strong> de BERT para capturar significado, no solo texto exacto. Esto resuelve el mayor problema de las métricas tradicionales.</p>
-
-<p>BERTScore calcula similaridad coseno entre cada token del candidato y su mejor matching token en la referencia:</p>
-
-<p><code>BERTScore = cos(embed(cand_i), embed(ref_j))</code></p>
-
-<pre><code class="language-python"># Versión conceptual de BERTScore
-# En producción usar: pip install bert-score
-
-import numpy as np
-
-def bert_score_simplified(candidate: str, reference: str, embeddings: dict) -> dict:
-    """
-    BERTScore simplificado usando embeddings pre-computados.
-    En producción, usaríamos BERT real para embeddings contextuales.
-    
-    Args:
-        candidate: texto generado
-        reference: texto de referencia
-        embeddings: dict de word -> embedding vector
-    """
-    cand_tokens = candidate.lower().split()
-    ref_tokens = reference.lower().split()
-    
-    # Obtener embeddings (silently skip OOV)
-    cand_embs = [embeddings.get(t) for t in cand_tokens if t in embeddings]
-    ref_embs = [embeddings.get(t) for t in ref_tokens if t in embeddings]
-    
-    if not cand_embs or not ref_embs:
-        return {"precision": 0.0, "recall": 0.0, "f1": 0.0}
-    
-    # Para cada token del candidato, encontrar el max similarity en referencia
-    def max_sim_cosine(emb, ref_embs):
-        max_sim = 0
-        for ref_emb in ref_embs:
-            sim = np.dot(emb, ref_emb) / (np.linalg.norm(emb) * np.linalg.norm(ref_emb) + 1e-9)
-            max_sim = max(max_sim, sim)
-        return max_sim
-    
-    # Precision: avg max similarity para tokens del candidato
-    precisions = [max_sim_cosine(e, ref_embs) for e in cand_embs]
-    precision = np.mean(precisions)
-    
-    # Recall: avg max similarity para tokens de la referencia
-    recalls = [max_sim_cosine(e, cand_embs) for e in ref_embs]
-    recall = np.mean(recalls)
-    
-    f1 = 2 * precision * recall / (precision + recall + 1e-9)
-    
-    return {"precision": precision, "recall": recall, "f1": f1}
-
-# Ejemplo con embeddings dummy (en producción usar BERT real)
-# Los vectores deben ser pre-entrenados y contextualizados
-dummy_embeddings = {
-    "el": np.array([0.1, 0.2, 0.3]),
-    "gato": np.array([0.4, 0.5, 0.6]),
-    "está": np.array([0.7, 0.8, 0.9]),
-    "sentado": np.array([0.2, 0.3, 0.4]),
-    "sobre": np.array([0.5, 0.6, 0.7]),
-    "la": np.array([0.8, 0.9, 0.1]),
-    "mesa": np.array([0.3, 0.4, 0.5]),
-    "en": np.array([0.6, 0.7, 0.8]),
-}
-
-ref = "El gato está sentado sobre la mesa"
-cand = "El gato está en la mesa"
-
-result = bert_score_simplified(cand, ref, dummy_embeddings)
-print(f"BERTScore (simplified): {result}")
-</code></pre>
-
-<h3>Instalación Real de BERTScore</h3>
-
-<pre><code class="language-bash"># Instalar bert-score
-pip install bert-score
-
-# Uso en Python
-from bert_score import score
-
-candidates = ["El gato está en la mesa"]
-references = ["El gato está sentado sobre la mesa"]
-
-P, R, F1 = score(candidates, references, lang="es", verbose=True)
-print(f"BERTScore F1: {F1.mean():.4f}")
-</code></pre>
-
-<h2>Evaluation Framework Completo</h2>
-
-<p>Ahora que conoces las métricas principales, vamos a construir un <strong>evaluation framework</strong> que combine todas ellas y sea fácil de extender.</p>
-
-<pre><code class="language-python">from dataclasses import dataclass, field
-from typing import List, Dict, Callable, Optional
-import json
-
-@dataclass
-class EvaluationResult:
-    """Resultado de una evaluación individual."""
-    metric_name: str
-    score: float
-    details: Optional[dict] = None
-
-@dataclass
-class EvaluationReport:
-    """Reporte completo de evaluación de un modelo."""
-    model_name: str
-    timestamp: str
-    results: List[EvaluationResult] = field(default_factory=list)
-    
-    def get_metric(self, name: str) -> Optional[float]:
-        for r in self.results:
-            if r.metric_name == name:
-                return r.score
-        return None
-    
-    def summary(self) -> dict:
-        return {r.metric_name: r.score for r in self.results}
-
-class EvaluationFramework:
-    """
-    Framework completo para evaluar outputs de LLMs.
-    Combina múltiples métricas y permite extensión fácil.
-    """
-    
-    def __init__(self, name: str = "default"):
-        self.name = name
-        self.metrics: Dict[str, Callable] = {}
-        self._register_default_metrics()
-    
-    def _register_default_metrics(self):
-        """Registra las métricas por defecto."""
-        self.register_metric("bleu", lambda c, r: bleu_score(c, r))
-        self.register_metric("rouge_1", lambda c, r: rouge_n(c, r, 1))
-        self.register_metric("rouge_2", lambda c, r: rouge_n(c, r, 2))
-        self.register_metric("rouge_l", lambda c, r: rouge_l(c, r))
-        self.register_metric("meteor", lambda c, r: meteor_score(c, r))
-    
-    def register_metric(self, name: str, fn: Callable[[str, str], float]):
-        """Registra una nueva métrica al framework."""
-        self.metrics[name] = fn
-    
-    def evaluate(
-        self,
-        candidate: str,
-        reference: str,
-        model_name: str = "model"
-    ) -> EvaluationReport:
-        """Evalúa un candidato contra una referencia con todas las métricas."""
-        from datetime import datetime
-        
-        results = []
-        for metric_name, metric_fn in self.metrics.items():
-            try:
-                score = metric_fn(candidate, reference)
-                results.append(EvaluationResult(
-                    metric_name=metric_name,
-                    score=round(score, 4)
-                ))
-            except Exception as e:
-                results.append(EvaluationResult(
-                    metric_name=metric_name,
-                    score=0.0,
-                    details={"error": str(e)}
-                ))
-        
-        return EvaluationReport(
-            model_name=model_name,
-            timestamp=datetime.now().isoformat(),
-            results=results
+    def __init__(self, in_channels, out_channels, kernel_size, stride=1, padding=1):
+        super().__init__()
+        self.conv = nn.Conv3d(
+            in_channels,
+            out_channels,
+            kernel_size=(kernel_size, kernel_size, kernel_size),
+            stride=(stride, stride, stride),
+            padding=(padding, padding, padding)
         )
+        self.bn = nn.BatchNorm3d(out_channels)
+        self.relu = nn.ReLU()
     
-    def evaluate_dataset(
-        self,
-        dataset: List[Dict[str, str]],
-        model_fn: Callable[[str], str],
-        model_name: str = "model"
-    ) -> Dict[str, float]:
-        """
-        Evalúa un modelo sobre un dataset completo.
-        Promedia los scores de todas las métricas.
-        """
-        all_scores: Dict[str, List[float]] = {}
+    def forward(self, x):
+        return self.relu(self.bn(self.conv(x)))
+
+class VideoCNN(nn.Module):
+    """CNN 3D para clasificacion de video."""
+    
+    def __init__(self, num_classes):
+        super().__init__()
         
-        for item in dataset:
-            candidate = model_fn(item["input"])
-            reference = item["reference"]
+        # Early layers
+        self.conv1 = Conv3DBlock(3, 64, kernel_size=7, stride=2, padding=3)
+        self.pool1 = nn.MaxPool3d(kernel_size=(1, 2, 2), stride=(1, 2, 2))
+        
+        # Residual blocks
+        self.conv2 = self._make_layer(64, 128, 3)
+        self.pool2 = nn.MaxPool3d(kernel_size=(2, 2, 2), stride=(2, 2, 2))
+        
+        self.conv3 = self._make_layer(128, 256, 3)
+        self.conv4 = self._make_layer(256, 512, 3)
+        
+        # Global pooling y clasificacion
+        self.global_pool = nn.AdaptiveAvgPool3d((1, 1, 1))
+        self.fc = nn.Linear(512, num_classes)
+    
+    def _make_layer(self, in_channels, out_channels, num_blocks):
+        layers = []
+        layers.append(Conv3DBlock(in_channels, out_channels, kernel_size=3))
+        for _ in range(num_blocks - 1):
+            layers.append(Conv3DBlock(out_channels, out_channels, kernel_size=3))
+        return nn.Sequential(*layers)
+    
+    def forward(self, x):
+        # x shape: (batch, channels, frames, height, width)
+        x = self.pool1(self.conv1(x))
+        x = self.pool2(self.conv2(x))
+        x = self.conv3(x)
+        x = self.conv4(x)
+        x = self.global_pool(x)
+        x = x.view(x.size(0), -1)
+        return self.fc(x)
+
+# Input: (batch, 3, 16, 224, 224) - 16 frames de 224x224
+# Output: (batch, num_classes)
+</code></pre>
+
+<h2>C3D: The Classic</h2>
+
+<p>El paper "Learning Spatiotemporal Features with 3D Convolutional Networks" (Tran et al., 2014) introdujo C3D, que uso 3D convoluciones para aprender features espaciotemporales.</p>
+
+<p>La ventaja de C3D es que las convoluciones 3D capturan naturalmente la informacion de movimiento porque procesan volumenes de video directamente.</p>
+
+<pre><code class="language-python">class C3D(nn.Module):
+    """C3D Network - el clasico para video."""
+    
+    def __init__(self, num_classes):
+        super().__init__()
+        
+        self.conv1 = nn.Conv3d(3, 64, kernel_size=3, padding=1)
+        self.pool1 = nn.MaxPool3d(kernel_size=(2, 2, 2), stride=(2, 2, 2))
+        
+        self.conv2 = nn.Conv3d(64, 128, kernel_size=3, padding=1)
+        self.pool2 = nn.MaxPool3d(kernel_size=(2, 2, 2), stride=(2, 2, 2))
+        
+        self.conv3a = nn.Conv3d(128, 256, kernel_size=3, padding=1)
+        self.conv3b = nn.Conv3d(256, 256, kernel_size=3, padding=1)
+        self.pool3 = nn.MaxPool3d(kernel_size=(2, 2, 2), stride=(2, 2, 2))
+        
+        self.conv4a = nn.Conv3d(256, 512, kernel_size=3, padding=1)
+        self.conv4b = nn.Conv3d(512, 512, kernel_size=3, padding=1)
+        self.pool4 = nn.MaxPool3d(kernel_size=(2, 2, 2), stride=(2, 2, 2))
+        
+        self.conv5a = nn.Conv3d(512, 512, kernel_size=3, padding=1)
+        self.conv5b = nn.Conv3d(512, 512, kernel_size=3, padding=1)
+        self.pool5 = nn.MaxPool3d(kernel_size=(2, 2, 2), stride=(2, 2, 2))
+        
+        self.fc6 = nn.Linear(8192, 4096)
+        self.fc7 = nn.Linear(4096, num_classes)
+        
+        self.relu = nn.ReLU()
+        self.dropout = nn.Dropout(0.5)
+        
+    def forward(self, x):
+        x = self.relu(self.conv1(x))
+        x = self.pool1(x)
+        
+        x = self.relu(self.conv2(x))
+        x = self.pool2(x)
+        
+        x = self.relu(self.conv3a(x))
+        x = self.relu(self.conv3b(x))
+        x = self.pool3(x)
+        
+        x = self.relu(self.conv4a(x))
+        x = self.relu(self.conv4b(x))
+        x = self.pool4(x)
+        
+        x = self.relu(self.conv5a(x))
+        x = self.relu(self.conv5b(x))
+        x = self.pool5(x)
+        
+        x = x.view(x.size(0), -1)
+        x = self.dropout(x)
+        x = self.relu(self.fc6(x))
+        x = self.dropout(x)
+        x = self.fc7(x)
+        
+        return x
+</code></pre>
+
+<h2>I3D: Inflating 2D to 3D</h2>
+
+<p>I3D (Inflated 3D) aprovecha modelos de imagen pre-entrenados "inflando" los pesos 2D a 3D:</p>
+
+<p><code>W_3D = W_2D expanded along time dimension</code></p>
+
+<pre><code class="language-python">def inflate_weights(weights_2d, kernel_size=7):
+    """
+    Infla pesos 2D a 3D repitiendo a lo largo del eje temporal.
+    """
+    # weights_2d shape: (out_channels, in_channels, H, W)
+    # output shape: (out_channels, in_channels, T, H, W)
+    weights_2d = weights_2d.unsqueeze(2)  # (out, in, 1, H, W)
+    weights_3d = weights_2d.repeat(1, 1, kernel_size, 1, 1)  # (out, in, T, H, W)
+    weights_3d = weights_3d / kernel_size  # Normalize
+    return weights_3d
+
+class I3D(nn.Module):
+    """Inflated 3D ConvNet - usa pretrained 2D features."""
+    
+    def __init__(self, in_channels=3, num_classes=400):
+        super().__init__()
+        
+        # Usamos InceptionV1 preentrenado en ImageNet
+        self.features = nn.Sequential(
+            Conv3DBlock(3, 64, kernel_size=7, stride=2, padding=3),
+            nn.MaxPool3d(kernel_size=(2, 3, 3), stride=(2, 2, 2)),
             
-            report = self.evaluate(candidate, reference, model_name)
+            Conv3DBlock(64, 64, kernel_size=1),
+            Conv3DBlock(64, 192, kernel_size=3, padding=1),
+            nn.MaxPool3d(kernel_size=(2, 3, 3), stride=(2, 2, 2)),
             
-            for result in report.results:
-                if result.metric_name not in all_scores:
-                    all_scores[result.metric_name] = []
-                all_scores[result.metric_name].append(result.score)
+            # Inception modules...
+        )
         
-        # Promediar
-        return {name: sum(scores) / len(scores) for name, scores in all_scores.items()}
-
-# Ejemplo de uso completo
-def demo_evaluation_framework():
-    # Dataset de ejemplo
-    dataset = [
-        {
-            "input": "¿Cuál es la capital de Francia?",
-            "reference": "La capital de Francia es París."
-        },
-        {
-            "input": "Explica la fotosíntesis",
-            "reference": "La fotosíntesis es el proceso por el cual las plantas convierten luz solar en energía."
-        },
-    ]
-    
-    # Modelo a evaluar (mock)
-    def my_model(prompt):
-        if "Francia" in prompt:
-            return "París es la capital de Francia."
-        if "fotosíntesis" in prompt:
-            return "Las plantas usan luz solar para crear energía."
-        return "No sé."
-    
-    # Framework
-    framework = EvaluationFramework("mi-framework")
-    
-    # Agregar métrica custom si quieres
-    def custom_accuracy(pred: str, ref: str) -> float:
-        """Métrica simple: 1.0 si el output contiene la info clave de la ref."""
-        ref_lower = ref.lower()
-        # Extraer "palabras de contenido" (más de 4 chars)
-        content_words = [w for w in ref_lower.split() if len(w) > 4]
-        matches = sum(1 for w in content_words if w in pred.lower())
-        return matches / len(content_words) if content_words else 0.0
-    
-    framework.register_metric("content_coverage", custom_accuracy)
-    
-    # Evaluar dataset completo
-    avg_scores = framework.evaluate_dataset(dataset, my_model)
-    
-    print("=== Resultados Promedio ===")
-    for metric, score in avg_scores.items():
-        print(f"{metric}: {score:.4f}")
-
-demo_evaluation_framework()
+        self.avg_pool = nn.AdaptiveAvgPool3d((None, 1, 1))
+        self.dropout = nn.Dropout(0.5)
+        self.fc = nn.Linear(1024, num_classes)
+        
+    def forward(self, x):
+        x = self.features(x)
+        x = self.avg_pool(x)
+        x = x.squeeze(3)
+        x = x.squeeze(3)
+        x = self.dropout(x)
+        x = self.fc(x)
+        return x
 </code></pre>
 
-<h2>Métricas Custom Para Tu Dominio</h2>
+<h2>Two-Stream Networks</h2>
 
-<p>A veces las métricas existentes no capturan lo que te importa. En esos casos, necesitas diseñar tu propia métrica. Aquí van ejemplos de métricas custom por dominio.</p>
+<p>Una arquitectura alternativa es usar <strong>dos flujos separados</strong>: uno para espacial (frame individual) y otro para temporal (optical flow):</p>
 
-<pre><code class="language-python"># ===========================================
-# MÉTRICAS CUSTOM POR DOMINIO
-# ===========================================
-
-class DomainSpecificMetrics:
-    """Colección de métricas específicas para diferentes dominios."""
+<pre><code class="language-python">class TwoStreamNetwork(nn.Module):
+    """Two-Stream Network para video."""
     
-    @staticmethod
-    def code_execution_accuracy(code_output: str, expected_output: str) -> float:
-        """
-        Para tareas de generación de código:
-        verifica que el output contiene el resultado esperado.
-        """
-        return 1.0 if expected_output in code_output else 0.0
-    
-    @staticmethod
-    def factual_consistency_ner(prediction: str, reference: str) -> float:
-        """
-        Para generación factual:
-        extrae Named Entities y verifica que coincidan.
-        """
-        # En producción usar spaCy o similar para NER
-        def extract_mock_entities(text):
-            # Mock NER - solo para demostración
-            words = text.split()
-            return set(w for w in words if w[0].isupper() and len(w) > 2)
+    def __init__(self, num_classes):
+        super().__init__()
         
-        pred_ents = extract_mock_entities(prediction)
-        ref_ents = extract_mock_entities(reference)
+        # Stream espacial (imagen RGB)
+        self.spatial_stream = nn.Sequential(
+            nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3),
+            nn.BatchNorm2d(64),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=3, stride=2),
+            # ... mas capas
+        )
         
-        if not ref_ents:
-            return 1.0
+        # Stream temporal (optical flow)
+        self.temporal_stream = nn.Sequential(
+            nn.Conv2d(2, 64, kernel_size=7, stride=2, padding=3),  # 2 canales para flow
+            nn.BatchNorm2d(64),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=3, stride=2),
+            # ... mas capas
+        )
         
-        return len(pred_ents & ref_ents) / len(ref_ents)
-    
-    @staticmethod
-    def response_length_score(response: str, min_len: int = 50, max_len: int = 500) -> float:
-        """
-        Para chat: penaliza respuestas demasiado cortas o largas.
-        """
-        length = len(response.split())
+        # Fusion
+        self.fc = nn.Linear(2048 * 2, num_classes)
         
-        if length < min_len:
-            return length / min_len  # 0.0 a 1.0
-        elif length > max_len:
-            return max(0, 1 - (length - max_len) / max_len)
-        else:
-            return 1.0
-    
-    @staticmethod
-    def safety_score(response: str, forbidden_patterns: List[str]) -> float:
-        """
-        Para safety: verifica que no contenga patrones prohibidos.
-        """
-        response_lower = response.lower()
-        violations = sum(1 for pattern in forbidden_patterns if pattern.lower() in response_lower)
+    def forward(self, frames, optical_flow):
+        # frames: (B, 3, H, W) - un solo frame o promedio
+        # optical_flow: (B, 2, H, W) - optica flow apilado
         
-        return max(0, 1 - violations * 0.25)  # Cada violación resta 0.25
-    
-    @staticmethod
-    def tone_consistency(responses: List[str], target_tone: str = "professional") -> float:
-        """
-        Para consistencia de tono en multi-turn:
-        verifica que todas las respuestas tengan el mismo tono.
-        """
-        # En producción: usar clasificador de tono entrenado
-        # Mock: asumimos todas en el mismo tono si no hay markers de cambio
-        tone_markers = {
-            "professional": ["cordialmente", "atentamente", "es un placer"],
-            "casual": ["che", ["qué onda", "genial", "bueno"],
-        }
+        spatial_out = self.spatial_stream(frames)
+        temporal_out = self.temporal_stream(optical_flow)
         
-        markers = tone_markers.get(target_tone, [])
-        consistent_count = sum(1 for r in responses if any(m in r.lower() for m in markers))
-        
-        return consistent_count / len(responses) if responses else 0.0
+        # Concatenar y clasificar
+        combined = torch.cat([spatial_out, temporal_out], dim=1)
+        return self.fc(combined)
 
-# Ejemplo de uso
-metrics = DomainSpecificMetrics()
-
-print(f"Code accuracy: {metrics.code_execution_accuracy('Output: 42', '42')}")
-print(f"Factual consistency: {metrics.factual_consistency_ner('Paris is capital', 'Paris is capital of France')}")
-print(f"Length score: {metrics.response_length_score('Short')}")
-print(f"Safety score: {metrics.safety_score('Hello world', ['hack', 'exploit'])}")
-</code></pre>
-
-<h2>Los 3 Errores Comunes (y Sus Soluciones)</h2>
-
-<h3>Error 1: Confiar Solo en Una Métrica</h3>
-
-<p><strong>El problema:</strong> "Nuestro modelo tiene BLEU 0.85, está excelente." No. BLEU alto no garantiza calidad. Puedes tener BLEU perfecto con un texto sin sentido y BLEU bajo con una respuesta perfecta pero expresada diferente.</p>
-
-<p><strong>La solución:</strong> Usa múltiples métricas que se complementen. Mínimo: BLEU + ROUGE + una métrica de semantic similarity. Idealmente: un framework como el que construimos arriba con al menos 5 métricas de categorías distintas.</p>
-
-<pre><code class="language-python">def comprehensive_evaluation(candidate: str, reference: str) -> dict:
+def compute_optical_flow(video_frames):
     """
-    Evaluación comprehensiva que NO depende de una sola métrica.
+    Calcula optical flow entre frames consecutivos.
+    Usa Gunnar Farneback algorithm.
     """
-    return {
-        "bleu": bleu_score(candidate, reference),
-        "rouge_1": rouge_n(candidate, reference, 1),
-        "rouge_2": rouge_n(candidate, reference, 2),
-        "rouge_l": rouge_l(candidate, reference),
-        "meteor": meteor_score(candidate, reference),
-        # NO BERTScore aquí porque necesitamos embeddings reales
-        # pero las demás son computables sin modelo externo
-    }
+    import cv2
+    
+    flows = []
+    for i in range(len(video_frames) - 1):
+        frame1 = cv2.cvtColor(video_frames[i], cv2.COLOR_RGB2GRAY)
+        frame2 = cv2.cvtColor(video_frames[i+1], cv2.COLOR_RGB2GRAY)
+        
+        flow = cv2.calcOpticalFlowFarneback(
+            frame1, frame2,
+            None,
+            0.5, 3, 15, 3, 5, 1.2, 0
+        )
+        flows.append(flow)
+    
+    return np.stack(flows)
 </code></pre>
 
-<h3>Error 2: No Entender las Limitaciones de las Métricas Automáticas</h3>
+<h2>LSTM para Secuencias de Video</h2>
 
-<p><strong>El problema:</strong> Usas BERTScore y asumes que captura todo. No captura. BERTScore no mide si la información es verdadera, solo si es similar contextualment. Un modelo que genera tonterías coherentes tendrá BERTScore alto.</p>
+<p>Otra aproximacion es usar CNNs para extraer features por frame y luego usar <strong>LSTMs</strong> para modelar la dependencia temporal:</p>
 
-<p><strong>La solución:</strong> Entiende qué mide cada métrica y para qué NO sirve:</p>
+<pre><code class="language-python">class CNN_LSTM(nn.Module):
+    """CNN + LSTM para video classification."""
+    
+    def __init__(self, cnn_backbone, hidden_size=512, num_layers=2, num_classes=400):
+        super().__init__()
+        
+        # CNN pre-entrenada para extraer features
+        self.cnn = cnn_backbone
+        self.feature_dim = self.cnn.output_dim
+        
+        # LSTM para dependencia temporal
+        self.lstm = nn.LSTM(
+            input_size=self.feature_dim,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            batch_first=True,
+            dropout=0.5,
+            bidirectional=True
+        )
+        
+        # Clasificador
+        self.fc = nn.Linear(hidden_size * 2, num_classes)  # *2 por bidirectional
+        
+    def forward(self, x):
+        # x: (batch, frames, channels, height, width)
+        batch_size, num_frames, C, H, W = x.size()
+        
+        # Procesar cada frame con CNN
+        x = x.view(batch_size * num_frames, C, H, W)
+        features = self.cnn(x)  # (batch*frames, feature_dim)
+        features = features.view(batch_size, num_frames, -1)  # (batch, frames, feature_dim)
+        
+        # LSTM sobre la secuencia
+        lstm_out, (h_n, c_n) = self.lstm(features)
+        
+        # Usar el ultimo hidden state
+        final_hidden = h_n[-1]  # (batch, hidden_size)
+        
+        # Clasificar
+        return self.fc(final_hidden)
+
+class AttentionLSTM(nn.Module):
+    """LSTM con attention para video."""
+    
+    def __init__(self, input_size, hidden_size, num_classes):
+        super().__init__()
+        
+        self.lstm = nn.LSTM(input_size, hidden_size, batch_first=True, bidirectional=True)
+        
+        # Attention mechanism
+        self.attention = nn.Sequential(
+            nn.Linear(hidden_size * 2, hidden_size),
+            nn.Tanh(),
+            nn.Linear(hidden_size, 1)
+        )
+        
+        self.fc = nn.Linear(hidden_size * 2, num_classes)
+    
+    def forward(self, x):
+        # x: (batch, frames, features)
+        
+        lstm_out, _ = self.lstm(x)  # (batch, frames, hidden*2)
+        
+        # Calculate attention weights
+        attn_weights = self.attention(lstm_out)  # (batch, frames, 1)
+        attn_weights = torch.softmax(attn_weights, dim=1)
+        
+        # Weighted sum
+        context = torch.sum(attn_weights * lstm_out, dim=1)  # (batch, hidden*2)
+        
+        return self.fc(context)
+</code></pre>
+
+<h2>Video Transformers</h2>
+
+<p>Similar a como los transformers revolucionaron NLP, ahora estan revolucionando video:</p>
+
+<pre><code class="language-python">class VideoTransformer(nn.Module):
+    """Transformer para video sin CNN backbone."""
+    
+    def __init__(self, num_frames, patch_size=16, hidden_size=768, num_heads=12, num_layers=12, num_classes=400):
+        super().__init__()
+        
+        self.num_frames = num_frames
+        self.patch_size = patch_size
+        self.hidden_size = hidden_size
+        
+        # Patch embedding (divide video en patches y aplana)
+        # Asume video de forma (C, T, H, W)
+        self.patch_embed = nn.Conv3d(
+            3, hidden_size,
+            kernel_size=(patch_size, patch_size, patch_size),
+            stride=(patch_size, patch_size, patch_size)
+        )
+        
+        # CLS token
+        self.cls_token = nn.Parameter(torch.randn(1, 1, hidden_size))
+        
+        # Positional embedding
+        self.pos_embed = nn.Parameter(torch.randn(1, num_frames + 1, hidden_size))
+        
+        # Transformer encoder
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=hidden_size,
+            nhead=num_heads,
+            dim_feedforward=hidden_size * 4,
+            dropout=0.1,
+            batch_first=True
+        )
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers)
+        
+        # Classification head
+        self.fc = nn.Linear(hidden_size, num_classes)
+        
+    def forward(self, x):
+        # x: (batch, channels, frames, height, width)
+        B = x.size(0)
+        
+        # Patch embedding
+        x = self.patch_embed(x)  # (B, hidden, T', H', W')
+        x = x.flatten(2).transpose(1, 2)  # (B, T'*H'*W', hidden)
+        
+        # Add CLS token
+        cls_tokens = self.cls_token.expand(B, -1, -1)
+        x = torch.cat([cls_tokens, x], dim=1)
+        
+        # Add positional embedding
+        x = x + self.pos_embed
+        
+        # Transformer
+        x = self.transformer(x)
+        
+        # Use CLS token for classification
+        cls_output = x[:, 0]
+        
+        return self.fc(cls_output)
+
+class Timesformer(nn.Module):
+    """TimeSformer: Transformer espacio-temporal para video."""
+    
+    def __init__(self, img_size=224, num_classes=400, num_frames=8):
+        super().__init__()
+        
+        self.num_frames = num_frames
+        self.patch_size = 16
+        hidden_size = 768
+        
+        # Space-time attention分开
+        self.space_attention = nn.MultiheadAttention(hidden_size, 12, batch_first=True)
+        self.time_attention = nn.MultiheadAttention(hidden_size, 12, batch_first=True)
+        
+        # Patch embedding
+        self.patch_embed = nn.Conv2d(3, hidden_size, kernel_size=patch_size, stride=patch_size)
+        
+        # Positional embeddings
+        self.space_pos_embed = nn.Parameter(torch.randn(1, (img_size // 16) ** 2, hidden_size))
+        self.time_pos_embed = nn.Parameter(torch.randn(1, num_frames, hidden_size))
+        
+        # ... transformer layers ...
+        
+    def forward(self, x):
+        # x: (B, T, C, H, W)
+        B, T = x.size(0), x.size(1)
+        
+        # Procesar frames independientemente primero
+        x = x.view(B * T, C, H, W)
+        x = self.patch_embed(x)  # (B*T, num_patches, hidden)
+        
+        # D-T (Divided Space-Time) attention
+        # Primero attention espacial
+        x = x + self.space_pos_embed
+        x = self.space_attention(x, x, x)[0]
+        
+        # Luego attention temporal
+        x = x.view(B, T, -1) + self.time_pos_embed
+        x = x.view(B * T, -1, self.hidden_size)
+        x = self.time_attention(x, x, x)[0]
+        
+        # Pooling y classification
+        x = x.mean(dim=0)
+        return self.fc(x)
+</code></pre>
+
+<h2>Optical Flow: Capturando Movimiento</h2>
+
+<p>El <strong>optical flow</strong> es fundamental para entender video. Representa el movimiento aparente entre frames:</p>
+
+<p><code>I(x, y, t) = I(x + dx, y + dy, t + dt)</code></p>
+
+<p>El algoritmo de Horn-Schunck resuelve:</p>
+
+<p><code>E = (I_x u + I_y v + I_t)^2 + alpha * (||nabla u||^2 + ||nabla v||^2)</code></p>
+
+<pre><code class="language-python">def horn_schunck_flow(image1, image2, alpha=1.0, iterations=100):
+    """
+    Calcula optical flow usando el metodo de Horn-Schunck.
+    """
+    # Calcular gradientes
+    Ix = (image1[:, :, 1:] + image2[:, :, 1:]) / 2
+    Iy = (image1[:, 1:, :] + image2[:, 1:, :]) / 2
+    It = image2 - image1
+    
+    # Inicializar u, v con ceros
+    u = np.zeros_like(image1)
+    v = np.zeros_like(image1)
+    
+    # Iterar
+    for _ in range(iterations):
+        # Promedio local de u y v
+        u_avg = filter2d(u)  # Convolucion con kernel 3x3
+        v_avg = filter2d(v)
+        
+        # Actualizar
+        denominator = Ix**2 + Iy**2 + alpha**2
+        u = u_avg - Ix * (Ix * u_avg + Iy * v_avg + It) / denominator
+        v = v_avg - Iy * (Ix * u_avg + Iy * v_avg + It) / denominator
+    
+    return u, v
+
+def filter2d(image):
+    """Filtro de promedio 3x3."""
+    kernel = np.array([[1, 2, 1], [2, 4, 2], [1, 2, 1]]) / 16.0
+    return convolve2d(image, kernel, mode='same')
+</code></pre>
+
+<h2>Datasets Para Video Understanding</h2>
 
 <ul>
-<li><strong>BLEU/ROUGE</strong>: no miden semantic, solo texto literal</li>
-<li><strong>BERTScore</strong>: no mide factualidad, solo similitud contextual</li>
-<li><strong>Todas</strong>: no miden si la información es verdadera</li>
+<li><strong>UCF-101</strong>: 13,000 videos de 101 acciones humanas</li>
+<li><strong>HMDB-51</strong>: 7,000 videos de 51 acciones</li>
+<li><strong>Kinetics-400/700</strong>: 650,000 videos de 400/700 acciones</li>
+<li><strong>Something-Something</strong>: Acciones que requieren razonamiento temporal</li>
+<li><strong>Charades</strong>: Video diario con descripciones</li>
 </ul>
 
-<blockquote>
-<p>"Métricas automáticas miden correlación con referencias humanas, no calidad intrínseca. Son un proxy, no la verdad."</p>
-</blockquote>
+<h2>Resumen</h2>
 
-<h3>Error 3: No Tener Evaluación Humana Para Complementar</h3>
-
-<p><strong>El problema:</strong> Confías 100% en métricas automatizadas y te sorprendes cuando usuarios reportan que el modelo dice puras tonterías con BERTScore 0.9.</p>
-
-<p><strong>La solución:</strong>: Implementa un pipeline de evaluación mixta:</p>
+<p>El Video Understanding es uno de los problemas mas desafiantes en computer vision porque requiere:</p>
 
 <ul>
-<li><strong>80% de casos</strong>: métricas automatizadas (rápido, barato)</li>
-<li><strong>20% de casos</strong>: evaluación humana (Likert scales, A/B testing)</li>
-<li><strong>定期</strong>: calibración de métricas vs. juicios humanos</li>
+<li><strong>Capturar movimiento</strong>: optical flow, 3D convolutions</li>
+<li><strong>Modelar temporalidad</strong>: LSTMs, Transformers</li>
+<li><strong>Combinar espacial y temporal</strong>: two-stream networks, I3D</li>
+<li><strong>Escala computacional</strong>: videos son enormes comparados con imagenes</li>
 </ul>
 
-<pre><code class="language-python">class HumanEvaluationSampler:
-    """
-    Sistema para muestrear casos para evaluación humana.
-    """
-    
-    def __init__(self, automation_threshold: float = 0.85):
-        self.automation_threshold = automation_threshold
-    
-    def should_human_review(self, metrics: dict) -> bool:
-        """
-        Decide si este caso necesita revisión humana.
-        Si todas las métricas automatizadas están muy altas o muy bajas,
-        lo automatizamos. Los casos dudosos van a humano.
-        """
-        scores = list(metrics.values())
-        avg_score = sum(scores) / len(scores)
-        
-        # Si está en zona gris (0.3 a 0.7), necesita humano
-        if 0.3 <= avg_score <= 0.7:
-            return True
-        
-        # Si todas las métricas concordar (varianza baja), automatizable
-        variance = sum((s - avg_score) ** 2 for s in scores) / len(scores)
-        if variance < 0.01:  # Métricas muy alineadas
-            return False
-        
-        # Alta varianza entre métricas = necesita revisión humana
-        return True
-    
-    def sample_for_calibration(
-        self, 
-        dataset_size: int, 
-        calibration_ratio: float = 0.1
-    ) -> int:
-        """
-        Calcula cuántos casos necesitan calibración humana periódica.
-        """
-        return max(1, int(dataset_size * calibration_ratio))
-</code></pre>
+<p>Las arquitecturas modernas como TimeSformer y Video Transformers estan pushing the boundaries, pero el field sigue siendo muy activo.</p>
 
-<h2>Matemáticas de las Métricas</h2>
-
-<h3>La Fórmula de BLEU en Detalle</h3>
-
-<p>BLEU se define como:</p>
-
-<p><code>BLEU = BP · exp(Σ w_n · log p_n)</code></p>
-
-<p>Donde:</p>
-<ul>
-<li><code>BP</code> = Brevity Penalty</li>
-<li><code>w_n</code> = pesos (normalmente 0.25 para cada n-grama de 1 a 4)</li>
-<li><code>p_n</code> = precisión modificada para n-gramas</li>
-</ul>
-
-<p>La Brevity Penalty previene preferir outputs cortos artificialmente:</p>
-
-<p><code>BP = 1 if c > r; else exp(1 - r/c)</code></p>
-
-<p>Donde <code>c</code> = longitud del candidato, <code>r</code> = longitud de referencia efectiva.</p>
-
-<h3>BERTScore y Similitud Coseno</h3>
-
-<p>BERTScore usa similitud coseno entre embeddings:</p>
-
-<p><code>cosine(A, B) = (A · B) / (||A|| · ||B||)</code></p>
-
-<p>Para cada token en el candidato, se encuentra el token en la referencia con máxima similitud:</p>
-
-<p><code>R = Σ max_sim(emb_cand[i], emb_ref) / Σ ||emb_ref||</code></p>
-
-<pre><code class="language-python">import numpy as np
-
-def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
-    """Similitud coseno entre dos vectores."""
-    return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-9)
-
-def bertscore_recall(embeddings_candidate: List[np.ndarray], 
-                      embeddings_reference: List[np.ndarray]) -> float:
-    """
-    Recall de BERTScore: qué tanto del reference está cubierto por candidate.
-    Para cada token de referencia, encuentra el token más similar en candidato.
-    """
-    recalls = []
-    for ref_emb in embeddings_reference:
-        similarities = [cosine_similarity(ref_emb, c_emb) for c_emb in embeddings_candidate]
-        recalls.append(max(similarities))
-    
-    return np.mean(recalls)
-</code></pre>
-
-<h2>Resumen y Cierre</h2>
-
-<p>Ahora tienes un arsenal completo para evaluar LLMs:</p>
-
-<ul>
-<li><strong>BLEU</strong>: bueno para traducción literal, no para semántica</li>
-<li><strong>ROUGE</strong>: mejor recall, útil para summarization</li>
-<li><strong>METEOR</strong>: más robusto que BLEU, usa sinónimos</li>
-<li><strong>BERTScore</strong>: el mejor para semantic similarity contextual</li>
-<li><strong>Custom metrics</strong>: diseña los tuyos para tu dominio específico</li>
-</ul>
-
-<p>Y recuerda: <strong>nunca confíes ciegamente en una métrica</strong>. Un buen evaluation framework combina múltiples métricas con evaluación humana periódica.</p>
-
-<p>Mañana en el día 285 seguimos con más. Hasta entonces, no te quedes con una sola métrica, mano.</p>
-
-<p><strong>#365DaysOfAI #LLMEvaluation #Metrics</strong></p>
+<p><strong>#365DaysOfAI #VideoUnderstanding #ComputerVision #DeepLearning</strong></p>
 </article>
 
   <script>
