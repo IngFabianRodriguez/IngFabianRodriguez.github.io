@@ -118,53 +118,343 @@ nav {
   </header>
 
   <article class="article-body">
-    <h1>SWE-Agent - Resolviendo Issues de GitHub Automaticamente</h1>
-<p>Hagale pues, parcero. Hoy es el Dia 354 y hablamos de SWE-Agent: resolviendo issues de GitHub automaticamente. Cafe.</p>
-<hr>
-<h2>🎯 SWE-Agent</h2>
-<p>SWE-Agent usa AI para resolver bugs automaticamente:</p>
-<ul>
-<li><strong>Issue analysis</strong>: Entiende el problema</li>
-<li><strong>Code search</strong>: Encuentra archivos relevantes</li>
-<li><strong>Fix generation</strong>: Propoe soluciones</li>
-<li><strong>PR creation</strong>: Crea pull request</li>
-</ul>
-<hr>
-<h2>📐 Agent Architecture</h2>
-<pre><code class="language-python"># SWE-Agent architecture
-SWE_AGENT_ARCH = {
-    "planner": "Breaks down issue into tasks",
-    "retriever": "Finds relevant code",
-    "editor": "Makes code changes",
-    "tester": "Runs tests to verify",
-    "submitter": "Creates PR if tests pass"
+<h2>🎯 Intro</h2>
+<p>Qué tal, parcero. Día 354 y hoy le metemos segunda velocidad al tema de ayer. Ayer cubrimos la teoría de scaling laws — hoy vamos a lo práctico: cómo usar esas leyes para tomar decisiones reales en entrenamiento de LLMs. Compute allocation, batch sizing, cómo planear antes de gastar millones. Vamos con todo.</p>
+
+<h2>📐 Compute Allocation Framework</h2>
+<p>La pregunta del millón: dado un compute budget, ¿cómo lo distribuyo entre parámetros, datos y arquitectura? La teoría de ayer nos da la base, pero la práctica requiere ajustes:</p>
+
+<pre><code class="language-python">class ComputeAllocator:
+    """
+    Framework para allocation óptima de compute en training de LLMs.
+    Basado en Hoffmann et al. 2022 (Chinchilla) con ajustes prácticos.
+    """
+    
+    def __init__(self, compute_budget_flops, model_architecture="decoder"):
+        self.C = compute_budget_flops
+        self.arch = model_architecture
+    
+    def chinchilla_optimal(self):
+        """Allocation óptima según Chinchilla (2022)."""
+        N = 1.07 * (self.C / 6) ** 0.48
+        D = 1.97 * (self.C / 6) ** 0.52
+        return {"parameters": int(N), "tokens": int(D), "D/N": D/N}
+    
+    def practical_allocation(self, overhead_factor=1.2):
+        """
+        Allocation práctica con overhead para:
+        - Eval, checkpointing, debugging
+        - Arquitectura específica (attention, embeddings)
+        """
+        opt = self.chinchilla_optimal()
+        
+        # Ajustar por overhead
+        effective_C = self.C / overhead_factor
+        
+        # Adjustments por arquitectura
+        N = 1.07 * (effective_C / 6) ** 0.48
+        D = 1.97 * (effective_C / 6) ** 0.52
+        
+        return {
+            "parameters": int(N),
+            "tokens": int(D),
+            "D/N": D/N,
+            "compute_used_flops": effective_C,
+            "overhead_flops": self.C - effective_C
+        }
+    
+    def scale_with_batch_size(self, target_micro_batch=1, grad_acc_steps=32):
+        """
+        Calcula batch size y steps dado el allocation.
+        
+        Args:
+            target_micro_batch: tokens por micro-batch por GPU
+            grad_acc_steps: gradient accumulation steps
+        
+        Returns:
+            Configuración de batch sizing
+        """
+        # Asume sequence length típica
+        SEQ_LEN = 2048
+        tokens_per_step = target_micro_batch * SEQ_LEN * grad_acc_steps
+        
+        return {
+            "micro_batch_size": target_micro_batch,
+            "grad_accumulation_steps": grad_acc_steps,
+            "tokens_per_step": tokens_per_step,
+            "total_steps": int(self.chinchilla_optimal()["tokens"] / tokens_per_step)
+        }
+
+# Ejemplo: Budget de 1e23 FLOPs (~$1B USD)
+allocator = ComputeAllocator(1e23)
+opt = allocator.chinchilla_optimal()
+print(f"Allocation Chinchilla para {1e23:.0e} FLOPs:")
+print(f"  Parámetros: {opt['parameters']/1e9:.1f}B")
+print(f"  Tokens: {opt['tokens']/1e12:.2f}T")
+print(f"  Ratio D/N: {opt['D/N']:.1f}")
+
+config = allocator.scale_with_batch_size(target_micro_batch=2, grad_acc_steps=64)
+print(f"\nConfig de training:")
+print(f"  Pasos totales: {config['total_steps']:,}")
+print(f"  Tokens/step: {config['tokens_per_step']:,}")</code></pre>
+
+<h2>🔬 Batch Sizing: El Arte de la Escalabilidad</h2>
+<p>El batch size afecta directamente la eficiencia del entrenamiento y la calidad del modelo. Hay un sweet spot entre throughput y convergencia:</p>
+
+<pre><code class="language-python"># Batch sizing para training eficiente
+import math
+
+def compute_batch_size(
+    num_gpus: int,
+    gpu_memory_gb: float = 80,  # H100
+    model_params: int = 70e9,
+    seq_len: int = 2048,
+    precision: str = "bf16"  # bf16 o fp32
+):
+    """
+    Calcula el máximo batch size posible dado hardware.
+    
+    Memoria approximate para modelo en BF16:
+    - Modelo: 2 bytes * params ( activations + weights )
+    - Optimizer states: 8 bytes * params (Adam)
+    - Gradients: 2 bytes * params
+    - activations: variable (sequence_length * batch * hidden)
+    """
+    
+    bytes_per_param = {"bf16": 2, "fp16": 2, "fp32": 4}[precision]
+    
+    # Memoria para modelo + optimizer + gradients
+    memory_model = 2 * bytes_per_param * model_params  # ~2.5* for model
+    memory_optimizer = 8 * model_params  # Adam estados
+    memory_grads = bytes_per_param * model_params
+    
+    # Memoria disponible por GPU
+    memory_per_gpu_gb = gpu_memory_gb * 0.85  # Leave headroom
+    memory_per_gpu_bytes = memory_per_gpu_gb * 1024**3
+    
+    # Calcular máxima cantidad de parámetros que caben en memoria
+    # Approximación: 20 bytes por parámetro para full training
+    effective_params_per_gpu = memory_per_gpu_bytes / 20
+    
+    # Batch size máximo por GPU (memoria activations)
+    # Aprox: hidden_dim * seq_len * batch * bytes ~ 10% de modelo
+    hidden_dim_approx = (model_params / 12) ** 0.5 * 4  # Est. embedding dim
+    memory_for_activations = memory_per_gpu_bytes * 0.3
+    max_batch_per_gpu = memory_for_activations / (hidden_dim_approx * seq_len * bytes_per_param)
+    
+    return {
+        "num_gpus": num_gpus,
+        "max_batch_total": int(max_batch_per_gpu * num_gpus),
+        "batch_per_gpu": int(max_batch_per_gpu),
+        "tokens_per_batch": int(max_batch_per_gpu * seq_len * num_gpus),
+        "memory_per_gpu_used_gb": memory_per_gpu_gb
+    }
+
+# H100 cluster de 64 GPUs
+config = compute_batch_size(num_gpus=64, model_params=70e9)
+print(f"Config para 70B modelo en 64x H100:")
+print(f"  Batch total: {config['max_batch_total']}")
+print(f"  Tokens/batch: {config['tokens_per_batch']:,}")</code></pre>
+
+<h2>📊 Data-to-Parameters Ratio: Más Allá de Chinchilla</h2>
+<p>El ratio D/N de Chinchilla (~20) es el punto de partida, pero la industria ha encontrado que en la práctica este ratio puede variar:</p>
+
+<pre><code class="language-python"># Análisis de ratios D/N en modelos reales
+
+MODELS_ANALYSIS = {
+    "Chinchilla (optimal)": {
+        "params": 70e9, "tokens": 1.4e12, "D/N": 20,
+        "note": "Paper original de DeepMind"
+    },
+    "GPT-3 (Kaplan era)": {
+        "params": 175e9, "tokens": 0.3e12, "D/N": 1.7,
+        "note": "Antes de Chinchilla, suboptimal"
+    },
+    "Llama 2": {
+        "params": 70e9, "tokens": 2.0e12, "D/N": 28.6,
+        "note": "Overchinchilla intencional"
+    },
+    "Llama 3 8B": {
+        "params": 8e9, "tokens": 15e12, "D/N": 1875,
+        "note": "Massive overtraining, aún controversial"
+    },
+    "Mistral 7B": {
+        "params": 7e9, "tokens": 0.008e12, "D/N": 1.1,
+        "note": " undertrained relative to chinchilla"
+    }
 }
 
-def resolve_issue(issue):
-    plan = planner.analyze(issue)
-    for task in plan:
-        code = retriever.find(task)
-        edit = editor.modify(code, task)
-        if not tester.verify(edit):
-            editor.rollback()
-    submitter.create_pr(edit)</code></pre>
-<hr>
-<h2>🚀 Limitations</h2>
-<pre><code class="language-python"># Donde SWE-Agent Struggle
-LIMITATIONS = [
-    "Complex architectural changes",
-    "Multi-file refactoring",
-    "Ambiguous requirements",
-    "Performance optimizations",
-    "Legacy code without tests"
-]</code></pre>
-<hr>
-<h2>⚠️ Errores Comunes</h2>
-<h3>Error 1: Automatic Merge</h3>
-<p><strong>El problema</strong>: Merge automatico sin review.</p>
-<p><strong>La solucion</strong>: Siempre review humano antes de merge.</p>
-<hr>
-<p><em>Eso es todo! Nos vemos en el Dia 355.</em></p>
+def evaluate_ratio(params, tokens):
+    """Evalúa si un modelo está bien balanceado."""
+    chinchilla_D = params * 20  # Lo que Chinchilla sugeriría
+    
+    if tokens > chinchilla_D * 1.5:
+        return {
+            "status": "OVERCHINCHILLA",
+            "ratio": tokens / params,
+            "verdict": "Tokens excesivos para los parámetros",
+            "compute_waste_pct": ((tokens - chinchilla_D) / tokens) * 100
+        }
+    elif tokens < chinchilla_D * 0.5:
+        return {
+            "status": "UNDERCHINCHILLA", 
+            "ratio": tokens / params,
+            "verdict": "Parámetros excesivos para los datos",
+            "compute_waste_pct": ((chinella_D - tokens) / chinchilla_D) * 100
+        }
+    else:
+        return {
+            "status": "OK",
+            "ratio": tokens / params,
+            "verdict": "Ratio dentro del rango óptimo",
+            "compute_waste_pct": 0
+        }
+
+# Evaluar Llama 3
+result = evaluate_ratio(8e9, 15e12)
+print(f"Llama 3 8B: {result}")</code></pre>
+
+<h2>⚠️ Los 3 Errores Comunes</h2>
+
+<h3>Error 1: Not Using Data-to-Parameters Ratio Correcto</h3>
+<p><strong>El problema</strong>: Entrenar con un ratio D/N muy bajo (modelo grande con pocos datos) o muy alto (datos excesivos para el tamaño del modelo). Ambos desperdician compute.</p>
+<p><strong>La solución</strong>: Calcula el ratio antes de empezar. Si D/N < 10 o D/N > 100, reconsidera tu diseño. El sweet spot está entre 15-30 para la mayoría de casos.</p>
+
+<pre><code class="language-python">def validate_design(params, tokens, compute_budget):
+    """
+    Valida que el diseño cumpla con scaling laws.
+    """
+    C = 6 * params * tokens
+    C_optimal = compute_budget
+    
+    # Check 1: Compute utilizado vs budget
+    compute_efficiency = C / C_optimal
+    
+    # Check 2: Ratio D/N
+    ratio = tokens / params
+    
+    # Check 3: Parámetros óptimos para compute
+    N_opt = 1.07 * (C_optimal / 6) ** 0.48
+    params_efficiency = params / N_opt
+    
+    issues = []
+    if compute_efficiency < 0.5:
+        issues.append(f"Compute desperdiciado: {compute_efficiency*100:.0f}%")
+    if ratio < 10:
+        issues.append(f"Ratio D/N bajo ({ratio:.1f}): posible undertraining")
+    if ratio > 100:
+        issues.append(f"Ratio D/N alto ({ratio:.1f}): posible overtraining")
+    if params_efficiency < 0.5 or params_efficiency > 2.0:
+        issues.append(f"Parámetros subóptimos para el compute")
+    
+    return {"valid": len(issues) == 0, "issues": issues}</code></pre>
+
+<h3>Error 2: Not Planning Ahead</h3>
+<p><strong>El problema</strong>: Empezar training sin planear los steps, el learning rate schedule, y el warmup. Esto resulta en training inestable o pérdida de compute.</p>
+<p><strong>La solución</strong>: Planifica el número de tokens por learning rate step antes de entrenar. Usa linear warmup + cosine decay.</p>
+
+<pre><code class="language-python">def plan_training_schedule(
+    total_tokens: int,
+    batch_size: int,
+    seq_len: int = 2048,
+    epochs: int = 1,
+    warmup_tokens_pct: float = 0.005,  # 0.5% para warmup
+    min_lr_ratio: float = 0.1  # 10% de LR max
+):
+    """
+    Planifica el learning rate schedule basado en tokens.
+    """
+    tokens_per_step = batch_size * seq_len
+    total_steps = total_tokens // tokens_per_step
+    
+    warmup_steps = int(total_steps * warmup_tokens_pct)
+    
+    # Cosine decay
+    decay_steps = total_steps - warmup_steps
+    
+    return {
+        "total_steps": total_steps,
+        "warmup_steps": warmup_steps,
+        "decay_steps": decay_steps,
+        "tokens_per_step": tokens_per_step,
+        "total_tokens_processed": total_steps * tokens_per_step,
+        "lr_schedule": {
+            "warmup": f"linear from 0 to LR_max in {warmup_steps} steps",
+            "decay": f"cosine from LR_max to {min_lr_ratio*100}% of LR_max"
+        }
+    }
+
+schedule = plan_training_schedule(
+    total_tokens=1.4e12,  # Chinchilla optimal para 70B
+    batch_size=2048,
+    seq_len=2048
+)
+print(f"Schedule para Chinchilla 70B:")
+print(f"  Total steps: {schedule['total_steps']:,}")
+print(f"  Warmup: {schedule['warmup_steps']:,} steps")
+print(f"  LR schedule: {schedule['lr_schedule']}")</code></pre>
+
+<h3>Error 3: Wasting Compute</h3>
+<p><strong>El problema</strong>: No monitorear el training, no hacer early stopping basado en loss de validación, no guardar checkpoints óptimos.</p>
+<p><strong>La solución</strong>: Implementa logging de compute por token, evalúa en holdout set regularmente, guarda checkpoints cada N tokens.</p>
+
+<pre><code class="language-python">class TrainingMonitor:
+    """
+    Monitor para trackear compute efficiency durante training.
+    """
+    
+    def __init__(self, eval_every_tokens=1e9):
+        self.eval_every = eval_every_tokens
+        self.tokens_seen = 0
+        self.best_val_loss = float('inf')
+        self.checkpoints = []
+    
+    def step(self, tokens_in_batch, val_loss=None):
+        self.tokens_seen += tokens_in_batch
+        
+        if self.tokens_seen % self.eval_every == 0:
+            # Evaluar y guardar si es mejor
+            if val_loss and val_loss < self.best_val_loss:
+                self.best_val_loss = val_loss
+                self.checkpoints.append({
+                    "tokens": self.tokens_seen,
+                    "val_loss": val_loss,
+                    "compute_used": self.tokens_seen * 6 * 70e9  # Asume 70B
+                })
+            
+            # Calcular compute efficiency
+            compute_per_token = 6 * 70e9  # FLOPs por token (70B modelo)
+            total_compute = self.tokens_seen * compute_per_token
+            
+            return {
+                "tokens": self.tokens_seen,
+                "val_loss": val_loss,
+                "compute_used_flops": total_compute,
+                "efficiency_vs_optimal": self.best_val_loss / val_loss if val_loss else 1.0
+            }
+    
+    def should_stop_early(self, patience=3):
+        """Check si debemos parar por falta de progreso."""
+        if len(self.checkpoints) < patience:
+            return False
+        
+        recent_losses = [c["val_loss"] for c in self.checkpoints[-patience:]]
+        return all(recent_losses[i] >= recent_losses[i-1] for i in range(1, len(recent_losses)))</code></pre>
+
+<h2>🎯 Resumen y Cierre Colombiano</h2>
+<p>Mira, parcero, lo que hablamos hoy es la diferencia entre entrenar un modelo a lo loco y hacerlo con inteligencia. Las scaling laws no son solo teoría — son herramientas prácticas que te salvan millones de dólares y semanas de GPU time.</p>
+
+<p>Recuerda:</p>
+<ul>
+<li>Usa el ratio D/N como tu primera verificación (idealmente entre 15-30)</li>
+<li>Planifica tu schedule de LR antes de empezar, no durante</li>
+<li>Monitorea compute efficiency y haz early stopping si el validation loss no mejora</li>
+<li>Guarda checkpoints cada cierto volumen de tokens, no solo al final</li>
+</ul>
+
+<p>El que sabe allocate compute correctamente va a ganar. Chingón.</p>
+
+<p><em>Eso es todo por el Día 354. Mañana continuamos con más del tema. ¡Nos vemos!</em></p>
   </article>
 
   <script>
