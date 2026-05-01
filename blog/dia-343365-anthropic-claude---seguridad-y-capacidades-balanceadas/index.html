@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="Anthropic Claude - Seguridad y Capacidades Balanceadas | #365DaysOfAI por Fabian Rodriguez">
-  <title>Anthropic Claude - Seguridad y Capacidades Balanceadas | #365DaysOfAI</title>
+  <meta name="description" content="LLM Latency Optimization — Lo que el 85% Ignora y el 15% Optimiza | #365DaysOfAI por Fabian Rodriguez">
+  <title>LLM Latency Optimization — Lo que el 85% Ignora y el 15% Optimiza | #365DaysOfAI</title>
   
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
@@ -110,69 +110,695 @@ nav {
 
   <header class="article-hero">
     <div class="day-badge">Dia 343 / 365 &nbsp;·&nbsp; #365DaysOfAI</div>
-    <h1 class="article-title">Anthropic Claude - Seguridad y Capacidades Balanceadas</h1>
+    <h1 class="article-title">LLM Latency Optimization — Lo que el 85% Ignora y el 15% Optimiza</h1>
     <div class="article-meta">
       <time class="article-date">09 de diciembre de 2026</time>
-      <div class="tags"><span class="tag">anthropic</span><span class="tag">claude</span><span class="tag">constitutional-ai</span><span class="tag">safety</span></div>
+      <div class="tags"><span class="tag">llm</span><span class="tag">latency</span><span class="tag">optimization</span><span class="tag">streaming</span></div>
     </div>
   </header>
 
   <article class="article-body">
-    <h1>Anthropic Claude - Seguridad y Capacidades Balanceadas</h1>
-<p>Hagale pues, parcero. Dia 343 y hoy hablamos de Anthropic Claude: seguridad y capacidades balanceadas. Dejala.</p>
+<h1>LLM Latency Optimization — Lo que el 85% Ignora y el 15% Optimiza</h1>
+<p>Hagale pues, parcero. Aquíandamos en el Día 343 con un tema que a más de uno le tiene locote: la **latencia en LLMs**. Enquanto uns ficam esperando 30 segundos por uma resposta, outros já estão recibiendo tokens em tempo real. ¿Cuál es la diferencia? Eso exactamente te voy a enseñar hoy. Ponte comodo que esto va con demos y código de verdad.</p>
 <hr>
-<h2>🎯 Anthropic Claude</h2>
-<p>Anthropic se diferencia por su enfoque en seguridad:</p>
+<h2>🎯 ¿Por qué la Latencia Mattera?</h2>
+<p>Antes de metele mano al código, entendamos por qué la latencia no es solo "velocidad". Es una variable crítica que determina:</p>
 <ul>
-<li><strong>Constitutional AI</strong>: Entrenamiento con principios eticos</li>
-<li><strong>Claude 3 Family</strong>: Opus, Sonnet, Haiku</li>
-<li><strong>Long context</strong>: 200K tokens de contexto</li>
-<li><strong>Vision</strong>: Procesa imagenes</li>
+<li><strong>User Experience</strong>: Tiempo de espera = percepción de calidad</li>
+<li><strong>Throughput del Sistema</strong>: Más latencia = menos requests por segundo</li>
+<li><strong>Costos de Infraestructura</strong>: Conexiones abiertas consumen recursos</li>
+<li><strong>Casos de Uso Real</strong>: Chatbots vs. agentes autónomos tienen requisitos distintos</li>
+</ul>
+<p>La fórmula fundamental del tiempo de respuesta total en un LLM es:</p>
+<p><strong>TTFT + TPOT × (n_output − 1) = Latencia Total</strong></p>
+<p>Donde:</p>
+<ul>
+<li><strong>TTFT</strong> (Time To First Token): Tiempo hasta el primer token — dominado por <em>prefilling</em></li>
+<li><strong>TPOT</strong> (Time Per Output Token): Tiempo por cada token subsiguiente — dominado por <em>decoding</em></li>
+<li><strong>n_output</strong>: Número de tokens en la respuesta</li>
 </ul>
 <hr>
-<h2>📐 Constitutional AI</h2>
-<pre><code class="language-python"># Constitutional AI approach
-CONSTITUTIONAL_AI = """
-1. Initial RLHF training con humanos
-2. Critica el modelo sus propias respuestas
-3. Revision contra principios (constitution)
-4. SRL (Superivised Reinforcement Learning)
-5. RLAIF (AI feedback adicional)
+<h2>📐 Prefilling vs. Decoding — La Matemática Clave</h2>
+<p>Durante el forward pass de un LLM, hay dos fases críticas:</p>
+<h3>Fase 1: Prefill (Processamiento del Prompt)</h3>
+<p>El prompt entero se procesa en paralelo. La complejidad computacional es:</p>
+<p><strong>O(prompt_length × d_model × n_layers)</strong></p>
+<p>Esta fase es computacionalmente intensiva pero altamente paralelizable. A mayor batch size, mejor utilización de GPU.</p>
+<h3>Fase 2: Decode (Generación Token por Token)</h3>
+<p>Cada nuevo token se genera autoregresivamente. La complejidad por step es:</p>
+<p><strong>O(1 × d_model × n_layers)</strong></p>
+<p>Pero hay una dependencia secuencial: no puedes generar el token 10 sin haber generado el 9. Esto es lo que hace que el decoding sea el bottleneck principal.</p>
+<pre><code class="language-python">"""
+LLM Latency Profiler — Mide y desglosa latencia de prefilling vs decoding
 """
+import time
+import asyncio
+from dataclasses import dataclass
+from typing import Optional, List, Dict
+from contextlib import asynccontextmanager
 
-# Los principios (simplified)
-PRINCIPLES = [
-    "Helpful, harmless, and honest",
-    "Do not provide harmful advice",
-    "Respect privacy and autonomy",
-    "Be transparent about limitations"
-]</code></pre>
+
+@dataclass
+class LatencyBreakdown:
+    """Desglose detallado de latencia"""
+    total_latency_ms: float
+    ttft_ms: float  # Time To First Token
+    tpot_ms: float  # Time Per Output Token
+    prefill_latency_ms: float
+    decode_latency_ms: float
+    num_tokens: int
+    prompt_tokens: int
+    
+    @property
+    def efficiency_score(self) -> float:
+        """Score de eficiencia: 1.0 = óptimo"""
+        theoretical_min = self.prefill_latency_ms + (self.tpot_ms * self.num_tokens)
+        return min(1.0, theoretical_min / self.total_latency_ms) if self.total_latency_ms > 0 else 0.0
+
+
+class LLMProfiler:
+    """Profiler para medir latencia de operaciones LLM"""
+    
+    def __init__(self, model_name: str = "gpt-4"):
+        self.model_name = model_name
+        self.history: List[LatencyBreakdown] = []
+    
+    def profile_request(
+        self,
+        prompt_tokens: int,
+        num_output_tokens: int,
+        prefill_time_ms: float,
+        decode_times_ms: List[float]
+    ) -> LatencyBreakdown:
+        """
+        Perfila un request individual
+        
+        Args:
+            prompt_tokens: Longitud del prompt en tokens
+            num_output_tokens: Número de tokens generados
+            prefill_time_ms: Tiempo de prefill en ms
+            decode_times_ms: Lista de tiempos por cada token generado
+        """
+        ttft = prefill_time_ms + decode_times_ms[0] if decode_times_ms else prefill_time_ms
+        tpot = sum(decode_times_ms) / len(decode_times_ms) if decode_times_ms else 0
+        decode_total = sum(decode_times_ms)
+        total = prefill_time_ms + decode_total
+        
+        breakdown = LatencyBreakdown(
+            total_latency_ms=total,
+            ttft_ms=ttft,
+            tpot_ms=tpot,
+            prefill_latency_ms=prefill_time_ms,
+            decode_latency_ms=decode_total,
+            num_tokens=num_output_tokens,
+            prompt_tokens=prompt_tokens
+        )
+        
+        self.history.append(breakdown)
+        return breakdown
+    
+    def get_bottleneck_analysis(self) -> Dict[str, float]:
+        """Analiza dónde está el bottleneck principal"""
+        if not self.history:
+            return {"bottleneck": "no_data", "ratio": 0.0}
+        
+        avg_prefill = sum(b.prefill_latency_ms for b in self.history) / len(self.history)
+        avg_decode = sum(b.decode_latency_ms for b in self.history) / len(self.history)
+        total = avg_prefill + avg_decode
+        
+        if total == 0:
+            return {"bottleneck": "no_data", "ratio": 0.0}
+        
+        prefill_ratio = avg_prefill / total
+        
+        return {
+            "avg_prefill_ms": avg_prefill,
+            "avg_decode_ms": avg_decode,
+            "prefill_ratio": prefill_ratio,
+            "bottleneck": "prefill" if prefill_ratio > 0.5 else "decode"
+        }
+
+
+# --- Demostración ---
+if __name__ == "__main__":
+    profiler = LLMProfiler("claude-3-opus")
+    
+    # Simular request típico
+    breakdown = profiler.profile_request(
+        prompt_tokens=500,
+        num_output_tokens=150,
+        prefill_time_ms=45.2,
+        decode_times_ms=[12.1, 11.8, 12.3, 11.9, 12.0] * 30  # ~150 tokens
+    )
+    
+    print(f"=== Perfil de Latencia ===")
+    print(f"TTFT: {breakdown.ttft_ms:.1f}ms")
+    print(f"TPOT: {breakdown.tpot_ms:.1f}ms")
+    print(f"Prefill: {breakdown.prefill_latency_ms:.1f}ms ({breakdown.prefill_latency_ms/breakdown.total_latency_ms*100:.1f}%)")
+    print(f"Decode: {breakdown.decode_latency_ms:.1f}ms ({breakdown.decode_latency_ms/breakdown.total_latency_ms*100:.1f}%)")
+    print(f"Total: {breakdown.total_latency_ms:.1f}ms")
+    print(f"Eficiencia: {breakdown.efficiency_score:.2f}")
+    
+    bottleneck = profiler.get_bottleneck_analysis()
+    print(f"\n=== Análisis de Bottleneck ===")
+    print(f"Bottleneck principal: {bottleneck['bottleneck']}")
+    print(f"Ratio prefill/total: {bottleneck['prefill_ratio']:.2%}")</code></pre>
 <hr>
-<h2>🚀 Claude 3 Comparison</h2>
-<pre><code class="language-python">CLAUDE3_MODELS = {
-    "claude-opus": {
-        "size": "Largest",
-        "use_case": "Complex reasoning, analysis",
-        "benchmark": "Top on GSM8K, MMLU"
-    },
-    "claude-sonnet": {
-        "size": "Medium",
-        "use_case": "Balanced for most tasks",
-        "benchmark": "Excellent general performance"
-    },
-    "claude-haiku": {
-        "size": "Smallest",
-        "use_case": "Fast, efficient tasks",
-        "benchmark": "Fast inference, lower cost"
-    }
-}</code></pre>
+<h2>🚀 Optimización de Prefilling</h2>
+<p>El prefill es la puerta de entrada — si es lento, todo el pipeline sufres. Aquí las técnicas probadas:</p>
+<h3>1. Batch Optimization (Arthur quien lo patentó)</h3>
+<pre><code class="language-python">"""
+Prefill Batching — Agrupa requests para maximizar utilization de GPU
+"""
+import asyncio
+from typing import List, Tuple, Optional
+from dataclasses import dataclass
+import time
+
+
+@dataclass
+class BatchRequest:
+    request_id: str
+    prompt_tokens: List[int]
+    priority: int = 0  # Mayor = más urgente
+    arrival_time: float = None
+    
+    def __post_init__(self):
+        if self.arrival_time is None:
+            self.arrival_time = time.time()
+
+
+class DynamicBatcher:
+    """
+    Batcher dinámico que optimiza prefill batching
+    
+    Estrategias:
+    - Max batch: llena hasta el máximo de GPU memory
+    - Timeout: espera máximo X ms antes de procesar
+    - Priority: prioriza requests urgentes
+    """
+    
+    def __init__(
+        self,
+        max_batch_size: int = 32,
+        max_wait_ms: float = 10.0,
+        max_context_length: int = 4096
+    ):
+        self.max_batch_size = max_batch_size
+        self.max_wait_ms = max_wait_ms
+        self.max_context_length = max_context_length
+        self.pending: List[BatchRequest] = []
+        self.stats = {"batches_processed": 0, "tokens_processed": 0}
+    
+    def add_request(self, request: BatchRequest) -> None:
+        """Añade request a la cola de espera"""
+        # Verificar que no exceda context length
+        if len(request.prompt_tokens) > self.max_context_length:
+            raise ValueError(f"Request excede max context: {len(request.prompt_tokens)} > {self.max_context_length}")
+        self.pending.append(request)
+    
+    async def get_next_batch(self) -> Optional[List[BatchRequest]]:
+        """
+        Obtiene el siguiente batch óptimo
+        
+        Retorna batch cuando:
+        1. Llego al max_batch_size
+        2. Paso el timeout
+        3. Quedan pocos requests y conviene procesar
+        """
+        if not self.pending:
+            return None
+        
+        # Ordenar por prioridad (y por arrival para fairness)
+        self.pending.sort(key=lambda r: (-r.priority, r.arrival_time))
+        
+        # Calcular tokens totales si hacemos batch ahora
+        total_tokens = sum(len(r.prompt_tokens) for r in self.pending)
+        avg_tokens = total_tokens / len(self.pending) if self.pending else 0
+        
+        # Estrategia: procesar si:
+        # - Batch lleno
+        # - Timeout expirado para el más antiguo
+        # - O si tenemos suficientes tokens para ser eficientes
+        oldest = min(r.arrival_time for r in self.pending)
+        wait_time = (time.time() - oldest) * 1000  # en ms
+        
+        should_process = (
+            len(self.pending) >= self.max_batch_size or
+            wait_time >= self.max_wait_ms or
+            (len(self.pending) >= 4 and avg_tokens > 500)  # al menos 4 requests opromedio > 500 tokens
+        )
+        
+        if should_process:
+            batch = self.pending[:self.max_batch_size]
+            self.pending = self.pending[self.max_batch_size:]
+            self.stats["batches_processed"] += 1
+            self.stats["tokens_processed"] += sum(len(r.prompt_tokens) for r in batch)
+            return batch
+        
+        return None  # Seguir esperando
+    
+    def get_stats(self) -> dict:
+        return {
+            **self.stats,
+            "pending_requests": len(self.pending),
+            "avg_batch_size": (
+                self.stats["tokens_processed"] / self.stats["batches_processed"] 
+                if self.stats["batches_processed"] > 0 else 0
+            )
+        }
+
+
+# --- Demo ---
+async def demo_batcher():
+    batcher = DynamicBatcher(max_batch_size=8, max_wait_ms=20.0)
+    
+    # Simular llegada de requests
+    for i in range(20):
+        tokens = [100 + j for j in range(50 + (i * 10) % 200)]  # 50-250 tokens
+        priority = 1 if i % 5 == 0 else 0  # Cada 5to es prioritario
+        batcher.add_request(BatchRequest(
+            request_id=f"req-{i}",
+            prompt_tokens=tokens,
+            priority=priority
+        ))
+        await asyncio.sleep(0.05)  # 50ms entre requests
+    
+    # Procesar batches
+    print("=== Dynamic Batching Demo ===")
+    batch_num = 0
+    while True:
+        batch = await batcher.get_next_batch()
+        if not batch and len(batcher.pending) == 0:
+            break
+        if batch:
+            batch_num += 1
+            total_tokens = sum(len(r.prompt_tokens) for r in batch)
+            avg_priority = sum(r.priority for r in batch) / len(batch)
+            print(f"Batch {batch_num}: {len(batch)} requests, {total_tokens} tokens, avg priority={avg_priority:.2f}")
+        await asyncio.sleep(0.01)
+    
+    print(f"\nStats: {batcher.get_stats()}")
+
+
+if __name__ == "__main__":
+    asyncio.run(demo_batcher())</code></pre>
+<h3>2. KV Cache Optimization</h3>
+<pre><code class="language-python">"""
+KV Cache Manager — Optimiza caching de key-value activations
+"""
+from typing import Dict, List, Optional, Tuple
+from dataclasses import dataclass
+import hashlib
+import json
+
+
+@dataclass
+class CacheEntry:
+    """Entrada de cache con metadatos"""
+    prompt_hash: str
+    prompt_tokens: List[int]
+    kv_cache: any  # Representación del cache
+    created_at: float
+    last_used: float
+    hit_count: int = 0
+    memory_bytes: int = 0
+
+
+class KVCacheManager:
+    """
+    Gestor de KV Cache con eviction policies
+    
+    Estrategias de eviction:
+    - LRU: Least Recently Used
+    - LFU: Least Frequently Used  
+    - TTL: Time To Live
+    """
+    
+    def __init__(
+        self,
+        max_memory_mb: float = 1024.0,
+        eviction_policy: str = "lru",
+        ttl_seconds: Optional[float] = 3600.0
+    ):
+        self.max_memory_bytes = int(max_memory_mb * 1024 * 1024)
+        self.eviction_policy = eviction_policy
+        self.ttl_seconds = ttl_seconds
+        self.cache: Dict[str, CacheEntry] = {}
+        self.current_memory = 0
+        self.stats = {
+            "hits": 0,
+            "misses": 0,
+            "evictions": 0,
+            "total_tokens_cached": 0
+        }
+    
+    def _compute_hash(self, prompt_tokens: List[int]) -> str:
+        """Genera hash único del prompt"""
+        token_str = ",".join(map(str, prompt_tokens))
+        return hashlib.sha256(token_str.encode()).hexdigest()[:16]
+    
+    def get(self, prompt_tokens: List[int]) -> Optional[any]:
+        """Obtiene cache entry si existe"""
+        prompt_hash = self._compute_hash(prompt_tokens)
+        
+        if prompt_hash not in self.cache:
+            self.stats["misses"] += 1
+            return None
+        
+        entry = self.cache[prompt_hash]
+        
+        # Verificar TTL
+        import time
+        if self.ttl_seconds and (time.time() - entry.created_at) > self.ttl_seconds:
+            self._evict(prompt_hash)
+            self.stats["misses"] += 1
+            return None
+        
+        # Update stats
+        entry.last_used = time.time()
+        entry.hit_count += 1
+        self.stats["hits"] += 1
+        
+        return entry.kv_cache
+    
+    def put(self, prompt_tokens: List[int], kv_cache: any, memory_bytes: int) -> None:
+        """Añade entrada al cache con eviction si es necesario"""
+        prompt_hash = self._compute_hash(prompt_tokens)
+        import time
+        
+        # Si ya existe, actualizar
+        if prompt_hash in self.cache:
+            old_entry = self.cache[prompt_hash]
+            self.current_memory -= old_entry.memory_bytes
+            old_entry.kv_cache = kv_cache
+            old_entry.memory_bytes = memory_bytes
+            old_entry.last_used = time.time()
+            self.current_memory += memory_bytes
+            return
+        
+        # Evict si no hay espacio
+        while self.current_memory + memory_bytes > self.max_memory_bytes and self.cache:
+            self._evict_one()
+        
+        # Crear nueva entrada
+        entry = CacheEntry(
+            prompt_hash=prompt_hash,
+            prompt_tokens=prompt_tokens,
+            kv_cache=kv_cache,
+            created_at=time.time(),
+            last_used=time.time(),
+            memory_bytes=memory_bytes
+        )
+        
+        self.cache[prompt_hash] = entry
+        self.current_memory += memory_bytes
+        self.stats["total_tokens_cached"] += len(prompt_tokens)
+    
+    def _evict(self, prompt_hash: str) -> None:
+        """Evict específica por hash"""
+        if prompt_hash in self.cache:
+            entry = self.cache.pop(prompt_hash)
+            self.current_memory -= entry.memory_bytes
+            self.stats["evictions"] += 1
+    
+    def _evict_one(self) -> None:
+        """Evict una entrada según política"""
+        if not self.cache:
+            return
+        
+        import time
+        
+        if self.eviction_policy == "lru":
+            # Least Recently Used
+            oldest = min(self.cache.values(), key=lambda e: e.last_used)
+            self._evict(oldest.prompt_hash)
+        
+        elif self.eviction_policy == "lfu":
+            # Least Frequently Used
+            least_used = min(self.cache.values(), key=lambda e: e.hit_count)
+            self._evict(least_used.prompt_hash)
+        
+        elif self.eviction_policy == "ttl":
+            # Expire oldest first
+            oldest = min(self.cache.values(), key=lambda e: e.created_at)
+            self._evict(oldest.prompt_hash)
+        
+        else:  # default: FIFO
+            oldest = min(self.cache.values(), key=lambda e: e.created_at)
+            self._evict(oldest.prompt_hash)
+    
+    def get_stats(self) -> dict:
+        """Retorna estadísticas del cache"""
+        total = self.stats["hits"] + self.stats["misses"]
+        hit_rate = self.stats["hits"] / total if total > 0 else 0
+        
+        return {
+            **self.stats,
+            "hit_rate": hit_rate,
+            "current_memory_mb": self.current_memory / (1024 * 1024),
+            "num_entries": len(self.cache)
+        }
+
+
+# --- Demo ---
+if __name__ == "__main__":
+    cache = KVCacheManager(max_memory_mb=50.0, eviction_policy="lru")
+    
+    # Simular cache hits y misses
+    prompts = [
+        [100, 200, 300, 400, 500],
+        [100, 200, 300, 400, 500],  # Hit!
+        [101, 201, 301, 401, 501],  # Miss
+        [100, 200, 300, 400, 500],  # Hit!
+        [102, 202, 302, 402, 502],  # Miss
+        [103, 203, 303, 403, 503],  # Miss
+    ]
+    
+    for i, tokens in enumerate(prompts):
+        result = cache.get(tokens)
+        if result is None:
+            # Simular compute y cache
+            cache.put(tokens, kv_cache=f"cache_data_{i}", memory_bytes=1024 * (i + 1))
+            print(f"Request {i+1}: MISS → cached ({1024*(i+1)} bytes)")
+        else:
+            print(f"Request {i+1}: HIT! (cached data: {result})")
+    
+    print(f"\nCache Stats: {json.dumps(cache.get_stats(), indent=2)}")</code></pre>
 <hr>
-<h2>⚠️ Errores Comunes</h2>
-<h3>Error 1: "Seguro" = Perfecto</h3>
-<p><strong>El problema</strong>: Asumir que Claude nunca erra.</p>
-<p><strong>La solucion</strong>: Siempre verificar outputs criticos.</p>
+<h2>⚡ Streaming Implementation</h2>
+<p>El streaming no solo mejora percepción — puede reducir latencia efectiva en aplicaciones interactivas:</p>
+<pre><code class="language-python">"""
+Streaming LLM Handler — Implementa streaming token-by-token
+"""
+import asyncio
+import time
+from typing import AsyncGenerator, Optional, Callable
+from dataclasses import dataclass
+from enum import Enum
+
+
+class StreamMode(Enum):
+    FULL = "full"           # Todos los tokens en orden
+    STREAMING = "streaming" # Token por token según se generan
+    HYBRID = "hybrid"        # Primeros tokens rápidos, después en batch
+
+
+@dataclass
+class StreamConfig:
+    """Configuración del streaming"""
+    mode: StreamMode = StreamMode.STREAMING
+    chunk_size: int = 1                    # Tokens por chunk
+    initial_chunk_delay_ms: float = 0       # Delay antes del primer chunk
+    inter_chunk_delay_ms: float = 0        # Delay entre chunks
+    enable_heartbeat_ms: Optional[float] = None  # Ping periódico para mantener conexión
+
+
+class StreamingLLMHandler:
+    """
+    Handler que implementa streaming optimizado para UX
+    
+    Técnicas:
+    1. TTFT optimization: primeros tokens最快
+    2. Heartbeat: mantiene conexión viva
+    3. Backpressure: controla flujo según cliente
+    """
+    
+    def __init__(self, config: Optional[StreamConfig] = None):
+        self.config = config or StreamConfig()
+        self.stats = {
+            "tokens_streamed": 0,
+            "chunks_sent": 0,
+            "avg_ttft_ms": 0,
+            "total_time_ms": 0
+        }
+    
+    async def stream_generate(
+        self,
+        prompt: str,
+        model_call: Callable,  # Función que llama al LLM
+        on_token: Optional[Callable[[str], None]] = None
+    ) -> AsyncGenerator[str, None]:
+        """
+        Genera respuesta en streaming
+        
+        Args:
+            prompt: Prompt de entrada
+            model_call: Función async que retorna generator de tokens
+            on_token: Callback por cada token recibido
+        """
+        start_time = time.time()
+        first_token_time = None
+        buffer = []
+        
+        # Primer chunk:迫不及待 (eager) — el cliente quiere algo YA
+        if self.config.initial_chunk_delay_ms > 0:
+            await asyncio.sleep(self.config.initial_chunk_delay_ms / 1000)
+        
+        async for token in model_call(prompt):
+            if first_token_time is None:
+                first_token_time = time.time()
+                self.stats["avg_ttft_ms"] = (first_token_time - start_time) * 1000
+            
+            buffer.append(token)
+            self.stats["tokens_streamed"] += 1
+            
+            # Enviar chunk cuando alcance tamaño especificado
+            if len(buffer) >= self.config.chunk_size:
+                chunk = "".join(buffer)
+                yield chunk
+                self.stats["chunks_sent"] += 1
+                buffer = []
+                
+                if on_token:
+                    on_token(chunk)
+                
+                # Inter-chunk delay
+                if self.config.inter_chunk_delay_ms > 0:
+                    await asyncio.sleep(self.config.inter_chunk_delay_ms / 1000)
+            
+            # Heartbeat para conexiones largas
+            if self.stats["tokens_streamed"] % 50 == 0 and self.config.enable_heartbeat_ms:
+                await asyncio.sleep(self.config.enable_heartbeat_ms / 1000)
+        
+        # Enviar buffer restante
+        if buffer:
+            yield "".join(buffer)
+            self.stats["chunks_sent"] += 1
+        
+        self.stats["total_time_ms"] = (time.time() - start_time) * 1000
+    
+    def get_stats(self) -> dict:
+        return {
+            **self.stats,
+            "avg_tokens_per_chunk": (
+                self.stats["tokens_streamed"] / self.stats["chunks_sent"] 
+                if self.stats["chunks_sent"] > 0 else 0
+            ),
+            "streaming_speed_tokens_s": (
+                self.stats["tokens_streamed"] / (self.stats["total_time_ms"] / 1000)
+                if self.stats["total_time_ms"] > 0 else 0
+            )
+        }
+
+
+# --- Demo con mock ---
+async def mock_llm_call(prompt: str) -> AsyncGenerator[str, None]:
+    """Simula LLM que genera tokens"""
+    response = f"Recibí tu prompt: '{prompt}'. Esta es una respuesta de demostración con múltiples tokens para probar el streaming.".split()
+    for i, word in enumerate(response):
+        await asyncio.sleep(0.05)  # 50ms por palabra
+        yield word + " "
+
+
+async def demo_streaming():
+    print("=== Streaming LLM Demo ===\n")
+    
+    handler = StreamingLLMHandler(StreamConfig(
+        mode=StreamMode.STREAMING,
+        chunk_size=3,
+        inter_chunk_delay_ms=10
+    ))
+    
+    print("Recibiendo tokens en chunks de 3:")
+    async for chunk in handler.stream_generate("test prompt", mock_llm_call):
+        print(f"[CHUNK] {repr(chunk)}")
+    
+    print(f"\nStats: {json.dumps(handler.get_stats(), indent=2)}")
+
+
+if __name__ == "__main__":
+    import json
+    asyncio.run(demo_streaming())</code></pre>
 <hr>
-<p><em>Eso es todo! Nos vemos en el Dia 344.</em></p>
+<h2>⚠️ Los 3 Errores Más Comunes</h2>
+<h3>Error 1: No Medir Latencias Individuales</h3>
+<p><strong>El problema</strong>: Mirar solo el tiempo total sin desglosar prefilling vs. decoding.</p>
+<p>Este es talvez el error más frecuente que veo por ahí. La gente hace un request, mide 2 segundos, y queda conforme. Pero no sabe si el bottleneck está en el prefill o en el decode. Son problemas distintos con soluciones distintas.</p>
+<p><strong>El fix</strong>: Implementa profiling granular desde el día uno. Usa el <code>LLMProfiler</code> que te mostré arriba para identificar exactamente dónde está el bottleneck:</p>
+<pre><code class="language-python"># Bueno:测量todo con desglose
+profiler = LLMProfiler()
+# ... hacer request ...
+breakdown = profiler.profile_request(...)
+print(f"Prefill: {breakdown.prefill_ratio:.1%} del tiempo")
+
+# Optimizar donde más impacto tiene
+if breakdown.prefill_ratio > 0.4:
+    # Invertir en batching optimization
+    optimize_prefill_batching()
+else:
+    # Invertir en decoding optimization  
+    optimize_decode_caching()</code></pre>
+<h3>Error 2: Ignorar la Etapa de Prefilling</h3>
+<p><strong>El problema</strong>: Todo el mundo se enfoca en "speculative decoding" y "KV cache" para el decode, pero el prefill es frecuentemente el bottleneck real para prompts largos.</p>
+<p>En producción, cuando los prompts son de 1000+ tokens, el prefill puede representar el 70-80% del tiempo total. Pero la mayoría de tutorials solo hablan del decode.</p>
+<p><strong>El fix</strong>: Mide siempre el ratio prefill/total. Si es mayor que 0.3:</p>
+<pre><code class="language-python"># Optimizaciones específicas para prefill
+# 1. Batching agresivo de prompts largos
+batcher = DynamicBatcher(
+    max_batch_size=64,  # GPU más grande = batch más grande
+    max_wait_ms=5.0     # Espera menos para no degradar TTFT
+)
+
+# 2. Habilitar KV cache para prompts repetitivos
+cache = KVCacheManager(max_memory_mb=4096.0, eviction_policy="lru")
+
+# 3. Usar half-precision para prefill
+model = model.to(dtype=torch.float16)  # 2x throughput</code></pre>
+<h3>Error 3: No Usar Streaming Cuando Mejora la UX</h3>
+<p><strong>El problema</strong>: Muchos devs deshabilitan streaming por "simplicidad" o porque "no lo necesitan". Pero en aplicaciones interactivas, el streaming puede hacer la diferencia entre una experiencia que se siente lenta y una que se siente responsiva.</p>
+<p>El cerebro humano percibe una respuesta de 5s con streaming como "más rápida" que una respuesta de 2s sin streaming porque hay retroalimentación constante.</p>
+<p><strong>El fix</strong>: Habilita streaming por defecto en chatbots y aplicaciones interactivas:</p>
+<pre><code class="language-python"># Streaming como default, no como opción
+async def chat_with_llm(user_message: str):
+    handler = StreamingLLMHandler(StreamConfig(
+        mode=StreamMode.STREAMING,
+        chunk_size=1,      # Token por token para máx responsividad
+        enable_heartbeat_ms=5000  # Mantiene conexión viva
+    ))
+    
+    # El frontend recibe tokens inmediatamente
+    async for chunk in handler.stream_generate(
+        user_message, 
+        lambda p: openai_client.chat.completions.create(
+            model="gpt-4",
+            messages=[{"role": "user", "content": p}],
+            stream=True  # Streaming nativo del provider
+        )
+    ):
+        await websocket.send(json.dumps({"token": chunk}))</code></pre>
+<hr>
+<h2>📊 Resumen y Recomendaciones</h2>
+<p>Aquí te dejo el resumen de las técnicas con su impacto aproximado:</p>
+<ul>
+<li><strong>Dynamic Batching</strong>: 30-50% reducción en latencia de prefill en sistemas con alta concurrencia</li>
+<li><strong>KV Cache</strong>: Hasta 10x speedup en requests con prompts repetitivos/comunes</li>
+<li><strong>Streaming</strong>: Percepción de 2-3x mejora en UX sin cambiar latencia real</li>
+<li><strong>Profiling granular</strong>: Sin esto, estás optimizing en la oscuridad</li>
+</ul>
+<p><strong>La formula del éxito</strong>: Mide primero → identifica bottleneck → optimiza lo que más impacta → repite.</p>
+<hr>
+<p><em>Hachica, parce. Eso es todo por hoy. Mañana seguimos con Quality Assurance para que tus LLMs no te fallen en producción. ¡Ahí te vi!</em></p>
   </article>
 
   <script>
