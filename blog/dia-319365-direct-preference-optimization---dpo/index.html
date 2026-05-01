@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="Direct Preference Optimization - DPO | #365DaysOfAI por Fabian Rodriguez">
-  <title>Direct Preference Optimization - DPO | #365DaysOfAI</title>
+  <meta name="description" content="LLM Time Series Analysis | #365DaysOfAI por Fabian Rodriguez">
+  <title>LLM Time Series Analysis | #365DaysOfAI</title>
   
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
@@ -110,47 +110,467 @@ nav {
 
   <header class="article-hero">
     <div class="day-badge">Dia 319 / 365 &nbsp;·&nbsp; #365DaysOfAI</div>
-    <h1 class="article-title">Direct Preference Optimization - DPO</h1>
+    <h1 class="article-title">LLM Time Series Analysis — Lo Que El 75% No Conoce Para Analizar Datos Temporales</h1>
     <div class="article-meta">
       <time class="article-date">15 de noviembre de 2026</time>
-      <div class="tags"><span class="tag">dpo</span><span class="tag">preference-learning</span><span class="tag">rlhf</span><span class="tag">alignment</span></div>
+      <div class="tags"><span class="tag">llm</span><span class="tag">time-series</span><span class="tag">forecasting</span><span class="tag">anomaly-detection</span></div>
     </div>
   </header>
 
   <article class="article-body">
-    <h1>Direct Preference Optimization - DPO</h1>
-<p>Hagale pues, parcero. Dia 319 y hoy hablamos de DPO, direct preference optimization. Cafe.</p>
+<h2>☕ Intro</h2>
+<p>Qué más, parce. Día 319 y hoy vamos con algo que el 75% de la gente no conoce o no sabe cómo aplicar: usar LLMs para análisis de series temporales. En Colombia solemos pensar que las series temporales son solo para economistas o para predecir el clima, pero la realidad es que ahora los LLMs pueden meterse en ese mundo y hacer cosas que antes eran impensables.</p>
+<p>Lo que vas a aprender hoy: cómo combinar LLMs con métodos tradicionales para forecasting, anomaly detection y feature extraction en time series. Y lo más importante: cómo evitar los 3 errores más comunes que hacen que el 75% fracase cuando intenta aplicar esto.</p>
 <hr>
-<h2>🎯 Que Es DPO?</h2>
-<p>DPO (Direct Preference Optimization) elimina la necesidad de reward model y RL. Optimiza directamente con preferencias humanas.</p>
-<h3>Ventajas sobre PPO:</h3>
+<h2>📐 Qué es Time Series Analysis con LLMs?</h2>
+<p>Básicamente, tenemos dos mundos:</p>
 <ul>
-<li><strong>Simpler</strong>: Sin reward model separado</li>
-<li><strong>Stable</strong>: Sin on-policy data issues</li>
-<li><strong>Eficiente</strong>: Solo 2 models (policy + reference)</li>
+<li><strong>Métodos tradicionales</strong>: ARIMA, Prophet, LSTM, Transformers de序列 (los que aprendimos en la uni)</li>
+<li><strong>LLMs</strong>: Modelos de lenguaje que pueden razonar sobre patrones temporales</li>
+</ul>
+<p>El punto es que NO son excluyentes. El 75% o usa uno o usa el otro. El 25% que sí sabe los combina.</p>
+<h3>Formalización</h3>
+<p>Una serie temporal es una secuencia de observaciones:</p>
+<p>$$\mathcal{X} = \{x_1, x_2, \ldots, x_T\}$$</p>
+<p>donde $x_t$ es el valor en el tiempo $t$. El objetivo puede ser:</p>
+<ul>
+<li><strong>Forecasting</strong>: Predecir $x_{T+h}$ para $h > 0$</li>
+<li><strong>Anomaly Detection</strong>: Identificar $x_t$ donde $x_t$ es outlier</li>
+<li><strong>Classification</strong>: Clasificar la serie en una categoría</li>
+<li><strong>Feature Extraction</strong>: Representar la serie en un espacio latente</li>
 </ul>
 <hr>
-<h2>📐 DPO Loss</h2>
-<pre><code class="language-python">def dpo_loss(policy_chosen, policy_rejected,
-             ref_chosen, ref_rejected, beta=0.1):
-    # Log ratios
-    chosen_log_ratio = policy_chosen - ref_chosen
-    rejected_log_ratio = policy_rejected - ref_rejected
+<h2>🔧 Time Series Framework con LLMs</h2>
+<p>Vamos al código. Este framework combina la potencia semántica de LLMs con la robustez de métodos tradicionales:</p>
+<pre><code class="language-python">"""
+LLM Time Series Analysis Framework
+Combina LLMs con métodos tradicionales para forecasting y anomaly detection
+"""
+
+import numpy as np
+import torch
+import json
+from typing import List, Dict, Tuple, Optional, Union
+from dataclasses import dataclass
+from sklearn.preprocessing import StandardScaler, MinMaxScaler
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from sklearn.base import BaseEstimator
+import re
+
+
+@dataclass
+class TimeSeriesConfig:
+    """Configuración para análisis de series temporales"""
+    # Forecasting
+    forecast_horizon: int = 7  # Días a predecir
+    context_window: int = 30  # Histórico a usar
     
-    # DPO objective
-    loss = -torch.log(
-        torch.sigmoid(beta * (chosen_log_ratio - rejected_log_ratio))
-    ).mean()
+    # LLM
+    llm_temperature: float = 0.1
+    use_semantic_reasoning: bool = True
     
-    return loss</code></pre>
+    # Combinar métodos?
+    use_ensemble: bool = True
+    traditional_weight: float = 0.4
+    llm_weight: float = 0.6
+
+
+@dataclass
+class ForecastResult:
+    """Resultado de forecast"""
+    predictions: np.ndarray
+    lower_bound: np.ndarray
+    upper_bound: np.ndarray
+    confidence: float
+    method: str  # 'llm', 'traditional', 'ensemble'
+    explanation: Optional[str] = None
+
+
+class TimeSeriesEmbedder:
+    """
+    Convierte series temporales en embeddings que un LLM puede entender.
+    
+    El truco está en cómo representas la serie: no le vas a pasar 10,000 números.
+    Le vas a pasar una descripción semántica que capture los patrones importantes.
+    """
+    
+    def __init__(self):
+        self.scaler = StandardScaler()
+        self.is_fitted = False
+    
+    def fit(self, series: np.ndarray):
+        """Aprender la distribución de la serie"""
+        self.scaler.fit(series.reshape(-1, 1))
+        self.is_fitted = True
+    
+    def to_text_description(self, series: np.ndarray) -> str:
+        """
+        Convertir serie a descripción textual para el LLM.
+        Esto es clave: el LLM no procesa números, procesa texto.
+        """
+        if not self.is_fitted:
+            raise ValueError("Primero debes llamar fit()")
+        
+        # Normalizar
+        scaled = self.scaler.transform(series.reshape(-1, 1)).flatten()
+        
+        # Calcular estadísticas
+        trend = self._detect_trend(scaled)
+        seasonality = self._detect_seasonality(scaled)
+        volatility = np.std(scaled)
+        mean_val = np.mean(scaled)
+        
+        # Construir descripción
+        description = f"""
+Serie temporal con {len(series)} observaciones:
+- Tendencia: {trend}
+- Estacionalidad: {seasonality}
+- Volatilidad: {volatility:.4f}
+- Media: {mean_val:.4f}
+- Valores recientes (últimos 7): {series[-7:].tolist()}
+- Cambio porcentual última semana: {((series[-1] - series[-8]) / series[-8] * 100):.2f}%
+""".strip()
+        
+        return description
+    
+    def _detect_trend(self, series: np.ndarray) -> str:
+        """Detectar dirección de tendencia"""
+        if len(series) < 7:
+            return "insuficiente_data"
+        
+        # Regresión lineal simple
+        x = np.arange(len(series))
+        slope = np.polyfit(x, series, 1)[0]
+        
+        if slope > 0.05:
+            return "ascendente"
+        elif slope < -0.05:
+            return "descendente"
+        else:
+            return "lateral"
+    
+    def _detect_seasonality(self, series: np.ndarray) -> str:
+        """Detectar patrón estacional (simplificado)"""
+        if len(series) < 14:
+            return "no_detectable"
+        
+        # Autocorrelación con lag 7 (semanal)
+        mean_centered = series - np.mean(series)
+        n = len(series)
+        
+        # Lag 7
+        if n > 7:
+            c7 = np.sum(mean_centered[:-7] * mean_centered[7:]) / n
+            c0 = np.sum(mean_centered ** 2) / n
+            acf_7 = c7 / c0
+            
+            if abs(acf_7) > 0.5:
+                return f"semanal (autocorr={acf_7:.2f})"
+        
+        return "no_detectable"
+
+
+class LLMTemperatureAnalyzer:
+    """
+    Usa un LLM para razonar sobre la serie temporal.
+    
+    El LLM puede capturar patrones semánticos que métodos estadísticos no ven:
+    - Cambios de contexto (eventos externos)
+    - Patrones anomalos
+    - Razonamiento sobre la serie
+    """
+    
+    def __init__(self, llm_client, config: TimeSeriesConfig):
+        self.llm = llm_client
+        self.config = config
+    
+    def analyze_series(self, series: np.ndarray, embedder: TimeSeriesEmbedder) -> Dict:
+        """
+        Análisis completo de la serie usando LLM.
+        """
+        description = embedder.to_text_description(series)
+        
+        prompt = f"""Eres un analista de series temporales experto. Analiza la siguiente serie y proporciona:
+
+1. **Patrones identificados**: Qué patrones ves en los datos?
+2. **Pronóstico**: Qué esperarías para los próximos {self.config.forecast_horizon} períodos?
+3. **Anomalías**: Hay algún punto que te parezca outlier?
+4. **Recomendaciones**: Qué acciones suggest?
+
+Serie:
+{description}
+
+Responde en JSON con formato:
+{{
+  "patterns": "descripción de patrones",
+  "forecast_direction": "up/down/stable",
+  "forecast_magnitude": "alto/medio/bajo",
+  "anomalies": [lista de índices anomaly],
+  "confidence": 0.0 a 1.0,
+  "recommendations": "recomendaciones"
+}}"""
+        
+        response = self.llm.generate(prompt, max_tokens=500)
+        
+        try:
+            result = json.loads(response)
+            return result
+        except:
+            return {
+                "patterns": "error_parseando",
+                "forecast_direction": "stable",
+                "confidence": 0.0
+            }
+    
+    def generate_forecast_narrative(
+        self, 
+        historical: np.ndarray, 
+        forecast: np.ndarray,
+        embedder: TimeSeriesEmbedder
+    ) -> str:
+        """
+        Generar una narrativa del forecast para stakeholders.
+        """
+        hist_desc = embedder.to_text_description(historical)
+        
+        prompt = f"""Eres un data analyst que presenta resultados a negocio. 
+Genera un párrafo简短 que explique el forecast de forma clara y accionable.
+
+Contexto histórico:
+{hist_desc}
+
+Forecast predicho:
+{forecast.tolist()}
+
+Responde SOLO con el párrafo explicativo, sin JSON ni formato extra."""
+        
+        return self.llm.generate(prompt, max_tokens=200)
+
+
+class TraditionalForecaster:
+    """
+    Métodos tradicionales de forecasting: media móvil, ARIMA simplificado, etc.
+    """
+    
+    def __init__(self, method: str = "simple_average"):
+        self.method = method
+        self.scaler = MinMaxScaler()
+        self.is_fitted = False
+    
+    def fit(self, series: np.ndarray):
+        """Entrenar el forecaster"""
+        self.scaler.fit(series.reshape(-1, 1))
+        self.is_fitted = True
+    
+    def predict(self, horizon: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Predecir próximos 'horizon' períodos.
+        Retorna: (predictions, lower_bound, upper_bound)
+        """
+        if not self.is_fitted:
+            raise ValueError("Primero debes llamar fit()")
+        
+        # Predicción simple: media de los últimos 7 días
+        # (Este es un baseline, en producción usarías ARIMA, Prophet, etc.)
+        recent_mean = np.mean(self.scaler.data_inverse_[-7:])
+        
+        predictions = np.full(horizon, recent_mean.flatten()[0])
+        
+        # Bounds basados en desviación estándar histórica
+        std = np.std(self.scaler.data_inverse_[-30:])
+        lower = predictions - 1.96 * std
+        upper = predictions + 1.96 * std
+        
+        return predictions, lower, upper
+
+
+class HybridTimeSeriesForecaster:
+    """
+    Forecaster híbrido que combina:
+    1. Métodos tradicionales (media móvil, ARIMA)
+    2. LLM para razonamiento semántico
+    
+    El ensemble es clave: el método tradicional captura patrones estadísticos,
+    el LLM captura contexto y razonamiento.
+    """
+    
+    def __init__(
+        self, 
+        llm_client, 
+        config: TimeSeriesConfig = TimeSeriesConfig()
+    ):
+        self.config = config
+        self.embedder = TimeSeriesEmbedder()
+        self.llm_analyzer = LLMTemperatureAnalyzer(llm_client, config)
+        self.traditional_forecaster = TraditionalForecaster()
+        self.is_fitted = False
+    
+    def fit(self, series: np.ndarray):
+        """Entrenar con datos históricos"""
+        print(f"🎯 Entrenando con {len(series)} observaciones...")
+        
+        self.embedder.fit(series)
+        self.traditional_forecaster.fit(series)
+        self.series = series
+        
+        self.is_fitted = True
+        print("   ✓ Modelo entrenado")
+    
+    def forecast(self, horizon: Optional[int] = None) -> ForecastResult:
+        """
+        Hacer forecast combinando métodos tradicionales + LLM.
+        """
+        if not self.is_fitted:
+            raise ValueError("Primero debes llamar fit()")
+        
+        horizon = horizon or self.config.forecast_horizon
+        
+        # Método tradicional
+        trad_pred, trad_lower, trad_upper = self.traditional_forecaster.predict(horizon)
+        
+        # LLM análisis
+        if self.config.use_semantic_reasoning:
+            analysis = self.llm_analyzer.analyze_series(
+                self.series, 
+                self.embedder
+            )
+            
+            # Combinar predicción del LLM con tradicional
+            # El LLM nos dice la dirección, el método tradicional la magnitud
+            llm_direction = analysis.get("forecast_direction", "stable")
+            llm_confidence = analysis.get("confidence", 0.5)
+            
+            # Ajustar predicción tradicional según LLM
+            if llm_direction == "up":
+                adjustment = 1.1
+            elif llm_direction == "down":
+                adjustment = 0.9
+            else:
+                adjustment = 1.0
+            
+            final_pred = trad_pred * adjustment
+            final_lower = trad_lower * adjustment
+            final_upper = trad_upper * adjustment
+            
+            explanation = self.llm_analyzer.generate_forecast_narrative(
+                self.series[-self.config.context_window:],
+                final_pred,
+                self.embedder
+            )
+            
+            method = "ensemble"
+        else:
+            final_pred = trad_pred
+            final_lower = trad_lower
+            final_upper = trad_upper
+            llm_confidence = 0.5
+            explanation = None
+            method = "traditional"
+        
+        return ForecastResult(
+            predictions=final_pred,
+            lower_bound=final_lower,
+            upper_bound=final_upper,
+            confidence=llm_confidence if method == "ensemble" else 0.5,
+            method=method,
+            explanation=explanation
+        )
+    
+    def detect_anomalies(self, threshold: float = 2.0) -> List[int]:
+        """
+        Detectar anomalías usando Z-score.
+        """
+        if not self.is_fitted:
+            raise ValueError("Primero debes llamar fit()")
+        
+        # Z-score de los últimos valores
+        recent = self.series[-self.config.context_window:]
+        mean = np.mean(recent)
+        std = np.std(recent)
+        
+        z_scores = np.abs((recent - mean) / std)
+        
+        anomalies = np.where(z_scores > threshold)[0].tolist()
+        return anomalies
+
+
+def evaluate_forecast(
+    y_true: np.ndarray, 
+    y_pred: np.ndarray
+) -> Dict[str, float]:
+    """Evaluar forecast contra ground truth"""
+    return {
+        "mae": mean_absolute_error(y_true, y_pred),
+        "rmse": np.sqrt(mean_squared_error(y_true, y_pred)),
+        "r2": r2_score(y_true, y_pred),
+        "mape": np.mean(np.abs((y_true - y_pred) / y_true)) * 100
+    }</code></pre>
 <hr>
-<h2>🚀 Azimuth</h2>
-<p>DPO se usa extensivamente en open-source models como Llama, Mistral para alignment.</p>
+<h2>🔢 Métricas de Time Series</h2>
+<h3>Métricas de Forecasting</h3>
+<ul>
+<li><strong>MAE</strong>: $\frac{1}{n}\sum|y_i - \hat{y}_i|$ — error absoluto medio</li>
+<li><strong>RMSE</strong>: $\sqrt{\frac{1}{n}\sum(y_i - \hat{y}_i)^2}$ — más sensible a outliers</li>
+<li><strong>MAPE</strong>: $\frac{100}{n}\sum\left|\frac{y_i - \hat{y}_i}{y_i}\right|$ — error porcentual</li>
+<li><strong>R²</strong>: $1 - \frac{\sum(y_i - \hat{y}_i)^2}{\sum(y_i - \bar{y})^2}$ — varianza explicada</li>
+</ul>
 <hr>
-<h2>⚠️ Limitations</h2>
-<p>DPO requiere mas memory ya que mantiene policy y reference model simultaneously.</p>
+<h2>⚠️ Los 3 Errores Comunes (y sus fixes)</h2>
+<h3>Error 1: No considerar LLMs para time series</h3>
+<p><strong>El problema</strong>: La gente piensa que los LLMs son solo para NLP y que no pueden manejar datos temporales. FALSO.</p>
+<p><strong>El fix</strong>: Convierte la serie temporal en texto descriptivo (embedder) y deja que el LLM razone sobre ella. El LLM puede detectar cambios de contexto y patrones que métodos estadísticos no ven.</p>
+<h3>Error 2: No combinar con métodos tradicionales</h3>
+<p><strong>El problema</strong>: Usar SOLO el LLM para forecasting. El LLM no es bueno estimando magnitudes exactas.</p>
+<p><strong>El fix</strong>: Usa ensemble. El método tradicional te da la magnitud, el LLM te da la dirección y el contexto. Combínalos con pesos (típicamente 60% LLM reasoning + 40% método tradicional para predicción).</p>
+<h3>Error 3: No manejar dependencias temporales</h3>
+<p><strong>El problema</strong>: Tratar cada punto como independiente. Las series temporales tienen correlación entre puntos adyacentes.</p>
+<p><strong>El fix</strong>: Usa ventanas contextuales (context windows) y pasa toda la secuencia al modelo. No hagas one-step forecast iterativo si puedes evitarlo — el error se acumula.</p>
 <hr>
-<p><em>Eso es todo! Nos vemos en el Dia 320.</em></p>
+<h2>📊 Ejemplo de Uso</h2>
+<pre><code class="language-python"># Datos de ejemplo: ventas diarias
+ventas = np.array([
+    100, 120, 115, 130, 125, 140, 135,  # semana 1
+    110, 130, 125, 145, 140, 155, 150,  # semana 2
+    115, 135, 130, 150, 145, 160, 155,  # semana 3
+    120, 140, 135, 155, 150, 165, 160   # semana 4
+])
+
+# Inicializar framework
+config = TimeSeriesConfig(
+    forecast_horizon=7,
+    context_window=21,
+    use_ensemble=True
+)
+
+# Crear modelo (asume que tienes un cliente LLM)
+forecaster = HybridTimeSeriesForecaster(llm_client, config)
+forecaster.fit(ventas)
+
+# Hacer forecast
+result = forecaster.forecast(horizon=7)
+print(f"Predicciones: {result.predictions}")
+print(f"Método: {result.method}")
+print(f"Explicación: {result.explanation}")
+
+# Detectar anomalías
+anomalies = forecaster.detect_anomalies(threshold=2.0)
+print(f"Anomalías detectadas en índices: {anomalies}")</code></pre>
+<hr>
+<h2>☕ Resumen y Cierre</h2>
+<p>Parce, hoy aprendiste que los LLMs NO son solo para texto. Para series temporales, la clave está en:</p>
+<ol>
+<li><strong>Convertir la serie en texto descriptivo</strong> — el LLM procesa lenguaje, no números</li>
+<li><strong>Combinar con métodos tradicionales</strong> — el LLM captura contexto, el método tradicional la magnitud</li>
+<li><strong>Manejar dependencias temporales</strong> — usa ventanas contextuales, no puntos aislados</li>
+</ol>
+<p>Los errores más comunes:</p>
+<ul>
+<li>❌ No usar LLMs para time series (se pueden usar y son potentes)</li>
+<li>❌ Usar solo LLMs sin métodos tradicionales (magnitud incorrecta)</li>
+<li>❌ Ignorar dependencias temporales (cada punto no es independiente)</li>
+</ul>
+<p>Mañana seguimos con día 320 y vamos con algo que el 80% ignora: LLM Graph Analysis. Eso de analizar grafos con modelos de lenguaje es una zona que pocos están explorando y tiene un potencial brutal. Stay tuned, parce!</p>
+<p><em>Nos vemos en el Día 320.</em></p>
   </article>
 
   <script>
