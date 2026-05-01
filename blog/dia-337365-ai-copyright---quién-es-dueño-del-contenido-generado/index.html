@@ -118,43 +118,550 @@ nav {
   </header>
 
   <article class="article-body">
-    <h1>AI Copyright - Quién Es Dueño del Contenido Generado</h1>
-<p>Hagale pues, parcero. Dia 337 y hoy hablamos de AI Copyright: quien es dueno del contenido generado por IA? Dejala.</p>
+<h2>🎯 LLM Function Calling — Por Qué el 80% Lo Hace Mal</h2>
+<p>Hagale pues, parcero. Hoy es Día 337 de 365 y vamos a hablar de algo que el 80% de los desarrolladores implementa incorrectamente: <strong>LLM Function Calling</strong>. Muchos abren ChatGPT y usan plugins sin entender cómo funciona por debajo. Yo prefiero explicar la matemática y el código. Sígame.</p>
 <hr>
-<h2>🎯 AI Copyright</h2>
-<p>El copyright de contenido generado por IA es un terreno legal complejo:</p>
+<h2>📐 La Matemática Detrás del Function Calling</h2>
+<p>El function calling no es magia. Es un proceso de generación condicionada:</p>
+<p>Dada una secuencia de tokens <code>x₁, x₂, ..., xₜ</code>, el LLM genera el siguiente token:</p>
+<p><code>xₜ₊₁ = argmax P(xₜ₊₁ | x₁,...,xₜ, tools)</code></p>
+<p>Donde <code>tools</code> son las definiciones de funciones en el prompt. El modelo no "elige" una función — aprende a generar tokens que representan una llamada a función válida según el schema.</p>
+<h3>Tool Schema Structure</h3>
+<pre><code class="language-json">{
+  "name": "get_weather",
+  "description": "Obtiene el clima de una ciudad",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "city": {
+        "type": "string",
+        "description": "Ciudad para el clima"
+      },
+      "unit": {
+        "type": "string",
+        "enum": ["celsius", "fahrenheit"]
+      }
+    },
+    "required": ["city"]
+  }
+}</code></pre>
+<hr>
+<h2>💻 Implementación Completa del Framework</h2>
+<pre><code class="language-python">"""
+Function Calling Framework — Día 337
+Implementación completa con tool schemas, parsing y manejo de errores
+"""
+import json
+import re
+from typing import Any, Callable, Optional
+from dataclasses import dataclass
+from enum import Enum
+from datetime import datetime
+
+class ToolError(Exception):
+    """Error base para herramientas"""
+    pass
+
+class ToolNotFoundError(ToolError):
+    """Herramienta no encontrada"""
+    pass
+
+class ToolExecutionError(ToolError):
+    """Error ejecutando la herramienta"""
+    pass
+
+class InvalidArgumentsError(ToolError):
+    """Argumentos inválidos para la herramienta"""
+    pass
+
+@dataclass
+class ToolCall:
+    """Representa una llamada a función del LLM"""
+    name: str
+    arguments: dict
+    call_id: str
+    timestamp: datetime = None
+    
+    def __post_init__(self):
+        if self.timestamp is None:
+            self.timestamp = datetime.now()
+
+@dataclass  
+class ToolResult:
+    """Resultado de ejecutar una herramienta"""
+    call_id: str
+    success: bool
+    result: Any = None
+    error: Optional[str] = None
+    execution_time_ms: float = 0
+
+class FunctionCallingFramework:
+    """
+    Framework completo para function calling con LLMs.
+    
+    El proceso es:
+    1. Definir tools con schemas JSON
+    2. Enviar tools + prompt al LLM
+    3. Parsear la respuesta del LLM
+    4. Ejecutar la función
+    5. Devolver resultado al LLM
+    6. Repetir si hay más llamadas en cadena
+    """
+    
+    def __init__(self, llm_client, max_retries: int = 3):
+        self.llm = llm_client
+        self.tools: dict[str, Callable] = {}
+        self.tool_schemas: list[dict] = []
+        self.max_retries = max_retries
+        self.call_history: list[ToolCall] = []
+        self.execution_log: list[ToolResult] = []
+    
+    def register_tool(
+        self,
+        name: str,
+        func: Callable,
+        description: str,
+        parameters: dict
+    ):
+        """Registra una herramienta con su schema"""
+        self.tools[name] = func
+        self.tool_schemas.append({
+            "name": name,
+            "description": description,
+            "parameters": parameters
+        })
+    
+    def get_tools_for_llm(self) -> list[dict]:
+        """Devuelve los schemas de herramientas para el LLM"""
+        return self.tool_schemas
+    
+    def parse_llm_response(self, response: str) -> list[ToolCall]:
+        """
+        Parsea la respuesta del LLM para extraer llamadas a funciones.
+        
+        El LLM devuelve algo como:
+        &lt;tool_call&gt;
+        {"name": "get_weather", "arguments": {"city": "Bogotá", "unit": "celsius"}, "id": "call_123"}
+        &lt;/tool_call&gt;
+        """
+        tool_calls = []
+        
+        # Patrón para extraer llamadas a función
+        pattern = r'&lt;tool_call&gt;\s*(.*?)\s*&lt;/tool_call&gt;'
+        matches = re.findall(pattern, response, re.DOTALL)
+        
+        for match in matches:
+            try:
+                data = json.loads(match)
+                tool_call = ToolCall(
+                    name=data["name"],
+                    arguments=data["arguments"],
+                    call_id=data.get("id", f"call_{len(self.call_history)}")
+                )
+                tool_calls.append(tool_call)
+                self.call_history.append(tool_call)
+            except json.JSONDecodeError as e:
+                print(f"Error parseando tool call: {e}")
+                continue
+        
+        return tool_calls
+    
+    def validate_arguments(
+        self, 
+        tool_name: str, 
+        arguments: dict,
+        schema: dict
+    ) -> tuple[bool, Optional[str]]:
+        """
+        Valida que los argumentos cumplan con el schema.
+        
+        Usa JSON Schema validation simplificada:
+        - Verifica campos requeridos
+        - Verifica tipos de datos
+        - Verifica enums
+        """
+        props = schema.get("parameters", {}).get("properties", {})
+        required = schema.get("parameters", {}).get("required", [])
+        
+        # Verificar campos requeridos
+        for field in required:
+            if field not in arguments:
+                return False, f"Campo requerido faltante: {field}"
+        
+        # Verificar tipos y constraints
+        for field, value in arguments.items():
+            if field not in props:
+                return False, f"Campo desconocido: {field}"
+            
+            field_schema = props[field]
+            field_type = field_schema.get("type")
+            
+            # Validación de tipos
+            if field_type == "string" and not isinstance(value, str):
+                return False, f"{field} debe ser string, got {type(value)}"
+            elif field_type == "number" and not isinstance(value, (int, float)):
+                return False, f"{field} debe ser number, got {type(value)}"
+            elif field_type == "boolean" and not isinstance(value, bool):
+                return False, f"{field} debe ser boolean, got {type(value)}"
+            elif field_type == "array" and not isinstance(value, list):
+                return False, f"{field} debe ser array, got {type(value)}"
+            elif field_type == "object" and not isinstance(value, dict):
+                return False, f"{field} debe ser object, got {type(value)}"
+            
+            # Validar enum
+            if "enum" in field_schema:
+                if value not in field_schema["enum"]:
+                    return False, f"{field} debe ser uno de {field_schema['enum']}, got {value}"
+        
+        return True, None
+    
+    def execute_tool(
+        self, 
+        tool_call: ToolCall,
+        retry_count: int = 0
+    ) -> ToolResult:
+        """
+        Ejecuta una herramienta con manejo de errores y retries.
+        
+        El retry exponential backoff:
+        wait_time = base_delay * (2 ^ retry_count) + random_jitter
+        """
+        import time
+        import random
+        
+        if tool_call.name not in self.tools:
+            return ToolResult(
+                call_id=tool_call.call_id,
+                success=False,
+                error=f"Herramienta no encontrada: {tool_call.name}"
+            )
+        
+        func = self.tools[tool_call.name]
+        
+        # Encontrar el schema para validación
+        schema = next(
+            (s for s in self.tool_schemas if s["name"] == tool_call.name),
+            None
+        )
+        
+        # Validar argumentos si hay schema
+        if schema:
+            valid, error_msg = self.validate_arguments(
+                tool_call.name,
+                tool_call.arguments,
+                schema
+            )
+            if not valid:
+                return ToolResult(
+                    call_id=tool_call.call_id,
+                    success=False,
+                    error=f"Argumentos inválidos: {error_msg}"
+                )
+        
+        # Ejecutar con retries
+        base_delay = 1.0
+        last_error = None
+        
+        for attempt in range(self.max_retries):
+            try:
+                start_time = time.time()
+                result = func(**tool_call.arguments)
+                execution_time = (time.time() - start_time) * 1000
+                
+                tool_result = ToolResult(
+                    call_id=tool_call.call_id,
+                    success=True,
+                    result=result,
+                    execution_time_ms=execution_time
+                )
+                self.execution_log.append(tool_result)
+                return tool_result
+                
+            except Exception as e:
+                last_error = str(e)
+                if attempt < self.max_retries - 1:
+                    # Exponential backoff
+                    delay = base_delay * (2 ** attempt) + random.uniform(0, 0.1)
+                    time.sleep(delay)
+        
+        # Todos los retries fallaron
+        return ToolResult(
+            call_id=tool_call.call_id,
+            success=False,
+            error=f"Error después de {self.max_retries} intentos: {last_error}"
+        )
+    
+    def execute_tool_chain(self, tool_calls: list[ToolCall]) -> list[ToolResult]:
+        """Ejecuta una cadena de llamadas a funciones"""
+        results = []
+        for tool_call in tool_calls:
+            result = self.execute_tool(tool_call)
+            results.append(result)
+            if not result.success:
+                # Detener cadena si hay error
+                break
+        return results
+    
+    def format_results_for_llm(self, results: list[ToolResult]) -> str:
+        """Formatea los resultados para enviarlos al LLM"""
+        formatted = []
+        for result in results:
+            if result.success:
+                formatted.append(
+                    f"[{result.call_id}] {json.dumps(result.result)}"
+                )
+            else:
+                formatted.append(
+                    f"[{result.call_id}] ERROR: {result.error}"
+                )
+        return "\n".join(formatted)
+    
+    def call_llm_with_tools(
+        self,
+        messages: list[dict],
+        tools: Optional[list[dict]] = None
+    ) -> dict:
+        """
+        Hace una llamada al LLM con herramientas.
+        Detecta si hay tool_calls en la respuesta y las ejecuta.
+        """
+        response = self.llm.chat(messages, tools=tools or self.tool_schemas)
+        
+        # Verificar si hay llamadas a funciones
+        tool_calls = self.parse_llm_response(response.get("content", ""))
+        
+        if not tool_calls:
+            return response
+        
+        # Ejecutar las herramientas
+        results = self.execute_tool_chain(tool_calls)
+        
+        # Agregar resultados al mensaje
+        messages.append({
+            "role": "assistant",
+            "content": response.get("content", "")
+        })
+        
+        for tc, result in zip(tool_calls, results):
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tc.call_id,
+                "content": json.dumps(result.result) if result.success else f"ERROR: {result.error}"
+            })
+        
+        # Llamada recursiva si hay más herramientas
+        return self.call_llm_with_tools(messages)
+
+
+# Ejemplo de uso completo
+def demo():
+    """Demostración completa del framework"""
+    
+    # Mock LLM Client
+    class MockLLM:
+        def chat(self, messages, tools=None):
+            # Simula respuesta del LLM con tool call
+            return {
+                "content": 'El clima en Bogotá es soleado. &lt;tool_call&gt;\n{"name": "get_weather", "arguments": {"city": "Bogotá", "unit": "celsius"}, "id": "call_abc123"}\n&lt;/tool_call&gt;'
+            }
+    
+    # Mock función del mundo real
+    def get_weather(city: str, unit: str = "celsius") -> dict:
+        """Función que obtiene el clima de una API externa"""
+        return {
+            "city": city,
+            "temperature": 18 if unit == "celsius" else 64,
+            "unit": unit,
+            "condition": "soleado",
+            "humidity": 65
+        }
+    
+    # Inicializar framework
+    framework = FunctionCallingFramework(
+        llm_client=MockLLM(),
+        max_retries=3
+    )
+    
+    # Registrar herramienta
+    framework.register_tool(
+        name="get_weather",
+        func=get_weather,
+        description="Obtiene el clima actual de una ciudad",
+        parameters={
+            "type": "object",
+            "properties": {
+                "city": {
+                    "type": "string",
+                    "description": "Nombre de la ciudad"
+                },
+                "unit": {
+                    "type": "string",
+                    "enum": ["celsius", "fahrenheit"],
+                    "description": "Unidad de temperatura"
+                }
+            },
+            "required": ["city"]
+        }
+    )
+    
+    # Hacer una llamada
+    messages = [
+        {"role": "user", "content": "¿Qué clima hace en Bogotá?"}
+    ]
+    
+    response = framework.call_llm_with_tools(messages)
+    print("Respuesta final:", response)
+
+if __name__ == "__main__":
+    demo()</code></pre>
+<hr>
+<h2>🔄 Chaining Tool Calls — La Magia de Encadenar</h2>
+<p>El chaining de tools es cuando el LLM hace múltiples llamadas en secuencia:</p>
+<pre><code class="language-python"># Ejemplo de cadena de tools
+# 1. Buscar usuario por email
+# 2. Obtener sus pedidos
+# 3. Calcular total de compras
+
+CHAIN_STEPS = [
+    {"tool": "find_user", "input": "email", "output": "user_id"},
+    {"tool": "get_orders", "input": "user_id", "output": "orders"},
+    {"tool": "calculate_total", "input": "orders", "output": "total"}
+]
+
+# El LLM ejecuta cada paso y pasa el resultado al siguiente
+def execute_chain(initial_input: dict, chain: list) -> dict:
+    context = initial_input.copy()
+    
+    for step in chain:
+        result = execute_single_tool(
+            step["tool"], 
+            {step["input"]: context[step["input"]]}
+        )
+        context[step["output"]] = result
+    
+    return context</code></pre>
+<hr>
+<h2>⚠️ Los 3 Errores Que el 80% Comete</h2>
+<h3>Error 1: No Usar Function Calling Cuando es Beneficial</h3>
+<p><strong>El problema</strong>: Muchas aplicaciones usan prompts vagos cuando deberían usar function calling estructurado.</p>
+<p><strong>El escenario</strong>: En lugar de pedir "busca información del clima", el LLM podría generar código que llame directamente a una API.</p>
+<p><strong>La solución</strong>: Usa function calling cuando:</p>
 <ul>
-<li><strong>Training data</strong>: Los modelos se entrenan con datos protegidos?</li>
-<li><strong>Output ownership</strong>: Quien es dueo de lo que genera la IA?</li>
-<li><strong>Derivative works</strong>: Es una obra derivada si imita estilo?</li>
-<li><strong>Human authorship</strong>: Se requiere intervencion humana?</li>
+<li>Necesitas datos estructurados y precisos</li>
+<li>La acción tiene efectos secundarios (enviar email, hacer pago)</li>
+<li>Quieres evitar prompts injection</li>
+<li>La tarea requiere datos externos en tiempo real</li>
 </ul>
-<hr>
-<h2>📐 Perspectivas Legales</h2>
-<pre><code class="language-python"># Posiciones sobre ownership de AI content
-LEGAL_POSITIONS = {
-    "no_copyright": "AI output no tiene copyright sin humana intervencion",
-    "human_AI_joint": "Copyright joint entre usuario y desarrollador",
-    "fair_use_training": "Training es fair use",
-    "licensing_required": "Todo training requiere licencia"
+<pre><code class="language-python"># MAL: Prompt vago
+messages = [{"role": "user", "content": "Busca el clima de Bogotá"}]
+
+# BIEN: Function calling estructurado
+tools = [{
+    "name": "get_weather",
+    "parameters": {
+        "type": "object",
+        "properties": {"city": {"type": "string"}},
+        "required": ["city"]
+    }
+}]
+messages = [{"role": "user", "content": "¿Qué clima hace en Bogotá?"}]</code></pre>
+<h3>Error 2: No Definir Buenos Tool Schemas</h3>
+<p><strong>El problema</strong>: Schemas vagos o incompletos llevan a llamadas incorrectas.</p>
+<p><strong>El error común</strong>: No especificar tipos, no marcar campos requeridos, descripciones ambiguas.</p>
+<pre><code class="language-python"># MAL: Schema incompleto
+{
+    "name": "search",
+    "parameters": {"type": "object", "properties": {"query": {}}}
+}
+
+# BIEN: Schema completo con tipos y descripciones
+{
+    "name": "search",
+    "description": "Busca productos en el catálogo por nombre o categoría",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "Texto de búsqueda (mínimo 2 caracteres)"
+            },
+            "category": {
+                "type": "string",
+                "enum": ["electronics", "clothing", "home", "sports"],
+                "description": "Filtrar por categoría (opcional)"
+            },
+            "max_results": {
+                "type": "integer",
+                "description": "Máximo de resultados (default: 10, max: 50)",
+                "default": 10
+            }
+        },
+        "required": ["query"]
+    }
 }</code></pre>
+<h3>Error 3: No Manejar Errores de Herramientas Gracefully</h3>
+<p><strong>El problema</strong>: La herramienta falla y el sistema se rompe sin explicación útil.</p>
+<p><strong>El scenario</strong>: API externa caída, timeout, rate limit — y el usuario no sabe qué pasó.</p>
+<pre><code class="language-python"># MAL: Sin manejo de errores
+def handle_tool_result(result):
+    return result.result  # Explota si hay error
+
+# BIEN: Manejo completo con retries y feedback
+def handle_tool_result_with_fallback(
+    tool_call: ToolCall,
+    framework: FunctionCallingFramework
+) -> str:
+    
+    result = framework.execute_tool(tool_call)
+    
+    if result.success:
+        return f"✅ {result.result}"
+    
+    # Clasificar el error para dar feedback útil
+    error_type = classify_error(result.error)
+    
+    if error_type == "network":
+        return ("🌐 Error de red. La API no está disponible. "
+                "Intentando nuevamente...")
+    elif error_type == "rate_limit":
+        return ("⏳ Rate limit alcanzado. "
+                "Esperando antes de reintentar...")
+    elif error_type == "invalid_args":
+        return (f"❌ Argumentos inválidos: {result.error}. "
+                "Revisa los parámetros.")
+    else:
+        return (f"❌ Error inesperado: {result.error}. "
+                "Contacta soporte si persiste.")
+    
+    return f"✅ Resultado: {result.result}"
+
+def classify_error(error_msg: str) -> str:
+    """Clasifica el tipo de error para feedback apropiado"""
+    error_msg = error_msg.lower()
+    if "network" in error_msg or "connection" in error_msg:
+        return "network"
+    elif "rate limit" in error_msg or "429" in error_msg:
+        return "rate_limit"
+    elif "invalid" in error_msg or "required" in error_msg:
+        return "invalid_args"
+    return "unknown"</code></pre>
 <hr>
-<h2>🚀 Caso Studio: GitHub Copilot</h2>
-<pre><code class="language-python"># GitHub Copilot y alleged copyright infringement
-case_details = {
-    "plaintiff": "Programmers",
-    "defendant": "Microsoft/OpenAI",
-    "claim": "Code suggestions copia codigo protegido",
-    "status": "Pending",
-    "issue": "Was training data use fair?"
-}</code></pre>
-<hr>
-<h2>⚠️ Errores Comunes</h2>
-<h3>Error 1: Asumir que AI = Sin Derechos</h3>
-<p><strong>El problema</strong>: Usar contenido sin verificar licencias.</p>
-<p><strong>La solucion</strong>: Audit trail de training data y outputs.</p>
-<hr>
-<p><em>Eso es todo! Nos vemos en el Dia 338.</em></p>
+<h2>📊 Resumen y Cierre</h2>
+<p>El 80% hace function calling mal porque:</p>
+<ul>
+<li>No entiende que es generación condicionada, no magia</li>
+<li>Define tool schemas incompletos sin tipos ni descripciones</li>
+<li>No maneja errores y deja al usuario sin feedback</li>
+</ul>
+<p>El 20% que lo hace bien:</p>
+<ul>
+<li>Diseña schemas completos con validación</li>
+<li>Implementa retries con exponential backoff</li>
+<li>Da feedback claro según el tipo de error</li>
+<li>Encadena tools cuando la tarea lo requiere</li>
+</ul>
+<p><strong>La matemática es simple</strong>: el LLM genera tokens condicionados a las tool definitions. <strong>La implementación es compleja</strong>: necesitas validación, retries, encadenamiento, y feedback. Pero eso es lo que separa al 80% del 20%.</p>
+<p><em>Hagale pues, parcero. Eso es todo por hoy. Mañana seguimos con más.</em></p>
   </article>
 
   <script>
