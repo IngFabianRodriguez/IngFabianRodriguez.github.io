@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="Pruning - Podando Redes Neuronales | #365DaysOfAI por Fabian Rodriguez">
-  <title>Pruning - Podando Redes Neuronales | #365DaysOfAI</title>
+  <meta name="description" content="LLM Document Understanding — Qué el 80% hace mal y qué el 20% hace bien para entender docs | #365DaysOfAI por Fabian Rodriguez">
+  <title>LLM Document Understanding — Qué el 80% hace mal | #365DaysOfAI</title>
   
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
@@ -110,51 +110,295 @@ nav {
 
   <header class="article-hero">
     <div class="day-badge">Dia 310 / 365 &nbsp;·&nbsp; #365DaysOfAI</div>
-    <h1 class="article-title">Pruning - Podando Redes Neuronales</h1>
+    <h1 class="article-title">LLM Document Understanding — Qué el 80% hace mal y qué el 20% hace bien para entender docs</h1>
     <div class="article-meta">
       <time class="article-date">06 de noviembre de 2026</time>
-      <div class="tags"><span class="tag">pruning</span><span class="tag">neural-networks</span><span class="tag">compression</span><span class="tag">optimization</span></div>
+      <div class="tags"><span class="tag">document-understanding</span><span class="tag">llm</span><span class="tag">pdf</span><span class="tag">tables</span><span class="tag">layout</span></div>
     </div>
   </header>
 
   <article class="article-body">
-    <h1>Pruning - Podando Redes Neuronales</h1>
-<p>Hagale pues, parcero. Hoy es el Dia 310 y hablamos de Pruning, podando redes para eficiencia. Dejala el cafe.</p>
-<hr>
-<h2>🎯 Que Es Pruning?</h2>
-<p>Pruning elimina weights o neuronas menos importantes de una red. Puede reducir size 50-90% con minima perdida de performance.</p>
-<h3>Tipos:</h3>
-<ul>
-<li><strong>Unstructured</strong>: Eliminar weights individuales</li>
-<li><strong>Structured</strong>: Eliminar attention heads o layers completos</li>
-<li><strong>Magnitude</strong>: Eliminar weights pequenos</li>
-<li><strong>Gradient-based</strong>: Usar sensitividad al gradiente</li>
-</ul>
-<hr>
-<h2>📐 Magnitude Pruning</h2>
-<pre><code class="language-python">import torch
-import torch.nn.utils.prune as prune
+    <h2>🎯 Intro — El Problema de Documentos que Todos Tratan Como Texto Plano</h2>
+    <p>Mamita querida, si usted abre un PDF de los que llegan a la oficina y lo trata como si fuera un bloc de notas, está perdido. Un PDF no es texto plano — tiene columnas, tablas, gráficos, headers, footers, watermarks, y un layout que le da significado. Así como en Bogotá uno no puede pedir una aguapanela y que le sirva en un vaso de生素, con documentos no puedes pedir contexto y tratar todo como texto. Día 310, hoy hablamos de document understanding con LLMs.</p>
 
-# Pruning magnitud
-model = MyModel()
-for name, module in model.named_modules():
-    if 'weight' in name:
-        prune.l1_unstructured(
-            module, name='weight', amount=0.3
+    <p>El 80% de las implementaciones que he visto tratan cualquier documento como strings de texto y se preguntan por qué el LLM no entiende la tabla de la página 4. Because it's not seeing the table, my friend. It's seeing "Figura 1.1 продол好 ...".</p>
+
+    <h2>📐 Por Qué Un Documento No Es Texto Plano</h2>
+    <p>Un documento tiene estructura jerárquica:</p>
+    <ul>
+      <li><strong>Layout</strong>: título, subtítulo, columnas, footnotes, marginalia</li>
+      <li><strong>Semántica tabular</strong>: filas y columnas con headers</li>
+      <li><strong>Figures</strong>: imágenes, chartss, diagramas</li>
+      <li><strong>Lectura order</strong>: no es izquierda→derecha lineal, es 2D</li>
+    </ul>
+
+    <p>Para un LLM que solo ve tokens, un PDF es una secuencia de caracteres. Necesitas reconstruir la estructura.</p>
+
+    <h2>🔧 Pipeline de Document Understanding</h2>
+    <pre><code class="language-python">from dataclasses import dataclass
+from typing import Optional
+import pdfplumber
+import pytesseract
+from PIL import Image
+import io
+
+@dataclass
+class DocumentElement:
+    type: str  # 'text' | 'table' | 'figure' | 'header' | 'footer'
+    content: any  # str for text, dict for table/figure
+    bbox: tuple[float, float, float, float]  # (x0, y0, x1, y1)
+    page: int
+
+class DocumentUnderstandingPipeline:
+    """
+    Pipeline completo para extraer estructura de documentos.
+    Combina pdfplumber (texto y tablas) con OCR (imágenes).
+    """
+
+    def __init__(self, ocr_enabled: bool = True):
+        self.ocr_enabled = ocr_enabled
+
+    def process_pdf(self, pdf_path: str) -> list[DocumentElement]:
+        elements = []
+        with pdfplumber.open(pdf_path) as pdf:
+            for page_num, page in enumerate(pdf.pages, start=1):
+                # 1. Extraer tablas
+                tables = page.extract_tables()
+                for table in tables:
+                    elements.append(DocumentElement(
+                        type='table',
+                        content={'headers': table[0], 'rows': table[1:]},
+                        bbox=(0, 0, page.width, page.height),
+                        page=page_num
+                    ))
+
+                # 2. Extraer texto por bloques con posición
+                words = page.extract_words(x_tolerance=3, y_tolerance=3)
+                current_block = []
+                current_bbox = None
+
+                for word in words:
+                    bbox = (word['x0'], word['top'], word['x1'], word['bottom'])
+
+                    if current_block and self._is_new_block(current_bbox, bbox, threshold=15):
+                        # Guardar bloque anterior
+                        text = ' '.join([w['text'] for w in current_block])
+                        elements.append(DocumentElement(
+                            type=self._classify_block(current_block),
+                            content=text,
+                            bbox=current_bbox,
+                            page=page_num
+                        ))
+                        current_block = []
+
+                    current_block.append(word)
+                    current_bbox = self._merge_bbox(current_bbox, bbox)
+
+                # Último bloque
+                if current_block:
+                    text = ' '.join([w['text'] for w in current_block])
+                    elements.append(DocumentElement(
+                        type=self._classify_block(current_block),
+                        content=text,
+                        bbox=current_bbox,
+                        page=page_num
+                    ))
+
+                # 3. OCR para imágenes/figuras
+                if self.ocr_enabled:
+                    for img in page.images:
+                        img_obj = page.to_image()
+                        img_obj.save(io.BytesIO(page.images[0]['raw_image']))
+                        # OCR en la imagen
+                        ocr_text = self._ocr_image(img['raw_image'])
+                        if ocr_text.strip():
+                            elements.append(DocumentElement(
+                                type='figure',
+                                content=ocr_text,
+                                bbox=(img['x0'], img['top'], img['x1'], img['bottom']),
+                                page=page_num
+                            ))
+
+        return elements
+
+    def _is_new_block(self, prev_bbox, curr_bbox, threshold: float = 15) -> bool:
+        """Detecta si hubo salto de bloque (espacio vertical > threshold)."""
+        if prev_bbox is None:
+            return True
+        return abs(prev_bbox[1] - curr_bbox[1]) > threshold
+
+    def _merge_bbox(self, bbox1, bbox2):
+        if bbox1 is None:
+            return bbox2
+        return (
+            min(bbox1[0], bbox2[0]),
+            min(bbox1[1], bbox2[1]),
+            max(bbox1[2], bbox2[2]),
+            max(bbox1[3], bbox2[3])
         )
 
-# Hacer permanente
-for name, module in model.named_modules():
-    if hasattr(module, 'weight_orig'):
-        prune.remove(module, 'weight')</code></pre>
-<hr>
-<h2>🚀 Lottery Ticket Hypothesis</h2>
-<p>La hipotesis dice que toda red grande contiene una subred pequena que puede entrenar independently para igual performance.</p>
-<hr>
-<h2>⚠️ Efectividad</h2>
-<p>Pruning puede no mejorar speed en GPUs modernas sin soporte de sparsity estructurada.</p>
-<hr>
-<p><em>Eso es todo! Nos vemos en el Dia 311.</em></p>
+    def _classify_block(self, words: list) -> str:
+        """Clasifica el bloque según posición y contenido."""
+        if not words:
+            return 'text'
+        # Headers típicos
+        first_word = words[0]['text'].lower()
+        if first_word in ('figura', 'figure', 'tabla', 'table', 'gráfico', 'grafico'):
+            return 'figure'
+        # Posición: arriba de la página = header
+        avg_top = sum(w['top'] for w in words) / len(words)
+        if avg_top < 50:
+            return 'header'
+        return 'text'
+
+    def _ocr_image(self, raw_image: bytes) -> str:
+        """OCR usando Tesseract."""
+        img = Image.open(io.BytesIO(raw_image))
+        text = pytesseract.image_to_string(img, lang='spa+eng')
+        return text
+
+# Uso
+pipeline = DocumentUnderstandingPipeline(ocr_enabled=True)
+elements = pipeline.process_pdf("informe_anual_2024.pdf")
+
+# Clasificar por tipo
+tables = [e for e in elements if e.type == 'table']
+texts = [e for e in elements if e.type == 'text']
+figures = [e for e in elements if e.type == 'figure']
+
+print(f"Tables: {len(tables)}, Texts: {len(texts)}, Figures: {len(figures)}")</code></pre>
+
+    <h2>📊 Extracción de Tablas</h2>
+    <pre><code class="language-python">def table_to_markdown(table_data: dict) -> str:
+    """
+    Convierte tabla extraída a markdown para LLM.
+    Incluye headers como primera fila.
+    """
+    headers = table_data['headers']
+    rows = table_data['rows']
+
+    if not rows:
+        return "| " + " | ".join(headers) + " |\n| " + " | ".join(["---"] * len(headers)) + " |"
+
+    lines = []
+    lines.append("| " + " | ".join(str(h) for h in headers) + " |")
+    lines.append("| " + " | ".join(["---"] * len(headers)) + " |")
+    for row in rows:
+        lines.append("| " + " | ".join(str(cell) if cell else "" for cell in row) + " |")
+
+    return "\n".join(lines)
+
+# Integración con LLM: construir prompt estructurado
+def build_document_prompt(elements: list[DocumentElement]) -> str:
+    """Construye prompt con estructura preservada."""
+    sections = []
+
+    # Headers primero
+    headers = [e for e in elements if e.type == 'header']
+    for h in headers:
+        sections.append(f"## HEADER: {h.content}")
+
+    # Tablas como markdown
+    tables = [e for e in elements if e.type == 'table']
+    for i, t in enumerate(tables):
+        sections.append(f"### Tabla {i+1}:\n{table_to_markdown(t.content)}")
+
+    # Texto
+    texts = [e for e in elements if e.type == 'text']
+    for t in texts:
+        sections.append(t.content)
+
+    # Figuras
+    figures = [e for e in elements if e.type == 'figure']
+    for i, f in enumerate(figures):
+        sections.append(f"### Figura {i+1}:\n{f.content}")
+
+    return "\n\n".join(sections)
+
+# Prompt para el LLM
+prompt = build_document_prompt(elements)
+llm_input = f"""Analiza este documento y responde las preguntas del usuario.
+Usa la estructura del documento (headers, tablas, figuras) para dar respuestas precisas.
+
+DOCUMENTO:
+{prompt}
+
+PREGUNTA: {user_question}"""
+</code></pre>
+
+    <h2>🚀 Layout Understanding con Modelos Especializados</h2>
+    <pre><code class="language-python"># Para documentos complejos (facturas, receipts, formularios)
+# usa modelos especializados como LayoutLM o Donut
+
+from transformers import DonutProcessor, VisionEncoderDecoderModel
+import torch
+
+class LayoutAwareExtractor:
+    """
+    Usa Donut para document understanding end-to-end.
+    No necesita OCR — el modelo lee directamente del imagen.
+    """
+
+    def __init__(self, model_name: str = "naver-clova-ai/donut-base-finetuned-docvqa"):
+        self.processor = DonutProcessor.from_pretrained(model_name)
+        self.model = VisionEncoderDecoderModel.from_pretrained(model_name)
+        self.model.eval()
+
+    def extract_structure(self, image: Image.Image, task_prompt: str = None):
+        """
+        Extrae estructura JSON del documento.
+        task_prompt puede ser 'captions', 'figures', 'tables', etc.
+        """
+        if task_prompt is None:
+            task_prompt = "Extract all document elements: headers, tables, figures, body text."
+
+        # Preparar input
+        inputs = self.processor(
+            image,
+            text=task_prompt,
+            return_tensors="pt"
+        )
+
+        # Generar output
+        with torch.no_grad():
+            outputs = self.model.generate(
+                inputs["pixel_values"],
+                max_length=512,
+                early_stopping=True
+            )
+
+        # Decodificar
+        seq = self.processor.batch_decode(outputs, skip_special_tokens=True)[0]
+        return self.processor.tokenizer2json(seq)
+
+# Uso
+extractor = LayoutAwareExtractor()
+doc_structure = extractor.extract_structure(image_from_pdf)
+# Devuelve JSON con: {headers: [...], tables: [...], figures: [...], text: [...]}</code></pre>
+
+    <h2>⚠️ Error 1: Tratando Todos los Documentos Como Texto Plano</h2>
+    <p><strong>El error:</strong> Haces <code>open(file).read()</code> en un PDF y le pasas el string al LLM. Pierdes toda la estructura — tablas se vuelven strings rotos, headers se mezclan con body text.</p>
+    <p><strong>El fix:</strong> Usa bibliotecas especializadas como pdfplumber, PyMuPDF, o LayoutParser. Ellas preservan coordenadas, tablas, y estructura. Para español, pdfplumber funciona bien con acentos y caracteres especiales.</p>
+
+    <h2>⚠️ Error 2: No Usar Modelos Especializados para Layout</h2>
+    <p><strong>El error:</strong> Tratar de detectar headers con regex o posición fija. Los documentos varían — lo que es header en uno puede ser footnote en otro.</p>
+    <p><strong>El fix:</strong> Modelos como Donut, LayoutLM, or PubLayNet-trained models detectan layout automáticamente. Para casos específicos (facturas, receipts), fine-tuned models dan 95%+ accuracy. No reinventes la rueda — usa un modelo que ya sabe cómo es un documento.</p>
+
+    <h2>⚠️ Error 3: No Manejar Tablas</h2>
+    <p><strong>El error:</strong> O ignoras las tablas o lasextraes mal y el LLM recibe filas sin headers. "Alabama, 300, 150, 45%" significa nada sin saber que son "Estado, Ventas, Costos, Margen".</p>
+    <p><strong>El fix:</strong> Convierte tablas a markdown con headers claros. Usa <code>page.extract_tables()</code> de pdfplumber que detecta bordes y estructura. Si la tabla está en imagen, OCR con estructura preservada (Tesseract con config <code>--oem 3 --psm 6</code>). Y siempre verifica que el número de columnas sea consistente.</p>
+
+    <h2>📊 Resumen — Colombianizando la Práctica</h2>
+    <p>Así como en una挤aypa de Bogotá uno sabe que primero pida el plato, luego la cuenta, y al final el aguapanela, en document understanding hay que seguir el orden correcto:</p>
+    <ul>
+      <li><strong>Preserva la estructura</strong>: no shred the documento — reconoce headers, tablas, figuras</li>
+      <li><strong>Usa modelos especializados</strong>: Donut, LayoutLM, pdfplumber — cada uno para su momento</li>
+      <li><strong>Convierte a markdown</strong>: tablas como markdown con headers claros, figuras con captions</li>
+      <li><strong>Pasa contexto al LLM</strong>: no solo texto, sino la estructura jerárquica</li>
+    </ul>
+
+    <p>Y listo, parce. Día 310 completado. Mañana seguimos con más. Bueno, más vale.</p>
+    <p><em>#365DaysOfAI</em></p>
   </article>
 
   <script>
