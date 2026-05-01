@@ -118,65 +118,433 @@ nav {
   </header>
 
   <article class="article-body">
-    <h1>Retrieval Augmented Generation - RAG Explicado</h1>
-<p>Hagale pues, parcero. Hoy es el Dia 356 y hablamos de RAG: Retrieval Augmented Generation explicado. Cafe.</p>
-<hr>
-<h2>🎯 RAG</h2>
-<p>RAG combina retrieval con generacion:</p>
-<ul>
-<li><strong>Retrieve</strong>: Busca informacion relevante</li>
-<li><strong>Augment</strong>: Anade contexto al prompt</li>
-<li><strong>Generate</strong>: Produce respuesta con contexto</li>
-<li><strong>Up-to-date</strong>: Info actualizada, no solo training data</li>
-</ul>
-<hr>
-<h2>📐 RAG Architecture</h2>
-<pre><code class="language-python"># RAG Pipeline
-RAG_PIPELINE = """
-1. Indexing (offline):
-   Documentos -> Chunks -> Embeddings -> Vector DB
+<h1>LLM Architecture Evolution II — Mixture of Experts y Efficient Routing</h1>
 
-2. Query (online):
-   Query -> Embed -> Search Vector DB -> Top-k chunks
-   -> Add to prompt -> LLM Generate -> Response
-"""
+<p>Hagale pues, parcero. Día 356 y continuamos con la serie de evolución de arquitecturas LLM. Ayer hablamos de State Space Models y modelado en tiempo lineal. Hoy nos metemos con **Mixture of Experts (MoE)**: cómo el scaling fue el driver principal, y por qué el efficient routing está cambiando el campo otra vez. Acompañeme que esto está interesante.</p>
 
-# Ejemplo de implementacion
-def rag_query(question, vector_db, llm):
-    # 1. Embed la pregunta
-    question_embedding = embed(question)
+<h2>🎯 Por Qué MoE Existe: El Problema del Scaling</h2>
+
+<p>Cuando hablamos de escalar LLMs, hay un problema práctico: **más parámetros = más computación por token**. Un modelo de 7B parámetros usa ~7B FLOPs por token. Un modelo de 70B usa ~70B FLOPs. Esto es lineal — y se vuelve prohibitivamente caro.</p>
+
+<p>Pero ¿qué pasa si queremos que el modelo tenga **más capacidad** sin aumentar **el costo por inference**? Aquí es donde entra MoE.</p>
+
+<h2>📐 Mixture of Experts: La Idea Central</h2>
+
+<p>La idea de MoE es simple pero poderosa: en lugar de que **todos** los parámetros procesen **cada** token, dejamos que **subconjuntos especializados** de parámetros se activen por token. Esto se llama **sparse activation</strong>.</p>
+
+<pre><code class="language-python"># === DENSE vs SPARSE ===
+# Modelo Denso (GPT, Llama):
+# - Todos los 70B parámetros procesan cada token
+# - Costo por token: 70B FLOPs
+# - Utilización: 100% de parámetros
+
+# MoE (Mixtral, Switch Transformer):
+# - Solo 2 experts de 8B procesan cada token
+# - Costo por token: ~12B FLOPs (2 * 8B + routing overhead)
+# - Utilización: ~2/8 = 25% de parámetros activos
+
+# Entonces: ¿tenemos un modelo de 46B que cuesta como 12B?
+# ¡Sí! Mixtral 8x7B: 46.7B total, ~12B FLOPs/token activo
+
+MoeArchitecture = {
+    "total_params": "46.7B",
+    "active_params_per_token": "12B",
+    "num_experts": 8,
+    "top_k": 2,  # cuántos experts se activan por token
+    "expert_capacity": "1.0",  # balance load
+}</code></pre>
+
+<h2>🔢 La Matemática del Routing</h2>
+
+<p>El corazón de MoE es el **router** (también llamado **gate**). Para cada token, el router decide qué expert procesarlo. Esto se hace con una simple red lineal + softmax:</p>
+
+<pre><code class="language-python">import numpy as np
+
+def mixture_of_experts_forward(x, experts, router_weights, top_k=2):
+    """
+    Forward pass de un MoE layer.
     
-    # 2. Busca chunks relevantes
-    chunks = vector_db.search(question_embedding, k=5)
+    x: (batch, seq_len, d_model) - embedding del token
+    experts: lista de N redes neuronales (los "experts")
+    router_weights: (d_model, N) - pesos del router
+    top_k: cuántos experts activar por token
+    """
+    batch_size, seq_len, d_model = x.shape
     
-    # 3. Construye prompt con contexto
-    context = "\n".join([c.text for c in chunks])
-    prompt = f"Contexto: {context}\n\nPregunta: {question}"
+    # === ROUTING ===
+    # Para cada token, calcula score para cada expert
+    # router_logits: (batch * seq_len, num_experts)
+    x_flat = x.reshape(-1, d_model)  # (batch*seq_len, d_model)
+    router_logits = x_flat @ router_weights  # (B*S, num_experts)
     
-    # 4. Genera respuesta
-    return llm.generate(prompt)</code></pre>
-<hr>
-<h2>🚀 RAG vs Fine-tuning</h2>
-<pre><code class="language-python">COMPARISON = {
-    "RAG": {
-        "pros": ["Dynamic data", "Explainable", "Easy updates"],
-        "cons": ["Latency", "Retrieval quality"],
-        "best_for": "Knowledge bases, Q&A"
+    # Softmax para obtener probabilidades
+    router_probs = np.exp(router_logits) / np.exp(router_logits).sum(axis=-1, keepdims=True)
+    
+    # Seleccionar top-k experts
+    top_k_indices = np.argsort(router_probs, axis=-1)[:, -top_k:]  # (B*S, top_k)
+    top_k_probs = np.take_along_axis(router_probs, top_k_indices, axis=-1)
+    
+    # Normalizar probabilidades de los top-k
+    top_k_probs_norm = top_k_probs / top_k_probs.sum(axis=-1, keepdims=True)
+    
+    # === FORWARD POR LOS EXPERTS ===
+    # Cada expert procesa el token independientemente
+    outputs = []
+    for i, expert in enumerate(experts):
+        # ¿Cuáles tokens van a este expert?
+        expert_mask = (top_k_indices == i).any(axis=-1)
+        expert_tokens = x_flat[expert_mask]
+        
+        if len(expert_tokens) > 0:
+            expert_output = expert(expert_tokens)  # (n_tokens, d_model)
+            
+            # Ponderar por probabilidad del router
+            expert_probs = top_k_probs_norm[expert_mask, 
+                                            np.where((top_k_indices[expert_mask] == i).any(axis=-1))[0]]
+            
+            # Acumular salida ponderada
+            output = np.zeros((len(x_flat), d_model))
+            output[expert_mask] += expert_output * expert_probs[:, np.newaxis]
+            outputs.append(output)
+    
+    # Combinar outputs de todos los experts
+    final_output = sum(outputs)
+    
+    return final_output.reshape(batch_size, seq_len, d_model)
+
+# Ejemplo de experts
+class Expert:
+    def __init__(self, d_model, d_ff):
+        self.W1 = np.random.randn(d_model, d_ff)
+        self.W2 = np.random.randn(d_ff, d_model)
+    
+    def __call__(self, x):
+        return x @ (self.W1 @ self.W2)  # Simplificado: FFN
+
+# Configuración Mixtral-style
+NUM_EXPERTS = 8
+D_MODEL = 4096
+D_FF = 14336  # ~4x expansion
+
+experts = [Expert(D_MODEL, D_FF) for _ in range(NUM_EXPERTS)]
+router_weights = np.random.randn(D_MODEL, NUM_EXPERTS) * 0.01</code></pre>
+
+<h2>📊 MoE vs Dense: La Comparación</h2>
+
+<pre><code class="language-python"># Comparación de FLOPs por token
+def compare_moe_vs_dense(model_size, num_experts, top_k, d_model):
+    """
+    Compara FLOPs entre MoE y Dense.
+    """
+    # === DENSE ===
+    # FFN: 2 * d_model * (4 * d_model) = 8 * d_model^2
+    # Asumiendo d_ff = 4 * d_model
+    dense_flops_per_token = 8 * d_model ** 2
+    
+    # === MoE ===
+    # Routing: 2 * d_model * num_experts
+    routing_flops = 2 * d_model * num_experts
+    
+    # Cada expert activo: 2 * d_model * d_ff = 8 * d_model^2
+    # Pero solo top_k de num_experts se ejecutan
+    active_expert_flops = top_k * 8 * d_model ** 2
+    
+    # Balance/load balancing (overhead)
+    load_balancing_flops = d_model * num_experts * 0.01
+    
+    moe_flops_per_token = routing_flops + active_expert_flops + load_balancing_flops
+    
+    # Savings
+    speedup = dense_flops_per_token / moe_flops_per_token
+    memory_savings = 1 - (top_k / num_experts)
+    
+    print(f"=== {model_size}B parameters ===")
+    print(f"Dense FLOPs/token: {dense_flops_per_token:,}")
+    print(f"MoE ({num_experts} experts, top-{top_k}) FLOPs/token: {moe_flops_per_token:,}")
+    print(f"Speedup: {speedup:.1f}x")
+    print(f"Memory savings in params: {memory_savings*100:.0f}%")
+    
+    return speedup
+
+# Mixtral 8x7B vs Llama 70B
+compare_moe_vs_dense(model_size="70B equivalent", num_experts=8, top_k=2, d_model=4096)
+# Output:
+# Dense FLOPs/token: 134,217,728
+# MoE FLOPs/token: ~33,816,832
+# Speedup: ~4x</code></pre>
+
+<h2>🚀 Por Qué el Routing Es Difícil</h2>
+
+<p>El routing parece simple — solo un softmax y argsort — pero tiene problemas prácticos importantes:</p>
+
+<pre><code class="language-python"># === PROBLEMA 1: Load Imbalance ===
+# Si un expert siempre recibe más tokens, ese expert se satura
+# y los demás están subutilizados.
+
+# Solución: Auxiliary load balancing loss
+def load_balancing_loss(router_probs, top_k_indices, num_experts):
+    """
+    Penaliza cuando la distribución de tokens está desbalanceada.
+    
+    paper: "Switch Transformers: Scaling to Trillion Parameter Models"
+    """
+    # Cuántos tokens recibió cada expert (fracción)
+    tokens_per_expert = np.zeros(num_experts)
+    for expert_idx in range(num_experts):
+        tokens_per_expert[expert_idx] = (top_k_indices == expert_idx).sum()
+    tokens_fraction = tokens_per_expert / tokens_per_expert.sum()
+    
+    # Probabilidad promedio que el router asigna a cada expert
+    expert_probs_sum = router_probs.mean(axis=0)
+    expert_probs_fraction = expert_probs_sum / expert_probs_sum.sum()
+    
+    # La pérdida es la diferencia cuadrática
+    # Minimizar esto = distribución uniforme
+    loss = num_experts * (tokens_fraction @ expert_probs_fraction)
+    
+    return loss
+
+# === PROBLEMA 2: Communication Overhead (en distributed) ===
+# En multi-GPU, diferentes tokens van a diferentes GPUs
+# Esto requiere all-to-all communication
+
+# === PROBLEMA 3: Expert Collapse ===
+# Si un expert se hace "demasiado bueno", recibe TODOS los tokens
+# Los demás experts dejan de entrenar
+
+# Solución: Router z-loss, capacity factors, dropout en routing
+ROUTING_SOLUTIONS = {
+    "auxiliary_loss": "Añade pérdida de balanceo al training",
+    "capacity_factor": "Limita tokens por expert",
+    "dropout": "随机丢弃部分 routing decisions",
+    "noisy_top_k": "Añade ruido antes de seleccionar top-k",
+}</code></pre>
+
+<h2>📈 Evolución de MoE</h2>
+
+<pre><code class="language-python">MOE_TIMELINE = {
+    "2017": {
+        "name": "Outrageously Large Neural Networks",
+        "authors": "Shazeer et al.",
+        "concept": "Primer MoE para NLP con millones de experts",
+        "experts": "1000+ sparse gates",
+        "problem": "Communication overhead era prohibitivo"
     },
-    "Fine-tuning": {
-        "pros": ["Fast inference", "Style learning"],
-        "cons": ["Static", "Expensive", "Hard to debug"],
-        "best_for": "Task-specific, style transfer"
+    "2021": {
+        "name": "Switch Transformer",
+        "authors": "Google",
+        "concept": "Simplifica a top-1 routing (un solo expert)",
+        "experts": "2048",
+        "speedup": "10x vs T5-base",
+        "breakthrough": "Auxiliary load balancing práctico"
+    },
+    "2023": {
+        "name": "Mixtral 8x7B",
+        "authors": "Mistral AI",
+        "concept": "MoE eficiente con top-2 routing",
+        "experts": 8,
+        "active": "12B de 46B parámetros por token",
+        "breakthrough": "Primer MoE open-source competitivo"
+    },
+    "2024": {
+        "name": "DeepSeek-V2",
+        "authors": "DeepSeek",
+        "concept": "MoE con 236B params, 21B activos",
+        "experts": 128,
+        "technique": "Multi-head routing, not just top-k",
+        "breakthrough": "MLA attention + MoE совместно"
+    },
+    "2025": {
+        "name": "Domain-Specific MoE",
+        "concept": "Experts especializados por dominio",
+        "example": "Un expert para código, otro para matemáticas, otro para español",
+        "trend": "Fine-grained specialization"
     }
 }</code></pre>
-<hr>
-<h2>⚠️ Errores Comunes</h3>
-<h3>Error 1: Chunking Aleatorio</h3>
-<p><strong>El problema</strong>: Chunks sin logica pierden contexto.</p>
-<p><strong>La solucion</strong>: Chunking inteligente con overlap.</p>
-<hr>
-<p><em>Eso es todo! Nos vemos en el Dia 357.</em></p>
-  </article>
+
+<h2>⚠️ Errores Comunes al Aproximarse a MoE</h2>
+
+<h3>Error 1: No Entender Qué Es MoE Realmente</h3>
+
+<p><strong>El problema</strong>: Muchos creen que MoE significa "muchos modelos en uno". No es eso. MoE es un **single model** con **sparse activation**. Los experts no son modelos completos — son capas FFN especializadas dentro de una arquitectura unificada.</p>
+
+<p><strong>La solución</strong>: Entiende que MoE escala la **capacidad del modelo** manteniendo el **costo de inference** relativamente bajo. Es como tener 8 especialistas disponibles, pero solo pagando por 2 por paciente.</p>
+
+<pre><code class="language-python"># NO es esto:
+WRONG_CONCEPTION = """
+Un ensemble de 8 modelos completos que promedia respuestas.
+Cada "expert" es un modelo de，语言 completo.
+"""
+
+# SÍ es esto:
+CORRECT_CONCEPTION = """
+Una sola arquitectura transformer donde cada FFN layer
+tiene 8 "experts" (sub-capas), y un router selecciona 2 por token.
+Los experts comparten la misma estructura, pero tienen pesos distintos.
+"""</code></pre>
+
+<h3>Error 2: No Saber Cuándo Usar MoE</h3>
+
+<p><strong>El problema</strong>: MoE no siempre es mejor. Para tareas simples, un modelo dense pequeño es más eficiente. MoE brilla en:</p>
+
+<ul>
+<li>**Training a escala masiva**: Cuando quieres 100B+ parámetros efectivos</li>
+<li>**Inference de alto throughput**: Cuando puedes parallelizar bien los experts</li>
+<li>**Tareas heterogéneas**: Cuando diferentes inputs necesitan diferentes capacidades</li>
+</ul>
+
+<p>MoE no brilla en:</p>
+<ul>
+<li>**Baja latencia**: Routing overhead añade latencia</li>
+<li>**Single-token prediction**: Cada token individual puede ser más lento</li>
+<li>**Memory-constrained devices**: Los expertos deben caber en VRAM aunque no estén activos</li>
+</ul>
+
+<p><strong>La solución</strong>: Antes de implementar MoE, pregúntate: ¿el overhead de routing vale la pena dado mi caso de uso? Si estás haciendo fine-tuning de un modelo pequeño para una tarea específica, probablemente no.</p>
+
+<h3>Error 3: Ignorar la Complejidad del Routing</h3>
+
+<p><strong>El problema</strong>: El routing no es "solo un softmax". En la práctica:</p>
+
+<ul>
+<li>**Expert load imbalance**: Puede causar que algunos experts no aprendan bien</li>
+<li>**Token dropping**: Si la capacity de un expert se excede, tokens se-droppean</li>
+<li>**Training instability**: Top-k sampling con gradients puede ser inestable</li>
+<li>**Deployment complexity**: En inference, necesitas manejar routing dinámic</li>
+</ul>
+
+<p><strong>La solución</strong>: Implementa desde el inicio:</p>
+
+<pre><code class="language-python"># Best practices para MoE routing
+class MoELayerWithBestPractices(nn.Module):
+    def __init__(self, d_model, num_experts, top_k, capacity_factor=1.25):
+        super().__init__()
+        self.num_experts = num_experts
+        self.top_k = top_k
+        self.capacity_factor = capacity_factor
+        
+        # Router con capacidad adecuada
+        self.router = nn.Linear(d_model, num_experts, bias=False)
+        
+        # Experts como FFN estándar
+        self.experts = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(d_model, 4 * d_model),
+                nn.GELU(),
+                nn.Linear(4 * d_model, d_model),
+            )
+            for _ in range(num_experts)
+        ])
+        
+        # Load balancing auxiliary loss
+        self.register_buffer('expert_usage_count', torch.zeros(num_experts))
+        
+    def forward(self, x):
+        B, T, D = x.shape
+        x_flat = x.view(-1, D)
+        
+        # Router
+        router_logits = self.router(x_flat) / 0.67  # temperature scaling
+        router_probs = F.softmax(router_logits, dim=-1)
+        
+        # Top-k selection
+        top_k_probs, top_k_indices = torch.topk(router_probs, self.top_k, dim=-1)
+        top_k_probs = top_k_probs / top_k_probs.sum(dim=-1, keepdim=True)
+        
+        # Capacity check
+        max_tokens_per_expert = int(T * self.capacity_factor)
+        
+        # Initialize output
+        output = torch.zeros_like(x_flat)
+        
+        for expert_idx, expert in enumerate(self.experts):
+            # Mask para tokens asignados a este expert
+            expert_mask = (top_k_indices == expert_idx).any(dim=-1)
+            expert_indices = expert_mask.nonzero(as_tuple=True)[0]
+            
+            if len(expert_indices) > max_tokens_per_expert:
+                # Token dropping: muestra qué tokens se pierden
+                expert_indices = expert_indices[:max_tokens_per_expert]
+                expert_mask = torch.zeros(len(x_flat), dtype=torch.bool)
+                expert_mask[expert_indices] = True
+            
+            if len(expert_indices) > 0:
+                # Forward pass
+                expert_input = x_flat[expert_indices]
+                expert_output = expert(expert_input)
+                
+                # Ponderar por probabilidad del router
+                probs = top_k_probs[expert_indices, 
+                                   (top_k_indices[expert_indices] == expert_idx).any(dim=-1).nonzero(as_tuple=True)[1]]
+                
+                output[expert_indices] = expert_output * probs.unsqueeze(-1)
+                
+                # Tracking para load balancing
+                self.expert_usage_count[expert_idx] += len(expert_indices)
+        
+        return output.view(B, T, D)</code></pre>
+
+<h2>📈 El Estado Actual: MoE Everywhere</h2>
+
+<p>MoE se ha convertido en el estándar para modelos a escala:</p>
+
+<pre><code class="language-python">KNOWN_MOE_MODELS = {
+    # Open Source
+    "Mixtral 8x7B": {
+        "organization": "Mistral AI",
+        "total_params": "46.7B",
+        "active_params": "12B",
+        "experts": 8,
+        "top_k": 2,
+        "context_length": "32k",
+        "license": "Apache 2.0"
+    },
+    "DeepSeek-V2": {
+        "organization": "DeepSeek",
+        "total_params": "236B",
+        "active_params": "21B",
+        "experts": 128,
+        "top_k": "multi-head",
+        "context_length": "128k",
+        "breakthrough": "MLA attention + MoE"
+    },
+    "Qwen2-MoE": {
+        "organization": "Alibaba",
+        "total_params": "14B",
+        "active_params": "4B",
+        "experts": 16,
+        "top_k": 4,
+        "architecture": "Fine-grained expert specialization"
+    },
+    
+    # Closed/Production
+    "GPT-4 (rumored)": {
+        "猜测": "8x220B MoE",
+        "active_params_per_token": "~110B",
+        "organization": "OpenAI"
+    },
+    "Gemini (Google)": {
+        "architecture": "MoE + TPU optimization",
+        "organization": "Google DeepMind"
+    }
+}
+
+# Tendencia: Expert Specialization
+# En lugar de experts genéricos, algunos approaches usan:
+# - Domain experts (código, math, lenguaje)
+# - Language experts (español, inglés, mandarín)
+# - Task experts (QA, resumen, traducción)</code></pre>
+
+<h2>Resumen y Cierre Colombiano</h2>
+
+<p>Eso era lo que quería mostrarle, parcero. MoE es una de las ideas más elegantes en scaling de LLMs: aumentar capacidad sin aumentar costo proporcional de inference. La clave está en el routing — y ahí es donde está la complejidad.</p>
+
+<p>Dos días de arquitecturas de LLMs: primero SSM para modelado de secuencias eficiente, ahora MoE para scaling eficiente. El campo está convergiendo hacia **múltiples mecanismos especializados** que se combinan — attention, state spaces, experts — cada uno con su fortalezas.</p>
+
+<p>Mañana en el Día 357 cerramos esta mini-serie con **fine-tuning methods**: RLHF, DPO, ORPO, y cómo elegir el método correcto para tu caso. Eso también es muy práctico.</p>
+
+<p>Un abrazao y hasta mañana. 🎄</p>
+</article>
 
   <script>
     document.getElementById('themeToggle').addEventListener('click', function() {
