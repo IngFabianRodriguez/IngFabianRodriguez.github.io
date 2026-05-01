@@ -118,147 +118,202 @@ nav {
   </header>
 
   <article class="article-body">
-<p>Hágale pues Parcero, ¿sabes cuál es la técnica de regularización más subestimada en deep learning? No es L1/L2, no es batch norm — es Dropout. Después de 12 años de experiencia, te cuento que el 85% de los practitioners lo usa incorrectamente sin saberlo. Usan `Dropout(p=0.5)` "porque siempre se pone 0.5" y no tienen idea de por qué funciona ni cuándo desactivarlo en inferencia. Lo descubrí de la manera más dolorosa: desplegué un modelo que había entrenado con Dropout y en producción el rendimiento era terrible. Había olvidado que durante inference PyTorch aplica Dropout por defecto si no lo desactivas con `model.eval()`. Eso me convirtió un modelo de 92% accuracy en uno de 54%. Hoy destapamos Dropout: la matemática real, por qué funciona, los errores que el 85% comete, y cómo implementarlo correctamente en PyTorch.</p>
+    <h2>La Intro que el 85% Se Salta</h2>
+    <p>Hágale pues Parcero, ¿sabes cuál es la técnica de regularización más subestimada en deep learning? No es L1/L2, no es batch norm — es Dropout. Después de 12 años de experiencia, te cuento que el 85% de los practitioners lo usa incorrectamente sin saberlo. Usan <code>Dropout(p=0.5)</code> "porque siempre se pone 0.5" y no tienen idea de por qué funciona ni cuándo desactivarlo en inferencia.</p>
+    <p>Lo descubrí de la manera más dolorosa: desplegué un modelo que había entrenado con Dropout y en producción el rendimiento era terrible. Había olvidado que durante inference PyTorch aplica Dropout por defecto si no lo desactivas con <code>model.eval()</code>. Eso me convirtió un modelo de 92% accuracy en uno de 54%.</p>
+    <p>Hoy destapamos Dropout: la matemática real, por qué funciona, los errores que el 85% comete, y cómo implementarlo correctamente en PyTorch. Hágale.</p>
 
-## 🎯 ¿Por Qué Apagar Neuronas Ayuda a la Red a Aprender Mejor?
-**Definición técnica (sin rodeos):** Dropout es una técnica de regularización que durante cada training step apaga (set a zero) un subconjunto aleatorio de neuronas con probabilidad $p$. Esto fuerza a la red a no depender de ninguna neurona específica — cada neurona tiene que ser útil por sí misma, no porque "las demás la respaldan".
+    <h2>🎯 ¿Por Qué Apagar Neuronas Ayuda a la Red a Aprender Mejor?</h2>
+    <p><strong>Definición:</strong> Dropout es una técnica de regularización que durante cada training step apaga (set a zero) un subconjunto aleatorio de neuronas con probabilidad $p$. Esto fuerza a la red a no depender de ninguna neurona específica — cada neurona tiene que ser útil por sí misma, no porque "las demás la respaldan".</p>
+    <p><strong>Tipos:</strong></p>
+    <ul>
+      <li><strong>Vanilla Dropout:</strong> La máscara cambia cada forward pass. En inference se promedian múltiples máscaras. Original de Hinton et al. (2012).</li>
+      <li><strong>Inverted Dropout (estándar actual):</strong> Escalar durante training ($1/(1-p)$), no durante inference. Es lo que implementa PyTorch por defecto. Durante inference, todas las neuronas participan a escala completa.</li>
+    </ul>
+    <p>Mirá, es como si en un equipo de fútbol, cada jugador tuviera que entrenar vendado un ojo — así ninguno puede depender demasiado de otro. En inference, todos juegan con los dos ojos abiertos.</p>
 
-**Tipos:**
-- **Vanilla Dropout**: La máscara cambia cada forward pass. En inference se promedian múltiples máscaras. Original de Hinton et al. (2012).
-- **Inverted Dropout (estándar actual)**: Escalar durante training ($1/(1-p)$), no durante inference. Es lo que implementa PyTorch por defecto. Durante inference, todas las neuronas participan a escala completa.
-
-**Mirá**: Es como si en un equipo de fútbol, cada jugador tuviera que entrenar vendado un ojo — así ninguno puede depender demasiado de otro. En inference, todos juegan con los dos ojos abiertos.
-
-## 📐 La Ecuación del Dropout — LA JOYA
-Esta ecuación parece simple pero tiene TODO el poder de evitar que tu red memorize en vez de generalizar:
-$$
+    <h2>📐 La Ecuación del Dropout — LA JOYA</h2>
+    <p>Esta ecuación parece simple pero tiene TODO el poder de evitar que tu red memorize en vez de generalizar:</p>
+    <p>$$
 y_i^{(l)} = \sigma\left(\sum_j W_{ij}^{(l)} x_j^{(l-1)} \cdot m_i^{(l)}\right)
-$$
-"Durante training, $m_i^{(l)} \sim \text{Bernoulli}(1-p)$ crea una máscara binaria que apaga neuronas aleatoriamente. Durante inference, NO hay máscara — todas las neuronas participan."
-
-**$m_i^{(l)}$** = máscara de Dropout (0 = apagada, 1 = activa)
-**$p$** = probabilidad de apagar cada neurona
-**$(1-p)$** = fracción de neuronas activas en promedio
-
-### Inverted Dropout — El Estándar Moderno
-Durante training escalamos por $1/(1-p)$ para mantener la misma escala que durante inference:
-$$
-y_i^{(l)} = \frac{1}{1-p} \cdot \sigma\left(\sum_j W_{ij}^{(l)} x_j^{(l-1)} \cdot m_i^{(l)}\right)
-$$
-Durante inference: $$\hat{y}_i^{(l)} = \sigma\left(\sum_j W_{ij}^{(l)} x_j^{(l-1)}\right)$$
-**Sin escala extra** — todas las neuronas participan a escala completa.
-
-**símbolo** = $\sigma$ es la activación (ReLU, sigmoid, etc.)
-**otro** = $W_{ij}^{(l)}$ son los pesos de la capa $l$
-
-### Derivación de Inverted Dropout
-Paso 1: $$\mathbb{E}[y_i^{(l)}] = \mathbb{E}\left[\frac{1}{1-p} \cdot \sigma\left(z_i^{(l)}\right) \cdot m_i^{(l)}\right]$$
-Paso 2: Como $m_i^{(l)} \sim \text{Bernoulli}(1-p)$: $$= \frac{1}{1-p} \cdot (1-p) \cdot \sigma\left(z_i^{(l)}\right) = \sigma\left(z_i^{(l)}\right)$$
-**El factor $1/(1-p)$ compensa exactamente** la esperanza de la máscara, haciendo que la salida esperada sea la misma que sin Dropout.
-
-Ejemplo numérico concreto:
-```python
+$$</p>
+    <p><strong>Descomposición:</strong></p>
+    <ul>
+      <li><strong>$m_i^{(l)}$</strong> = máscara de Dropout (0 = apagada, 1 = activa)</li>
+      <li><strong>$p$</strong> = probabilidad de apagar cada neurona</li>
+      <li><strong>$(1-p)$</strong> = fracción de neuronas activas en promedio</li>
+    </ul>
+    <p><strong>Ejemplo numérico:</strong></p>
+    <pre><code class="language-python">
 import torch
 import torch.nn as nn
+from dataclasses import dataclass
+from typing import Optional
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class DropoutConfig:
+    """Configuración para Dropout con validación."""
+    p: float = 0.5
+    inplace: bool = False
+
+    def __post_init__(self):
+        if not 0.0 <= self.p <= 1.0:
+            raise ValueError(f"Dropout p must be in [0, 1], got {self.p}")
+        logger.info(f"DropoutConfig(p={self.p}, inplace={self.inplace})")
+
 
 class DropoutMLP(nn.Module):
-    def __init__(self, input_dim, hidden_dim, output_dim, dropout_p=0.5):
+    """MLP con Dropout para demostrar Inverted Dropout."""
+
+    def __init__(
+        self,
+        input_dim: int,
+        hidden_dim: int,
+        output_dim: int,
+        dropout_p: float = 0.5,
+    ):
         super().__init__()
+        self.config = DropoutConfig(p=dropout_p)
         self.net = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),
             nn.ReLU(),
-            nn.Dropout(p=dropout_p),
+            nn.Dropout(p=self.config.p, inplace=self.config.inplace),
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
-            nn.Dropout(p=dropout_p),
+            nn.Dropout(p=self.config.p, inplace=self.config.inplace),
             nn.Linear(hidden_dim, output_dim),
         )
+        logger.info(f"DropoutMLP initialized with dropout_p={dropout_p}")
 
-    def forward(self, x, training=None):
+    def forward(self, x: torch.Tensor, training: Optional[bool] = None) -> torch.Tensor:
         if training is None:
             training = self.training
         return self.net(x)
 
+    def predict(self, x: torch.Tensor) -> torch.Tensor:
+        """Inference predictions — ¡usa model.eval() primero!"""
+        if self.training:
+            logger.warning("predict() called while model.train()! Call model.eval() first.")
+        with torch.no_grad():
+            return self(x, training=False)
+
+
+def train_step(
+    model: nn.Module,
+    optimizer: torch.optim.Optimizer,
+    loss_fn: nn.Module,
+    batch_x: torch.Tensor,
+    batch_y: torch.Tensor,
+) -> float:
+    """Single training step con Dropout activo."""
+    model.train()  # ← Dropout activo
+    optimizer.zero_grad()
+    output = model(batch_x)
+    loss = loss_fn(output, batch_y)
+    loss.backward()
+    optimizer.step()
+    return loss.item()
+
+
+def evaluate(
+    model: nn.Module,
+    loss_fn: nn.Module,
+    test_x: torch.Tensor,
+    test_y: torch.Tensor,
+) -> dict[str, float]:
+    """Evaluation — ¡model.eval() es crítico!"""
+    model.eval()  # ← Desactiva Dropout
+    with torch.no_grad():
+        output = model(test_x)
+        loss = loss_fn(output, test_y)
+        preds = output.argmax(dim=1)
+        accuracy = (preds == test_y).float().mean().item()
+    return {"loss": loss.item(), "accuracy": accuracy}
+
+
+# Demo
 model = DropoutMLP(784, 256, 10, dropout_p=0.5)
+optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+loss_fn = nn.CrossEntropyLoss()
 
 # Training
 model.train()
-for batch_x, batch_y in train_loader:
-    output = model(batch_x)
-    loss = loss_fn(output, batch_y)
-    loss.backward()
+logger.info("Training mode — Dropout activo")
 
 # Inference — ¡CRÍTICO!
 model.eval()
+logger.info("Eval mode — Dropout desactivado")
 with torch.no_grad():
-    output = model(batch_x)
-```
+    dummy_input = torch.randn(32, 784)
+    output = model(dummy_input)
+    logger.info(f"Output shape: {output.shape}")
+    </code></pre>
 
-## 🚨 Errores Comunes (y Cómo No Cagarla)
-
-**Error 1: Olvidar model.eval() en inferencia**
-**El problema**: Si entrenas con `model.train()` y luego haces inference SIN llamar `model.eval()`, Dropout sigue activo y la red está usando máscaras aleatorias en cada forward pass. Las predicciones son inconsistentes (distintas cada vez para el mismo input) y el rendimiento cae drásticamente.
-❌
-```python
+    <h2>🚨 Errores Comunes (y Cómo No Cagarla)</h2>
+    <p><strong>Error 1: Olvidar model.eval() en inferencia</strong></p>
+    <p><strong>El problema:</strong> Si entrenas con <code>model.train()</code> y luego haces inference SIN llamar <code>model.eval()</code>, Dropout sigue activo y la red está usando máscaras aleatorias en cada forward pass. Las predicciones son inconsistentes y el rendimiento cae drásticamente.</p>
+    <pre><code class="language-python">❌ # ERROR: inference sin cambiar modo
 model.train()
 for batch_x, batch_y in train_loader:
     output = model(batch_x)
     loss = loss_fn(output, batch_y)
     loss.backward()
-# ERROR: inference sin cambiar modo
+# Dropout todavía activo en inference!
 with torch.no_grad():
-    predictions = model(test_x)  # Dropout todavía activo!
-```
-**Por qué falla**: Sin `model.eval()`, PyTorch sigue aplicando máscaras aleatorias en cada forward pass. Tu "inferencia" es en realidad otro training step con dropout activo.
-✓
-```python
+    predictions = model(test_x)  # ← ¡Rendimiento destruido!
+    </code></pre>
+    <p><strong>Por qué falla:</strong> Sin <code>model.eval()</code>, PyTorch sigue aplicando máscaras aleatorias en cada forward pass. Tu "inferencia" es en realidad otro training step con dropout activo.</p>
+    <p>$$
+\text{Output}_{\text{inference}} = \sigma(W x \cdot m), \quad m \sim \text{Bernoulli}(1-p)
+$$</p>
+    <pre><code class="language-python">✓ # CORRECTO: inference con model.eval()
 model.train()
 for batch_x, batch_y in train_loader:
     output = model(batch_x)
     loss = loss_fn(output, batch_y)
     loss.backward()
-model.eval()  # Desactiva Dropout
+model.eval()  # ← Desactiva Dropout
 with torch.no_grad():
-    predictions = model(test_x)
-```
+    predictions = model(test_x)  # ← ¡Ahora sí funciona!
+    </code></pre>
 
-**Error 2: Poner Dropout antes de Batch Norm en la misma capa**
-**El problema**: El orden de las capas importa. Si pones `Dropout → Linear → BatchNorm`, el Dropout introduce ruido que BatchNorm luego normaliza. Pero la normalización se vuelve ruidosa porque depende de qué neuronas fueron apagadas.
-❌
-```python
+    <p><strong>Error 2: Poner Dropout antes de Batch Norm</strong></p>
+    <p><strong>El problema:</strong> El orden de las capas importa. Si pones <code>Dropout → Linear → BatchNorm</code>, el Dropout introduce ruido que BatchNorm luego normaliza. Pero la normalización se vuelve ruidosa porque depende de qué neuronas fueron apagadas.</p>
+    <pre><code class="language-python">❌ # Dropout PRIMERO — normaliza ruido
 nn.Sequential(
-    nn.Dropout(p=0.5),   # Dropout PRIMERO
+    nn.Dropout(p=0.5),
     nn.Linear(256, 256),
-    nn.BatchNorm1d(256),  # Normaliza ruido, no señal
+    nn.BatchNorm1d(256),
 )
-```
-**Por qué falla**: BatchNorm calcula mean/std sobre activaciones que tienen valores aleatorios en zero por Dropout. Eso hace que la normalización sea inconsistente entre training e inference.
-✓
-```python
+    </code></pre>
+    <p><strong>Por qué falla:</strong> BatchNorm calcula mean/std sobre activaciones que tienen valores aleatorios en zero por Dropout. Eso hace que la normalización sea inconsistente entre training e inference.</p>
+    <pre><code class="language-python">✓ # CORRECTO: BatchNorm → Dropout
 nn.Sequential(
     nn.Linear(256, 256),
     nn.BatchNorm1d(256),
     nn.ReLU(),
-    nn.Dropout(p=0.5),  # Dropout DESPUÉS de BatchNorm
+    nn.Dropout(p=0.5),  # ← Dropout DESPUÉS de BatchNorm
 )
-```
+    </code></pre>
 
-**Error 3: Dropout率为 0.5 para todas las capas**
-**El problema**: El 85% pone `Dropout(p=0.5)` en todas partes porque "así se hace". Pero el paper original muestra que la optimal dropout rate varía: capas más cercanas al input necesitan dropout más bajo (0.2-0.3); capas más cercanas al output pueden usar dropout más alto (0.5). En transformers, embeddings tienen dropout MUY bajo (0.1).
-❌
-```python
+    <p><strong>Error 3: Dropout率为 0.5 para todas las capas</strong></p>
+    <p><strong>El problema:</strong> El 85% pone <code>Dropout(p=0.5)</code> en todas partes porque "así se hace". Pero el paper original muestra que la optimal dropout rate varía: capas más cercanas al input necesitan dropout más bajo (0.2-0.3); capas más cercanas al output pueden usar dropout más alto (0.5). En transformers, embeddings tienen dropout MUY bajo (0.1).</p>
+    <pre><code class="language-python">❌ # ¡Está destruyendo conocimiento pre-entrenado!
 nn.Sequential(
     nn.Embedding(vocab, 512),
-    nn.Dropout(p=0.5),  # ¡Está destruyendo conocimiento pre-entrenado!
+    nn.Dropout(p=0.5),  # ← Destruye embeddings
     nn.Linear(512, 512),
     nn.Dropout(p=0.5),
     nn.Linear(512, vocab),
     nn.Dropout(p=0.5),
 )
-```
-**Por qué falla**: Dropout alto en embeddings destruye información pre-entrenada valiosa. En transformers, embeddings representan conocimiento aprendido — apagar el 50% es like jogar fora o bebê com a água do banho.
-✓
-```python
+    </code></pre>
+    <p><strong>Por qué falla:</strong> Dropout alto en embeddings destruye información pre-entrenada valiosa. En transformers, embeddings representan conocimiento aprendido — apagar el 50% es como jogar fora o bebê com a água do banho.</p>
+    <pre><code class="language-python">✓ # CORRECTO: dropout gradual
 nn.Sequential(
     nn.Embedding(vocab, 512),
     nn.Dropout(p=0.1),   # Embeddings: dropout muy bajo
@@ -269,22 +324,25 @@ nn.Sequential(
     nn.Linear(512, vocab),
     nn.Dropout(p=0.5),   # Output: dropout más alto
 )
-```
+    </code></pre>
 
----
-## 🎯 Resumen Ejecutivo
-Dropout no es "apagar neuronas aleatoriamente para que la red sea más robusta".
-Es resolver: $$\min_\theta \mathbb{E}_{m \sim \text{Bernoulli}(1-p)}[\mathcal{L}(\theta, m)]$$
-Mediante: $$y^{(l)} = \frac{1}{1-p} \cdot \sigma(W^{(l)} x^{(l-1)} \odot m^{(l)})$$
-
-Con todas las implicaciones que eso conlleva:
-- **Inverted Dropout**: Escalar durante training ($1/(1-p)$), no durante inference. Es el estándar moderno.
-- **model.train() / model.eval()**: SIEMPRE llama `model.eval()` antes de inference. Sin esto, tu modelopredice ruido.
-- **Dropout rate por capa**: No pongas 0.5 en todas partes. Capas tempranas = dropout bajo; capas finales = dropout alto.
-- **Orden de capas**: Linear → BatchNorm → Dropout → Activation (o Linear → Dropout → BatchNorm). NO Dropout → Linear → BatchNorm.
-- **MC Dropout**: Para uncertainty estimation, múltiples forward passes con `model.train()` y promedio.
-
-Parcero, Dropout es de las técnicas más simples y efectivas que tienes. Y precisamente por eso el 85% la subestima — la ven como "añadir un parámetro p y ya". Pero como con todo en deep learning, el diablo está en los detalles: el orden de las capas, la diferencia entre training e inference, el variational dropout en RNNs... todo eso marca la diferencia entre un modelo que generaliza bien y uno que memorize. Recuerda: "más dropout es mejor" es mentira — con dropout muy alto (0.8+), la red simplemente no puede aprender. ¡Nos vemos en el día 79!
+    <hr>
+    <h2>🎯 Resumen Ejecutivo</h2>
+    <p>Dropout no es "apagar neuronas aleatoriamente para que la red sea más robusta".</p>
+    <p>Es resolver: $$
+\min_\theta \mathbb{E}_{m \sim \text{Bernoulli}(1-p)}[\mathcal{L}(\theta, m)]
+$$</p>
+    <p>Mediante: $$
+y^{(l)} = \frac{1}{1-p} \cdot \sigma(W^{(l)} x^{(l-1)} \odot m^{(l)})
+$$</p>
+    <ul>
+      <li><strong>Inverted Dropout:</strong> Escalar durante training ($1/(1-p)$), no durante inference. Es el estándar moderno.</li>
+      <li><strong>model.train() / model.eval():</strong> SIEMPRE llama <code>model.eval()</code> antes de inference. Sin esto, tu modelo predice ruido.</li>
+      <li><strong>Dropout rate por capa:</strong> No pongas 0.5 en todas partes. Capas tempranas = dropout bajo; capas finales = dropout alto.</li>
+      <li><strong>Orden de capas:</strong> Linear → BatchNorm → Dropout → Activation (o Linear → Dropout → BatchNorm). NO Dropout → Linear → BatchNorm.</li>
+      <li><strong>MC Dropout:</strong> Para uncertainty estimation, múltiples forward passes con <code>model.train()</code> y promedio.</li>
+    </ul>
+    <p>Parcero, Dropout es de las técnicas más simples y efectivas que tienes. Y precisamente por eso el 85% la subestima — la ven como "añadir un parámetro p y ya". Pero como con todo en deep learning, el diablo está en los detalles: el orden de las capas, la diferencia entre training e inference, el variational dropout en RNNs... todo eso marca la diferencia entre un modelo que generaliza bien y uno que memorize. Recuerda: "más dropout es mejor" es mentira — con dropout muy alto (0.8+), la red simplemente no puede aprender. ¡Nos vemos en el día 79!</p>
   </article>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
