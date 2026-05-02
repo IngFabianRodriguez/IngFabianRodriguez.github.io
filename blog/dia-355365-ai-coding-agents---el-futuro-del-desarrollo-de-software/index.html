@@ -118,243 +118,390 @@ nav {
   </header>
 
   <article class="article-body">
-<h1>LLM Architecture Evolution I — State Space Models y Linear Time Sequence Modeling</h1>
+<h2>Intro</h2>
+<p>Qué tal, parcero. Día 355 y hoy vamos a cerrar el año hablando de algo que está transformando nuestra industria: los AI Coding Agents. Ayer cubrimos SWE-Agent específicamente — hoy vamos al panorama general. Qué son, cómo funcionan, quién los está construyendo, y qué significa esto para el futuro del software. Vamos con todo que esto está muy interesante.</p>
 
-<p>Hagale pues, parcero. Hoy es el Día 355 y vamos a meternos en un tema que está revolucionando cómo pensamos transformers: los **State Space Models (SSM)**, Mamba, y por qué la comunidad está tan emocionada con el modelado de secuencias en tiempo lineal. Esto está bueno — acompañeme.</p>
+<h2>Qué es un AI Coding Agent</h2>
+<p>Un AI Coding Agent es un sistema de IA que puede:</p>
+<ul>
+<li>Entender código existente y propósito de un proyecto</li>
+<li>Planificar y ejecutar tareas de desarrollo multi-step</li>
+<li>Usar herramientas: terminal, editor de archivos, navegador web, APIs</li>
+<li>Tomar decisiones autónomas sobre cómo resolver problemas</li>
+<li>Iterar y corregir errores basándose en feedback</li>
+<li>Colaborar con humanos de forma natural</li>
+</ul>
 
-<h2>🎯 La Situación Actual: Attention es Caro</h2>
+<p>La diferencia fundamental con un autocomplete o copilot tradicional es que un agent no solo completa código — planifica y ejecuta secuencias de acciones para lograr objetivos.</p>
 
-<p>Los transformers han sido increíbles, pero tienen un problema fundamental: el mecanismo de **attention** escala cuadráticamente con la longitud de la secuencia. Para una secuencia de longitud $N$, la complejidad es $O(N^2)$ en memoria y computación.</p>
-
-<p>Esto significa que cuando quieres procesar documentos largos, código extenso, o audio de horas, el attention se convierte en un cuello de botella costoso. Ya sea que estés entrenando o haciendo inferencia, pagar $O(N^2)$ por cada token que agregas no escala.</p>
-
-<h2>📐 State Space Models: La Alternativa</h2>
-
-<p>Un State Space Model es esencialmente un **sistema dinámico lineal** que mapea una secuencia de entrada $x(t)$ a una secuencia de salida $y(t)$ a través de un estado oculto $h(t)$:</p>
-
-<pre><code class="language-python"># Ecuación diferencial continua de un SSM:
-# dh/dt = A * h(t) + B * x(t)
-# y(t)  = C * h(t) + D * x(t)
-
-# Discretizado (para implementación en computers):
-# h_k = A_bar * h_{k-1} + B_bar * x_k
-# y_k = C * h_k + D * x_k
-
-# Donde A_bar, B_bar son versiones discretizadas de A, B
-# usando transformada zero-order hold (ZOH):
-# A_bar = exp(A * Δ)
-# B_bar = (A^{-1} * (exp(A * Δ) - I)) * B</code></pre>
-
-<p>La clave está en que esta formulación permite **computación en $O(N)$** — cada token solo necesita información del token anterior y del estado acumulado, similar a un RNN pero con la capacidad de capturar dependencias largas.</p>
-
-<h2>🔢 La Magia Matemática: Selección vs Uniformidad</h2>
-
-<p>El paper "Mamba: Linear-Time Sequence Modeling with Selective State Spaces" (2023) resolvió uno de los principales problemas de los SSM tradicionales: **la uniformidad**. Los SSM clásicos procesan cada token de manera uniforme — no pueden "decidir" qué información es importante.</p>
-
-<p>La innovación de Mamba es sencilla pero poderosa: hacer que las **matrices de transición $A$ y $B$ dependan de la entrada**:</p>
-
-<pre><code class="language-python"># En un SSM tradicional (S4):
-# El得很困
-# A, B, C son fijos para todas las entradas
-
-# En Mamba (Selective SSM):
-# Las proyecciones de entrada determinan A, B, C dinámicamente
-import numpy as np
-
-def mamba_step(x_t, h_prev, params):
+<pre><code class="language-python"># Concepto básico de un AI Coding Agent
+class AICodingAgent:
     """
-    Un paso de Mamba (Selective State Space Model).
-    
-    x_t: token de entrada en tiempo t
-    h_prev: estado oculto previo
-    params: parámetros que incluyen proyecciones de entrada
+    Agente de IA para desarrollo de software.
+    Recibe instrucciones de alto nivel y las ejecuta autonomously.
     """
-    # Proyecciones de entrada - esto es lo SELECTIVO
-    x_bar = params['input_proj'](x_t)  # (d_model,) -> (d_state,)
     
-    # Descompone en partes para A, B, C
-    A = params['A']  # matriz de estado (d_state, d_state)
-    B = x_bar[:, :params.d_state]       # (d_state,)
-    C = x_bar[:, params.d_state:]       # (d_state,)
-    D = params['D']                      # skip connection
+    def __init__(self, llm, tools):
+        self.llm = llm  # Modelo de lenguaje base
+        self.tools = tools  # Herramientas disponibles
+        self.memory = []  # Historial de acciones
     
-    # Discretización选择性
-    # Δ determina cuánto "olvida" el modelo por timestep
-    Δ = params['dt_proj'](x_t)
-    ΔA = np.exp(Δ * A)  #等价于 exp(A * Δ)
-    ΔB = np.exp(Δ * B)  # exp(Δ * B)
+    def run(self, task):
+        """
+        Ejecuta una tarea de desarrollo.
+        
+        Ejemplos de tareas:
+        - "Crea un API REST para gestionar usuarios"
+        - "Añade autenticación JWT a este proyecto"
+        - "Optimiza el performance de esta función"
+        - "Escribe tests para el módulo de payments"
+        """
+        plan = self.plan(task)
+        
+        for step in plan:
+            result = self.execute(step)
+            self.memory.append(result)
+            
+            if self.needs_correction(result):
+                plan = self.replan(task, self.memory)
+        
+        return self.finalize()
     
-    # Estado actualizado: ht = A_bar * h_{t-1} + B_bar * x_t
-    h_t = ΔA * h_prev + ΔB * x_t
+    def plan(self, task):
+        """Genera un plan de ejecución."""
+        prompt = f"""
+        Task: {task}
+        Available tools: {list(self.tools.keys())}
+        Generate a step-by-step plan to complete this task.
+        """
+        return self.llm.generate(prompt)
     
-    # Salida: y_t = C * h_t + D * x_t
-    y_t = C @ h_t + D * x_t
-    
-    return y_t, h_t
+    def execute(self, step):
+        """Ejecuta un paso del plan."""
+        tool_name, args = self.parse_step(step)
+        return self.tools[tool_name].run(**args)
 
-# Comparación: SSM vs Attention
-SSM_COMPLEXITY = {
-    "computation": "O(N)",      # Lineal en secuencia
-    "memory": "O(N)",           # Lineal (solo estados)
-    "context": "selective"      # Puede ignorar información
-}
-
-ATTENTION_COMPLEXITY = {
-    "computation": "O(N^2)",    # Cuadrático
-    "memory": "O(N^2)",         # Matriz NxN
-    "context": "full"           # Considera todo
+# Tools que puede usar un coding agent
+AVAILABLE_TOOLS = {
+    "read_file": "Lee contenido de archivos",
+    "write_file": "Crea o modifica archivos",
+    "bash": "Ejecuta comandos en terminal",
+    "web_search": "Busca información en la web",
+    "git": "Opera sobre repositorios git",
+    "browser": "Interactúa con navegadores web",
+    "api_call": "Hace llamadas a APIs externas",
 }</code></pre>
 
-<h2>📊 SSM vs Attention: Trade-offs</h2>
+<h2>Arquitecturas Principales</h2>
+<p>Hay varias aproximaciones a cómo construir coding agents. Vamos a ver las más importantes:</p>
 
-<pre><code class="language-python">import numpy as np
+<h3>1. Agentic Workflows (ReAct, Plan-and-Execute)</h3>
+<p>El agente alterna entre razonamiento y acción. Piensa, actúa, observa el resultado, y repite.</p>
 
-def compare_ssm_vs_attention(seq_length, d_model, d_state=16):
-    """
-    Compara complejidad computacional SSM vs Attention.
+<pre><code class="language-python"># Patrón ReAct (Reason + Act)
+def react_agent(task):
+    state = {"task": task, "observations": [], "actions": []}
     
-    seq_length: longitud de la secuencia N
-    d_model: dimensión del embedding
-    d_state: dimensión del estado interno SSM (típicamente 16-64)
-    """
+    while not is_complete(state):
+        # Razonar sobre el estado actual
+        thought = reason(state)
+        
+        # Decidir siguiente acción
+        action = decide(thought, state)
+        
+        # Ejecutar y observar
+        obs = execute(action)
+        state["observations"].append(obs)
+        state["actions"].append(action)
+        
+        # Si la acción falla, replanificar
+        if is_failure(obs):
+            state = replan(state)
     
-    # === ATTENTION: O(N^2) ===
-    # Q, K, V: cada una es (N, d_model)
-    # Attention scores: Q @ K.T = (N, d_model) @ (d_model, N) = (N, N)
-    # Costo: N * d_model * N = N^2 * d_model
+    return state
+
+# Plan-and-Execute más estructurado
+def plan_and_execute(task):
+    # 1. Planificar todas las acciones de una vez
+    plan = planner.create_plan(task)
     
-    attention_flops = seq_length ** 2 * d_model
-    attention_memory = seq_length ** 2  # Matriz NxN de scores
+    # 2. Ejecutar cada paso secuencialmente
+    for step in plan:
+        result = executor.execute(step)
+        
+        # 3. Verificar después de cada paso
+        if not verifier.is_correct(result):
+            # Replanificar desde el principio
+            plan = replan(task, result)
     
-    # === SSM: O(N) ===
-    # Para cada timestep: una multiplicación de matrices (d_state, d_state)
-    # Más proyecciones lineales
-    ssm_flops = seq_length * d_model * d_state  # Proyecciones
-    ssm_flops += seq_length * d_state ** 2       # Transiciones de estado
-    ssm_memory = seq_length * d_state            # Solo mantenemos estados
-    
-    speedup = attention_flops / ssm_flops
-    
-    print(f"Sequence length: {seq_length}")
-    print(f"Model dimension: {d_model}")
-    print(f"SSM state dimension: {d_state}")
-    print(f"\nATTENTION:")
-    print(f"  FLOPs: {attention_flops:,.0f}")
-    print(f"  Memory: {attention_memory:,.0f} elements ({attention_memory*8/1024:.1f} KB)")
-    print(f"\nSSM (Mamba-style):")
-    print(f"  FLOPs: {ssm_flops:,.0f}")
-    print(f"  Memory: {ssm_memory:,.0f} elements ({ssm_memory*8/1024:.1f} KB)")
-    print(f"\nSpeedup: {speedup:.1f}x faster with SSM")
-    
-    return {
-        'attention_flops': attention_flops,
-        'ssm_flops': ssm_flops,
-        'speedup': speedup
+    return final_result</code></pre>
+
+<h3>2. Tool-augmented LLMs</h3>
+<p>Modelos de lenguaje con acceso a funciones externas como tools nativas. Ejemplos: GPT-4 con function calling, Claude con tools.</p>
+
+<pre><code class="language-python"># Tool calling con function calling API
+TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "create_file",
+            "description": "Crea un archivo con contenido",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "content": {"type": "string"}
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "run_command",
+            "description": "Ejecuta un comando en la terminal",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "cmd": {"type": "string"}
+                }
+            }
+        }
     }
+]
 
-# Ejemplo: secuencia de 4096 tokens (documentos largos)
-result = compare_ssm_vs_attention(seq_length=4096, d_model=768, d_state=16)</code></pre>
+# El modelo decide cuándo llamar cada tool
+response = openai.ChatCompletion.create(
+    model="gpt-4",
+    messages=[{"role": "user", "content": "Crea un hello world en Python"}],
+    tools=TOOLS,
+    tool_choice="auto"
+)</code></pre>
 
-<p>Para una secuencia de 4096 tokens con embedding de 768:</p>
-<ul>
-<li>**Attention**: ~12.5 millones de FLOPs, ~16 MB de memoria para scores</li>
-<li>**SSM**: ~50 mil FLOPs, ~0.25 MB de memoria</li>
-<li>**Speedup**: ~250x en computación</li>
-</ul>
+<h3>3. Multi-Agent Systems</h3>
+<p>Múltiples agentes especializados que colaboran. Por ejemplo: un agente escribe código, otro hace review, otro testea.</p>
 
-<h2>🚀 Arquitecturas Híbridas: Lo Mejor de Dos Mundos</h2>
-
-<p>La tendencia actual no es reemplazar attention completamente, sino **combinar** ambas estrategias:</p>
-
-<pre><code class="language-python"># Block-wise: alternar attention y SSM
-class HybridBlock(nn.Module):
-    def __init__(self, d_model, d_state, n_heads):
-        super().__init__()
-        self.ssm_branch = MambaBlock(d_model, d_state)
-        self.attention_branch = nn.MultiheadAttention(d_model, n_heads)
-        self.norm = nn.LayerNorm(d_model)
+<pre><code class="language-python"># Sistema multi-agente
+class SoftwareTeam:
+    """
+    Equipo de agentes trabajando juntos.
+    """
     
-    def forward(self, x):
-        # SSM branch: O(N) para contexto local
-        x_ssm = self.ssm_branch(x)
+    def __init__(self):
+        self.coder = CoderAgent()
+        self.reviewer = ReviewerAgent()
+        self.tester = TesterAgent()
+        self.project_manager = PMAgent()
+    
+    def develop_feature(self, feature_spec):
+        # Project manager descompone la tarea
+        tasks = self.project_manager.break_down(feature_spec)
         
-        # Attention branch: O(N^2) para dependencias globales
-        x_attn, _ = self.attention_branch(x, x, x)
+        results = []
+        for task in tasks:
+            # Code implementa
+            code = self.coder.implement(task)
+            
+            # Reviewer aprueba o pide cambios
+            review = self.reviewer.approve(code)
+            if review.needs_changes:
+                code = self.coder.revise(code, review.feedback)
+            
+            # Tester verifica
+            test_results = self.tester.verify(code)
+            
+            results.append({
+                "task": task,
+                "code": code,
+                "review": review,
+                "tests": test_results
+            })
         
-        # Combinar (típicamente residuales)
-        return self.norm(x_ssm + x_attn)
+        return results</code></pre>
 
-# Modelos como Mistral, Gemini usan esta estrategia
-# JINA AI's M2-BERT es un ejemplo de SSM + BERT fusionado</code></pre>
+<h2>Players Principales en el Espacio</h2>
 
-<h2>⚠️ Errores Comunes al Aproximarse a SSMs</h2>
+<h3>Devin (Cognition)</h3>
+<p>Primer "software engineer AI" autónomo. Puede planificar, ejecutar, y entregar features completas. Claim: puede completar tareas que tomarían días a un humano en minutos u horas.</p>
 
-<h3>Error 1: Ignorar los Desarrollos en SSM</h3>
+<h3>Claude (Anthropic) + Extended Thinking</h3>
+<p>Claude con extended thinking mode puede manejar tareas de desarrollo complejas. Su context window de 200K tokens permite trabajar en bases de código grandes.</p>
 
-<p><strong>El problema</strong>: Muchos ingenieros siguen pensando que transformers son la única opción viable. Esto lleva a sobreoptimizar para $O(N^2)$ cuando $O(N)$ es posible.</p>
-
-<p><strong>La solución</strong>: Investigar Mamba, S4, HIPPO, y las arquitecturas híbridas. Modelos como <strong>Mamba-2</strong> (State Space Duality), <strong>RetNet</strong>, y <strong>RWKV</strong> están demostrando que sí se puede entrenar en tiempo lineal con calidad competitiva.</p>
-
-<pre><code class="language-python"># Installation de mamba (usando mamba-ssm)
-# pip install mamba-ssm
-
-# Uso básico
-# from mamba_ssm import Mamba
-
-# model = Mamba(
-#     d_model=768,
-#     d_state=16,
-#     d_conv=4,
-#     expand=2,
-# )
-
-# output = model(x)  # x: (batch, seq_len, d_model)</code></pre>
-
-<h3>Error 2: No Entender los Trade-offs</h3>
-
-<p><strong>El problema</strong>: Asumir que SSM siempre es mejor que attention es igual de errado. SSMs tienen limitaciones:</p>
-
+<h3>Cursor / Copilot (GitHub/Microsoft)</h3>
+<p>Evolucionando de autocomplete a pair programming Agent. Cursor tiene modos de Agent que pueden:</p>
 <ul>
-<li>**Selective memory**: Mamba "decide" qué olvidar — pero puede perder información importante</li>
-<li>** menos paralelo**: A diferencia de attention que es paralelizable, SSM es secuencial por naturaleza</li>
-<li>**No hay cross-attention nativa**: Para tareas multimodal, necesitas adaptaciones</li>
+<li>Buscar y reemplazar en múltiples archivos</li>
+<li>Responder preguntas sobre el codebase</li>
+<li>Generar y modificar tests</li>
+<li>Explicar código complejo</li>
 </ul>
 
-<p><strong>La solución</strong>: Evaluar tu caso de uso. Para secuencias largas con dependencia local (DNA, audio, código), SSM brillan. Para atención global requerida (Q&A, traducción), attention sigue siendo rey.</p>
+<h3>Replit Agent</h3>
+<p>Enfocado en deployment automático. Le das una idea en lenguaje natural y te devuelve una app deployada.</p>
 
-<h3>Error 3: Asumir que Transformers Son el Final</h3>
+<h3>SWE-Agent y similares</h3>
+<p>Especializados en resolver issues de GitHub. Muy útiles para bug fixing y code review automatizado (cubierto ayer).</p>
 
-<p><strong>El problema</strong>: El campo avanza rápido. Architecuras como <strong>Linear Transformers</strong>, <strong>Longformer</strong>, <strong>Performer</strong> ya ofrecen alternativas aproximadas. Y ahora con SSM selectionales, la pregunta no es "attention vs SSM" sino "cómo combinarlos".</p>
+<h2>Capacidades Actuales vs Expectativas</h2>
+<p>Es importante ser realista sobre qué pueden y no pueden hacer los coding agents hoy:</p>
 
-<p><strong>La solución</strong>: Mantente actualizado. Papers como "Vision Mamba", "Mamba-ND", y los recientes "Zamba" muestran que la revolución apenas comienza. El campo está convergiendo hacia arquitecturas **heterogéneas** que eligen dinámicamente qué computational path seguir.</p>
+<h3>Lo que hacen bien</h3>
+<ul>
+<li>Boilerplate y código repetitivo</li>
+<li>Refactoring de funciones conocidas</li>
+<li>Escribir tests dado código existente</li>
+<li>Explicar código legacy</li>
+<li>Bug fixing en código bien estructurado</li>
+<li>Autocomplete avanzadas en contexto largo</li>
+<li>Documentación de APIs y funciones</li>
+</ul>
 
-<h2>📈 El Futuro: Computación Algorítmica vs Hardware</h2>
+<h3>Lo que todavía les cuesta</h3>
+<ul>
+<li>Diseñar arquitectura de sistemas desde cero</li>
+<li>Entender requerimientos ambiguos o incompletos</li>
+<li>Coordinar cambios en múltiples archivos de forma consistente</li>
+<li>Decisiones de diseño que requieren contexto de negocio</li>
+<li>Debugging de problemas race conditions o concurrency issues</li>
+<li>Optimización de performance sin guidance específico</li>
+</ul>
 
-<p>Algo que pocos mencionan: la verdadera ventaja de SSM no es solo teórica. En GPUs modernas con memoria limitada, $O(N^2)$ significa que para secuencias largas, el attention **no cabe en GPU**. SSM permite procesar secuencias de 100K+ tokens donde attention se muere.</p>
+<h2>El Futuro: Qué viene</h2>
 
-<pre><code class="language-python"># Proyección: Long Context Modeling
-CONTEXT_LENGTHS = {
-    "GPT-4": 128_000,      # Attention - costoso
-    "Claude-3": 200_000,    # Attention - costoso
-    "Mamba-7B": 1_000_000,  # SSM - mucho más barato por token
-}
+<h3>Corto Plazo (1-2 años)</h3>
+<ul>
+<li>Agents que pueden manejar 70-80% del código routine</li>
+<li>Mejor context management para proyectos grandes</li>
+<li>Multi-modal: entender diagramas, interfaces, dokumentación visual</li>
+<li>Better tooling integration con CI/CD, issue trackers, etc.</li>
+</ul>
 
-# Costo por 1M tokens (estimado):
-COST_PER_1M_TOKENS = {
-    "Long-context LLM (attention)": "$10-50",
-    "Mamba-based (SSM)": "$0.50-2"
+<h3>Mediano Plazo (3-5 años)</h3>
+<ul>
+<li>Autonomous agents que pueden mantener y evolucionar proyectos completos</li>
+<li>Agents que colaboran con humanos como verdadero pair programmers</li>
+<li>Specialized agents: uno para frontend, otro para backend, otro para DevOps</li>
+<li>Self-improving: agentes que aprenden de sus errores en tu codebase específico</li>
+</ul>
+
+<h3>Largo Plazo (5-10 años)</h3>
+<ul>
+<li>FullSDLC agents: desde specs hasta deployment y monitoring</li>
+<li>Agents que pueden entender requisitos de negocio y proponer soluciones técnicas</li>
+<li>Colaboración fluida entre múltiples agentes y humanos en tiempo real</li>
+</ul>
+
+<pre><code class="language-python"># Projection: Evolución de coding agents
+AGENT_CAPABILITIES_TIMELINE = {
+    2024: {
+        "code_completion": "90% accuracy",
+        "bug_fixing": "60% autonomous",
+        "feature_dev": "40% of code autonomous",
+        "code_review": "70% automated"
+    },
+    2026: {
+        "code_completion": "95% accuracy",
+        "bug_fixing": "80% autonomous",
+        "feature_dev": "70% of code autonomous",
+        "code_review": "90% automated"
+    },
+    2028: {
+        "code_completion": "98% accuracy",
+        "bug_fixing": "90% autonomous",
+        "feature_dev": "85% of code autonomous",
+        "code_review": "95% automated",
+        "architecture_design": "50% assisted"
+    }
 }</code></pre>
 
-<h2>Resumen y Cierre Colombiano</h2>
+<h2>Implicaciones para la Industria</h2>
+<p>Los coding agents van a cambiar cómo hacemos software:</p>
 
-<p>Eso era lo que quería mostrarle, parcero. Los State Space Models son una de las evoluciones más interesantes en arquitecturas de LLMs. No es que transformers estén muertos — nada de eso — pero el campo está buscando activamente qué viene después, y el modelado en tiempo lineal con selección selectiva es una respuesta real.</p>
+<h3>Para Developers</h3>
+<p>El developer promedio va a ser más productivo. Pero el rol cambia de "escribir código" a "dirigir y revisar código escrito por agentes". Las skills más valiosas serán:</p>
+<ul>
+<li>Diseño de sistemas y arquitectura</li>
+<li>Comunicación clara de requerimientos</li>
+<li>Code review y quality assurance</li>
+<li>Debugging de problemas complejos</li>
+<li>Entendimiento de negocio y producto</li>
+</ul>
 
-<p>La próxima vez que esté diseña una pipeline que procesa secuencias largas, tenga presente: hay vida más allá del attention机制. Y esa vida es más barata, más rápida, y a veces mejor.</p>
+<h3>Para Companies</h3>
+<p>Más output por developer = menor costo de development = más experiments = más innovación. Pero también:</p>
+<ul>
+<li>Need for better testing infrastructure (más tests automatizados)</li>
+<li>Mayor necesidad de code review processes rigurosos</li>
+<li>Nuevos riesgos de seguridad (código generado por IA puede tener vulnerabilidades)</li>
+<li>Questions sobre ownership y liability del código generado</li>
+</ul>
 
-<p>Mañana en el Día 356 hablamos de **Mixture of Experts**: cómo el scaling drove MoE y por qué el efficient routing está cambiando el campo otra vez. Eso también está muy interesante.</p>
+<h3>Para la Educación</h3>
+<p>Cómo enseñamos software engineering va a cambiar. Ya no basta con saber escribir código — hay que saber:</p>
+<ul>
+<li>Diseñar sistemas completos</li>
+<li>Validar y verificar código</li>
+<li>Entender el negocio detrás del código</li>
+<li>Collaborate effectively con agents</li>
+</ul>
 
-<p>Un abrazao, y hasta mañana. 🎄</p>
-</article>
+<h2>Errores Comunes al Adoptar Coding Agents</h2>
+
+<h3>Error 1: Confiar 100% en el Código Generado</h3>
+<p><strong>El problema</strong>: Poner código generado por IA en producción sin review. Los agents pueden generar código que "parece" correcto pero tiene edge cases o bugs sutiles.</p>
+<p><strong>La solución</strong>: Treat AI-generated code como code de un junior — necesita review cuidadoso. Implementa procesos de validation rigurosos.</p>
+
+<h3>Error 2: Usarlos para Tareas que No Son Adecuadas</h3>
+<p><strong>El problema</strong>: Intentar usar coding agents para arquitectura de sistemas complejos o decisiones de diseño que requieren contexto profundo.</p>
+<p><strong>La solución</strong>: Usa agents para implementation de tareas bien definidas, no para brainstorming o diseño. Delimita claramente qué tareas delegar.</p>
+
+<pre><code class="language-python"># Guía de uso apropiado de coding agents
+TASKS_FOR_AGENTS = {
+    "great_for": [
+        "Escribir boilerplate y código repetitivo",
+        "Generar tests unitarios",
+        "Refactorizar funciones específicas",
+        "Documentar código existente",
+        "Bug fixing con stack trace claro",
+        "Code review first pass",
+        "Explorar陌生的代码bases"
+    ],
+    "not_great_for": [
+        "Diseñar arquitectura de sistemas",
+        "Decisiones de diseño con trade-offs complejos",
+        "Requerimientos vagos o ambiguos",
+        "Security-critical code sin revisión exhaustiva",
+        "Performance optimization sin profiling previo"
+    ]
+}</code></pre>
+
+<h3>Error 3: No Invertir en Context Quality</h3>
+<p><strong>El problema</strong>: Esperar que el agent entienda tu proyecto sin darle contexto adecuado. Garbage in, garbage out.</p>
+<p><strong>La solución</strong>: Invierte en:</p>
+<ul>
+<li>Codebase bien documentada y estructurada</li>
+<li>Tests que describen el comportamiento esperado</li>
+<li>Context window management (darle al agent la información relevante)</li>
+<li>Clear task descriptions con examples</li>
+</ul>
+
+<h3>Error 4: No Monitorear la Calidad</h3>
+<p><strong>El problema</strong>: Dejar que los agents generen código sin tracking de metrics de calidad.</p>
+<p><strong>La solución</strong>: Implementa:</p>
+<ul>
+<li>Code coverage metrics</li>
+<li>Bugs reportados porfeature/módulo</li>
+<li>Technical debt tracking</li>
+<li>Security vulnerability scanning</li>
+</ul>
+
+<h2>Resumen y Cierre de Año</h2>
+<p>Mira, parcero, lo que hemos visto estos 355 días es solo el comienzo. Los AI coding agents son una herramienta que va a amplify la productividad de developers exponencialmente. No es el fin de la profesión — es una evolución. Los que se adapten y aprendan a trabajar effectively con estos agents van a tener una ventaja enorme.</p>
+
+<p>Este fue el penúltimo día del #365DaysOfAI. Ha sido un viaje increíble recorriendo todo desde fundamentos de ML hasta agentes autónomos y el futuro del desarrollo de software. Mañana cerramos con una reflexión final y proyecciones para el próximo año.</p>
+
+<p>Gracias por acompañarme en este camino. Nos vemos mañana en el Día 365. 🎄</p>
+  </article>
 
   <script>
     document.getElementById('themeToggle').addEventListener('click', function() {
