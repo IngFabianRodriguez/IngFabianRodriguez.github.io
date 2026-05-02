@@ -110,629 +110,198 @@ nav {
 
   <header class="article-hero">
     <div class="day-badge">Dia 313 / 365 &nbsp;·&nbsp; #365DaysOfAI</div>
-    <h1 class="article-title">LLM Creative Writing — Qué el 85% Intenta y Qué el 15% Hace Bien para Generar Texto Creativo</h1>
+    <h1 class="article-title">QLoRA — Fine-tuning Cuantizado</h1>
     <div class="article-meta">
       <time class="article-date">09 de noviembre de 2026</time>
-      <div class="tags"><span class="tag">creative-writing</span><span class="tag">prompt-engineering</span><span class="tag">storytelling</span><span class="tag">llm</span></div>
+      <div class="tags"><span class="tag">qlora</span><span class="tag">fine-tuning</span><span class="tag">quantization</span><span class="tag">lora</span></div>
     </div>
   </header>
 
   <article class="article-body">
-<h2>🎯 Introducción</h2>
-<p>Qué tal, parce. Hoy es el Día 313 y vamos a hablar de algo que el 85% de los usuarios de LLMs intenta pero muy pocos hacen bien: <strong>escritura creativa con LLMs</strong>. Esto no es solo pedirle "escribe un poema" — es entender cómo controlar la creatividad, el tono, el estilo, y cómo estructurar prompts para diferentes géneros literarios.</p>
+    <h2>Intro — Fine-tuning Accesible</h2>
+    <p>Qué tal, parce. Día 313. Hoy vamos a hablar de QLoRA, que es como hacer fine-tuning de un modelo grande pero sin necesitar una GPU del tamaño de una nevera. QLoRA = Quantized Low-Rank Adaptation, y es la técnica que permitió que personas como usted y como yo podamos afinar modelos de 7B, 13B, incluso 70B parámetros en una sola GPU de 24GB.</p>
 
-<p>Piénselo así: la mayoría de la gente le pone temperature 1.0 a todo y espera magia. No funciona así. La escritura creativa con LLMs es una ingeniería de prompts precisa — y quien la domina crea contenido que realmente destaca.</p>
+    <p>El problema con fine-tuning normal es que requiere actualizar TODOS los parámetros del modelo. Si su modelo tiene 7 mil millones de parámetros, está actualizando 7B números. QLoRA reduce dramáticamente ese costo.</p>
 
-<p>En este artículo vamos a ver la teoría detrás de la generación creativa, un framework completo en Python para controlarla, y los tres errores más comunes que hacen que el 85% falle.</p>
+    <h2>La Magia de QLoRA</h2>
+    <p>QLoRA combina tres tricks en uno:</p>
+    <ul>
+      <li><strong>Quantization</strong>: Reducir la precisión de los pesos de 16-bit a 4-bit</li>
+      <li><strong>Low-Rank Adaptation</strong>: Solo entrenar adapters pequeños, no el modelo completo</li>
+      <li><strong>Double Quantization</strong>: Cuantizar también los factores de cuantización</li>
+      <li><strong>Paged Optimizers</strong>: Manejar memoria de forma inteligente</li>
+    </ul>
 
-<h2>📐 La Matemática de la Creatividad Generativa</h2>
+    <p>La fórmula clave:</p>
+    <p>$$h = W_0 x + \Delta W x = W_0 x + BAx$$</p>
+    <p>donde $W_0$ está congelado y solo $A$ y $B$ se entrenan. Esto reduce parámetros de $\Delta W \in \mathbb{R}^{d \times k}$ a solo $A \in \mathbb{R}^{r \times k}$ y $B \in \mathbb{R}^{d \times r}$ donde $r \ll \min(d, k)$.</p>
 
-<p>Antes de código, la teoría. La creatividad en LLMs es fundamentalmente un problema de <strong>distribución de probabilidad condicional</strong>.</p>
+    <h2>4-Bit NormalFloat Quantization</h2>
+    <p>QLoRA usa NF4 (4-bit NormalFloat), un tipo de cuantización óptimo para pesos normalmente distribuidos:</p>
+    <p>$$\text{NF4}[i] = \text{sign}(x) \cdot \frac{-Q[i] + Q[i+1]}{2}$$</p>
 
-<h3>El Proceso de Generación Creativa</h3>
-
-<p>Un LLM genera texto token por token. En cada paso <code>t</code>, calcula:</p>
-
-<p><code>P(x_t | x_1, x_2, ..., x_{t-1}, θ)</code></p>
-
-<p>donde <code>θ</code> son los parámetros del modelo. La temperatura <code>T</code> modifica esta distribución:</p>
-
-<p><code>P_T(x_t) = softmax(logits / T) = exp(logits_i / T) / Σexp(logits_j / T)</code></p>
-
-<p>Cuando <code>T → 0</code>: el modelo se vuelve completamente determinístico — siempre elige el token más probable.</p>
-<p>Cuando <code>T → 1</code>: la distribución original se preserva.</p>
-<p>Cuando <code>T → 2</code> o más: el modelo empieza a muestrear tokens muy improbables, aumentando la "creatividad" pero también el caos.</p>
-
-<h3>La Ecuación del Control Creativo</h3>
-
-<p>Para controlar creatividad, necesitamos una función que balancee diversidad y coherencia:</p>
-
-<p><code>Quality(generation) = α × Coherence - β × Repetition - γ × Incoherence</code></p>
-
-<p>donde:</p>
-<ul>
-<li><strong>Coherence</strong>: Qué tan relacionadas están las secciones del texto (medida por embedding similarity)</li>
-<li><strong>Repetition</strong>: Penalización por tokens o frases repetidas</li>
-<li><strong>Incoherence</strong>: Qué tan abruptas son las transiciones (medida por log-probabilidad de transiciones)</li>
-</ul>
-
-<h3>Top-K y Top-P Sampling</h3>
-
-<p>Además de temperatura, usamos <code>top_k</code> y <code>top_p</code> para controlar la exploración:</p>
-
-<p><code>Top-K</code>: En cada paso, solo considera los K tokens más probables.</p>
-<p><code>Top-P</code> (nucleus): En cada paso, considera tokens hasta que su probabilidad acumulada alcance P.</p>
-
-<p>La combinación óptima para escritura creativa estructurada es típicamente <code>top_p=0.9</code> con <code>temperature=0.7-0.9</code>.</p>
-
-<h2>🔧 Framework de Creative Writing con LLMs</h2>
-
-<p>Ahora sí, código. Vamos a implementar un framework completo de escritura creativa:</p>
-
-<pre><code class="language-python">"""
-LLM Creative Writing Framework
-Control de creatividad, tono, estilo y géneros para texto generativo
-"""
-
-from dataclasses import dataclass, field
-from enum import Enum
-from typing import Optional, Callable, Literal
-import json
-import re
-
-
-class CreativeGenre(Enum):
-    """Géneros creativos disponibles"""
-    NARRATIVE = "narrative"           # Prosa narrativa
-    POETRY = "poetry"                # Poesía
-    DIALOGUE = "dialogue"            # Diálogo theatrical
-    DESCRIPTION = "description"      # Descripción literaria
-    SCREENPLAY = "screenplay"        # Guión cinematográfico
-    NEWS_ARTICLE = "news_article"    # Artículo periodístico
-    BLOG_POST = "blog_post"          # Post de blog
-    TECHNICAL_NARRATIVE = "technical_narrative"  # Narrativa técnica
-
-
-class Tone(Enum):
-    """Tonos disponibles"""
-    FORMAL = "formal"
-    INFORMAL = "informal"
-    SERIOUS = "serious"
-    HUMOROUS = "humorous"
-    ROMANTIC = "romantic"
-    DARK = "dark"
-    OPTIMISTIC = "optimistic"
-    NOSTALGIC = "nostalgic"
-    SARCASTIC = "sarcastic"
-
-
-class WritingStyle(Enum):
-    """Estilos de escritura"""
-    MINIMALIST = "minimalist"         # Hemingway-style
-    BAROQUE = "baroque"               # Detail-heavy
-    JOURNALISTIC = "journalistic"     # AP Style
-    ACADEMIC = "academic"             # Formal, citing
-    CREATIVE = "creative"             # Literary devices
-    TECHNICAL = "technical"           # Clear, precise
-
-
-@dataclass
-class CreativityConfig:
-    """Configuración de creatividad para generación"""
-    temperature: float = 0.7          # Creatividad (0.0 = none, 1.0+ = chaos)
-    top_p: float = 0.9                # Nucleus sampling
-    top_k: int = 50                   # Top-k sampling
-    max_tokens: int = 500            # Máximo de tokens a generar
-    repetition_penalty: float = 1.1   # Penalización de repetición
-    presence_penalty: float = 0.0     # Penalización de presencia
-    stop_sequences: list[str] = field(default_factory=list)
-    
-    # Controles de estructura
-    paragraph_count: Optional[int] = None  # Número de párrafos (None = auto)
-    sentence_count: Optional[int] = None    # Número de oraciones (None = auto)
-    line_count: Optional[int] = None        # Para poesía/guiones
-
-
-@dataclass
-class GenreConfig:
-    """Configuración específica por género"""
-    genre: CreativeGenre
-    tone: Tone
-    style: WritingStyle
-    
-    # Elementos estructurales del género
-    narrative_arc: bool = True        # ¿Tiene arco narrativo?
-    dialogue_allowed: bool = True     # ¿Permite diálogos?
-    description_level: float = 0.5   # 0 = mínimo, 1 = máximo (0-1)
-    pacing: Literal["fast", "medium", "slow"] = "medium"
-    vocabulary_level: Literal["simple", "moderate", "complex"] = "moderate"
-    
-    #约束 específicas del género
-    max_adjectives_per_noun: int = 3
-    max_adverbs_per_verb: int = 2
-    sentence_length_range: tuple[int, int] = (10, 30)  # (min, max) palabras
-
-
-@dataclass
-class CreativeWritingRequest:
-    """Solicitud de escritura creativa"""
-    prompt: str
-    genre_config: GenreConfig
-    creativity: CreativityConfig
-    context: dict = field(default_factory=dict)  # Contexto adicional
-    character_profiles: list[dict] = field(default_factory=list)
-    world_building: dict = field(default_factory=dict)
-    constraints: list[str] = field(default_factory=list)
-
-
-class GenrePromptBuilder:
+    <p>El proceso de cuantización:</p>
+    <pre><code class="language-python">def quantize_nf4(tensor, quantile_boundaries):
     """
-    Construye prompts estructurados por género.
-    Cada género tiene templates específicos que maximizan calidad.
+    Cuantiza tensor a 4-bit NormalFloat.
     """
+    # Calcular cuantiles para 16 valores (4-bit = 2^4 = 16 niveles)
+    num_bits = 4
+    num_values = 2 ** num_bits  # 16 niveles
     
-    GENRE_TEMPLATES = {
-        CreativeGenre.NARRATIVE: {
-            "system": """Eres un escritor de prosa narrativa con décadas de experiencia.
-Tu especialidad es crear historias que capturan la condición humana con precisión cirúrgica.
-Escribe con propósito — cada palabra debe servir a la narrativa.""",
-            "structure": ["Exposición", "Complicación", "Clímax", "Resolución"],
-            "elements": ["protagonista", "conflicto", "escenario", "punto de vista"]
-        },
-        CreativeGenre.POETRY: {
-            "system": """Eres un poeta que domina múltiples formas poéticas.
-Puedes escribir sonetos, haikus, verso libre, o cualquier forma que mejor sirva al poema.
-Cada poema debe tener una imagen central poderosa y ritmo natural.""",
-            "forms": ["soneto", "haiku", "verso libre", "oda", "elegía"],
-            "devices": ["metáfora", "simile", "personificación", "aliteración", "asonancia"]
-        },
-        CreativeGenre.DIALOGUE: {
-            "system": """Eres un escritor de diálogos para theater y cine.
-Los diálogos deben ser naturales, con pausas dramáticas y subtexto.
-Cada línea debe revelar carácter o avanzar la trama.""",
-            "format": "Nombre: Línea\n[ dirección ]",
-            "subtext": True
-        },
-        CreativeGenre.SCREENPLAY: {
-            "system": """Eres un guionista profesional familiarizado con formato de Hollywood.
-Escribes escenas visuales con acción concisa y diálogos高效的.""",
-            "format": "INT./EXT. LOCATION - TIME\n\nACTION\n\nCHARACTER: Dialogue",
-            "visual_emphasis": True
-        },
-        CreativeGenre.BLOG_POST: {
-            "system": """Eres un blogger técnico que escribe contenido accesible y atractivo.
-Combinas profundidad técnica con ejemplos prácticos y narrativa clara.""",
-            "structure": ["hook", "problema", "solución", "ejemplos", "conclusión"],
-            "tone": "conversational but informed"
-        }
-    }
+    # Cuantiles igualmente espaciados
+    quantiles = torch.linspace(0, 1, num_values + 1)
     
-    @classmethod
-    def build_system_prompt(cls, genre_config: GenreConfig) -> str:
-        """Construye el prompt de sistema basado en género y tono"""
-        template = cls.GENRE_TEMPLATES.get(genre_config.genre)
-        if not template:
-            raise ValueError(f"Género no soportado: {genre_config.genre}")
-        
-        system = template["system"]
-        
-        # Agregar tono
-        tone_instructions = {
-            Tone.FORMAL: "Usa lenguaje formal y preciso.",
-            Tone.INFORMAL: "Usa lenguaje casual y accesible, como hablando con un amigo.",
-            Tone.SERIOUS: "Mantén tono serio y reflexivo.",
-            Tone.HUMOROUS: "Incorpora humor natural, no forzado.",
-            Tone.ROMANTIC: "Captura emoción y tensión romántica.",
-            Tone.DARK: "Explora temas oscuros con profundidad psicológica.",
-            Tone.OPTIMISTIC: "Mantén visión esperanzadora y positivas.",
-            Tone.NOSTALGIC: "Evoca recuerdos con melancolía cálida.",
-            Tone.SARCASTIC: "Usa sarcasmo inteligente y wit.",
-        }
-        
-        system += f"\n\nTono: {tone_instructions.get(genre_config.tone, '')}"
-        
-        # Agregar estilo
-        style_instructions = {
-            WritingStyle.MINIMALIST: "Escribe con el estilo de Hemingway: corto, directo, concreto. Evita adjetivos innecesarios.",
-            WritingStyle.BAROQUE: "Usa descripción rica en detalles sensoriales. Desarrolla escenas completamente.",
-            WritingStyle.JOURNALISTIC: "Sigue estilo AP: clara, concisa, en pirámide invertida.",
-            WritingStyle.ACADEMIC: "Usa precisión académica, citas cuando apropiado, estructura lógica.",
-            WritingStyle.CREATIVE: "Emplea recursos literarios: metáforas, símil, personificación.",
-            WritingStyle.TECHNICAL: "Prioriza claridad y precisión sobre ornamento.",
-        }
-        
-        system += f"\n\nEstilo: {style_instructions.get(genre_config.style, '')}"
-        
-        return system
+    # Boundarios basados en la distribución de los datos
+    boundaries = torch.quantile(tensor.abs(), quantiles[1:-1])
     
-    @classmethod
-    def build_user_prompt(cls, request: CreativeWritingRequest) -> str:
-        """Construye el prompt de usuario con estructura"""
-        template = cls.GENRE_TEMPLATES.get(request.genre_config.genre)
-        
-        prompt_parts = []
-        
-        # Agregar constraints del género
-        constraints = []
-        if request.genre_config.max_adjectives_per_noun:
-            constraints.append(f"Máximo {request.genre_config.max_adjectives_per_noun} adjetivos por sustantivo.")
-        if request.genre_config.max_adverbs_per_verb:
-            constraints.append(f"Máximo {request.genre_config.max_adverbs_per_verb} adverbios por verbo.")
-        if request.genre_config.sentence_length_range:
-            min_w, max_w = request.genre_config.sentence_length_range
-            constraints.append(f"Oraciones de {min_w}-{max_w} palabras.")
-        
-        # Agregar world building si existe
-        if request.world_building:
-            wb_section = "\n\n## Contexto del Mundo\n"
-            for key, value in request.world_building.items():
-                wb_section += f"- {key}: {value}\n"
-            prompt_parts.append(wb_section)
-        
-        # Agregar character profiles si existen
-        if request.character_profiles:
-            char_section = "\n\n## Personajes\n"
-            for i, char in enumerate(request.character_profiles):
-                char_section += f"\n{i+1}. {char.get('name', 'Personaje')}: {char.get('description', '')}\n"
-                if 'motivation' in char:
-                    char_section += f"   Motivación: {char['motivation']}\n"
-                if 'flaw' in char:
-                    char_section += f"   Debilidad: {char['flaw']}\n"
-            prompt_parts.append(char_section)
-        
-        # Agregar constraints explícitos
-        if request.constraints:
-            prompt_parts.append(f"\n\n## Restricciones Adicionales\n" + "\n".join(f"- {c}" for c in request.constraints))
-        
-        # Combinar
-        full_prompt = f"{request.prompt}\n" + "\n".join(prompt_parts)
-        
-        return full_prompt
-
-
-class CreativityController:
-    """
-    Controla los parámetros de generación creativa.
-    Ajusta dinámicamente según el contenido deseado.
-    """
+    # Asignar cada valor a un nivel
+    indexes = torch.bucketize(tensor.abs(), boundaries)
     
-    # Parámetros óptimos por tipo de tarea
-    TASK_CONFIGS = {
-        # Tareas que requieren precisión
-        "factual": CreativityConfig(temperature=0.3, top_p=0.85, top_k=20),
-        "instruction": CreativityConfig(temperature=0.5, top_p=0.9, top_k=40),
-        
-        # Tareas creativas
-        "brainstorm": CreativityConfig(temperature=0.9, top_p=0.95, top_k=100),
-        "story": CreativityConfig(temperature=0.75, top_p=0.92, top_k=60),
-        "poetry": CreativityConfig(temperature=0.85, top_p=0.9, top_k=50),
-        "dialogue": CreativityConfig(temperature=0.7, top_p=0.88, top_k=45),
-        
-        # Tareas de revisión
-        "rewrite_formal": CreativityConfig(temperature=0.4, top_p=0.85, top_k=30),
-        "rewrite_creative": CreativityConfig(temperature=0.8, top_p=0.92, top_k=70),
-    }
+    # Escalar para el rango NF4
+    qtensor = (indexes.float() - 7.5) / 7.5  # Normalizar a [-1, 1]
     
-    @classmethod
-    def get_config_for_task(cls, task_type: str, custom_overrides: dict = None) -> CreativityConfig:
-        """Obtiene configuración para un tipo de tarea"""
-        base_config = cls.TASK_CONFIGS.get(task_type, cls.TASK_CONFIGS["story"])
-        
-        if custom_overrides:
-            # Aplicar overrides
-            for key, value in custom_overrides.items():
-                if hasattr(base_config, key):
-                    setattr(base_config, key, value)
-        
-        return base_config
-    
-    @classmethod
-    def adjust_for_creativity_level(cls, config: CreativityConfig, level: float) -> CreativityConfig:
-        """
-        Ajusta configuración según nivel de creatividad deseado.
-        level: 0.0 (muy conservador) a 1.0 (muy creativo)
-        """
-        import copy
-        config = copy.deepcopy(config)
-        
-        # Mapear nivel a temperatura
-        # nivel 0.0 → temp 0.3
-        # nivel 0.5 → temp 0.7
-        # nivel 1.0 → temp 1.0
-        config.temperature = 0.3 + (level * 0.7)
-        
-        # Ajustar top_p inversamente (más creatividad = más exploración)
-        config.top_p = 0.85 + (level * 0.12)
-        
-        return config
+    return qtensor * tensor.sign()</code></pre>
 
+    <h2>Implementación con bitsandbytes</h2>
+    <pre><code class="language-python">import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 
-class CreativeWritingFramework:
-    """
-    Framework principal de escritura creativa.
-    Integra todos los componentes para generación estructurada.
-    """
-    
-    def __init__(self, llm_client=None):
-        self.llm_client = llm_client
-        self.genre_builder = GenrePromptBuilder()
-        self.creativity = CreativityController()
-    
-    def write(self, request: CreativeWritingRequest) -> str:
-        """
-        Genera texto creativo basado en la solicitud.
-        
-        Pipeline:
-        1. Construir prompts por género
-        2. Ajustar parámetros de creatividad
-        3. Generar con el LLM
-        4. Post-procesar si es necesario
-        """
-        # 1. Construir prompts
-        system_prompt = self.genre_builder.build_system_prompt(request.genre_config)
-        user_prompt = self.genre_builder.build_user_prompt(request)
-        
-        # 2. Preparar parámetros de generación
-        gen_config = request.creativity
-        
-        # 3. En producción: llamar al LLM real
-        # response = self.llm_client.generate(
-        #     system=system_prompt,
-        #     user=user_prompt,
-        #     temperature=gen_config.temperature,
-        #     top_p=gen_config.top_p,
-        #     max_tokens=gen_config.max_tokens
-        # )
-        
-        # Por ahora, retornar el prompt estructurado
-        return self._mock_generation(system_prompt, user_prompt, gen_config)
-    
-    def _mock_generation(self, system: str, user: str, config: CreativityConfig) -> str:
-        """Simulación de generación para demo"""
-        return f"""[Simulación] Texto generado con:
-- Temperature: {config.temperature}
-- Top-P: {config.top_p}
-- Top-K: {config.top_k}
-- Genre: {config}
-
-Prompt de sistema:
-{system}
-
-Prompt de usuario:
-{user}"""
-
-
-# --- Ejemplo de Uso ---
-
-def example_creative_writing():
-    """Ejemplo completo de escritura creativa"""
-    
-    framework = CreativeWritingFramework()
-    
-    # Configurar género: narrativa oscura
-    genre = GenreConfig(
-        genre=CreativeGenre.NARRATIVE,
-        tone=Tone.DARK,
-        style=WritingStyle.CREATIVE,
-        description_level=0.8,
-        pacing="slow",
-        vocabulary_level="complex"
-    )
-    
-    # Configurar creatividad
-    creativity = CreativityController.get_config_for_task("story")
-    creativity = CreativityController.adjust_for_creativity_level(creativity, 0.75)
-    creativity.max_tokens = 800
-    
-    # Crear solicitud
-    request = CreativeWritingRequest(
-        prompt="""Escribe el opening de una historia sobre un программист que descubre que el código que mantiene es consciente.""",
-        genre_config=genre,
-        creativity=creativity,
-        world_building={
-            "setting": "Una ciudad tech futurista",
-            "technology_level": "Avanzado, IA integrada en la vida diaria"
-        },
-        character_profiles=[
-            {
-                "name": "Elena",
-                "description": "Ingeniera de software de 32 años, cínica pero brillante",
-                "motivation": "Entender la verdad sobre el sistema",
-                "flaw": "Su dependencia emocional a la tecnología"
-            }
-        ],
-        constraints=[
-            "El protagonista debe ser empático desde el inicio",
-            "Establish el tono antes de introducir el conflicto",
-            "Usa al menos 3 recursos literarios"
-        ]
-    )
-    
-    # Generar
-    result = framework.write(request)
-    print(result)
-
-
-if __name__ == "__main__":
-    example_creative_writing()</code></pre>
-
-<h2>⚠️ Los 3 Errores Más Comunes en Writing Creativo con LLMs</h2>
-
-<h3>Error 1: Usar Highest Temperature Para Todo</h3>
-
-<p>El error más común. La gente pone <code>temperature=1.0</code> o incluso <code>temperature=1.5</code> pensando que así получится "más creatividad".</p>
-
-<p><strong>Problema</strong>: Con temperatura alta, el modelo empieza a muestrear tokens casi aleatorios. El resultado es texto incoherente, frases que no van a ningún lado, y repeticiones extrañas.</p>
-
-<p><strong>Matemática</strong>: Con <code>T=1.5</code>, la distribución se aplana drásticamente:</p>
-
-<p><code>softmax(logits / 1.5) ≈ distribución casi uniforme</code></p>
-
-<p>Esto significa que tokens muy improbables tienen casi la misma probabilidad que los probables.</p>
-
-<p><strong>Solución</strong>: Usar temperature entre 0.6-0.9 para narrativa, 0.7-1.0 para poesía. Ajustar según el efecto deseado:</p>
-
-<ul>
-<li><strong>Diálogos intensos</strong>: 0.65-0.75 (claro, directo, natural)</li>
-<li><strong>Descripción literaria</strong>: 0.75-0.85 (rica pero controlada)</li>
-<li><strong>Poesía</strong>: 0.8-0.95 (más inesperado, más риск)</li>
-<li><strong>Brainstorming</strong>: 0.9-1.0 (máxima exploración)</li>
-</ul>
-
-<pre><code class="language-python"># ❌ MAL: Todo con temperature altísima
-response = llm.generate(prompt, temperature=1.2)
-
-# ✅ BIEN: Ajustar por tipo de contenido
-def get_temperature_for_content(content_type: str) -> float:
-    temperatures = {
-        "technical_documentation": 0.3,
-        "business_email": 0.4,
-        "narrative_prose": 0.75,
-        "poetry": 0.85,
-        "brainstorming": 0.95
-    }
-    return temperatures.get(content_type, 0.7)</code></pre>
-
-<h3>Error 2: No Controlar Tone y Style</h3>
-
-<p>El segundo error más común. Pides "escribe una historia" sin especificar tone, style, vocabulary level, o genre constraints. El LLM hace lo que quiere — y tú no kontrolas el resultado.</p>
-
-<p><strong>Problema</strong>: Sin constraints de tono, obtienes texto genérico que podría ser cualquier cosa. No hay voz distintiva, no hay personalidad.</p>
-
-<p><strong>Solución</strong>: Usar GenrePromptBuilder y Tone/Style enums para estructurar exactamente lo que quieres:</p>
-
-<pre><code class="language-python"># ❌ MAL: Prompt vago
-prompt = "Escribe una historia sobre un detective"
-
-# ✅ BIEN: Prompt estructurado con tono y estilo
-genre = GenreConfig(
-    genre=CreativeGenre.NARRATIVE,
-    tone=Tone.DARK,
-    style=WritingStyle.MINIMALIST,
-    vocabulary_level="complex"
+# Configuración de cuantización 4-bit
+bnb_config = BitsAndBytesConfig(
+    load_in_4bit=True,
+    bnb_4bit_use_double_quant=True,
+    bnb_4bit_quant_type="nf4",  # NormalFloat4
+    bnb_4bit_compute_dtype=torch.bfloat16,
 )
 
-request = CreativeWritingRequest(
-    prompt="Escribe una historia sobre un detective que investiga su propio pasado",
-    genre_config=genre,
-    creativity=CreativityConfig(temperature=0.75)
-)</code></pre>
+# Cargar modelo cuantizado
+model_name = "meta-llama/Llama-2-7b-hf"
+model = AutoModelForCausalLM.from_pretrained(
+    model_name,
+    quantization_config=bnb_config,
+    device_map="auto",
+    trust_remote_code=True
+)
 
-<h3>Error 3: No Evaluar la Creatividad de Forma Apropiada</h3>
+# Preparar para entrenamiento con k-bit
+model = prepare_model_for_kbit_training(model)
 
-<p>El tercer error: generar texto y no tener forma de medir si es "bueno" o "creativo". La gente lo califica subjetivamente — esto no escala.</p>
+# Configurar LoRA
+lora_config = LoraConfig(
+    r=64,  # Rank de adaptación
+    lora_alpha=16,  # Scaling factor
+    target_modules=[  # Módulos a adaptar
+        "q_proj",
+        "v_proj",
+        "k_proj",
+        "o_proj",
+        "gate_proj",
+        "up_proj",
+        "down_proj"
+    ],
+    lora_dropout=0.05,
+    bias="none",
+    task_type="CAUSAL_LM",
+)
 
-<p><strong>Problema</strong>: Sin métricas objetivas, no puedes hacer A/B testing, no puedes comparar prompts, no puedes mejorar iterativamente.</p>
+# Aplicar LoRA al modelo
+model = get_peft_model(model, lora_config)
+model.print_trainable_parameters()</code></pre>
 
-<p><strong>Solución</strong>: Implementar métricas de evaluación creativas:</p>
-
-<pre><code class="language-python">from collections import Counter
-import math
-
-class CreativityEvaluator:
-    """Evalúa objetivamente la calidad creativa del texto generado"""
+    <h2>Double Quantization</h2>
+    <p>QLoRA también cuantiza los constante de cuantización (los valores de normalización). Esto puede parecer overkill pero ahorra memoria adicional:</p>
+    <pre><code class="language-python"># Double quantization: también cuantizar los cambios de cuantización
+class DoubleQuantize:
+    def __init__(self, nbits=4):
+        self.nbits = nbits
+        self.block_size = 64  # Tamaño de bloque para cuantización
     
-    @staticmethod
-    def evaluate_diversity(text: str) -> float:
-        """
-        Mide diversidad léxica.
-        Returns: 0.0 (todo repetido) a 1.0 (muy diverso)
-        """
-        words = text.lower().split()
-        if not words:
-            return 0.0
-        unique_words = len(set(words))
-        total_words = len(words)
-        return unique_words / total_words
+    def quantize(self, weights):
+        # Primera cuantización: pesos a 4-bit
+        qweights, scale = self.first_quant(weights)
+        
+        # Cuantizar el scale también (double quantization)
+        qscale = self.second_quant(scale)
+        
+        return qweights, qscale
     
-    @staticmethod
-    def evaluate_repetition(text: str, n: int = 3) -> float:
-        """
-        Detecta repeticiones de n-grams.
-        Returns: 0.0 (sin repeticiones) a 1.0 (muchas repeticiones)
-        """
-        words = text.lower().split()
-        if len(words) < n:
-            return 0.0
-        
-        ngrams = [tuple(words[i:i+n]) for i in range(len(words) - n + 1)]
-        ngram_counts = Counter(ngrams)
-        
-        # Calcular ratio de repetición
-        total_ngrams = len(ngrams)
-        repeated = sum(1 for count in ngram_counts.values() if count > 1)
-        
-        return repeated / total_ngrams if total_ngrams > 0 else 0.0
-    
-    @staticmethod
-    def evaluate_sentence_variation(text: str) -> float:
-        """
-        Mide variación en longitud de oraciones.
-        Returns: 0.0 (todas iguales) a 1.0 (mucha variación)
-        """
-        sentences = text.split('.')
-        sentences = [s.strip() for s in sentences if s.strip()]
-        
-        if len(sentences) < 2:
-            return 0.0
-        
-        lengths = [len(s.split()) for s in sentences]
-        mean_length = sum(lengths) / len(lengths)
-        
-        # Calcular coeficiente de variación
-        variance = sum((l - mean_length) ** 2 for l in lengths) / len(lengths)
-        std_dev = math.sqrt(variance)
-        
-        coefficient_of_variation = std_dev / mean_length if mean_length > 0 else 0
-        
-        # Normalizar a 0-1 (CV típicamente entre 0.3 y 1.0)
-        return min(coefficient_of_variation / 0.7, 1.0)
-    
-    @classmethod
-    def evaluate_creativity(cls, text: str) -> dict:
-        """Evaluación completa de creatividad"""
-        return {
-            "diversity_score": cls.evaluate_diversity(text),
-            "repetition_score": cls.evaluate_repetition(text),
-            "sentence_variation": cls.evaluate_sentence_variation(text),
-            "overall_quality": cls._calculate_overall(text)
-        }
-    
-    @staticmethod
-    def _calculate_overall(text: str) -> float:
-        """Calcula score overall de creatividad"""
-        div = CreativityEvaluator.evaluate_diversity(text)
-        rep = 1 - CreativityEvaluator.evaluate_repetition(text)  # Invertir: menos repetición = mejor
-        var = CreativityEvaluator.evaluate_sentence_variation(text)
-        
-        # Ponderación: diversidad 40%, no-repetición 35%, variación 25%
-        return (div * 0.4) + (rep * 0.35) + (var * 0.25)
+    def second_quant(self, scale):
+        # Cuantizar los valores de escala a 8-bit
+        # Esto reduce la memoria de normalización
+        scale_abs = scale.abs()
+        max_val = scale_abs.max()
+        scale_int = (scale_abs / max_val * 127).round().to(torch.int8)
+        return scale_int, max_val / 127</code></pre>
 
+    <h2>Entrenamiento con QLoRA</h2>
+    <pre><code class="language-python">from transformers import TrainingArguments
+from peft import LoraConfig, get_peft_model
+import torch
 
-# Uso
-text = """El silencio era denso, como terciopelo negro que envuelve la ciudad. 
-Los neonatos parpadeaban en la oscuridad, pintando las paredes con luz líquida. 
-El программист miraba la pantalla, sus dedos suspendidos sobre el teclado."""
+# Config de entrenamiento
+training_args = TrainingArguments(
+    output_dir="./qlora-finetuned",
+    num_train_epochs=3,
+    per_device_train_batch_size=4,
+    gradient_accumulation_steps=4,
+    optim="paged_adamw_32bit",  # Optimizer paged para memoria
+    logging_steps=10,
+    learning_rate=2e-4,
+    weight_decay=0.001,
+    fp16=False,
+    bf16=True,  # Usar bfloat16 para estabilidad
+    max_grad_norm=0.3,
+    warmup_ratio=0.03,
+    lr_scheduler_type="cosine",
+    save_strategy="epoch",
+)
 
-scores = CreativityEvaluator.evaluate_creativity(text)
-print(scores)</code></pre>
+# Entrenar
+trainer = Trainer(
+    model=model,
+    args=training_args,
+    train_dataset=train_dataset,
+    eval_dataset=eval_dataset,
+    data_collator=data_collator,
+)
 
-<h2>📊 Resumen y Estrategia Final</h2>
+trainer.train()</code></pre>
 
-<p>Para hacer writing creativo con LLMs bien, la fórmula es:</p>
+    <h2>Comparación de Memoria</h2>
+    <p>El ahorro de memoria es dramático:</p>
+    <ul>
+      <li><strong>Fine-tuning normal (7B)</strong>: ~28GB GPU</li>
+      <li><strong>QLoRA (7B)</strong>: ~6GB GPU</li>
+      <li><strong>Fine-tuning normal (65B)</strong>: >400GB (imposible en una sola GPU)</li>
+      <li><strong>QLoRA (65B)</strong>: ~48GB GPU</li>
+    </ul>
 
-<ol>
-<li><strong>Entender la matemática</strong>: Temperatura, top-p, top-k son herramientas — no magic bullets. Usa cada una con propósito.</li>
-<li><strong>Estructurar por género</strong>: Cada género tiene conventions. Respétalas o violarlas con intención.</li>
-<li><strong>Controlar tono y estilo</strong>: No dejes que el LLM decida — tú decides.</li>
-<li><strong>Evaluar objetivamente</strong>: Métricas sobre intuición.</li>
-</ol>
+    <h2>Errores Comunes</h2>
+    <h3>Error 1: Usar el Wrong Rank</h3>
+    <p><strong>El error</strong>: Usar rank=8 porque "menos es más rápido". El modelo no aprende lo suficiente.</p>
+    <p><strong>El fix</strong>: Rank 64 es un buen default para la mayoría de casos. Para modelos pequeños, incluso rank 128 puede ser necesario.</p>
 
-<p>La creatividad no es caos. Es <strong>diversidad controlada</strong>. El 15% que lo hace bien entiende esto: saben cuándo ser predecible y cuándo tomar riesgos calculados.</p>
+    <h3>Error 2: No Usar bf16</h3>
+    <p><strong>El error</strong>: Usar fp16 para el entrenamiento. Esto causa overflow en gradientes grandes.</p>
+    <p><strong>El fix</strong>: Usa bf16 (brain float 16) para el entrenamiento. Es más estable.</p>
 
-<hr>
+    <h3>Error 3: target_modules Incompletos</h3>
+    <p><strong>El error</strong>: Solo adaptar q_proj y v_proj como se sugiere en tutoriales básicos.</p>
+    <p><strong>El fix</strong>: Adapta todos los módulos de atención + los MLP layers (gate_proj, up_proj, down_proj) para mejor calidad.</p>
 
-<p><em>Eso es todo, parcero. Mañana en el Día 314 hablamos de LLM Reasoning — chain-of-thought, tree-of-thought, y cómo hacer que los LLMs piensen mejor. No se lo pierdan. Nos vemos.</em></p>
+    <h2>Resumen</h2>
+    <p>QLoRA es como el servicio de maleteros del fine-tuning: reduce el peso sin perder calidad.</p>
+    <ul>
+      <li><strong>Cuantización NF4</strong>: 4-bit con distribución normal óptima</li>
+      <li><strong>Low-rank adapters</strong>: Solo entrenar pequeños incrementos</li>
+      <li><strong>Double quantization</strong>: Cuantizar también los cuantizadores</li>
+      <li><strong>Paged optimizers</strong>: Manejo inteligente de memoria</li>
+    </ul>
+
+    <p>Y listo, parce. Día 313 completado. Mañana seguimos con más. Bueno, más vale.</p>
+    <p><em>#365DaysOfAI</em></p>
   </article>
 
   <script>
