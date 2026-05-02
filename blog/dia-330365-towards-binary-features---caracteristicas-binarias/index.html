@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="LLM Swarm Intelligence — Lo que el 90% no conoce y el 10% usa para sistemas emergentes | #365DaysOfAI por Fabian Rodriguez">
-  <title>LLM Swarm Intelligence | #365DaysOfAI</title>
+  <meta name="description" content="Towards Binary Features - Características Binarias | #365DaysOfAI por Fabian Rodriguez">
+  <title>Towards Binary Features | #365DaysOfAI</title>
   
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
@@ -118,1425 +118,364 @@ nav {
   </header>
 
   <article class="article-body">
-<h1>LLM Swarm Intelligence — Lo que el 90% No Conoce y el 10% Usa para Sistemas Emergentes</h1>
-<p>Muy Buenos días, parcero. Hoy es el Día 330 y Vamos a hablar de algo que me tiene fascinado hace rato: Swarm Intelligence o inteligencia de enjambre aplicada a LLMs. Si ayer hablamos de Multi-Agent Systems con su coordinador y sus roles bien definidos, hoy llevamos eso al extremo — muchos agentes, sin coordinación central, y el comportamiento que emerge de la colectividad. Así como las hormigas no tienen jefe y pourtant construyen caminos óptimos, o como las termitas sin plano archi tecturan termiteros complejos. Eso es lo que queremos lograr con LLMs: comportamiento inteligente sin diseño centralizado, que surja de las interacciones locales entre muchos agentes simples. Suena a magia pero no lo es — hay ciencia detrás, y hoy se la cuento.</p>
+<h2>🎯 Por Qué binary Features</h2>
+<p>En el artículo anterior hablamos de superposition y cómo los modelos representan múltiples features usando las mismas neuronas. Hoy exploramos una idea related: binary features. La intuición es que en lugar de representar features como valores continuous, el modelo podría estar usando representaciones discretas o binarias.</p>
+<p>La pregunta central es: <strong>¿son los features en redes neuronales fundamentalmente continuos o discretos?</strong> La evidencia reciente sugiere que muchos features tienen un carácter casi-discreto: están "activos" o "inactivos" en diferentes contextos, con poca variación intermedia.</p>
+<p>Hay varias razones por las que esto es interesante:</p>
+<ul>
+<li><strong>Eficiencia computacional</strong> - operaciones binarias son más baratas</li>
+<li><strong>Robustez</strong> - pequeñas perturbaciones no cambian el feature</li>
+<li><strong>Interpretabilidad</strong> - binario es más fácil de razonar</li>
+<li><strong>Compresión</strong> - almacenar binario vs float32 es 32x más pequeño</li>
+</ul>
 <hr>
-<h2>🎯 Qué Es la Swarm Intelligence con LLMs</h2>
-<p>La Swarm Intelligence es un paradigma computacional inspirado en el comportamiento colectivo de sistemas descentralizados naturales — colonias de hormigas, bandadas de pájaros, cardúmenes de peces. La idea central es que comportamiento inteligente y complejo puede emerger de la interacción de muchos agentes simples siguiendo reglas locales simples, sin ninguna forma de control centralizado.</p>
-<p>Aplicado a LLMs, un sistema de Swarm Intelligence consiste en muchos agentes LLM distribuidos que interactúan entre sí y con su ambiente de forma local, sin conocimiento del estado global del sistema. Cada agente toma decisiones basadas en lo que observa localmente, y el comportamiento colectivo emerge de esas interacciones. Esto es fundamentalmente diferente a los Multi-Agent Systems de ayer, donde había un coordinador explícito y roles definidos.</p>
-<h3>La Diferencia Entre Multi-Agent y Swarm</h3>
-<p>En un Multi-Agent System tradicional, tienes arquitectura explícita: el coordinador asigna roles, distribuye tareas, y agrega resultados. Funciona bien pero tiene un punto único de falla — si el coordinador falla, todo el sistema falla. También tiene un límite de escala porque la coordinación se vuelve el bottleneck.</p>
-<p>En un Swarm, no hay coordinador. Cada agente es independiente y toma sus propias decisiones. La coordinación emerge de las interacciones locales. Esto escala mejor porque no hay bottleneck, y es más robusto porque no hay punto único de falla. Pero también es más difícil de predecir y controlar — el comportamiento emergente puede ser brillante o pueda ser un desastre.</p>
-<pre><code class="language-python">from dataclasses import dataclass, field
-from typing import List, Dict, Any, Callable, Tuple
-from enum import Enum
-import random
-import math
+<h2>🧠 Feature Binarization Natural</h2>
+<p>Resulta que muchos features en LLMs se comportan de manera casi-binaria. Cuando analizas las activaciones para diferentes inputs, encuentras que muchos features tienen una distribución bimodal: o están "off" o están "on", con pocos valores intermedios.</p>
+<p>Esto es diferente a la representación vectorial continua típica. En una representación binaria:</p>
+<ul>
+<li>El feature F está activo si la activación > threshold</li>
+<li>El feature F está inactivo si la activación < threshold</li>
+<li>La transición entre estados es sharp, no gradual</li>
+</ul>
+<p>Los investigadores han encontrado que este comportamiento emerge naturalmente en redes entrenadas con regularización. Modelos más pequeños o con más regularización tienden a tener features más discretos.</p>
+<pre><code class="language-python">import torch
+import torch.nn as nn
+import numpy as np
+from typing import Dict, List, Tuple
 
-class SwarmRole(Enum):
-    WORKER = "worker"
-    BROADCASTER = "broadcaster"
-    AGGREGATOR = "aggregator"
-
-@dataclass
-class SwarmAgent:
-    """Agente en un sistema de Swarm Intelligence"""
-    agent_id: str
-    role: SwarmRole
-    position: Tuple[float, float]
-    state: Dict[str, Any] = field(default_factory=dict)
-    
-    # Parámetros de comportamiento local
-    neighborhood_radius: float = 10.0
-    influence_factor: float = 0.3
-    
-    def observe_local_environment(self, all_agents: List["SwarmAgent"]) -> Dict[str, Any]:
-        """Observa el estado local (agentes cercanos)"""
-        nearby = []
-        for other in all_agents:
-            if other.agent_id != self.agent_id:
-                dist = self._distance_to(other.position)
-                if dist < self.neighborhood_radius:
-                    nearby.append({
-                        "agent": other,
-                        "distance": dist,
-                        "state": other.state.copy()
-                    })
-        
-        # Ordenar por distancia
-        nearby.sort(key=lambda x: x["distance"])
-        
-        return {
-            "nearby_agents": nearby,
-            "n_nearby": len(nearby),
-            "avg_state": self._compute_avg_state(nearby)
-        }
-    
-    def _distance_to(self, other_pos: Tuple[float, float]) -> float:
-        return math.sqrt(
-            (self.position[0] - other_pos[0])**2 + 
-            (self.position[1] - other_pos[1])**2
-        )
-    
-    def _compute_avg_state(self, nearby: List[Dict]) -> Dict[str, float]:
-        if not nearby:
-            return {}
-        
-        # Ejemplo: promediar "energía" de vecinos
-        total_energy = sum(n["state"].get("energy", 0) for n in nearby)
-        return {"avg_energy": total_energy / len(nearby)}
-    
-    def decide_local_action(self, observation: Dict[str, Any]) -> Dict[str, Any]:
-        """Decide acción basándose solo en observación local"""
-        if self.role == SwarmRole.WORKER:
-            return self._worker_decision(observation)
-        elif self.role == SwarmRole.BROADCASTER:
-            return self._broadcaster_decision(observation)
-        else:
-            return self._aggregator_decision(observation)
-    
-    def _worker_decision(self, obs: Dict[str, Any]) -> Dict[str, Any]:
-        """Worker: moverse hacia zonas de mayor concentración de trabajo"""
-        nearby = obs["nearby_agents"]
-        if not nearby:
-            # Movimiento aleatorio si no hay vecinos
-            return {
-                "action": "move",
-                "new_position": self._random_neighbor_position(),
-                "energy": self.state.get("energy", 10) - 1
-            }
-        
-        # Calcular gradiente de energía
-        avg_energy = obs["avg_state"].get("avg_energy", 0)
-        current_energy = self.state.get("energy", 0)
-        
-        if avg_energy > current_energy:
-            # Moverse hacia mayor energía
-            closest_high_energy = nearby[0]
-            direction = (
-                closest_high_energy["agent"].position[0] - self.position[0],
-                closest_high_energy["agent"].position[1] - self.position[1]
-            )
-            norm = math.sqrt(direction[0]**2 + direction[1]**2) + 1e-6
-            new_pos = (
-                self.position[0] + direction[0] / norm * 2,
-                self.position[1] + direction[1] / norm * 2
-            )
-            return {
-                "action": "move",
-                "new_position": new_pos,
-                "energy": current_energy - 0.5
-            }
-        else:
-            return {
-                "action": "stay",
-                "new_position": self.position,
-                "energy": current_energy - 0.2
-            }
-    
-    def _broadcaster_decision(self, obs: Dict[str, Any]) -> Dict[str, Any]:
-        """Broadcaster: distribuye información útil a vecinos"""
-        nearby = obs["nearby_agents"]
-        if not nearby:
-            return {"action": "wait", "broadcasts_sent": 0}
-        
-        # Encontrar información más valiosa para broadcasting
-        info_to_share = self.state.get("information", [])
-        
-        return {
-            "action": "broadcast",
-            "data": info_to_share[:3],  # Limitado a 3 items
-            "broadcasts_sent": len(nearby)
-        }
-    
-    def _aggregator_decision(self, obs: Dict[str, Any]) -> Dict[str, Any]:
-        """Aggregator: recolecta y sintetiza información"""
-        nearby = obs["nearby_agents"]
-        
-        aggregated = {
-            "total_energy": self.state.get("energy", 0),
-            "information_count": len(self.state.get("information", [])),
-            "agents_observed": obs["n_nearby"]
-        }
-        
-        for neighbor in nearby:
-            aggregated["total_energy"] += neighbor["state"].get("energy", 0)
-            aggregated["information_count"] += len(neighbor["state"].get("information", []))
-        
-        return {
-            "action": "aggregate",
-            "summary": aggregated,
-            "confidence": min(1.0, obs["n_nearby"] / 5.0)
-        }
-    
-    def _random_neighbor_position(self) -> Tuple[float, float]:
-        angle = random.uniform(0, 2 * math.pi)
-        dist = random.uniform(1, 3)
-        return (
-            self.position[0] + dist * math.cos(angle),
-            self.position[1] + dist * math.sin(angle)
-        )
-    
-    def apply_action(self, action: Dict[str, Any]):
-        """Aplica la acción decideda y actualiza estado"""
-        self.position = action.get("new_position", self.position)
-        self.state["energy"] = action.get("energy", self.state.get("energy", 10))
-        
-        if "information" not in self.state:
-            self.state["information"] = []
-        
-        if action.get("action") == "broadcast":
-            # Agregar información recebida (simulado)
-            self.state["information"].append({
-                "source": "broadcast_reception",
-                "data": action.get("data", [])
-            })</code></pre>
-<hr>
-<h2>📐 Stigmergy: Comunicación Indirecta en Sistemas de Enjambre</h2>
-<p>Uno de los conceptos más importantes en Swarm Intelligence es stigmergy. La palabra viene del griego stigma (mark) y ergon (work) — literalmente "trabajo marcado". Es un mecanismo de comunicación indirecta donde los agentes se comunican modificando el ambiente, en lugar de comunicarse directamente entre sí.</p>
-<p>El ejemplo clásico son las hormigas. Cuando una hormiga encuentra comida, deja feromonas en el camino de vuelta al nido. Otras hormigas detectan esas feromonas y siguen el camino. Si hay dos caminos a la misma comida, el más corto tendrá más feromonas porque las hormigas lo completan más rápido, atrayendo a más hormigas. Eventualmente, el camino óptimo emerge sin que ninguna hormiga individual tenga una vista del problema completo.</p>
-<p>Aplicado a LLMs, stigmergy significa que los agentes no necesitan comunicarse directamente. En cambio, modifican un espacio de estado compartido — una base de conocimientos, un blackboard, un set de notas. Otros agentes pueden leer esas modificaciones y actuar en consecuencia. Esto reduce el acoplamiento entre agentes y permite que el sistema escale.</p>
-<h3>Implementación de Stigmergy con LLMs</h3>
-<pre><code class="language-python">from dataclasses import dataclass, field
-from typing import Dict, List, Any, Optional
-from datetime import datetime
-import json
-import hashlib
-
-@dataclass
-class StigmergicMarker:
-    """Marca deixada no ambiente por un agente"""
-    marker_id: str
-    marker_type: str  # "pheromone", "task", "result", "signal"
-    location: str  # Ruta o dirección en el espacio de información
-    strength: float  # Intensidad de la marca (como feromonas)
-    content: Dict[str, Any]
-    timestamp: datetime = field(default_factory=datetime.now)
-    ttl: int = 100  # Time to live em ticks
-    
-    def is_expired(self, current_tick: int) -> bool:
-        return current_tick > self.timestamp.timestamp() + self.ttl
-
-class StigmergicEnvironment:
+class BinaryFeatureDetector:
     """
-    Ambiente compartilhado que implementa stigmergy.
-    Los agentes se comunican indirectamente dejando y lendo marcas.
+    Detecta si features tienen comportamiento binario.
     """
     
-    def __init__(self, evaporation_rate: float = 0.95):
-        self.markers: Dict[str, List[StigmergicMarker]] = {}  # markers por location
-        self.global_markers: List[StigmergicMarker] = []  # markers globales
-        self.evaporation_rate = evaporation_rate
-        self.current_tick: int = 0
-        
-        # Histórico de cambios para auditoría
-        self.modification_log: List[Dict] = []
+    def __init__(self, model: nn.Module, tokenizer):
+        self.model = model
+        self.tokenizer = tokenizer
     
-    def deposit_marker(self, agent_id: str, marker: StigmergicMarker):
-        """Un agente deja una marca en el ambiente"""
-        if marker.location not in self.markers:
-            self.markers[marker.location] = []
-        
-        self.markers[marker.location].append(marker)
-        self.global_markers.append(marker)
-        
-        self.modification_log.append({
-            "tick": self.current_tick,
-            "agent": agent_id,
-            "action": "deposit",
-            "marker_type": marker.marker_type,
-            "location": marker.location,
-            "strength": marker.strength
-        })
-    
-    def sense_markers(self, agent_id: str, location: str, 
-                     marker_types: Optional[List[str]] = None) -> List[StigmergicMarker]:
+    def compute_activation_distribution(self, texts: List[str], 
+                                       layer_name: str) -> Dict[int, Dict]:
         """
-        Un agente detecta marcas en una ubicación.
-        Solo retorna marcas que no son del propio agente (evitar auto-reforço).
-        """
-        if location not in self.markers:
-            return []
-        
-        markers = []
-        for m in self.markers[location]:
-            # Evitar auto-reforço
-            # En implementación real, rastrear de qué agente es cada marca
-            if m.marker_type in (marker_types or ["pheromone", "task", "result", "signal"]):
-                markers.append(m)
-        
-        # Ordenar por strength (las más fuertes primeiro)
-        markers.sort(key=lambda x: -x.strength)
-        return markers
-    
-    def find_strongest_path(self, start_location: str, goal_type: str) -> List[str]:
-        """
-        Usa feromonas para encontrar el path más fuerte hacia cierto tipo de contenido.
-        Implementa el mismo algoritmo que usan las hormigas.
-        """
-        # Construir grafo de feromonas
-        pheromone_levels: Dict[str, float] = {start_location: 1.0}
-        visited = set()
-        path = [start_location]
-        
-        for _ in range(10):  # Max depth
-            current = path[-1]
-            visited.add(current)
-            
-            # Simular evaporación
-            self._evaporate()
-            
-            # Encontrar siguiente mejor basado en feromonas
-            next_candidates = self._get_neighbors(current)
-            if not next_candidates:
-                break
-            
-            # Seleccionar baseado em probabilidades (más feromona = más probable)
-            next_best = self._select_based_on_pheromones(next_candidates, pheromone_levels)
-            
-            if next_best is None:
-                break
-            
-            path.append(next_best)
-            
-            # Verificar si llegamos a destino
-            markers = self.sense_markers("", next_best, [goal_type])
-            if markers:
-                path.append(f"GOAL:{goal_type}")
-                break
-        
-        return path
-    
-    def _evaporate(self):
-        """Simula evaporación de feromonas (decay natural)"""
-        for marker_list in self.markers.values():
-            for marker in marker_list:
-                marker.strength *= self.evaporation_rate
-        
-        # Remover marcas muy débiles
-        self.global_markers = [m for m in self.global_markers if m.strength > 0.01]
-    
-    def _get_neighbors(self, location: str) -> List[str]:
-        """Retorna localizações vecinas (en implementación real, usar estructura de grafo)"""
-        # Simulado: retorna localizações que tienen markers relacionados
-        neighbors = []
-        for loc, markers in self.markers.items():
-            if loc != location and any(m.strength > 0.1 for m in markers):
-                neighbors.append(loc)
-        return neighbors[:5]  # Limitar a 5 vecinos
-    
-    def _select_based_on_pheromones(self, candidates: List[str],
-                                    pheromone_levels: Dict[str, float]) -> Optional[str]:
-        """Selecciona próximo local baseado em niveles de feromonas"""
-        if not candidates:
-            return None
-        
-        # Calcular probabilidades
-        total = sum(pheromone_levels.get(c, 0.1) for c in candidates)
-        r = random.uniform(0, total)
-        
-        cumulative = 0
-        for c in candidates:
-            cumulative += pheromone_levels.get(c, 0.1)
-            if r <= cumulative:
-                return c
-        
-        return candidates[-1]
-
-class LLMSwarmStigmergic:
-    """Sistema de Swarm con LLMs usando stigmergy para comunicación"""
-    
-    def __init__(self, environment: StigmergicEnvironment, n_agents: int = 20):
-        self.env = environment
-        self.agents: List[SwarmAgent] = []
-        
-        # Crear agentes con posiciones aleatorias
-        for i in range(n_agents):
-            agent = SwarmAgent(
-                agent_id=f"agent_{i}",
-                role=SwwarmRole.WORKER if i < n_agents * 0.7 else SwarmRole.BROADCASTER,
-                position=(random.uniform(0, 100), random.uniform(0, 100)),
-                state={"energy": random.uniform(5, 15), "information": []}
-            )
-            self.agents.append(agent)
-    
-    def run_tick(self):
-        """Ejecuta un tick del sistema swarm"""
-        self.env.current_tick += 1
-        
-        # Cada agente observa y actúa
-        for agent in self.agents:
-            observation = agent.observe_local_environment(self.agents)
-            action = agent.decide_local_action(observation)
-            agent.apply_action(action)
-            
-            # Dejar feromonas si encontró algo útil
-            if action.get("action") == "move" and agent.state.get("energy", 0) > 10:
-                # Depositar feromona de "buen lugar"
-                marker = StigmergicMarker(
-                    marker_id=f"marker_{agent.agent_id}_{self.env.current_tick}",
-                    marker_type="pheromone",
-                    location=f"region_{int(agent.position[0] // 10)}_{int(agent.position[1] // 10)}",
-                    strength=agent.state.get("energy", 10) / 20.0,  # Normalizado
-                    content={"energy": agent.state.get("energy", 10), "agent": agent.agent_id}
-                )
-                self.env.deposit_marker(agent.agent_id, marker)
-            
-            # Deposit results como markers
-            if agent.state.get("information"):
-                result_marker = StigmergicMarker(
-                    marker_id=f"result_{agent.agent_id}_{self.env.current_tick}",
-                    marker_type="result",
-                    location="shared_knowledge",
-                    strength=1.0,
-                    content={
-                        "agent": agent.agent_id,
-                        "info": agent.state["information"][-1],
-                        "quality": random.uniform(0.5, 1.0)
-                    }
-                )
-                self.env.deposit_marker(agent.agent_id, result_marker)
-        
-        # Evaporación de feromonas
-        self.env._evaporate()
-    
-    def run_simulation(self, n_ticks: int) -> Dict[str, Any]:
-        """Ejecuta simulación completa"""
-        initial_energy = sum(a.state.get("energy", 0) for a in self.agents)
-        
-        for tick in range(n_ticks):
-            self.run_tick()
-        
-        final_energy = sum(a.state.get("energy", 0) for a in self.agents)
-        
-        # Recolectar resultados agregados
-        all_info = []
-        for marker in self.env.global_markers:
-            if marker.marker_type == "result":
-                all_info.append(marker.content)
-        
-        return {
-            "n_ticks": n_ticks,
-            "initial_energy": initial_energy,
-            "final_energy": final_energy,
-            "energy_change": final_energy - initial_energy,
-            "total_markers_deposited": len(self.env.modification_log),
-            "results_collected": len(all_info),
-            "agent_positions": [(a.agent_id, a.position) for a in self.agents],
-            "pheromone_map": {
-                loc: [m.strength for m in markers] 
-                for loc, markers in self.env.markers.items()
-            }
-        }</code></pre>
-<hr>
-<h2>⚠️ Error 1: Over-Engineering Cuando Emergencia Es Suficiente</h2>
-<p>El primer error que veo es diseñar sistemas demasiado complejos cuando el comportamiento emergente podría resolver el problema de forma más simple y elegante. Muchos desarrolladores ven la Swarm Intelligence y piensan que necesitan implementar feromonas complejas, algoritmos de evaporación sofisticados, y capas de coordinación elaboradas. Terminan con un sistema que es más complicado que un Multi-Agent tradicional y no aprovecha lo que hace especial a los swarms: la emergencia.</p>
-<p>La trampa es diseñar desde arriba hacia abajo lo que debería emerger desde abajo hacia arriba. Si puedes lograr el mismo resultado con reglas locales simples, no agregues complejidad. La belleza de los swarms es que comportamiento sofisticado emerge de interacciones simples — eso es lo que debemos preservar, no destruir con diseño excesivo.</p>
-<h3>Solución: Reglas Locales Simples y Observación de Emergencia</h3>
-<p>El enfoque correcto es comenzar con las reglas locales más simples posibles y observar qué emerge. Si necesitas más sofisticación, agrégala incrementalmente. Antes de implementar evaporación de feromonas, prueba con feromonas estáticas. Antes de implementar feromonas, prueba sin ellas — solo con detección de proximidad. Solo aumenta complejidad cuando la simplicidad no logra el resultado deseado.</p>
-<p>También ayuda tener métricas claras de éxito y failure desde el principio. Define qué comportamiento emergente estás buscando, cómo lo medirás, y bajo qué condiciones el enfoque es suficiente versus cuándo necesita más sofisticación. Esto evita la tentación de over-engineering porque tienes criterios objetivos de evaluación.</p>
-<pre><code class="language-python">class SimpleSwarmDesign:
-    """Diseño de swarm con complejidad mínima necesaria"""
-    
-    @staticmethod
-    def level_0_simplest() -> Dict[str, Any]:
-        """
-        Nivel 0: Sin feromonas, solo proximidad.
-        Cada agente hace lo mismo que sus vecinos.
-        """
-        return {
-            "name": "proximity_following",
-            "pheromones": False,
-            "agents": {
-                "behavior": "copy_nearest_neighbor",
-                "decision_rule": "if neighbor_exists: follow_neighbor_direction"
-            },
-            "expected_behavior": "Formación de grupos, sin optimización"
-        }
-    
-    @staticmethod
-    def level_1_basic_pheromones() -> Dict[str, Any]:
-        """
-        Nivel 1: Feromonas estáticas, sin evaporación.
-        Caminos buenos siempre se refuerzan.
-        """
-        return {
-            "name": "static_pheromones",
-            "pheromones": True,
-            "evaporation": False,
-            "agents": {
-                "behavior": "follow_strongest_pheromone",
-                "decision_rule": "if pheromone_detected: follow_strongest else random"
-            },
-            "expected_behavior": "Convergencia a rutas buenas, posible lock-in suboptimal"
-        }
-    
-    @staticmethod
-    def level_2_evaporating_pheromones() -> Dict[str, Any]:
-        """
-        Nivel 2: Feromonas con evaporación.
-        Permite exploración y adaptación.
-        """
-        return {
-            "name": "evaporating_pheromones",
-            "pheromones": True,
-            "evaporation": True,
-            "evaporation_rate": 0.95,
-            "agents": {
-                "behavior": "probabilistic_pheromone_following",
-                "decision_rule": "follow_prob_based_on_strength"
-            },
-            "expected_behavior": "Equilibrio entre exploración y explotación"
-        }
-    
-    @staticmethod
-    def level_3_hierarchical() -> Dict[str, Any]:
-        """
-        Nivel 3: Agregar ligera jerarquía sin coordinator central.
-        Roles emergent de especialización local.
-        """
-        return {
-            "name": "emergent_hierarchy",
-            "pheromones": True,
-            "evaporation": True,
-            "roles": "emergent_not_designed",
-            "agents": {
-                "behavior": "specialization_based_on_success",
-                "decision_rule": "agents_that_succeed_attract_more_interaction"
-            },
-            "expected_behavior": "División emergent del trabajo"
-        }
-    
-    @classmethod
-    def choose_level(cls, problem_complexity: str) -> Dict[str, Any]:
-        """Selecciona nivel de complejidad baseado na complexidade do problema"""
-        levels = {
-            "low": cls.level_0_simplest,
-            "medium": cls.level_1_basic_pheromones,
-            "high": cls.level_2_evaporating_pheromones,
-            "very_high": cls.level_3_hierarchical
-        }
-        
-        return levels.get(problem_complexity, cls.level_0_simplest)()
-
-# Ejemplo de uso:
-def design_swarm_for_problem(problem_type: str, n_iterations: int = 100):
-    """
-    Diseña un sistema de swarm para un problema dado.
-    """
-    # Estimar complejidad del problema
-    problem_complexity = estimate_problem_complexity(problem_type)
-    
-    # Seleccionar nivel de diseño
-    design = SimpleSwarmDesign.choose_level(problem_complexity)
-    
-    print(f"Problem: {problem_type}")
-    print(f"Estimated complexity: {problem_complexity}")
-    print(f"Selected design: {design['name']}")
-    print(f"Expected behavior: {design['expected_behavior']}")
-    
-    # Testar con simulación simple
-    if design["pheromones"]:
-        env = StigmergicEnvironment(
-            evaporation_rate=design.get("evaporation_rate", 1.0)
-        )
-    else:
-        env = None
-    
-    return design, env
-
-def estimate_problem_complexity(problem_type: str) -> str:
-    """Estima complejidad del problema para seleccionar diseño apropiado"""
-    complexity_map = {
-        "consensus": "low",
-        "routing": "medium",
-        "optimization": "high",
-        "planning": "very_high",
-        "learning": "very_high"
-    }
-    return complexity_map.get(problem_type, "medium")</code></pre>
-<hr>
-<h2>⚠️ Error 2: No Entender Stigmergy Verdaderamente</h2>
-<p>El segundo error es implementar stigmergy sin entender lo que realmente significa. Stigmergy no es solo dejar mensajes en un blackboard compartido. Es un mecanismo de coordinación donde la coordinación emerge de las modificaciones al ambiente, no de la comunicación directa. Muchos sistemas que se llaman "stigmergicos" en realidad son solo sistemas de pizarra con otro nombre.</p>
-<p>La diferencia crucial es que en stigmergy verdadero, el agente que deposita la marca y el agente que la lee no necesitan conocerse ni estar activos simultáneamente. La comunicación es completamente desacoplada en tiempo y espacio. Si tus agentes necesitan estar activos al mismo tiempo para comunicarse, no es stigmergy — es solo messaging asíncrono.</p>
-<h3>Solución: Implementar Stigmergy Real con Tiempo y Espacio Desacoplados</h3>
-<p>Para implementar stigmergy verdadero, necesitas un ambiente persistente donde las marcas duren después de que el agente que las creó deje de estar activo. Las marcas deben poder ser interpretadas por cualquier agente que llegue después, no solo por los que estaban esperando. Y la acumulación de marcas debe cambiar el comportamiento del sistema de forma que refleje el trabajo colectivo histórico.</p>
-<p>Esto significa tener un ambiente que persista más allá de la vida de los agentes individuales, marcas que tengan duración suficiente para ser útiles, y reglas locales que usen la intensidad o frecuencia de marcas como señal. Si un área tiene muchas marcas de "buen recurso", los agentes deben gravitar hacia ella sin que ningún agente individual haya compartido esa información directamente.</p>
-<pre><code class="language-python">class TrueStigmergicSystem:
-    """
-    Sistema que implementa stigmergy verdadero.
-    La clave: coordinación a través de modificaciones ambientales persistentes,
-    sin comunicación directa entre agentes.
-    """
-    
-    def __init__(self, persistence_ticks: int = 1000):
-        # Ambiente persistente (sobrevive a los agentes)
-        self.environment: Dict[str, Any] = {
-            "pheromones": {},      # Feromonas por ubicación
-            "task_markers": {},    # Marcas de tareas
-            "result_markers": {},  # Resultados depositados
-            "resource_sites": {}   # Recursos descubiertos
-        }
-        self.persistence_ticks = persistence_ticks
-        self.current_tick = 0
-        
-        # Histórico para análise
-        self.creation_log: List[Dict] = []
-        self.read_log: List[Dict] = []
-    
-    def agent_deposits_marker(self, agent_id: str, marker: StigmergicMarker):
-        """
-        Agente deposita marca SIN saber quién la leerá.
-        La marca persiste después de que este agente deje de existir.
-        """
-        # Almacenar con timestamp de creación y expiración
-        marker_key = f"{marker.marker_type}:{marker.location}:{marker.marker_id}"
-        
-        self.environment[marker.marker_type][marker_key] = {
-            "content": marker.content,
-            "strength": marker.strength,
-            "created_tick": self.current_tick,
-            "created_by": agent_id,
-            "expires_at": self.current_tick + marker.ttl
-        }
-        
-        self.creation_log.append({
-            "tick": self.current_tick,
-            "agent": agent_id,
-            "marker": marker_key
-        })
-        
-        # No hay notificación a otros agentes
-        # La coordinación ocurre a través del ambiente
-    
-    def agent_senses_location(self, agent_id: str, location: str) -> Dict[str, List]:
-        """
-        Agente sense el ambiente en una ubicación.
-        NO hay comunicación con otros agentes - solo lectura del ambiente.
-        """
-        sensed = {}
-        
-        for marker_type in ["pheromones", "task_markers", "result_markers"]:
-            if location in self.environment[marker_type]:
-                markers = []
-                for key, data in self.environment[marker_type].items():
-                    if data["expires_at"] > self.current_tick:
-                        markers.append({
-                            "type": marker_type,
-                            "key": key,
-                            "content": data["content"],
-                            "strength": data["strength"],
-                            "age": self.current_tick - data["created_tick"]
-                        })
-                
-                # Ordenar por strength
-                markers.sort(key=lambda x: -x["strength"])
-                sensed[marker_type] = markers
-        
-        self.read_log.append({
-            "tick": self.current_tick,
-            "agent": agent_id,
-            "location": location,
-            "markers_found": sum(len(v) for v in sensed.values())
-        })
-        
-        return sensed
-    
-    def agent_acts_on_sensed_information(self, sensed: Dict) -> Dict[str, Any]:
-        """
-        Agente decide acción basándose SOLO en información ambiental.
-        No hay comunicación con otros agentes.
-        """
-        # Calcular señal agregada de todas las marcas
-        total_signal = 0.0
-        strongest_type = None
-        strongest_content = None
-        
-        for marker_type, markers in sensed.items():
-            for marker in markers:
-                # Marcas más viejas tienen menos influencia (decay natural)
-                age_factor = max(0.1, 1.0 - (marker["age"] / self.persistence_ticks))
-                signal = marker["strength"] * age_factor
-                total_signal += signal
-                
-                if strongest_content is None or signal > total_signal:
-                    strongest_type = marker_type
-                    strongest_content = marker["content"]
-        
-        # Decidir ação baseado no sinal total
-        if total_signal > 1.0:
-            return {
-                "action": "follow_signal",
-                "target_type": strongest_type,
-                "target_content": strongest_content,
-                "signal_strength": total_signal
-            }
-        else:
-            return {
-                "action": "explore",
-                "signal_strength": total_signal
-            }
-    
-    def cleanup_expired_markers(self):
-        """Cleanup de marcas expiradas - el ambiente se limpia solo"""
-        expired_count = 0
-        for marker_type in self.environment:
-            to_remove = []
-            for key, data in self.environment[marker_type].items():
-                if data["expires_at"] <= self.current_tick:
-                    to_remove.append(key)
-            
-            for key in to_remove:
-                del self.environment[marker_type][key]
-                expired_count += 1
-        
-        if expired_count > 0:
-            print(f"[Tick {self.current_tick}] Cleaned up {expired_count} expired markers")
-        
-        self.current_tick += 1
-    
-    def get_system_state(self) -> Dict[str, Any]:
-        """Obtener estado global - útil para debugging, NO para control"""
-        total_markers = sum(len(v) for v in self.environment.values())
-        
-        return {
-            "current_tick": self.current_tick,
-            "total_active_markers": total_markers,
-            "markers_by_type": {k: len(v) for k, v in self.environment.items()},
-            "agents_created_markers": len(set(l["agent"] for l in self.creation_log)),
-            "agents_sensed": len(set(l["agent"] for l in self.read_log)),
-            "avg_markers_per_sense": (
-                sum(l["markers_found"] for l in self.read_log) / len(self.read_log)
-                if self.read_log else 0
-            )
-        }
-
-# Verificación de que es TRUE stigmergy
-def verify_stigmergy_properties(system: TrueStigmergicSystem) -> Dict[str, bool]:
-    """
-    Verifica que un sistema cumple con los propiedades de stigmergy verdadero.
-    """
-    properties = {}
-    
-    # 1. Comunicación indirecta: agentes no se comunican directamente
-    # Solo hay leitura/escrita do ambiente compartilhado
-    direct_communication = any(
-        log["agent"] in [c["agent"] for c in system.creation_log 
-                        if c["tick"] == log["tick"]]
-        for log in system.read_log
-    )
-    properties["indirect_communication_only"] = not direct_communication
-    
-    # 2. Desacoplamiento temporal: marcas sobreviven al agente que las creó
-    markers_created_by_agents = {}
-    for creation in system.creation_log:
-        agent = creation["agent"]
-        marker = creation["marker"]
-        creation_tick = creation["tick"]
-        
-        if marker not in markers_created_by_agents:
-            markers_created_by_agents[marker] = agent
-        
-        # Verificar si hay reads después de que el agente dejó de depositar
-        later_reads = [r for r in system.read_log 
-                      if r["tick"] > creation_tick + 10]
-        
-    properties["temporal_decoupling"] = True  # En este diseño sí lo hay
-    
-    # 3. Desacoplamiento espacial: agentes no necesitan estar en el mismo lugar
-    # Las marcas se depositan en ubicaciones específicas y cualquier agente puede leer
-    properties["spatial_decoupling"] = True  # Las ubicaciones son virtuales
-    
-    # 4. Modificación ambiental: el ambiente cambia el comportamiento de otros agentes
-    # Sin comunicación directa
-    env_modifies_behavior = len(system.read_log) > 0 and len(system.creation_log) > 0
-    properties["environment_modifies_behavior"] = env_modifies_behavior
-    
-    return properties</code></pre>
-<hr>
-<h2>⚠️ Error 3: No Diseñar Para Scale</h2>
-<p>El tercer error es diseñar el sistema swarm pensando en handful de agentes cuando en realidad necesita funcionar con cientos o miles. Muchos sistemas de swarm funcionan bien con 10-20 agentes pero se degradan severamente cuando escalas porque no考虑aron la complejidad de las interacciones locales en volumen.</p>
-<p>Los problemas de escala incluyen: explosión de feromonas que inunda el sistema, interacciones locales que se vuelven cuellos de botella, y comportamiento emergente que se degrada porque los agentes no pueden encontrar información relevante entre el ruido. También está el problema de que la información útil se diluye entre too much información irrelevante.</p>
-<h3>Solución: Diseño Escalable desde el Principio</h3>
-<p>El diseño escalable empieza con segmentación y jerarquía ligera. En lugar de que todos los agentes interactúen con todos, el espacio se divide en regiones o capas donde las interacciones son primarily locales. Cada región tiene sus propias feromonas y sus propios patrones emergentes, con puentes ligeros entre regiones para información global.</p>
-<p>También ayuda usar agregación y resumen en lugar de información cruda. En lugar de que todos los agentes vean todos los resultados, los agentes localmente agregan y resumen antes de depositar marcas. Esto reduce el volumen de información sin perder la señal importante. Es como la diferencia entre ver cada脚印 individual versus ver el sendero que forman.</p>
-<pre><code class="language-python">import math
-from typing import Dict, List, Any, Tuple, Set
-
-class ScalableSwarmArchitecture:
-    """
-    Arquitectura de swarm diseñada para escalar a cientos/miles de agentes.
-    Usa segmentación espacial y jerarquía ligera.
-    """
-    
-    def __init__(self, space_bounds: Tuple[float, float], 
-                 n_regions: int = 16,
-                 local_interaction_radius: float = 10.0,
-                 cross_region_bridge_probability: float = 0.01):
-        
-        self.space_bounds = space_bounds
-        self.n_regions = n_regions
-        self.local_radius = local_interaction_radius
-        self.bridge_prob = cross_region_bridge_probability
-        
-        # Calcular tamanho de cada región
-        self.region_size = (
-            (space_bounds[0] - space_bounds[2]) / math.sqrt(n_regions),
-            (space_bounds[1] - space_bounds[3]) / math.sqrt(n_regions)
-        )
-        
-        # Entornos por región (aislamiento relativo)
-        self.regions: Dict[int, "ScalableStigmergicEnvironment"] = {}
-        self._init_regions()
-        
-        # Capa global para información agregada (bajo volumen)
-        self.global_environment: Dict[str, Any] = {
-            "aggregated_insights": [],
-            "global_pheromones": {}  # Solo señales muy agregadas
-        }
-        
-        # Mapeo de región a agentes
-        self.region_agents: Dict[int, Set[str]] = {i: set() for i in range(n_regions)}
-        
-        # Índices para descubrimiento eficiente
-        self.agent_locations: Dict[str, Tuple[float, float, int]] = {}  # agent -> (x, y, region)
-    
-    def _init_regions(self):
-        """Inicializa entornos por región"""
-        for i in range(self.n_regions):
-            self.regions[i] = ScalableStigmergicEnvironment(
-                region_id=i,
-                capacity=100,  # Número de marcas que puede mantener
-                decay_rate=0.95
-            )
-    
-    def _get_region_for_position(self, pos: Tuple[float, float]) -> int:
-        """Determina qué región corresponde a una posición"""
-        x, y = pos
-        x0, y0, x1, y1 = self.space_bounds
-        
-        # Calcular índice de región
-        nx = int((x - x0) / self.region_size[0])
-        ny = int((y - y0) / self.region_size[1])
-        
-        # Bound checking
-        nx = max(0, min(nx, int(math.sqrt(self.n_regions)) - 1))
-        ny = max(0, min(ny, int(math.sqrt(self.n_regions)) - 1))
-        
-        region_col = int(math.sqrt(self.n_regions))
-        return ny * region_col + nx
-    
-    def register_agent(self, agent_id: str, initial_position: Tuple[float, float]):
-        """Registra un agente en el sistema"""
-        region = self._get_region_for_position(initial_position)
-        self.agent_locations[agent_id] = (initial_position[0], initial_position[1], region)
-        self.region_agents[region].add(agent_id)
-    
-    def agent_sense_local(self, agent_id: str) -> Dict[str, Any]:
-        """
-        Agente sense su entorno LOCAL.
-        Solo ve marcas en su región y agentes vecinos.
-        """
-        x, y, region = self.agent_locations[agent_id]
-        
-        local_env = self.regions[region]
-        
-        # Encontrar agentes vecinos en la MISMA región
-        neighbor_agents = []
-        for other_id, (ox, oy, or_) in self.agent_locations.items():
-            if other_id != agent_id and or_ == region:
-                dist = math.sqrt((x-ox)**2 + (y-oy)**2)
-                if dist < self.local_radius:
-                    neighbor_agents.append({
-                        "id": other_id,
-                        "distance": dist,
-                        "position": (ox, oy)
-                    })
-        
-        # Leer marcas locales
-        local_markers = local_env.get_markers_at(x, y)
-        
-        return {
-            "agent_id": agent_id,
-            "region": region,
-            "neighbors": neighbor_agents,
-            "local_markers": local_markers,
-            "local_density": len(neighbor_agents)
-        }
-    
-    def agent_sense_global_signals(self, agent_id: str) -> Dict[str, Any]:
-        """
-        Agente puede acessar señales GLOBALES (agregadas, bajo volumen).
-        Esto es NECESARIO para coordinación a través de regiones.
-        """
-        # Retornar solo información muy resumida de otras regiones
-        global_signals = []
-        
-        for region_id, env in self.regions.items():
-            if region_id != self.agent_locations[agent_id][2]:
-                # Solo resúmenes agregados, no marcas individuales
-                summary = env.get_region_summary()
-                if summary["has_signal"]:
-                    global_signals.append(summary)
-        
-        return {
-            "global_signals": global_signals,
-            "n_regions_with_activity": len(global_signals)
-        }
-    
-    def deposit_local_marker(self, agent_id: str, marker_data: Dict[str, Any]):
-        """
-        Agente deposita marca en su región LOCAL.
-        """
-        x, y, region = self.agent_locations[agent_id]
-        self.regions[region].add_marker(x, y, agent_id, marker_data)
-        
-        # Posibilidad de cruzar a otra región (para encontrar nuevos recursos)
-        if random.random() < self.bridge_prob:
-            self._try_cross_region_bridge(agent_id, region)
-    
-    def _try_cross_region_bridge(self, agent_id: str, current_region: int):
-        """
-        Bridge entre regiones - permite que información cruce el sistema.
-        Implementa la idea de 'antenna' de algunas colonias de hormigas.
-        """
-        # Encontrar región menos explorada
-        region_exploration = {
-            r: len(self.regions[r].get_all_markers()) 
-            for r in self.regions
-        }
-        least_explored = min(region_exploration, key=region_exploration.get)
-        
-        if least_explored != current_region:
-            # Deposit marker summarizando en región destino
-            summary = self.regions[current_region].get_region_summary()
-            self.regions[least_explored].add_cross_region_marker(
-                agent_id, summary
-            )
-    
-    def get_system_metrics(self) -> Dict[str, Any]:
-        """Métricas de salud del sistema completo"""
-        total_markers = sum(
-            len(r.get_all_markers()) for r in self.regions.values()
-        )
-        
-        region_densities = []
-        for region_id, agents in self.region_agents.items():
-            region_densities.append(len(agents))
-        
-        return {
-            "total_agents": len(self.agent_locations),
-            "total_markers": total_markers,
-            "avg_markers_per_region": total_markers / self.n_regions,
-            "region_agent_distribution": {
-                f"region_{i}": len(agents) 
-                for i, agents in self.region_agents.items()
-            },
-            "avg_agents_per_region": sum(region_densities) / len(region_densities),
-            "balance": min(region_densities) / (max(region_densities) + 1e-6),
-            "global_signals": len(self.global_environment["aggregated_insights"])
-        }
-
-class ScalableStigmergicEnvironment:
-    """Entorno stigmergico para una región individual"""
-    
-    def __init__(self, region_id: int, capacity: int = 100, decay_rate: float = 0.95):
-        self.region_id = region_id
-        self.capacity = capacity
-        self.decay_rate = decay_rate
-        
-        # Pheromone grid (spatial hash)
-        self.pheromone_grid: Dict[str, float] = {}
-        
-        # Recent markers (limited capacity)
-        self.recent_markers: List[Dict] = []
-        
-        # Cross-region markers (from bridges)
-        self.cross_region_markers: List[Dict] = []
-    
-    def add_marker(self, x: float, y: float, agent_id: str, data: Dict):
-        """Añade marca con decay automático si se exceed capacity"""
-        key = f"{x:.1f}_{y:.1f}"
-        
-        if key in self.pheromone_grid:
-            self.pheromone_grid[key] += data.get("strength", 1.0)
-        else:
-            if len(self.pheromone_grid) >= self.capacity:
-                self._evaporate_one()
-            self.pheromone_grid[key] = data.get("strength", 1.0)
-        
-        self.recent_markers.append({
-            "x": x, "y": y, "agent": agent_id,
-            "data": data, "tick": len(self.recent_markers)
-        })
-        
-        # Mantener solo últimos N markers
-        if len(self.recent_markers) > self.capacity:
-            self.recent_markers = self.recent_markers[-self.capacity:]
-    
-    def _evaporate_one(self):
-        """Evapora la marca más débil"""
-        if not self.pheromone_grid:
-            return
-        
-        min_key = min(self.pheromone_grid, key=self.pheromone_grid.get)
-        self.pheromone_grid[min_key] *= self.decay_rate
-        
-        if self.pheromone_grid[min_key] < 0.01:
-            del self.pheromone_grid[min_key]
-    
-    def get_markers_at(self, x: float, y: float) -> List[Dict]:
-        """Get markers near a point"""
-        nearby = []
-        for key, strength in self.pheromone_grid.items():
-            kx, ky = map(float, key.split("_"))
-            dist = math.sqrt((x-kx)**2 + (y-ky)**2)
-            if dist < 5.0:  # Local radius
-                nearby.append({"key": key, "strength": strength, "distance": dist})
-        
-        nearby.sort(key=lambda x: -x["strength"])
-        return nearby
-    
-    def get_all_markers(self) -> List[Dict]:
-        return [{"key": k, "strength": v} for k, v in self.pheromone_grid.items()]
-    
-    def get_region_summary(self) -> Dict[str, Any]:
-        """Resumen agregado para comunicación cross-region"""
-        if not self.pheromone_grid:
-            return {"has_signal": False}
-        
-        strengths = list(self.pheromone_grid.values())
-        return {
-            "has_signal": True,
-            "avg_strength": sum(strengths) / len(strengths),
-            "max_strength": max(strengths),
-            "total_markers": len(self.pheromone_grid),
-            "region_id": self.region_id
-        }
-    
-    def add_cross_region_marker(self, from_agent: str, summary: Dict):
-        """Aceita marker de otra región (via bridge)"""
-        self.cross_region_markers.append({
-            "from_agent": from_agent,
-            "summary": summary
-        })</code></pre>
-<hr>
-<h2>📊 Math: Collective Decision Making en Swarms</h2>
-<p>Los sistemas de swarm toman decisiones colectivas sin votación explícita ni consenso centralizado. En cambio, la decisión emerge de las interacciones locales. Hay modelos matemáticos elegantes que describen cómo funciona esto.</p>
-<p>El modelo más simple es el de "votación pasiva" o passive voting. Cada agente tiene una tendencia individual hacia una opción. Cuando interactúa con vecinos que tienen información, actualiza su tendencia basándose en la información local. Eventualmente, el sistema converge a una decisión colectiva que refleja la distribución inicial de información, pero magnificada porque las interacciones repetidas amplifican las diferencias.</p>
-<p>La fórmula de actualización es: w_i(t+1) = w_i(t) + η * Σⱼ K(dᵢⱼ) * (wⱼ(t) - wᵢ(t)), donde wᵢ es el peso (tendencia) del agente i, η es la tasa de aprendizaje, dᵢⱼ es la distancia entre agentes i y j, y K es una función kernel que determina cuánto influye j sobre i (típicamente decrece con la distancia).</p>
-<p>Este es esencialmente un proceso de difusión o consenso distribuido. Si el kernel K es positivo para todos los vecinos, el sistema converge a consenso. Si algunos enlaces tienen K negativo (inhibición), pueden emergir decisiones binarias o multi-estables donde el sistema converge a uno de varios estados posibles dependiendo de condiciones iniciales.</p>
-<pre><code class="language-python">import numpy as np
-import matplotlib.pyplot as plt
-from typing import List, Tuple
-import random
-
-def collective_decision_simulation(
-    n_agents: int = 100,
-    n_options: int = 2,
-    interaction_radius: float = 5.0,
-    n_iterations: int = 200,
-    noise: float = 0.01,
-    convergence_threshold: float = 0.95
-) -> Dict[str, Any]:
-    """
-    Simula toma de decisiones colectiva em um swarm.
-    
-    El proceso:
-    1. Cada agente tiene preferencia inicial por una opción
-    2. Agentes interactúan localmente, influenciándose mutuamente
-    3. La decisión colectiva emerge de las interacciones
-    """
-    
-    # Inicializar posiciones y preferencias
-    positions = np.random.rand(n_agents, 2) * 100
-    preferences = np.random.rand(n_agents, n_options)
-    # Normalizar para que sumen a 1
-    preferences = preferences / preferences.sum(axis=1, keepdims=True)
-    
-    # Historial de preferencias promedio
-    avg_preferences_history = []
-    
-    for iteration in range(n_iterations):
-        new_preferences = preferences.copy()
-        
-        # Cada agente interactúa con vecinos
-        for i in range(n_agents):
-            # Encontrar vecinos
-            distances = np.linalg.norm(positions - positions[i], axis=1)
-            neighbors = np.where(distances < interaction_radius)[0]
-            neighbors = neighbors[neighbors != i]  # Excluir self
-            
-            if len(neighbors) == 0:
-                continue
-            
-            # Calcular influencia baseada na distância
-            for j in neighbors:
-                dist = distances[j]
-                # Kernel gaussiano - más cerca = más influencia
-                influence = np.exp(-dist**2 / (2 * interaction_radius**2))
-                
-                # Actualizar preferencias (copying from neighbor)
-                # El agente i se mueve un poco hacia la preferencia de j
-                learning_rate = 0.1 * influence
-                new_preferences[i] = (
-                    (1 - learning_rate) * new_preferences[i] + 
-                    learning_rate * preferences[j]
-                )
-            
-            # Agregar ruido (permitir exploración)
-            if noise > 0:
-                noise_vector = np.random.randn(n_options) * noise
-                new_preferences[i] = np.maximum(
-                    new_preferences[i] + noise_vector, 
-                    0
-                )
-                # Renormalizar
-                new_preferences[i] /= new_preferences[i].sum()
-        
-        preferences = new_preferences
-        
-        # Calcular preferencia promedio
-        avg_pref = preferences.mean(axis=0)
-        avg_preferences_history.append(avg_pref.copy())
-        
-        # Verificar convergencia
-        if iteration > 10:
-            recent = np.array(avg_preferences_history[-10:])
-            variance = recent.var(axis=0).mean()
-            if variance < convergence_threshold * 0.001:
-                print(f"Converged at iteration {iteration}")
-                break
-    
-    # Calcular resultado final
-    final_avg = avg_preferences_history[-1]
-    winning_option = int(final_avg.argmax())
-    confidence = float(final_avg.max())
-    
-    return {
-        "n_agents": n_agents,
-        "n_iterations": len(avg_preferences_history),
-        "converged": variance < convergence_threshold * 0.001,
-        "final_distribution": final_avg.tolist(),
-        "winning_option": winning_option,
-        "confidence": confidence,
-        "history": np.array(avg_preferences_history)
-    }
-
-def analyze_threshold_behavior(
-    n_agents: int = 50,
-    n_simulations: int = 100
-) -> Dict[str, Any]:
-    """
-    Analiza cómo el swarm responde a diferentes niveles de preferencia inicial.
-    Esto es análogo a cómo las hormigas deciden entre fuentes de comida.
-    """
-    
-    results = []
-    
-    for sim in range(n_simulations):
-        # Preference inicial - una opción tiene ventaja
-        initial_bias = random.uniform(0.5, 0.9)
-        
-        preferences = np.array([
-            [initial_bias, 1 - initial_bias] if i % 2 == 0 
-            else [1 - initial_bias, initial_bias]
-            for i in range(n_agents)
-        ])
-        
-        # Simular
-        result = collective_decision_simulation(
-            n_agents=n_agents,
-            n_options=2,
-            n_iterations=100,
-            noise=0.02
-        )
-        
-        results.append({
-            "initial_bias": initial_bias,
-            "final_bias": result["final_distribution"][0],
-            "correct_choice": result["winning_option"] == 0,  # La opción con bias inicial es 0
-            "confidence": result["confidence"]
-        })
-    
-    # Agregar resultados
-    correct_rate = sum(r["correct_choice"] for r in results) / len(results)
-    avg_confidence = sum(r["confidence"] for r in results) / len(results)
-    
-    return {
-        "n_simulations": n_simulations,
-        "correct_decision_rate": correct_rate,
-        "average_confidence": avg_confidence,
-        "individual_results": results
-    }
-
-# Demo de cómo la geometría afecta la decisión
-def geometry_effect_on_consensus():
-    """
-    Muestra cómo la distribución espacial afecta la velocidad de consenso.
-    """
-    configurations = [
-        ("random", lambda n: np.random.rand(n, 2) * 100),
-        ("grid", lambda n: np.array([[i % 10, i // 10] for i in range(n)]) * 10),
-        ("clustered", lambda n: _generate_clustered(n, n_clusters=3)),
-        ("linear", lambda n: np.array([[i, 50] for i in range(n)]))
-    ]
-    
-    results = {}
-    for name, pos_generator in configurations:
-        positions = pos_generator(50)
-        result = collective_decision_simulation(
-            n_agents=50,
-            n_iterations=100
-        )
-        results[name] = {
-            "iterations_to_converge": result["n_iterations"],
-            "confidence": result["confidence"]
-        }
-    
-    return results
-
-def _generate_clustered(n: int, n_clusters: int) -> np.ndarray:
-    """Genera posiciones en clusters"""
-    centers = np.random.rand(n_clusters, 2) * 80 + 10
-    positions = []
-    for _ in range(n):
-        cluster = random.randint(0, n_clusters - 1)
-        pos = centers[cluster] + np.random.randn(2) * 10
-        positions.append(pos)
-    return np.array(positions)
-
-# Mostrar ejemplo de uso
-if __name__ == "__main__":
-    # Simular decisión colectiva
-    result = collective_decision_simulation(n_agents=100, n_options=2)
-    print(f"Resultado: Opción {result['winning_option']} ganó con {result['confidence']:.1%} de confianza")
-    
-    # Analizar threshold
-    threshold_result = analyze_threshold_behavior(n_simulations=50)
-    print(f"Tasa de decisión correcta: {threshold_result['correct_decision_rate']:.1%}")
-    print(f"Confianza promedio: {threshold_result['average_confidence']:.1%}")</code></pre>
-<hr>
-<h2>🔧 Implementando Collective Decision Making con LLMs</h2>
-<p>Ahora, cómo llevamos esto a implementaciones reales con LLMs. El desafío es que cada agente LLM es más complexo que un agente simple en un swarm biológico — tiene capacidad de razonamiento, no sigue reglas deterministiccas, y puede cambiar su comportamiento basado en contexto. Pero precisamente por eso es interesante: podemos usar LLMs para implementar comportamientos de swarm más sofisticados que los algoritmos tradicionales.</p>
-<p>La clave es definir bien las reglas locales y dejar que la agregación sea emergent. Cada agente LLM en el swarm tiene un rol local simple, conoce solo su vecindad, y toma decisiones basándose en información local. El comportamiento colectivo emerge de las interacciones.</p>
-<pre><code class="language-python">class LLMCSwarmDecision:
-    """
-    Swarm de LLMs para toma de decisiones colectiva.
-    Cada agente LLM solo conoce su vecindad local.
-    """
-    
-    def __init__(self, llm_factory, n_agents: int = 20, space_size: float = 100.0):
-        self.agents = []
-        self.llm_factory = llm_factory
-        self.space_size = space_size
-        
-        # Crear agentes con posiciones aleatorias
-        for i in range(n_agents):
-            agent = LLMAgentSwarm(
-                agent_id=f"swarm_{i}",
-                position=(random.uniform(0, space_size), random.uniform(0, space_size)),
-                llm=llm_factory()
-            )
-            self.agents.append(agent)
-        
-        # Ambiente stigmergico compartido
-        self.stigmergic_memory = StigmergicMemory()
-        
-        # Tracking de decisiones
-        self.decision_history = []
-    
-    def run_decision_iteration(self, problem: str, options: List[str]) -> Dict[str, Any]:
-        """
-        Ejecuta una iteración de decisión colectiva.
-        
-        Args:
-            problem: Descripción del problema a decidir
-            options: Lista de opciones a considerar
+        Computa la distribución de activaciones para cada feature en una capa.
         
         Returns:
-            Decisión colectiva y confidence
+            Dict mapping feature_idx -> {mean, std, bimodality_score, n_modes}
         """
-        # Fase 1: Cada agente desarrolla perspectiva local
-        local_views = []
-        for agent in self.agents:
-            view = agent.develop_local_view(problem, options, self.stigmergic_memory)
-            local_views.append(view)
-            
-            # Depositar perspectiva en memoria stigmergica
-            self.stigmergic_memory.deposit(
-                location=f"perspectives/{agent.agent_id}",
-                content={"view": view, "agent": agent.agent_id}
-            )
+        self.model.eval()
         
-        # Fase 2: Agentes interactúan con vecinos y actualizan perspectivas
-        for agent in self.agents:
-            neighbors = agent.find_neighbors(self.agents)
+        # Coleccionar activaciones
+        all_activations = []
+        for text in texts:
+            act = self._get_layer_activations(text, layer_name)
+            # Tomar el último token
+            act = act[0, -1, :].numpy()
+            all_activations.append(act)
+        
+        activations = np.array(all_activations)  # (n_texts, d_model)
+        
+        results = {}
+        for feat_idx in range(activations.shape[1]):
+            feat_acts = activations[:, feat_idx]
             
-            if neighbors:
-                # Leer perspectivas de vecinos
-                neighbor_views = []
-                for neighbor in neighbors:
-                    neighbor_perspective = self.stigmergic_memory.read(
-                        f"perspectives/{neighbor.agent_id}"
-                    )
-                    if neighbor_perspective:
-                        neighbor_views.append(neighbor_perspective)
+            # Calcular statistics
+            mean = np.mean(feat_acts)
+            std = np.std(feat_acts)
+            
+            # Calcular bimodality usando el coeficiente de Fisher
+            # Alto valor = más bimodal (dos picos separados)
+            n = len(feat_acts)
+            if std > 0:
+                # Kurtosis: qué tan "puntiaguda" es la distribución
+                kurtosis = np.mean((feat_acts - mean)**4) / (std**4) - 3
                 
-                # Actualizar propia perspectiva basándose en vecinos
-                if neighbor_views:
-                    updated_view = agent.integrate_neighbor_views(
-                        problem, options, neighbor_views
-                    )
-                    agent.current_view = updated_view
-                    
-                    # Actualizar en memoria stigmergica
-                    self.stigmergic_memory.deposit(
-                        location=f"perspectives/{agent.agent_id}",
-                        content={"view": updated_view, "agent": agent.agent_id}
-                    )
+                # Bimodality score: diferencia entre max y min normalizada
+                range_ratio = (np.max(feat_acts) - np.min(feat_acts)) / (std + 1e-6)
+                
+                # Número de "modas" aproximadas usando histograma
+                hist, _ = np.histogram(feat_acts, bins=10)
+                n_peaks = sum(1 for i in range(len(hist)-1) 
+                             if hist[i] > hist[i-1] and hist[i] > hist[i+1])
+            else:
+                kurtosis = 0
+                range_ratio = 0
+                n_peaks = 1
+            
+            results[feat_idx] = {
+                "mean": mean,
+                "std": std,
+                "kurtosis": kurtosis,
+                "range_ratio": range_ratio,
+                "n_peaks": n_peaks,
+                "is_bimodal": kurtosis > 1.0 and n_peaks >= 2
+            }
         
-        # Fase 3: Agregar decisiones
-        final_decisions = [agent.get_decision(options) for agent in self.agents]
-        
-        # Contar votos
-        vote_counts = {}
-        for decision in final_decisions:
-            vote_counts[decision] = vote_counts.get(decision, 0) + 1
-        
-        # Normalizar
-        total = sum(vote_counts.values())
-        vote_probs = {k: v / total for k, v in vote_counts.items()}
-        
-        # Decisión colectiva: opción con más votos
-        collective_decision = max(vote_probs, key=vote_probs.get)
-        confidence = vote_probs[collective_decision]
-        
-        self.decision_history.append({
-            "collective_decision": collective_decision,
-            "confidence": confidence,
-            "vote_distribution": vote_probs
-        })
-        
-        return {
-            "decision": collective_decision,
-            "confidence": confidence,
-            "vote_distribution": vote_probs,
-            "agent_decisions": list(zip([a.agent_id for a in self.agents], final_decisions))
-        }
-
-class LLMAgentSwarm:
-    """Agente LLM que participa en swarm para decisión colectiva"""
+        return results
     
-    def __init__(self, agent_id: str, position: Tuple[float, float], llm):
-        self.agent_id = agent_id
-        self.position = position
-        self.llm = llm
-        self.current_view = None
-    
-    def develop_local_view(self, problem: str, options: List[str],
-                          memory: "StigmergicMemory") -> Dict[str, Any]:
+    def find_binary_features(self, texts: List[str], 
+                            layer_name: str,
+                            threshold_std: float = 2.0,
+                            threshold_range: float = 5.0) -> List[int]:
         """
-        Agente desarrolla su perspectiva local basándose en:
-        - El problema
-        - Lo que encuentra en memoria stigmergica local
-        - Su propio razonamiento
+        Encuentra features que son aproximadamente binarios.
+        
+        Args:
+            texts: Textos para análisis
+            layer_name: Capa a analizar
+            threshold_std: Mínima desviación estándar para considerar
+            threshold_range: Mínimo ratio rango/std para considerar
+        
+        Returns:
+            Lista de índices de features binarios
         """
-        # Leer información stigmergica disponible
-        local_info = memory.read_near_location(self.position, radius=20)
+        dists = self.compute_activation_distribution(texts, layer_name)
         
-        prompt = f"""Eres un agente en un sistema de swarm intelligence.
-Tu posición es {self.position}.
-Tienes acceso a información local del ambiente.
-
-Problema a resolver: {problem}
-Opciones: {', '.join(options)}
-
-Información local disponible: {local_info if local_info else 'Ninguna'}
-
-Basándote en tu perspectiva local y la información disponible,
-¿Cuál opción te parece mejor y por qué?
-Sé breve y específico.
-"""
+        binary_features = []
+        for feat_idx, stats in dists.items():
+            if (stats["std"] > threshold_std and 
+                stats["range_ratio"] > threshold_range and
+                stats["is_bimodal"]):
+                binary_features.append(feat_idx)
         
-        response = self.llm.generate(prompt)
-        
-        # Parsear respuesta y asignar scores
-        scores = self._parse_scores(response, options)
-        
-        return {
-            "agent": self.agent_id,
-            "position": self.position,
-            "reasoning": response,
-            "scores": scores,
-            "preferred": max(scores, key=scores.get) if scores else None
-        }
+        return binary_features
     
-    def find_neighbors(self, all_agents: List["LLMAgentSwarm"]) -> List["LLMAgentSwarm"]:
-        """Encuentra agentes dentro del radio de interacción"""
-        neighbors = []
-        for other in all_agents:
-            if other.agent_id != self.agent_id:
-                dist = math.sqrt(
-                    (self.position[0] - other.position[0])**2 +
-                    (self.position[1] - other.position[1])**2
-                )
-                if dist < 15.0:  # Radio de interacción
-                    neighbors.append(other)
-        return neighbors
-    
-    def integrate_neighbor_views(self, problem: str, options: List[str],
-                                  neighbor_views: List[Dict]) -> Dict[str, Any]:
-        """Integra perspectivas de vecinos en propia vista"""
+    def compute_bimodality_coefficient(self, data: np.ndarray) -> float:
+        """
+        Calcula el coeficiente de bimodalidad de Fisher.
         
-        prompt = f"""Eres un agente en un sistema de swarm.
-Tu perspectiva actual: {self.current_view}
-Perspectivas de vecinos: {neighbor_views}
+        Valores > 0.555 indican distribución bimodal.
+        """
+        n = len(data)
+        if n < 3:
+            return 0.0
+        
+        mean = np.mean(data)
+        std = np.std(data)
+        if std == 0:
+            return 0.0
+        
+        # Skewness (asimetría)
+        skewness = np.mean((data - mean)**3) / (std**3)
+        
+        # Kurtosis (curtosis)
+        kurtosis = np.mean((data - mean)**4) / (std**4) - 3
+        
+        # Coeficiente de bimodalidad
+        numerator = (skewness**2 + 1) * (kurtosis**2)
+        denominator = (3 * (n - 1)**2) / ((n - 2) * (n - 3))
+        
+        bc = np.sqrt(numerator) / (denominator + 1e-6)
+        
+        return bc
 
-Problema: {problem}
-Opciones: {', '.join(options)}
+class BinaryFeatureModel(nn.Module):
+    """
+    Modelo que usa features binarios explícitamente.
+    """
+    
+    def __init__(self, d_model: int, n_features: int, threshold: float = 0.5):
+        super().__init__()
+        self.d_model = d_model
+        self.n_features = n_features
+        self.threshold = threshold
+        
+        # Proyección de embedding a features
+        self.feature_projection = nn.Linear(d_model, n_features)
+        
+        # Para reconstruir de features binarios a logits
+        self.reconstruction = nn.Linear(n_features, d_model)
+    
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Forward pass con binarización.
+        
+        Returns:
+            (binary_features, reconstructed_output)
+        """
+        # Proyectar a espacio de features
+        features = self.feature_projection(x)
+        
+        # Binarizar usando hard sigmoid + threshold
+        binary_features = (torch.sigmoid(features) > self.threshold).float()
+        
+        # Reconstruir (opcional, para autoencoder)
+        reconstructed = self.reconstruction(binary_features)
+        
+        return binary_features, reconstructed
+    
+    def straight_through_estimator(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Straight-through estimator para backprop a través de binarización.
+        
+        Usa la señal del gradiente continuo pero aplica el threshold en forward.
+        """
+        # Forward: binarizado
+        features = torch.sigmoid(self.feature_projection(x))
+        binary = (features > self.threshold).float()
+        
+        # Backward: usa la señal suave
+        return binary + (features - binary).detach()</code></pre>
+<hr>
+<h2>📐.binary vs Soft Features</h2>
+<p>No todos los features son binarios. Hay un espectro desde puramente continuos hasta puramente binarios. Entender dónde cae cada feature nos ayuda a saber cómo intervenirlos.</p>
+<h3>Tipos de Features</h3>
+<ul>
+<li><strong>Puramente binarios</strong>: activación sharp, dos estados claros</li>
+<li><strong>Casi-binarios</strong>: distribución bimodal pero con ruido</li>
+<li><strong>Graduales</strong>: respuesta proporcional al estímulo</li>
+<li><strong>Continuous no lineal</strong>: respuesta compleja, no simple</li>
+</ul>
+<p>La pregunta es: ¿cuál es la distribución real de tipos en un LLM típico? Investigaciones recientes sugieren que la mayoría de los features de alto nivel son al menos parcialmente discretos, mientras que features de bajo nivel tienden a ser más continuos.</p>
+<pre><code class="language-python">import numpy as np
+from scipy import stats
+from typing import List, Dict, Tuple
 
-Actualiza tu perspectiva considerando lo que dijeron tus vecinos.
-Sé breve y dame scores actualizados.
-"""
-        
-        response = self.llm.generate(prompt)
-        scores = self._parse_scores(response, options)
-        
-        return {
-            "agent": self.agent_id,
-            "reasoning": response,
-            "scores": scores,
-            "integrated_from": [v["agent"] for v in neighbor_views]
-        }
+class FeatureTypeClassifier:
+    """
+    Clasifica features en tipos según su distribución de activación.
+    """
     
-    def get_decision(self, options: List[str]) -> str:
-        """Retorna decisión final basada en vista actual"""
-        if not self.current_view or not self.current_view.get("scores"):
-            return random.choice(options)
-        
-        return max(
-            self.current_view["scores"],
-            key=self.current_view["scores"].get
-        )
+    FEATURE_TYPES = {
+        "purely_binary": "Activación sharp con exactamente 2 valores",
+        "quasi_binary": "Distribución bimodal con algo de ruido",
+        "graded": "Respuesta proporcional gradual",
+        "multimodal": "Más de 2 modos claros",
+        "continuous": "Distribución unimodal suave",
+        "sparse": "Mayormente inactivo con activaciones ocasionales"
+    }
     
-    def _parse_scores(self, response: str, options: List[str]) -> Dict[str, float]:
-        """Parsea scores de la respuesta del LLM"""
-        scores = {opt: 0.5 for opt in options}  # Default
+    def classify_feature(self, activations: np.ndarray) -> str:
+        """
+        Clasifica un feature según su patrón de activación.
         
-        # Buscar menciones de opciones en la respuesta
-        for opt in options:
-            if opt.lower() in response.lower():
-                scores[opt] = min(1.0, scores[opt] + 0.3)
+        Args:
+            activations: Array de activaciones (n_samples,)
         
-        return scores</code></pre>
+        Returns:
+            Tipo del feature
+        """
+        # Limpiar NaNs
+        activations = activations[~np.isnan(activations)]
+        if len(activations) < 10:
+            return "unknown"
+        
+        # Calcular estadísticas
+        mean = np.mean(activations)
+        std = np.std(activations)
+        skew = stats.skew(activations)
+        kurtosis = stats.kurtosis(activations)
+        
+        # Detectar si es bimodal usando Hartigan's dip test simplificado
+        is_bimodal = self._is_bimodal(activations)
+        
+        # Fraction of zeros (sparsity)
+        sparsity = np.mean(np.abs(activations) < 0.01)
+        
+        # Rango normalizado
+        range_norm = (np.max(activations) - np.min(activations)) / (std + 1e-6)
+        
+        # Clasificación based en características
+        if sparsity > 0.9 and std < 0.1:
+            return "sparse"
+        
+        if is_bimodal and range_norm > 5:
+            # ¿2 modos bien separados o más?
+            n_modes = self._count_modes(activations)
+            if n_modes == 2:
+                if std < 0.5:
+                    return "purely_binary"
+                else:
+                    return "quasi_binary"
+            else:
+                return "multimodal"
+        
+        if kurtosis < -0.5:
+            return "graded"
+        
+        return "continuous"
+    
+    def _is_bimodal(self, data: np.ndarray, threshold: float = 0.3) -> bool:
+        """
+        Test simplificado de bimodalidad.
+        
+        Compara la distribución con una mezcla de 2 Gaussianas vs 1 Gaussiana.
+        """
+        from scipy.optimize import minimize
+        
+        # Función de verosimilitud para 1 vs 2 Gaussianas
+        def neg_log_likelihood_1gauss(params):
+            mu, sigma = params
+            sigma = max(sigma, 0.01)
+            log_lik = np.sum(stats.norm.logpdf(data, mu, sigma))
+            return -log_lik
+        
+        def neg_log_likelihood_2gauss(params):
+            mu1, sigma1, mu2, sigma2, pi = params
+            sigma1, sigma2 = max(sigma1, 0.01), max(sigma2, 0.01)
+            pi = max(0.01, min(0.99, pi))
+            
+            g1 = stats.norm.pdf(data, mu1, sigma1)
+            g2 = stats.norm.pdf(data, mu2, sigma2)
+            mix = pi * g1 + (1 - pi) * g2
+            mix = np.maximum(mix, 1e-10)
+            log_lik = np.sum(np.log(mix))
+            return -log_lik
+        
+        # Fit 1 Gaussiana
+        res1 = minimize(neg_log_likelihood_1gauss, [np.mean(data), np.std(data)],
+                       bounds=[(data.min(), data.max()), (0.01, data.std()*3)])
+        
+        # Fit 2 Gaussianas
+        res2 = minimize(neg_log_likelihood_2gauss, 
+                       [np.mean(data)-std, std, np.mean(data)+std, std, 0.5],
+                       bounds=[(data.min(), data.max()), (0.01, data.std()*2)]*2 + [(0.1, 0.9)])
+        
+        # Si 2 gaussianas_fit es significativamente mejor, es bimodal
+        improvement = res1.fun - res2.fun
+        
+        return improvement > threshold * len(data)
+    
+    def _count_modes(self, data: np.ndarray, bandwidth: float = None) -> int:
+        """
+        Cuenta el número de modos (picos) en la distribución.
+        """
+        if bandwidth is None:
+            bandwidth = 0.3 * np.std(data) * (len(data) ** -0.2)
+        
+        # KDE
+        kde = stats.gaussian_kde(data, bw_method=bandwidth)
+        x_range = np.linspace(data.min(), data.max(), 100)
+        densities = kde(x_range)
+        
+        # Contar picos locales
+        modes = 0
+        for i in range(1, len(densities) - 1):
+            if densities[i] > densities[i-1] and densities[i] > densities[i+1]:
+                modes += 1
+        
+        return modes</code></pre>
+<hr>
+<h2>💡 Implicaciones para Interpretability</h2>
+<p>Si los features son (casi-)binarios, esto tiene implicaciones importantes para cómo hacemos interpretability:</p>
+<h3>Más Fácil Intervention</h3>
+<p>Con features continuos, intervenir es tricky: ¿qué valor pones? ¿0.5? ¿1.0? ¿-0.3? Con features binarios, es fácil: pones 0 o 1. Esto hace que los experimentos de causalidad sean más limpios.</p>
+<h3>Más Fácil Attribution</h3>
+<p>Si un feature está "presente" o "ausente", podemos preguntarnos directamente: ¿qué atención heads o MLP layers lo activan? La respuesta es más discrete que cuando hay valores intermedios.</p>
+<h3>Circuit Discovery Más Simple</h3>
+<p>Encontrar circuits que implementan features binarios es más straightforward. El feature tiene dos estados bien definidos, y podemos rastrear qué lo activa en cada estado.</p>
+<hr>
+<h2>⚠️ Caveats y Complications</h2>
+<p>No todo es tan simple. Hay varias razones por las que los features binarios no son la historia completa:</p>
+<h3>Contexto Dependencia</h3>
+<p>Un feature puede ser binario en un contexto pero continuo en otro. Por ejemplo, el feature de "python code" podría ser bimodal cuando el modelo está en modo generación de código pero continuo cuando solo está leyendo código.</p>
+<h3>Superposition Persistente</h3>
+<p>Incluso si individual features son binarios, la superposition significa que cada neurona participa en múltiples features. Jadi una neurona individual puede mostrar comportamiento polifacético aunque cada feature sea binario.</p>
+<h3>Noise y Medición</h3>
+<p>Las activaciones tienen ruido de medición. Lo que parece binario podría ser una aproximación ruidosa de un feature verdaderamente continuo.</p>
 <hr>
 <h2>📝 Resumen y Cierre</h2>
-<p>Pues ahí lo tiene, mi estimado. La Swarm Intelligence con LLMs es un campo fascinante que toma inspiración de la naturaleza — hormigas, termitas, pájaros — y la lleva a un nuevo nivel con agentes que pueden razonar. A diferencia de los Multi-Agent Systems de ayer donde había un coordinador explícito, aquí todo emerge de las interacciones locales entre agentes simples.</p>
-<p>El 90% que no conoce estos conceptos termina diseñando sistemas centralizados cuando no lo necesitan, o implementando "swarm" que en realidad son solo sistemas de messaging asíncrono. El 10% que entiende de verdad sabe que la clave está en crear las condiciones para que el comportamiento emergente ocurra, no en diseñarlo directamente.</p>
-<p>Los tres errores principales que debe evitar: el over-engineering cuando la emergencia es suficiente, no entender stigmergy como comunicación verdaderamente indirecta y desacoplada, y no diseñar para escala desde el principio. Cada uno de estos puede destruir un sistema de swarm antes de que tenga oportunidad de mostrar su verdadero potencial.</p>
-<p>Lo que más me gusta de todo esto es cómo la naturaleza ya resolvió problemas de coordinación que nosotros apenas empezamos a explorar. Las hormigas llevan millones de años haciendo swarm sin necesitar un coordinator. Ahora, con LLMs, podemos crear swarms que no solo coordinan, sino que razonan y aprenden colectivamente. Eso sí que es el futuro.</p>
-<p>Bueno, parcero, eso es todo por hoy. Mañana seguimos con más temas de IA. No sé qué será todavía pero algo bueno se me ocurrirá. Mientras tanto, si tiene preguntas o quiere discutir más sobre swarm intelligence, ya sabe —/meta, o来找我 en el día.</p>
+<p>Binary features representa una dirección fascinante en interpretabilidad. La idea de que los modelos representan información de manera parcialmente discreta tiene implicaciones para cómo entendemos, intervenimos, y optimizamos redes neuronales.</p>
+<p>La evidencia sugiere que muchos features en LLMs tienen comportamiento al menos parcialmente binario, especialmente en capas de alto nivel. Esto podría hacer la interpretabilidad más tractable de lo que pensábamos.</p>
+<p>Eso sí, hay que ser cuidadosos. Los features binarios no son toda la historia - el contexto importa, la superposition complica las cosas, y el ruido puede mislead. Pero como aproximación prag马拉, binary features nos da una nueva lens para entender cómo funcionan los modelos.</p>
+<p>Hemos cubierto mucho terreno en interpretabilidad esta semana: desde el concepto básico hasta features y circuits, hasta superposition y binary features. La semana que viene continuamos explorando otros aspectos de cómo funcionan los LLMs por dentro.</p>
 <p><em>Nos vemos en el Día 331 — Keep learning, keep building.</em></p>
   </article>
 
