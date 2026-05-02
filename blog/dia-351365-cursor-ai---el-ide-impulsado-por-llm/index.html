@@ -118,482 +118,289 @@ nav {
   </header>
 
   <article class="article-body">
-<p>Bueno pues, ahí vamos parcero! Día 351 de este viaje por la inteligencia artificial. Hoy cerramos el ciclo de artículos avanzados con temas que probablemente el 80% de los equipos忽略了 en producción. Vamos con todo.</p>
-
-<h2>🎯 Integration Patterns: Conectando LLMs con el Mundo Real</h2>
-
-<p>Un LLM fuera de contexto es como un参考书 en otro idioma — potencialmente útil pero completamente disconnected de lo que necesitas. Los integration patterns son los bridges que hacen que tu modelo realmente resuelva problemas.</p>
-
-<h3>Retrieval-Augmented Generation (RAG)</h3>
-
-<p>RAG combina la potencia generativa del LLM con información externa retrieval-time. La idea: recuperar documentos relevantes y pasarlos como contexto.</p>
-
-<pre><code class="language-python">"""
-RAG Pipeline completo — del retrieval al generation
-"""
-
-class SimpleRAGPipeline:
-    def __init__(self, llm, vector_store, retriever_config: dict):
-        self.llm = llm
-        self.vector_store = vector_store
-        self.top_k = retriever_config.get("top_k", 5)
-        self.reranker = retriever_config.get("reranker", None)
-        self.rewrite_query = retriever_config.get("rewrite_query", False)
-
-    def retrieve(self, query: str) -> list[Document]:
-        """Recupera documentos relevantes del vector store"""
-        query_embedding = self.llm.embed(query)
-
-        # Búsqueda en espacio vectorial
-        results = self.vector_store.similarity_search(
-            query_embedding,
-            k=self.top_k * 2  # Extra para reranking
-        )
-
-        # Reranking si está configurado
-        if self.reranker:
-            results = self.reranker.rerank(query, results, top_k=self.top_k)
-        else:
-            results = results[:self.top_k]
-
-        return results
-
-    def rewrite_query_if_needed(self, query: str) -> str:
-        """Rewriting de query para mejor retrieval"""
-        if not self.rewrite_query:
-            return query
-
-        prompt = f"""Given the following user query, rewrite it to be
-more effective for semantic search. Focus on key concepts and intent.
-
-Original query: {query}
-
-Rewritten query:"""
-
-        return self.llm.generate(prompt).strip()
-
-    def generate_with_context(
-        self,
-        query: str,
-        system_prompt: str = "You are a helpful AI assistant."
-    ) -> str:
-        """Genera respuesta usando contexto recuperado"""
-        # Rewriting de query
-        search_query = self.rewrite_query_if_needed(query)
-
-        # Retrieval
-        retrieved_docs = self.retrieve(search_query)
-
-        # Construir contexto
-        context = "\n\n".join([
-            f"[Source {i+1}] {doc.content}"
-            for i, doc in enumerate(retrieved_docs)
-        ])
-
-        # Prompt con contexto
-        full_prompt = f"""{system_prompt}
-
-Context from retrieved documents:
-{context}
-
-User question: {query}
-
-Based on the context, answer the question. If the context
-doesn't contain relevant information, say so.
-"""
-        return self.llm.generate(full_prompt)
-
-
-# --- Advanced: Hybrid Search ---
-def hybrid_search(
-    vector_results: list,
-    keyword_results: list,
-    alpha: float = 0.5,
-    max_results: int = 10
-) -> list[tuple[Document, float]]:
-    """
-    Combina búsqueda vectorial + keyword-based (BM25).
-
-    Score final: α × vector_score + (1-α) × bm25_score
-
-    α=0.5: peso igual a ambos métodos
-    α→1: privilegia búsqueda semántica
-    α→0: privilegia búsqueda por keywords
-    """
-    from collections import defaultdict
-
-    doc_scores = defaultdict(float)
-    doc_order = {}
-
-    # Normalizar y combinar scores vectoriales
-    if vector_results:
-        max_vec_score = max(score for _, score in vector_results)
-        for doc, score in vector_results:
-            doc_scores[doc.id] += alpha * (score / max_vec_score)
-            doc_order[doc.id] = doc
-
-    # Normalizar y combinar scores BM25
-    if keyword_results:
-        max_bm25_score = max(score for _, score in keyword_results)
-        for doc, score in keyword_results:
-            doc_scores[doc.id] += (1 - alpha) * (score / max_bm25_score)
-            doc_order[doc.id] = doc
-
-    # Ordenar por score combinado
-    ranked = sorted(
-        [(doc_order[doc_id], score) for doc_id, score in doc_scores.items()],
-        key=lambda x: x[1],
-        reverse=True
-    )
-
-    return ranked[:max_results]</code></pre>
-
-<h3>Chain-of-Thought Prompting</h3>
-
-<p>CoT induces reasoning by asking el modelo para explicitar su reasoning process antes de dar la respuesta final.</p>
-
-<pre><code class="language-python">"""
-Chain-of-Thought implementation con verification
-"""
-
-def chain_of_thought(
-    llm,
-    problem: str,
-    include_verification: bool = True
-) -> dict:
-    """
-    CoT prompting con paso de verificación.
-
-    Returns: {
-        "reasoning_steps": [...],
-        "answer": str,
-        "verification": bool,
-        "confidence": float
-    }
-    """
-
-    cot_prompt = f"""Solve this problem step by step. For each step:
-1. Write what you're thinking
-2. Write what you're doing
-3. Write the intermediate result
-
-Problem: {problem}
-
-Steps:"""
-
-    # Generar reasoning steps
-    raw_response = llm.generate(cot_prompt)
-
-    # Parsear pasos
-    steps = parse_reasoning_steps(raw_response)
-
-    # Extraer respuesta final
-    final_answer = extract_final_answer(steps)
-
-    # Verificación si está habilitada
-    verification = None
-    confidence = 0.5
-
-    if include_verification:
-        verification_prompt = f"""Given the following problem and solution,
-verify if the answer is correct. Also estimate confidence 0-1.
-
-Problem: {problem}
-Proposed answer: {final_answer}
-Reasoning steps: {steps}
-
-Is the answer correct? What is your confidence level?
-Provide a brief explanation.
-"""
-        verification_response = llm.generate(verification_prompt)
-        verification = parse_verification(verification_response)
-        confidence = verification.get("confidence", 0.5)
-
-    return {
-        "reasoning_steps": steps,
-        "answer": final_answer,
-        "verification": verification,
-        "confidence": confidence
-    }
-
-
-def tree_of_thought(llm, problem: str, num_branches: int = 3) -> str:
-    """
-    Tree-of-Thought: explora múltiples paths de reasoning
-    en paralelo and selecciona el mejor.
-    """
-    prompts = [
-        f"""Solve this problem using one specific approach.
-Think carefully about this approach and show your work.
-
-Problem: {problem}
-
-Approach {i+1}:"""
-        for i in range(num_branches)
-    ]
-
-    # Generar en paralelo
-    branch_responses = llm.generate_parallel(prompts)
-
-    # Evaluar y seleccionar mejor
-    evaluation_prompt = f"""Given the problem and these solution approaches,
-select the best one and explain why.
-
-Problem: {problem}
-
-Approaches:
-{chr(10).join([f'Approach {i+1}: {r}' for i, r in enumerate(branch_responses)])}
-
-Best approach and why:"""
-
-    final = llm.generate(evaluation_prompt)
-    return final</code></pre>
-
-<h2>🚀 Deployment Strategies: De Notebook a Producción</h2>
-
-<p>El problema del 90% de los deployments de LLM: treat it like a regular API. Un LLM es probabilístico, latente, y resource-intensive. Necesita una estrategia diferente.</p>
-
-<h3>Deployment Architecture Patterns</h3>
-
-<pre><code class="language-python">"""
-LLM Deployment Patterns — scalability y reliability
-"""
-
-# --- Pattern 1: Gateway con Fallback ---
-class LLMGateway:
-    """
-    Gateway que redirige a múltiples providers con fallback.
-    """
-
-    def __init__(self):
-        self.providers = [
-            {"name": "openai", "client": OpenAIClient(), "priority": 1},
-            {"name": "anthropic", "client": AnthropicClient(), "priority": 2},
-            {"name": "local", "client": LocalLLMClient(), "priority": 3},
-        ]
-        self.current_provider = 0
-
-    def generate(self, prompt: str, **kwargs) -> str:
-        """Intenta providers en orden hasta que uno succeeds"""
-        errors = []
-
-        for provider in self.providers:
-            try:
-                return provider["client"].generate(prompt, **kwargs)
-            except Exception as e:
-                errors.append(f"{provider['name']}: {str(e)}")
-                continue
-
-        # Todos fallaron
-        raise LLMAllProvidersFailedError(errors)
-
-
-# --- Pattern 2: Async con Streaming ---
-import asyncio
-from typing import AsyncGenerator
-
-class StreamingLLM:
-    """LLM con streaming asíncrono para baja latencia percibida"""
-
-    def __init__(self, client):
-        self.client = client
-
-    async def stream_generate(
-        self,
-        prompt: str,
-        model: str = "gpt-4"
-    ) -> AsyncGenerator[str, None]:
-        """Genera tokens asíncronamente mientras llegan"""
-        loop = asyncio.get_event_loop()
-
-        # Wrapper para convertir sync streaming a async
-        def sync_stream():
-            for token in self.client.stream_generate(prompt, model=model):
-                yield token
-
-        # Run blocking generator en thread pool
-        for token in await loop.run_in_executor(None, sync_stream):
-            yield token
-
-
-# --- Pattern 3: Caching Strategy ---
-class SemanticCache:
-    """
-    Cache semántico: guarda prompts similares y sus respuestas.
-    Reduce costo y latencia drásticamente.
-    """
-
-    def __init__(self, embedding_model, vector_db, similarity_threshold: float = 0.95):
-        self.embedding_model = embedding_model
-        self.vector_db = vector_db
-        self.similarity_threshold = similarity_threshold
-
-    def get_cached_response(self, prompt: str) -> tuple[str, float] | None:
-        """Busca en cache. Returns (response, similarity) o None"""
-        embedding = self.embedding_model.encode(prompt)
-
-        results = self.vector_db.similarity_search(embedding, k=1)
-
-        if not results:
-            return None
-
-        cached_prompt, cached_response, similarity = results[0]
-
-        if similarity >= self.similarity_threshold:
-            return cached_response, similarity
-
-        return None
-
-    def store(self, prompt: str, response: str):
-        """Guarda en cache"""
-        embedding = self.embedding_model.encode(prompt)
-        self.vector_db.insert(embedding, prompt, response)
-
-
-# --- Pattern 4: Load Balancing ---
-class LLMLoadBalancer:
-    """
-    Distribuye requests entre múltiples deployments.
-    Considera: latencia actual, rate limits, costo.
-    """
-
-    def __init__(self):
-        self.instances = []
-        self.metrics = {}  # instance_id -> {"latency": [], "requests": int}
-
-    def add_instance(self, instance: dict):
-        self.instances.append(instance)
-        self.metrics[instance["id"]] = {"latency": [], "requests": 0}
-
-    def select_instance(self) -> dict:
-        """
-        Selecciona mejor instancia basado en:
-        - Latencia promedio reciente
-        - Rate limit remaining
-        - Priority/weight
-        """
-        scored = []
-
-        for instance in self.instances:
-            metrics = self.metrics[instance["id"]]
-            avg_latency = sum(metrics["latency"]) / max(len(metrics["latency"]), 1)
-
-            # Score más bajo = mejor
-            # Normaliza: menor latencia y más rate limit = mejor
-            score = avg_latency / instance.get("rate_limit_remaining", 1)
-
-            scored.append((instance, score))
-
-        # Selecciona el de menor score
-        best = min(scored, key=lambda x: x[1])
-        return best[0]
-
-    async def generate(self, prompt: str) -> str:
-        instance = self.select_instance()
-        start = time.time()
-
-        try:
-            response = await instance["client"].generate(prompt)
-            latency = time.time() - start
-
-            # Update metrics
-            self.metrics[instance["id"]]["latency"].append(latency)
-            self.metrics[instance["id"]]["requests"] += 1
-
-            # Mantener solo últimos 100 latency measurements
-            if len(self.metrics[instance["id"]]["latency"]) > 100:
-                self.metrics[instance["id"]]["latency"] = \
-                    self.metrics[instance["id"]]["latency"][-100:]
-
-            return response
-        except Exception as e:
-            # Marcar instance como unavailable temporalmente
-            instance["consecutive_failures"] = instance.get("consecutive_failures", 0) + 1
-            raise</code></pre>
-
-<h3>Key Deployment Formulas</h3>
-
-<p>Metrics que importan en producción:</p>
-
-<p><strong>Time to First Token (TTFT)</strong>:</p>
-<p>$$TTFT = t_{encode} + t_{queue} + t_{first\_token}$$</p>
-
-<p>donde $t_{encode}$ es tiempo de encoding del prompt, $t_{queue}$ espera en cola, y $t_{first\_token}$ primera inferencia.</p>
-
-<p><strong>Throughput efectivo</strong>:</p>
-<p>$$Throughput = \frac{total\_tokens}{t_{total} - t_{TTFT}}$$</p>
-
-<p>**Costo por 1K tokens:**</p>
-<p>$$Costo_{1K} = \frac{precio_{modelo} \times 1000}{tokens\_por\_dollar}$$</p>
-
-<h2>⚠️ Errores Críticos en Deployment</h2>
-
-<h3>Error 1: No Tener Deployment Strategy</h3>
-
-<p><strong>El problema</strong>: Hacer deploy del modelo más grande sin considerar latency, costo, o fallback. En producción, esto significa downtime cuando el provider tiene problemas o cuando el costo se dispara.</p>
-
-<p><strong>La solución</strong>: Implementar gateway con fallback desde día uno. Empezar con el modelo más pequeño que cumpla los requisitos de calidad. Planificar для capacity desde el inicio.</p>
-
-<pre><code class="language-python"># Ejemplo: Strategy desde el inicio
-DEPLOYMENT_STRATEGY = {
-    "tier_1": {  # Producción
-        "model": "gpt-4o-mini",
-        "max_latency_ms": 2000,
-        "fallback_to": "gpt-3.5-turbo"
-    },
-    "tier_2": {  # Fallback
-        "model": "gpt-3.5-turbo",
-        "max_latency_ms": 3000,
-        "fallback_to": "local-llama"
-    },
-    "tier_3": {  # Emergencia
-        "model": "llama-3.1-8b",
-        "max_latency_ms": 5000,
-        "fallback_to": None  # Última instancia
-    }
-}</code></pre>
-
-<h3>Error 2: No Integrar Properly</h3>
-
-<p><strong>El problema</strong>: Llamar el LLM sin contexto, sin cache, sin manejo de errores. Esto resulta en respuestas irrelevantes, costos inflados, y crashes en producción.</p>
-
-<p><strong>La solución</strong>: Implementar RAG pipeline, semantic cache, y retry logic. El contexto es king — un LLM sin contexto es inútil.</p>
-
-<pre><code class="language-python"># Integration checklist
-INTEGRATION_CHECKLIST = [
-    "☐ RAG pipeline con hybrid search",
-    "☐ Semantic cache para prompts repetitivos",
-    "☐ Retry con exponential backoff",
-    "☐ Circuit breaker para failures sostenidos",
-    "☐ Monitoring de latencia, costo, y calidad",
-    "☐ A/B testing de prompts",
-    "☐ Fallback chain configurado"
-]</code></pre>
-
-<h3>Error 3: No Follow Best Practices</h3>
-
-<p><strong>El problema</strong>: Tratar LLMs como deterministic APIs. No hacer prompt versioning, no monitorear drift, no tener escalation paths. Esto acumula technical debt que después es cara de pagar.</p>
-
-<p><strong>La solución</strong>: Treat your prompts como código. Versionarlos, testearlos, hacer code review. Monitorear outputs por drift. Tener humanos en el loop para decisiones críticas.</p>
-
-<h2>📊 Resumen de Fórmulas Clave</h2>
-
+<h2>Que es Cursor AI</h2>
+<p>Cursor AI es un IDE integrado con modelos de lenguaje grandes que va mas alla del autocompletado tradicional. A diferencia de Visual Studio Code con extensiones de IA, Cursor esta construido desde cero con IA en su nucleo, lo que permite una integracion mucho mas profunda y fluida.</p>
+<p>El 85 por ciento de los developers que prueban Cursor no vuelven a su editor anterior. Hoy exploramos por que y como aprovecharlo al maximo en proyectos reales de machine learning y data science.</p>
+<hr>
+<h2>Arquitectura e Integracion</h2>
+<p>Cursor utiliza una arquitectura hibrida que combina un editor tradicional con inferencia de LLM en tiempo real. La diferencia fundamental con otros editores es que el modelo de IA tiene acceso completo al contexto del proyecto.</p>
+<p>Componentes principales:</p>
 <ul>
-<li><strong>RAG hybrid score</strong>: $S_{final} = \alpha \cdot S_{vector} + (1-\alpha) \cdot S_{bm25}$</li>
-<li><strong>TTFT</strong>: $t_{encode} + t_{queue} + t_{first\_token}$</li>
-<li><strong>Throughput</strong>: $\frac{tokens}{t_{total} - t_{TTFT}}$</li>
-<li><strong>Cache hit ratio</strong>: $\frac{cache\_hits}{total\_requests}$</li>
-<li><strong>Effective cost</strong>: $c_{base} \times (1 - hit\_ratio) + c_{cache} \times hit\_ratio$</li>
+<li><strong>Codebase indexing</strong>: El IDE indexa todo tu codigo para dar contexto al LLM</li>
+<li><strong>Conflict resolution engine</strong>: Detecta y resuelve conflictos de merge automaticamente</li>
+<li><strong>Multi-model routing</strong>: Elige automaticamente entre GPT-4, Claude, y modelos locales segun la tarea</li>
+<li><strong>Ghost text engine</strong>: Sugerencias en tiempo real sin interrupcion del flujo de trabajo</li>
 </ul>
+<p>La metrica de confianza en las sugerencias se calcula como:</p>
+<p>$$\text{Confianza} = \frac{\text{Similitud Contexto} \times \text{Historial Éxito}}{\text{Ambigüedad} + \text{Complejidad Tarea}}$$</p>
+<hr>
+<h2>Features Distintivas</h2>
+<h3>Composer: Generacion de Codigo Multiparte</h3>
+<p>La funcion Composer permite generar codigo en multiples archivos simultaneamente con coherencia arquitectonica. Es ideal para crear servicios completos o estructuras de proyecto.</p>
+<pre><code class="language-python">"""
+Ejemplo: Usar Composer para crear un servicio de API
+con arquitectura limpia desde cero.
+"""
 
-<h2>🏆 Reflexión de Hoy</h2>
+# Archivo 1: main.py - Punto de entrada
+from fastapi import FastAPI
+from router import api_router
+from middleware import logging_middleware
+from config import settings
 
-<p>De los 351 artículos que llevamos, los integration patterns y deployment strategies son lo que separa un proyecto de AI de un producto de AI. Puedes tener el mejor modelo, pero si no lo integras bien y no lo deployas correctamente, es solo un experimento costoso.</p>
+app = FastAPI(title=settings.PROJECT_NAME)
 
-<p>Mañana llegamos al día 352 y cerramos esta serie de Advanced Topics. Vamos con todo.</p>
+# Middleware
+app.middleware("http")(logging_middleware)
 
-<p><em>Nos vemos en el Día 352 — el cierre de este ciclo. ¡Hagámoslo!</em></p>
-  </article>
+# Routers
+app.include_router(api_router, prefix="/api/v1")
+
+@app.get("/health")
+def health_check():
+    return {"status": "healthy", "version": settings.VERSION}
+
+# Archivo 2: router.py - Rutas de API
+from fastapi import APIRouter, Depends, HTTPException
+from auth import get_current_user
+from schemas import UserCreate, UserResponse
+from service import UserService
+
+router = APIRouter()
+user_service = UserService()
+
+@router.post("/users", response_model=UserResponse)
+def create_user(user: UserCreate):
+    return user_service.create(user)
+
+@router.get("/users/{user_id}", response_model=UserResponse)
+def get_user(user_id: int, user = Depends(get_current_user)):
+    return user_service.get(user_id)
+
+# Archivo 3: schemas.py - Modelos Pydantic
+from pydantic import BaseModel, EmailStr
+from typing import Optional
+
+class UserBase(BaseModel):
+    email: EmailStr
+    username: str
+
+class UserCreate(UserBase):
+    password: str
+
+class UserResponse(UserBase):
+    id: int
+    is_active: bool = True
+    
+    class Config:
+        from_attributes = True</code></pre>
+<h3>Tablas de Memoria de Proyecto</h3>
+<p>Cursor mantiene tablas de memoria que permiten que el modelo recuerde decisiones arquitectonicas a traves de sesiones. Esto resuelve el problema de contexto limitado que tienen otros IDEs.</p>
+<pre><code class="language-python"># Estructura de memoria de proyecto en Cursor
+PROJECT_MEMORY = {
+    "architecture_decisions": {
+        "database": "PostgreSQL con SQLAlchemy ORM",
+        "cache": "Redis para sesiones y cache de queries",
+        "auth": "JWT con refresh tokens",
+        "api_style": "REST con versionado semántico"
+    },
+    "coding_standards": {
+        "naming": "snake_case para Python, camelCase para JS",
+        "docstrings": "Google style con tipos",
+        "testing": "pytest con fixtures para bd"
+    },
+    "patterns_to_follow": [
+        "Repository pattern para acceso a datos",
+        "Dependency injection via FastAPI Depends",
+        "Service layer entre routers y repos"
+    ],
+    "patterns_to_avoid": [
+        "Lógica de negocio en routers",
+        "Queries SQL crudas fuera de repositories",
+        "Imports circulares"
+    ]
+}
+
+def get_architecture_decision(decision_key: str) -> str:
+    """Recupera una decision arquitectonica de la memoria."""
+    return PROJECT_MEMORY["architecture_decisions"].get(decision_key)
+
+def validate_against_memory(code_snippet: str) -> dict:
+    """Valida si un snippet sigue los estandares del proyecto."""
+    violations = []
+    
+    if "SELECT *" in code_snippet and "repository" not in code_snippet.lower():
+        violations.append("Queries SQL crudas fuera del repository")
+    
+    if "def " in code_snippet and code_snippet.count("\n") < 3:
+        if "\"\"\"" not in code_snippet and "docstring" not in code_snippet.lower():
+            violations.append("Falta docstring en función")
+    
+    return {"valid": len(violations) == 0, "violations": violations}</code></pre>
+<hr>
+<h2>Modos de Uso en Data Science y ML</h2>
+<h3>Analisis Exploratorio de Datos</h3>
+<p>Cursor puede ayudarte a escribir codigo de EDA analisis exploratorio de datos de manera mas rapida, sugiriendo visualizaciones y transformaciones apropiadas.</p>
+<pre><code class="language-python">"""
+Analisis exploratorio automatico con Cursor
+"""
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from scipy import stats
+
+class EDAGenerator:
+    """Generador de analisis exploratorio de datos."""
+    
+    def __init__(self, df: pd.DataFrame):
+        self.df = df
+    
+    def generar_reporte(self) -> dict:
+        """Genera reporte completo de EDA."""
+        return {
+            "resumen": self.resumen_estadistico(),
+            "nulos": self.analisis_valores_nulos(),
+            "outliers": self.deteccion_outliers(),
+            "correlaciones": self.matiz_correlaciones(),
+            "distribuciones": self.analisis_distribuciones()
+        }
+    
+    def resumen_estadistico(self) -> dict:
+        """Resumen de estadisticas basicas."""
+        numeric_cols = self.df.select_dtypes(include=[np.number]).columns
+        return {
+            "filas": len(self.df),
+            "columnas": len(self.df.columns),
+            "columnas_numericas": len(numeric_cols),
+            "memoria_mb": self.df.memory_usage(deep=True).sum() / 1024**2,
+            "resumen": self.df[numeric_cols].describe().to_dict()
+        }
+    
+    def deteccion_outliers(self) -> dict:
+        """Detecta outliers usando IQR y Z-score."""
+        outliers = {}
+        numeric_cols = self.df.select_dtypes(include=[np.number]).columns
+        
+        for col in numeric_cols:
+            Q1 = self.df[col].quantile(0.25)
+            Q3 = self.df[col].quantile(0.75)
+            IQR = Q3 - Q1
+            lower = Q1 - 1.5 * IQR
+            upper = Q3 + 1.5 * IQR
+            
+            outliers[col] = {
+                "count": ((self.df[col] < lower) | (self.df[col] > upper)).sum(),
+                "percentage": ((self.df[col] < lower) | (self.df[col] > upper)).mean() * 100,
+                "bounds": (lower, upper)
+            }
+        
+        return outliers
+
+# Uso
+df = pd.read_csv("datos_climaticos.csv")
+eda = EDAGenerator(df)
+reporte = eda.generar_reporte()
+print(f"Outliers detectados: {reporte['outliers']}")</code></pre>
+<h3>Pipeline de Machine Learning</h3>
+<p>Cursor puede ayudarte a construir pipelines completos de ML con preprocessing, validacion, y evaluacion.</p>
+<pre><code class="language-python">"""
+Pipeline de ML completo con scikit-learn
+"""
+from sklearn.pipeline import Pipeline
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import StandardScaler, OneHotEncoder
+from sklearn.impute import SimpleImputer
+from sklearn.model_selection import cross_val_score, StratifiedKFold
+from sklearn.ensemble import GradientBoostingClassifier
+from sklearn.metrics import classification_report, confusion_matrix
+
+class MLPipelineBuilder:
+    """Constructor de pipelines de ML."""
+    
+    def __init__(self):
+        self.preprocessor = None
+        self.pipeline = None
+    
+    def build_preprocessor(
+        self,
+        numeric_features: list,
+        categorical_features: list
+    ) -> ColumnTransformer:
+        """Construye el preprocesador."""
+        
+        numeric_transformer = Pipeline(steps=[
+            ("imputer", SimpleImputer(strategy="median")),
+            ("scaler", StandardScaler())
+        ])
+        
+        categorical_transformer = Pipeline(steps=[
+            ("imputer", SimpleImputer(strategy="most_frequent")),
+            ("onehot", OneHotEncoder(handle_unknown="ignore", sparse_output=False))
+        ])
+        
+        self.preprocessor = ColumnTransformer(
+            transformers=[
+                ("num", numeric_transformer, numeric_features),
+                ("cat", categorical_transformer, categorical_features)
+            ]
+        )
+        
+        return self.preprocessor
+    
+    def build_pipeline(self, model=None):
+        """Construye el pipeline completo."""
+        if model is None:
+            model = GradientBoostingClassifier(
+                n_estimators=100,
+                learning_rate=0.1,
+                max_depth=3,
+                random_state=42
+            )
+        
+        self.pipeline = Pipeline(steps=[
+            ("preprocessor", self.preprocessor),
+            ("classifier", model)
+        ])
+        
+        return self.pipeline
+    
+    def evaluate(self, X, y, cv=5) -> dict:
+        """Evalua el pipeline con cross-validation."""
+        skf = StratifiedKFold(n_splits=cv, shuffle=True, random_state=42)
+        
+        scores = cross_val_score(self.pipeline, X, y, cv=skf, scoring="f1_weighted")
+        
+        return {
+            "mean_f1": scores.mean(),
+            "std_f1": scores.std(),
+            "scores": scores.tolist()
+        }
+
+# Uso
+builder = MLPipelineBuilder()
+preprocessor = builder.build_preprocessor(
+    numeric_features=["edad", "ingresos", "score_credito"],
+    categorical_features=["ciudad", "profesion"]
+)
+pipeline = builder.build_pipeline()
+result = builder.evaluate(X_train, y_train)
+print(f"F1 Score: {result['mean_f1']:.3f} (+/- {result['std_f1']:.3f})")</code></pre>
+<hr>
+<h2>Comparativa con Otros IDEs</h2>
+<p>La diferencia principal entre Cursor y la competencia radica en su enfoque nativo de IA frente a extensiones agregadas posteriormente.</p>
+<ul>
+<li><strong>VS Code + Copilot</strong>: Copilot es una extension que funciona sobre VS Code. Cursor tiene IA integrada desde el diseño.</li>
+<li><strong>PyCharm + JetBrains AI</strong>: Similar a Copilot, funciona como plugin. Cursor ofrece mayor context awareness.</li>
+<li><strong>Replit</strong>: Enfoque en desarrollo web rapido. Cursor es mas flexible para proyectos complejos.</li>
+</ul>
+<p>La formula de decision para elegir IDE seria:</p>
+<p>$$\text{Decisión} = \begin{cases} \text{Cursor} & \text{si } \text{Complejidad} > 7 \text{ y } \text{Contexto} > 5 \\ \text{VS Code} & \text{si } \text{Complejidad} \leq 7 \\ \text{Replit} & \text{si } \text{Prototipo Web} = \text{True} \end{cases}$$</p>
+<hr>
+<h2>Resumen</h2>
+<p>Cursor AI representa el siguiente paso en la evolucion de los entornos de desarrollo. Su enfoque nativo de IA permite una integracion que las extensiones no pueden igualar. Para proyectos de data science y machine learning, donde el contexto y la complejidad son altos, Cursor ofrece ventajas significativas.</p>
+<p>El developer que aprende a trabajar con Cursor efectivamente no reemplaza su criterio por la IA — lo amplifica. La clave esta en saber cuando confiar en las sugerencias y cuando corregirlas. Eso es lo que diferencia a los que multiplican su productividad de los que solo aparentan hacerlo.</p>
+</article>
 
   <script>
     document.getElementById('themeToggle').addEventListener('click', function() {
