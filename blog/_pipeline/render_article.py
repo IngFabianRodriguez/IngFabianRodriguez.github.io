@@ -544,6 +544,105 @@ def render(day: int, md_text: str, out_path: Path) -> None:
     out_path.write_text(html, encoding="utf-8")
     print(f"Wrote: {out_path}  ({len(body_html)} bytes body)")
 
+    # Update the blog's index.html card for this day.
+    try:
+        update_index_card(day, title, stack, date_str)
+    except Exception as exc:  # noqa: BLE001
+        # Index update is best-effort: don't fail the render if index
+        # has an unexpected format.
+        print(f"WARN: failed to update index.html card: {exc}")
+
+
+def update_index_card(day: int, full_title: str, stack: str, date_str: str) -> None:
+    """Update the <article-card data-day="N"> block in blog/index.html.
+
+    full_title is the "Dia N/365: TEMA — subtitulo" string from the metadata.
+    The card's <h3> uses just "TEMA — subtitulo" (no "Dia N/365:" prefix).
+    The tags are split by comma and lowercased.
+    """
+    index_path = BLOG_DIR / "index.html"
+    text = index_path.read_text(encoding="utf-8")
+
+    h3_text = strip_day_prefix(full_title).strip()
+
+    # Replace the <h3>...</h3> inside the day N card.
+    h3_pattern = re.compile(
+        r'(<a class="article-card" data-day="' + str(day) + r'"[^>]*>'
+        r'.*?<h3>)[^<]*(</h3>)',
+        re.DOTALL,
+    )
+    new_text, n = h3_pattern.subn(
+        lambda m: m.group(1) + escape_html(h3_text) + m.group(2),
+        text, count=1,
+    )
+    if n != 1:
+        raise RuntimeError(
+            f"could not find <h3> for day {day} in index.html"
+        )
+
+    # Replace the <div class="tags">...</div> inside the day N card.
+    # The regex captures the existing <div class="tags"> open tag and the
+    # closing </div>; we replace the INNER content (between them) with the
+    # new tags.
+    tags_pattern = re.compile(
+        r'(<a class="article-card" data-day="' + str(day) + r'"[^>]*>'
+        r'.*?<div class="tags">)(.*?)(</div>)',
+        re.DOTALL,
+    )
+    new_text, n = tags_pattern.subn(
+        lambda m: m.group(1) + build_tags_inner(stack) + m.group(3),
+        new_text, count=1,
+    )
+    if n != 1:
+        raise RuntimeError(
+            f"could not find <div class=tags> for day {day} in index.html"
+        )
+
+    # Replace the <time>...</time> inside the day N card.
+    time_pattern = re.compile(
+        r'(<a class="article-card" data-day="' + str(day) + r'"[^>]*>'
+        r'.*?<time>)[^<]*(</time>)',
+        re.DOTALL,
+    )
+    new_text, n = time_pattern.subn(
+        lambda m: m.group(1) + escape_html(date_str) + m.group(2),
+        new_text, count=1,
+    )
+    if n != 1:
+        raise RuntimeError(
+            f"could not find <time> for day {day} in index.html"
+        )
+
+    index_path.write_text(new_text, encoding="utf-8")
+    print(f"Updated index.html card for day {day}")
+
+
+def strip_day_prefix(title: str) -> str:
+    """Strip 'Dia N/365: ' prefix from a title for the index card."""
+    return re.sub(r"^Dia\s+\d+/\d+:\s*", "", title).strip()
+
+
+def build_tags_html(stack: str) -> str:
+    """Build the full <div class="tags">...</div> HTML for the index card."""
+    return f'<div class="tags">{build_tags_inner(stack)}</div>'
+
+
+def build_tags_inner(stack: str) -> str:
+    """Build the inner spans (no <div> wrapper) for the index card tags."""
+    # Split by comma, lowercase, strip, drop empties.
+    tags = [t.strip().lower() for t in stack.split(",") if t.strip()]
+    if not tags:
+        tags = ["ai"]
+    return "".join(f'<span class="tag">{escape_html(t)}</span>' for t in tags)
+
+
+def escape_html(text: str) -> str:
+    """Minimal HTML escape for text content."""
+    return (text.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+                .replace('"', "&quot;"))
+
 
 # ---------------------------------------------------------------------------
 # Main
