@@ -108,6 +108,8 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument("--yes", "-y", action="store_true",
+                        help="skip confirmation (for non-interactive shells)")
     parser.add_argument("--day", type=int, help="only process this day")
     parser.add_argument(
         "--from-day", type=int, default=113,
@@ -168,31 +170,54 @@ def main() -> None:
         return
 
     if args.apply:
-        confirm = input("\nApply this plan? Type 'yes' to confirm: ")
-        if confirm.strip().lower() != "yes":
-            print("Aborted.")
-            return
+        if not args.yes:
+            try:
+                confirm = input("\nApply this plan? Type 'yes' to confirm: ")
+                if confirm.strip().lower() != "yes":
+                    print("Aborted.")
+                    return
+            except EOFError:
+                # Non-interactive shell: require --yes flag
+                print("Non-interactive shell: pass --yes to skip confirmation.")
+                return
 
-        # First, rename moves (handle potential conflicts by doing two-phase)
-        for src, dst in moves:
-            if dst.exists():
-                # Move existing out of the way temporarily with a suffix
-                tmp = dst.with_suffix(dst.suffix + ".tmp-renaming")
-                shutil.move(str(dst), str(tmp))
-                shutil.move(str(src), str(dst))
-                # Resolve temp: it's now an old folder the user can verify; for
-                # now delete it (we already choose delete elsewhere)
-                if tmp.exists():
-                    shutil.rmtree(tmp, ignore_errors=True)
-            else:
-                shutil.move(str(src), str(dst))
+        # Strategy: process one day at a time. For each day, the plan is
+        # (1) delete any "extra" folders (duplicates to remove), and
+        # (2) rename the kept folder to the canonical name.
+        # IMPORTANT: deletes must happen BEFORE the rename for that day,
+        # because shutil.move on Windows moves INTO an existing dst dir.
+        # We also pre-clean up any stale .tmp-renaming folders left behind
+        # by a previous failed run.
 
-        for d in deletes:
-            if d.exists():
-                shutil.rmtree(d, ignore_errors=True)
+        # Cleanup any leftover .tmp-renaming dirs
+        for p in BLOG_DIR.iterdir():
+            if p.is_dir() and p.name.endswith(".tmp-renaming"):
+                print(f"  Cleaning leftover: {p.name}")
+                shutil.rmtree(p, ignore_errors=True)
+
+        for day in target_days:
+            tema = days.get(day)
+            if tema is None:
+                continue
+            plan = renames_for_day(day, tema)
+            # First, delete extras (those mapped to None)
+            for src, dst in plan.items():
+                if dst is None and src.exists():
+                    print(f"  DELETE day {day}: {src.name}")
+                    shutil.rmtree(src, ignore_errors=True)
+            # Then, rename the kept folder to canonical
+            for src, dst in plan.items():
+                if dst is not None and src.exists() and src.name != dst.name:
+                    print(f"  RENAME day {day}: {src.name} -> {dst.name}")
+                    # If dst still exists for any reason, delete it (shouldn't,
+                    # because we already deleted extras above)
+                    if dst.exists():
+                        shutil.rmtree(dst, ignore_errors=True)
+                    src.rename(dst)
 
         for c in creates:
             if not c.exists():
+                print(f"  CREATE: {c.name}")
                 c.mkdir(parents=True, exist_ok=True)
 
         print("\nDone.")

@@ -1,8 +1,10 @@
 """
 Update blog/index.html to point to the renamed canonical folder names.
 
-Strategy: for each day, find the OLD href in the index.html (based on the
-folder name as currently on disk) and rewrite it to the canonical new name.
+Strategy: parse the index.html to find each `<a data-day="N">` element and
+rewrite the href to point to the canonical folder name for that day.
+This handles the case where the index.html's hrefs still point to old
+slugs that no longer exist on disk.
 
 Run with --dry-run to preview, --apply to actually edit the file.
 """
@@ -22,67 +24,68 @@ from days_table import DAYS, build_path  # type: ignore
 
 BLOG_DIR = Path(__file__).resolve().parent.parent  # blog/
 INDEX = BLOG_DIR / "index.html"
-TODAY = re.compile(r"^dia-(\d+)365")
+DATA_DAY = re.compile(r'data-day="(\d+)"')
+HREF = re.compile(r'href="(/blog/dia-(\d+)365-[^"]+)"')
+TITLE = re.compile(r'<h3>(.*?)</h3>')
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument("--from-day", type=int, default=113)
+    parser.add_argument("--to-day", type=int, default=365)
     args = parser.parse_args()
 
     if not args.dry_run and not args.apply:
         args.dry_run = True
 
     days_tema = {day: tema for day, tema, _stack in DAYS}
-
-    # Build map: old folder name -> new folder name (only for the rename range 113-365)
-    plan: dict[str, str] = {}
-    for d in BLOG_DIR.iterdir():
-        if not d.is_dir():
-            continue
-        m = TODAY.match(d.name)
-        if not m:
-            continue
-        day = int(m.group(1))
-        if day < 113 or day > 365:
-            continue
-        tema = days_tema[day]
-        new_name = build_path(day, tema)
-        if new_name != d.name:
-            plan[d.name] = new_name
+    canonical: dict[int, str] = {
+        d: build_path(d, days_tema[d]) for d in days_tema
+    }
 
     text = INDEX.read_text(encoding="utf-8")
-    original = text
+    new_text = text
     changes = 0
+    samples: list[tuple[str, str, str]] = []  # (day, old, new)
 
-    for old, new in plan.items():
-        # Match both href="/blog/dia-N365-old-slug/" and bare references
-        patterns = [
-            (rf'href="/blog/{re.escape(old)}/"', f'href="/blog/{new}/"'),
-            (rf'href="/blog/{re.escape(old)}/index.html"', f'href="/blog/{new}/index.html"'),
-        ]
-        for pat, repl in patterns:
-            new_text, n = re.subn(pat, repl, text)
-            if n > 0:
-                text = new_text
-                changes += n
+    # For each href in the index, check if it matches the canonical for that day.
+    for m in HREF.finditer(text):
+        full_href = m.group(1)
+        day = int(m.group(2))
+        if not (args.from_day <= day <= args.to_day):
+            continue
+        canon = canonical.get(day)
+        if canon is None:
+            continue
+        new_href = f"/blog/{canon}/"
+        if full_href != new_href:
+            new_text = new_text.replace(
+                f'href="{full_href}"', f'href="{new_href}"', 1
+            )
+            changes += 1
+            if len(samples) < 8:
+                # Try to grab the title for context
+                title_match = TITLE.search(text[m.start():m.start() + 1000])
+                title = title_match.group(1)[:60] if title_match else ""
+                samples.append((str(day), full_href, new_href))
 
-    print(f"Index.html: {changes} references updated.")
+    print(f"Index.html: {changes} references updated (range {args.from_day}-{args.to_day}).")
+    for day, old, new in samples:
+        print(f"  Day {day}: {old}  ->  {new}")
+    if changes > len(samples):
+        print(f"  ... and {changes - len(samples)} more.")
     if not changes:
         print("No changes needed.")
         return
 
     if args.dry_run:
-        # Show a few samples
-        for old, new in list(plan.items())[:5]:
-            print(f"  Would rewrite: /blog/{old}/ -> /blog/{new}/")
-        print(f"  ... and {len(plan) - 5} more.")
         print("\nDRY RUN — no changes made. Re-run with --apply to execute.")
         return
 
     if args.apply:
-        INDEX.write_text(text, encoding="utf-8")
+        INDEX.write_text(new_text, encoding="utf-8")
         print(f"Wrote {INDEX}")
 
 
