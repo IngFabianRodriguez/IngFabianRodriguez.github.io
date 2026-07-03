@@ -563,6 +563,23 @@ def update_index_card(day: int, full_title: str, stack: str, date_str: str) -> N
 
     h3_text = strip_day_prefix(full_title).strip()
 
+    # Update the href to the canonical folder for this day.
+    canonical_path = "/blog/" + build_path(day, next(
+        (t for d, t, _, _ in DAYS if d == day), ""
+    )) + "/"
+    href_pattern = re.compile(
+        r'(<a class="article-card" data-day="' + str(day) + r'"\s+)href="[^"]+"',
+        re.DOTALL,
+    )
+    new_text, n = href_pattern.subn(
+        lambda m: m.group(1) + f'href="{escape_html(canonical_path)}"',
+        text, count=1,
+    )
+    if n != 1:
+        raise RuntimeError(
+            f"could not find <a data-day='{day}'> in index.html"
+        )
+
     # Replace the <h3>...</h3> inside the day N card.
     h3_pattern = re.compile(
         r'(<a class="article-card" data-day="' + str(day) + r'"[^>]*>'
@@ -571,7 +588,7 @@ def update_index_card(day: int, full_title: str, stack: str, date_str: str) -> N
     )
     new_text, n = h3_pattern.subn(
         lambda m: m.group(1) + escape_html(h3_text) + m.group(2),
-        text, count=1,
+        new_text, count=1,
     )
     if n != 1:
         raise RuntimeError(
