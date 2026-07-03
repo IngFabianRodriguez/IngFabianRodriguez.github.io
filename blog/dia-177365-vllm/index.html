@@ -3,9 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="Gradient Clipping - Estabilizando El Entrenamiento | #365DaysOfAI por Fabian Rodriguez">
-  <title>Gradient Clipping - Estabilizando El Entrenamiento | #365DaysOfAI</title>
-  
+  <meta name="description" content="Dia 177/365: vLLM — La bodega de paquetes que cuadruplica tu inferencia | #365DaysOfAI por Fabian Rodriguez">
+  <title>Dia 177/365: vLLM — La bodega de paquetes que cuadruplica tu inferencia | #365DaysOfAI</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
@@ -21,7 +20,7 @@
   --shadow: rgba(2,12,27,0.7); --nav-bg: rgba(10,25,47,0.92);
 }
 [data-theme="light"] {
-  --bg: #f0f4fb; --bg-card: #ffffff; --border: #d4dcee;
+  --bg: #f0f4fb; --bg-card: #ffffff; --border: #d4ddee;
   --text-muted: #64748b; --text: #475569; --text-heading: #0f172a;
   --accent: #0d9488; --accent-tint: rgba(13,148,136,0.08);
   --shadow: rgba(15,23,42,0.12); --nav-bg: rgba(240,244,251,0.95);
@@ -81,6 +80,10 @@ nav {
   border-radius: 4px; padding: .15em .4em;
 }
 .article-body pre code { background: none; border: none; padding: 0; font-size: inherit; }
+.article-body table { width: 100%; border-collapse: collapse; margin: 1.5rem 0; font-size: .9rem; }
+.article-body th, .article-body td { border: 1px solid var(--border); padding: .6rem 1rem; text-align: left; }
+.article-body th { background: var(--bg-card); color: var(--text-heading); }
+.article-body .katex-display { overflow-x: auto; padding: .5rem 0; }
 
 .article-nav {
   max-width: 820px; margin: 0 auto; padding: 2rem 1.5rem;
@@ -94,7 +97,8 @@ nav {
   nav { padding: 0 1rem; }
   .article-hero, .article-body { padding-left: 1rem; padding-right: 1rem; }
 }
-</style>
+
+  </style>
 </head>
 <body>
   <nav>
@@ -109,149 +113,746 @@ nav {
   </nav>
 
   <header class="article-hero">
-    <div class="day-badge">Dia 177 / 365 &nbsp;·&nbsp; #365DaysOfAI</div>
-    <h1 class="article-title">Gradient Clipping - Estabilizando El Entrenamiento</h1>
+    <div class="day-badge">Dia 177 / 365 &nbsp;&middot;&nbsp; #365DaysOfAI</div>
+    <h1 class="article-title">Dia 177/365: vLLM — La bodega de paquetes que cuadruplica tu inferencia</h1>
     <div class="article-meta">
       <time class="article-date">26 de junio de 2026</time>
-      <div class="tags"><span class="tag">gradient-clipping</span><span class="tag">exploding-gradients</span><span class="tag">rnn</span><span class="tag">lstm</span></div>
+      <div class="tags"><span class="tag">vllm (Servidor de inferencia)</span></div>
     </div>
   </header>
 
   <article class="article-body">
-<p>Parcero, día 177 y hoy我们来聊聊 Gradient Clipping — la técnica que evita que tus redes exploten durante el entrenamiento. Si alguna vez has visto loss变成NaN o los pesos crecer desproporcionadamente, esta vaina te va a salvar. De una.</p>
-
-<p>Gradient clipping es simple en concepto: cuando los gradientes se vuelven demasiado grandes, los cortamos a un valor máximo. Esto previene que la red se vuelva inestable, especialmente en RNNs y LSTMs donde los gradientes pueden explotar exponencialmente.</p>
-
-<hr>
-<h2>🎯 El Problema: Exploding Gradients</h2>
-
-<p>En redes profundas, especialmente las recurrentes, los gradientes pueden crecer exponencialmente durante backpropagation. Esto pasa porque:</p>
-
+<h2>Introducción: el hueco en tu GPU que te cuesta millones</h2>
+<p>Mira, si alguna vez serviste un LLM con HuggingFace Transformers en producción y sentiste que la GPU "no estaba haciendo nada" mientras el dashboard de Grafana mostraba 80% de utilización, no estás loco: el problema es real, es matemático y se llama <strong>fragmentación del KV cache</strong>.</p>
+<p>El KV cache de un transformer es la memoria que el modelo usa para recordar los tokens anteriores de cada request activo. Sin gestión inteligente, cada slot reserva espacio para la longitud máxima de secuencia desde el primer momento, aunque la request termine generando 50 tokens. Terminas con un parking lot donde cada carro reserva 50 espacios vacíos alrededor por si acaso crece. La utilización efectiva del KV cache en sistemas naive cae a 20-40%, y con ella se cae tu throughput.</p>
+<p>Ahí entra vLLM. Es un motor de inferencia de código abierto de UC Berkeley (Kwon et al., SOSP 2023) que introdujo <strong>PagedAttention</strong>, una idea simple pero devastadoramente efectiva: tratar el KV cache como memoria virtual paginada. En vez de reservar bloques contiguos de longitud máxima, dividís la memoria en páginas de tamaño fijo (16 tokens por bloque) y mantenés una tabla de mapeo lógico-a-físico por secuencia.</p>
+<p>El resultado: throughput 14-24x mayor que HuggingFace Transformers en el mismo hardware, con la misma latencia p50. Eso no es marketing: está medido en el paper original con Llama-7B, OPT y Mixtral-8x7B.</p>
+<h2>1. Qué es vLLM? (Y por qué debería importarte)</h2>
+<h3>1.1 La analogía cotidiana</h3>
+<p>Imaginate una bodega de una empresa de mensajería en el centro de Bogotá. Llegan paquetes todo el día, de todos los tamaños: cajas de audífonos, neveras pequeñas, repuestos industriales. En una bodega naive, cada paquete llega y el operario reserva un estante del tamaño del paquete más grande que la empresa ha visto jamás. Audífonos? Reservamos un estante de 3 metros. Resultado: bodega llena al 30% pero rechazando paquetes nuevos porque "no hay espacio contiguo disponible".</p>
+<p>vLLM rediseña esa bodega. Todos los paquetes se almacenan en casillas de tamaño uniforme (16 tokens por bloque). Cada paquete tiene un número de tracking (block table) que dice "este paquete está en casillas 7, 23, 145, 88". Cuando el cliente pide su paquete, el sistema busca por tracking, no por posición física. Las casillas se reciclan: cuando un paquete se entrega, su casilla queda libre inmediatamente para el siguiente.</p>
+<p>Lo brutal es que esta idea viene directo de los sistemas operativos: virtual memory paging, inventada en los 60, ahora salvando GPUs en 2023. No hay nada nuevo bajo el sol, pero la aplicación es brillante.</p>
+<h3>1.2 La matemática formal con KaTeX</h3>
+<p>Para entender por qué PagedAttention importa, primero cuantifiquemos el problema.</p>
+<p><strong>Memoria del KV cache sin PagedAttention:</strong></p>
+$$M_{naive} = N_{req} \times L_{max} \times 2 \times n_{layers} \times n_{kv\_heads} \times d_{head} \times p_{bytes}$$
+<p>Donde:</p>
 <ul>
-<li><strong>Multiplicación en cadena</strong>: Cada capa multiplica el gradiente por sus pesos. Si los pesos > 1, los gradientes explotan.</li>
-<li><strong>Secuencias largas</strong>: RNNs procesan secuencias paso a paso. El gradiente se multiplica en cada timestep.</li>
-<li><strong>Vanishing vs Exploding</strong>: Gradientes muy pequeños desaparecen (vanishing), muy grandes explotan.</li>
+  <li>$N_{req}$ = número de requests concurrentes</li>
+  <li>$L_{max}$ = longitud máxima de secuencia (prefill + generation)</li>
+  <li>$n_{layers}$ = número de capas del transformer</li>
+  <li>$n_{kv\_heads}$ = número de cabezas para K y V (con GQA puede ser menor que $n_{heads}$)</li>
+  <li>$d_{head}$ = dimensión por cabeza ($d_{model} / n_{heads}$)</li>
+  <li>$p_{bytes}$ = bytes por elemento (2 para FP16, 1 para INT8)</li>
 </ul>
+<p><strong>Para Llama-3-8B con FP16, batch de 32 requests, $L_{max}=2048$:</strong></p>
+$$M_{naive} = 32 \times 2048 \times 2 \times 32 \times 8 \times 128 \times 2 = 68.7 \text{ GB}$$
+<p>Una sola A100 de 80 GB se queda corta para batch=32. Y eso asumiendo que TODAS las requests usen los 2048 tokens, cosa que en la práctica nunca pasa.</p>
+<p><strong>Memoria con PagedAttention:</strong></p>
+$$M_{paged} = \sum_{i=1}^{N_{req}} \left\lceil \frac{L_i}{B} \right\rceil \times B \times 2 \times n_{layers} \times n_{kv\_heads} \times d_{head} \times p_{bytes}$$
+<p>Donde $B$ es el tamaño de bloque (típicamente 16) y $L_i$ la longitud real de la request $i$. El término dentro del sumatorio es el siguiente múltiplo de $B$ mayor o igual a $L_i$.</p>
+<p>En el caso optimista donde la longitud promedio real es $L_{avg} = 512$ en vez de 2048, y $B=16$:</p>
+$$M_{paged} \approx 32 \times 512 \times 2 \times 32 \times 8 \times 128 \times 2 = 17.2 \text{ GB}$$
+<p>4x menos memoria. Y el desperdicio por bloque no asignado es a lo sumo $B - 1 = 15$ tokens por secuencia, ~3% de overhead.</p>
+<p><strong>Función de atención estándar:</strong></p>
+$$\text{Attention}(Q, K, V) = \text{softmax}\left(\frac{QK^T}{\sqrt{d_k}}\right) V$$
+<p>PagedAttention no cambia esta fórmula. Lo que cambia es cómo $K$ y $V$ se almacenan y recuperan: en bloques de páginas indexados por una block table por secuencia. La operación de atención hace gather de los bloques relevantes justo antes de calcular $QK^T$.</p>
+<p><strong>Throughput teórico:</strong></p>
+$$T = \frac{N_{tokens\_procesados}}{t_{total}}$$
+<p>Con continuous batching, en cada paso de decodificación se procesan las requests que aún no terminaron, sin esperar a que la más lenta termine. Eso convierte el throughput de:</p>
+$$T_{static} = \frac{N_{batch} \times L_{avg}}{L_{max} \times t_{step}}$$
+$$T_{continuous} = \frac{N_{batch} \times L_{avg}}{L_{avg} \times t_{step}} = \frac{N_{batch}}{t_{step}}$$
+<p>En la práctica, en workloads reales con longitudes heterogéneas, el speedup de continuous batching sobre static batching es 2-3x sin contar PagedAttention.</p>
+<h2>2. Cómo vLLM resuelve esto por vos</h2>
+<p>PagedAttention es el corazón, pero el sistema completo tiene varias piezas que interactúan:</p>
+<p><strong>Diagrama lógico de componentes:</strong></p>
+<pre><code class="language-text">┌─────────────────────────────────────────────┐
+│            vLLM Engine                      │
+│  ┌─────────────┐    ┌──────────────────┐    │
+│  │  Scheduler  │───&gt;│ Continuous Batch │    │
+│  │  (FCFS/Pri) │    │   Manager        │    │
+│  └─────────────┘    └──────────────────┘    │
+│         │                     │             │
+│         v                     v             │
+│  ┌─────────────┐    ┌──────────────────┐    │
+│  │ Block Mgr   │    │ PagedAttention   │    │
+│  │ (Pool/Hash) │&lt;──&gt;│ CUDA Kernels     │    │
+│  └─────────────┘    └──────────────────┘    │
+│         │                     │             │
+│         v                     v             │
+│  ┌─────────────────────────────────────┐    │
+│  │   GPU KV Cache Pool (paged blocks)  │    │
+│  └─────────────────────────────────────┘    │
+└─────────────────────────────────────────────┘</code></pre>
+<p><strong>Componentes clave:</strong></p>
+<ol>
+  <li><strong>Block Manager</strong>: asigna y recicla bloques físicos. Mantiene una block table por secuencia: <code>{seq_id: [block_id_1, block_id_2, ...]}</code>. Cuando una secuencia crece, pide un nuevo bloque. Cuando termina, libera todos los suyos. Usa una doubly-linked list para la free queue, así la operación de mover bloques es $O(1)$.</li>
+</ol>
+<ol>
+  <li><strong>Scheduler</strong>: decide qué requests ejecutar en cada paso. Soporta políticas FCFS con prioridad y desde v0.4+ "chunked prefill" para mezclar prefills con decodes en el mismo paso. Esto es crítico: sin chunked prefill, una request larga de prefill bloquea todas las decodificaciones activas.</li>
+</ol>
+<ol>
+  <li><strong>PagedAttention CUDA kernels</strong>: implementaciones optimizadas de atención que hacen gather de bloques dispersos antes del softmax. Soporta FlashAttention, FP8 (en H100), y quantization kernels.</li>
+</ol>
+<ol>
+  <li><strong>Prefix Cache</strong>: si dos requests comparten un system prompt idéntico, los bloques de KV cache de ese prefix se reutilizan. Esto se activa con <code>enable_prefix_caching=True</code> y puede ahorrarte 50-90% del prefill en escenarios RAG.</li>
+</ol>
+<h2>3. vLLM: Uso Directo y Casos de Control Fino</h2>
+<p>Tres formas de usar vLLM según el caso:</p>
+<p><strong>A) Servidor OpenAI-compatible (lo más común en producción):</strong></p>
+<pre><code class="language-bash">vllm serve meta-llama/Meta-Llama-3-8B-Instruct \
+    --port 8000 \
+    --tensor-parallel-size 1 \
+    --gpu-memory-utilization 0.92 \
+    --max-model-len 8192 \
+    --enable-prefix-caching \
+    --quantization awq</code></pre>
+<p>Esto levanta un servidor compatible con la API de OpenAI en <code>/v1/chat/completions</code>. Tu código cliente no cambia, solo apuntás <code>OPENAI_API_BASE</code> a tu servidor.</p>
+<p><strong>B) Python API para batch offline (eval, generación masiva, RAG indexing):</strong></p>
+<pre><code class="language-python">from vllm import LLM, SamplingParams
 
-<p>Los síntomas son claros:</p>
+llm = LLM(
+    model="meta-llama/Meta-Llama-3-8B-Instruct",
+    tensor_parallel_size=1,
+    gpu_memory_utilization=0.92,
+    max_model_len=8192,
+    enable_prefix_caching=True,
+    dtype="float16",
+)
 
+prompts = [
+    "Explica PagedAttention en una frase:",
+    "Cuál es la capital de Colombia?",
+    "Escribe un haiku sobre Kubernetes:",
+]
+
+sampling_params = SamplingParams(
+    temperature=0.7,
+    top_p=0.9,
+    max_tokens=256,
+    stop=["\n\n"],
+)
+
+outputs = llm.generate(prompts, sampling_params)
+
+for output in outputs:
+    print(f"Prompt: {output.prompt!r}")
+    print(f"Generated: {output.outputs[0].text!r}")
+    print(f"Tokens generated: {len(output.outputs[0].token_ids)}")
+    print(f"Finish reason: {output.outputs[0].finish_reason}")
+    print("---")</code></pre>
+<p><strong>C) Integración con frameworks (LangChain, LlamaIndex):</strong></p>
+<pre><code class="language-python">from langchain_community.llms import VLLM
+
+llm = VLLM(
+    model="meta-llama/Meta-Llama-3-8B-Instruct",
+    trust_remote_code=True,
+    max_new_tokens=256,
+    top_k=10,
+    top_p=0.95,
+    temperature=0.7,
+)
+
+print(llm.invoke("Qué es PagedAttention?"))</code></pre>
+<p><strong>Control fino con sampling params:</strong></p>
+<pre><code class="language-python">from vllm import SamplingParams
+
+# Beam search determinista
+beam_params = SamplingParams(
+    n=4,
+    best_of=4,
+    use_beam_search=True,
+    temperature=0.0,
+    max_tokens=512,
+)
+
+# Logprobs para análisis de confianza por token
+logprob_params = SamplingParams(
+    temperature=0.0,
+    max_tokens=1,
+    logprobs=5,
+)
+
+# Penalización por repetición
+anti_repeat = SamplingParams(
+    temperature=0.8,
+    max_tokens=1024,
+    repetition_penalty=1.15,
+    frequency_penalty=0.5,
+    presence_penalty=0.3,
+)</code></pre>
+<h2>4. Implementación Production-Ready: Sistema de Inferencia Multi-Modelo</h2>
+<p>Te voy a mostrar un sistema completo con FastAPI, vLLM, métricas Prometheus y manejo de errores. Esto es lo que correrías detrás de un load balancer en producción real.</p>
+<h3>4.1 Tipos y protocolos</h3>
+<pre><code class="language-python"># api/schemas.py
+from __future__ import annotations
+
+from typing import Literal
+
+from pydantic import BaseModel, Field, field_validator
+
+
+class ChatMessage(BaseModel):
+    role: Literal["system", "user", "assistant"]
+    content: str = Field(..., min_length=1, max_length=32_000)
+
+
+class ChatCompletionRequest(BaseModel):
+    model: str
+    messages: list[ChatMessage] = Field(..., min_length=1)
+    temperature: float = Field(0.7, ge=0.0, le=2.0)
+    top_p: float = Field(0.9, ge=0.0, le=1.0)
+    max_tokens: int = Field(512, ge=1, le=4096)
+    stream: bool = False
+    stop: list[str] | None = None
+
+    @field_validator("messages")
+    @classmethod
+    def validate_message_sequence(cls, v: list[ChatMessage]) -&gt; list[ChatMessage]:
+        if v[0].role not in {"system", "user"}:
+            raise ValueError("First message must be system or user")
+        return v
+
+
+class TokenUsage(BaseModel):
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+
+
+class ChatCompletionChoice(BaseModel):
+    index: int
+    message: ChatMessage
+    finish_reason: Literal["stop", "length", "error"]
+
+
+class ChatCompletionResponse(BaseModel):
+    id: str
+    model: str
+    usage: TokenUsage
+    choices: list[ChatCompletionChoice]</code></pre>
+<h3>4.2 El motor principal</h3>
+<pre><code class="language-python"># api/server.py
+from __future__ import annotations
+
+import asyncio
+import time
+import uuid
+from contextlib import asynccontextmanager
+from typing import AsyncIterator
+
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse, StreamingResponse
+from prometheus_client import Counter, Histogram, generate_latest
+from vllm import AsyncLLMEngine, AsyncEngineArgs, SamplingParams
+
+from api.schemas import (
+    ChatCompletionChoice,
+    ChatCompletionRequest,
+    ChatCompletionResponse,
+    ChatMessage,
+    TokenUsage,
+)
+
+
+REQUESTS_TOTAL = Counter(
+    "vllm_requests_total",
+    "Total chat completion requests",
+    ["model", "status"],
+)
+REQUEST_LATENCY = Histogram(
+    "vllm_request_latency_seconds",
+    "End-to-end request latency",
+    ["model"],
+    buckets=(0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0),
+)
+TOKENS_GENERATED = Counter(
+    "vllm_tokens_generated_total",
+    "Total tokens generated",
+    ["model"],
+)
+
+
+class VLLMService:
+    def __init__(self, model_name: str, **engine_kwargs: object) -&gt; None:
+        self.model_name = model_name
+        self.engine: AsyncLLMEngine | None = None
+        self.engine_kwargs = engine_kwargs
+
+    async def start(self) -&gt; None:
+        args = AsyncEngineArgs(
+            model=self.model_name,
+            enable_prefix_caching=True,
+            gpu_memory_utilization=0.92,
+            **self.engine_kwargs,
+        )
+        self.engine = AsyncLLMEngine.from_engine_args(args)
+
+    async def stop(self) -&gt; None:
+        if self.engine is not None:
+            self.engine.shutdown()
+
+    async def generate(
+        self,
+        request_id: str,
+        prompt: str,
+        sampling_params: SamplingParams,
+    ) -&gt; AsyncIterator[object]:
+        assert self.engine is not None, "Engine not started"
+        async for output in self.engine.generate(prompt, sampling_params, request_id):
+            yield output
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    service = VLLMService(
+        model_name="meta-llama/Meta-Llama-3-8B-Instruct",
+        max_model_len=8192,
+        dtype="float16",
+    )
+    await service.start()
+    app.state.vllm = service
+    try:
+        yield
+    finally:
+        await service.stop()
+
+
+app = FastAPI(title="vLLM Inference API", lifespan=lifespan)
+
+
+def build_prompt(messages: list[ChatMessage]) -&gt; str:
+    """Llama-3 chat template inline."""
+    parts: list[str] = []
+    for msg in messages:
+        header = f"&lt;|start_header_id|&gt;{msg.role}&lt;|end_header_id|&gt;\n\n{msg.content}&lt;|eot_id|&gt;"
+        parts.append(header)
+    parts.append("&lt;|start_header_id|&gt;assistant&lt;|end_header_id|&gt;\n\n")
+    return "".join(parts)
+
+
+@app.post("/v1/chat/completions")
+async def chat_completions(
+    req: ChatCompletionRequest, request: Request
+) -&gt; JSONResponse | StreamingResponse:
+    service: VLLMService = request.app.state.vllm
+    request_id = f"chatcmpl-{uuid.uuid4().hex}"
+    start_time = time.perf_counter()
+
+    try:
+        prompt = build_prompt(req.messages)
+        sampling_params = SamplingParams(
+            temperature=req.temperature,
+            top_p=req.top_p,
+            max_tokens=req.max_tokens,
+            stop=req.stop or ["&lt;|eot_id|&gt;"],
+        )
+
+        if not req.stream:
+            final_output: object | None = None
+            async for output in service.generate(request_id, prompt, sampling_params):
+                final_output = output
+
+            assert final_output is not None
+            text = final_output.outputs[0].text
+            usage = TokenUsage(
+                prompt_tokens=len(final_output.prompt_token_ids),
+                completion_tokens=len(final_output.outputs[0].token_ids),
+                total_tokens=len(final_output.prompt_token_ids)
+                + len(final_output.outputs[0].token_ids),
+            )
+            response = ChatCompletionResponse(
+                id=request_id,
+                model=req.model,
+                usage=usage,
+                choices=[
+                    ChatCompletionChoice(
+                        index=0,
+                        message=ChatMessage(role="assistant", content=text),
+                        finish_reason=final_output.outputs[0].finish_reason,
+                    )
+                ],
+            )
+            REQUEST_LATENCY.labels(model=req.model).observe(time.perf_counter() - start_time)
+            TOKENS_GENERATED.labels(model=req.model).inc(usage.completion_tokens)
+            REQUESTS_TOTAL.labels(model=req.model, status="success").inc()
+            return JSONResponse(content=response.model_dump())
+
+        async def event_stream() -&gt; AsyncIterator[bytes]:
+            async for output in service.generate(request_id, prompt, sampling_params):
+                chunk = output.outputs[0].text
+                yield f"data: {chunk}\n\n".encode()
+            yield b"data: [DONE]\n\n"
+
+        return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+    except asyncio.TimeoutError:
+        REQUESTS_TOTAL.labels(model=req.model, status="timeout").inc()
+        raise HTTPException(status_code=504, detail="Inference timeout")
+    except Exception as exc:
+        REQUESTS_TOTAL.labels(model=req.model, status="error").inc()
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/metrics")
+async def metrics() -&gt; bytes:
+    return generate_latest()</code></pre>
+<h3>4.3 Utilidades de análisis y verificación</h3>
+<pre><code class="language-python"># tools/benchmark.py
+"""Benchmark throughput real para validar deployments."""
+from __future__ import annotations
+
+import json
+import time
+from statistics import mean, median, pstdev
+
+from vllm import LLM, SamplingParams
+
+
+def run_benchmark(
+    model: str,
+    n_prompts: int = 256,
+    input_tokens: int = 512,
+    output_tokens: int = 256,
+) -&gt; dict:
+    """Mide tokens/sec y latencia bajo carga."""
+    llm = LLM(
+        model=model,
+        enable_prefix_caching=True,
+        max_model_len=input_tokens + output_tokens + 16,
+    )
+
+    base_prompt = "Explica en detalle el concepto de " * (input_tokens // 8)
+    prompts = [f"{base_prompt} tema {i}: " for i in range(n_prompts)]
+
+    sampling_params = SamplingParams(temperature=0.0, max_tokens=output_tokens)
+
+    start = time.perf_counter()
+    outputs = llm.generate(prompts, sampling_params)
+    elapsed = time.perf_counter() - start
+
+    total_output_tokens = sum(len(o.outputs[0].token_ids) for o in outputs)
+
+    return {
+        "total_time_s": elapsed,
+        "throughput_tokens_per_s": total_output_tokens / elapsed,
+        "throughput_requests_per_s": n_prompts / elapsed,
+        "avg_output_tokens_per_request": total_output_tokens / n_prompts,
+        "total_output_tokens": total_output_tokens,
+    }
+
+
+if __name__ == "__main__":
+    result = run_benchmark("meta-llama/Meta-Llama-3-8B-Instruct")
+    print(json.dumps(result, indent=2))</code></pre>
+<h2>5. Ejemplos de Uso en Casos Reales</h2>
+<p><strong>Caso 1: Streaming para UI conversacional.</strong></p>
+<pre><code class="language-python">import asyncio
+from vllm import AsyncLLMEngine, AsyncEngineArgs, SamplingParams
+
+
+async def stream_chat() -&gt; None:
+    engine = AsyncLLMEngine.from_engine_args(
+        AsyncEngineArgs(
+            model="meta-llama/Meta-Llama-3-8B-Instruct",
+            enable_prefix_caching=True,
+        )
+    )
+
+    prompt = (
+        "&lt;|start_header_id|&gt;system&lt;|end_header_id|&gt;\n\n"
+        "Eres un asistente técnico colombiano.&lt;|eot_id|&gt;"
+        "&lt;|start_header_id|&gt;user&lt;|end_header_id|&gt;\n\n"
+        "Explica PagedAttention en 3 frases técnicas.&lt;|eot_id|&gt;"
+        "&lt;|start_header_id|&gt;assistant&lt;|end_header_id|&gt;\n\n"
+    )
+
+    sampling_params = SamplingParams(
+        temperature=0.7, top_p=0.9, max_tokens=256
+    )
+    request_id = "stream-1"
+
+    print("Streaming tokens:")
+    final = None
+    async for output in engine.generate(prompt, sampling_params, request_id):
+        delta = output.outputs[0].text
+        print(delta, end="", flush=True)
+        final = output
+
+    print("\n---")
+    print(f"Total tokens: {len(final.outputs[0].token_ids)}")
+    print(f"Finish reason: {final.outputs[0].finish_reason}")
+    engine.shutdown()
+
+
+asyncio.run(stream_chat())</code></pre>
+<p>Verificación numérica esperada: para Llama-3-8B en A100, deberías ver throughput de ~3000-4000 tokens/s en modo batch, ~150-250 tokens/s por stream individual.</p>
+<p><strong>Caso 2: Embeddings para retrieval (RAG pipeline).</strong></p>
+<pre><code class="language-python">from vllm import LLM
+
+llm = LLM(model="BAAI/bge-large-en-v1.5", task="embed")
+
+texts = [
+    "PagedAttention gestiona KV cache con paginación tipo OS.",
+    "vLLM usa continuous batching para maximizar throughput.",
+    "FAISS es una librería de similarity search.",
+]
+
+outputs = llm.encode(texts)
+for text, output in zip(texts, outputs):
+    embedding = output.outputs.embedding
+    norm = sum(x * x for x in embedding) ** 0.5
+    print(f"Text: {text[:50]}...")
+    print(f"Dim: {len(embedding)}, L2 norm: {norm:.4f}")
+    # Verificación: embeddings L2-normalized deben tener norma ≈ 1.0</code></pre>
+<p><strong>Caso 3: Generación masiva offline para evaluación.</strong></p>
+<pre><code class="language-python">from vllm import LLM, SamplingParams
+
+llm = LLM(model="meta-llama/Meta-Llama-3-8B-Instruct", tensor_parallel_size=2)
+
+questions = [f"Pregunta {i}: Cuál es {i}^2?" for i in range(1000)]
+sampling_params = SamplingParams(temperature=0.0, max_tokens=50, stop=["\n"])
+
+outputs = llm.generate(questions, sampling_params)
+
+correct_stops = sum(1 for o in outputs if o.outputs[0].finish_reason == "stop")
+print(
+    f"Stopped naturally: {correct_stops}/{len(outputs)} "
+    f"= {correct_stops / len(outputs) * 100:.1f}%"
+)</code></pre>
+<h2>6. Debugging: Cuando Todo se Va a la Mierda</h2>
+<p><strong>Problema 1: OOM al cargar el modelo.</strong></p>
+<p>Síntoma: <code>torch.cuda.OutOfMemoryError: CUDA out of memory. Tried to allocate 2.50 GiB.</code></p>
+<p>Detección numérica: revisá <code>nvidia-smi</code> antes de levantar vLLM, y compará con lo que vLLM reporta en logs al inicio.</p>
+<pre><code class="language-python"># tools/diagnose_memory.py
+"""Diagnostica uso de memoria antes y después de cargar vLLM."""
+from __future__ import annotations
+
+import torch
+from vllm import LLM, SamplingParams
+
+
+def get_gpu_memory() -&gt; dict:
+    free, total = torch.cuda.mem_get_info()
+    return {
+        "free_gb": free / 1e9,
+        "total_gb": total / 1e9,
+        "used_gb": (total - free) / 1e9,
+    }
+
+
+print("Antes de cargar modelo:", get_gpu_memory())
+
+try:
+    llm = LLM(
+        model="meta-llama/Meta-Llama-3-8B-Instruct",
+        gpu_memory_utilization=0.92,
+        max_model_len=8192,
+    )
+    print("Después de cargar:", get_gpu_memory())
+
+    sampling_params = SamplingParams(max_tokens=1)
+    llm.generate(["Test prompt"], sampling_params)
+    print("Después de 1 request:", get_gpu_memory())
+
+except torch.cuda.OutOfMemoryError as exc:
+    print(f"OOM detectado: {exc}")
+    print("Soluciones:")
+    print("1. Bajá gpu_memory_utilization a 0.85")
+    print("2. Reducí max_model_len")
+    print("3. Aplicá cuantización (--quantization awq)")
+    print("4. Usá tensor-parallel-size mayor")</code></pre>
+<p>Soluciones reales:</p>
+<ol>
+  <li>Bajá <code>gpu_memory_utilization</code> de 0.92 a 0.85 (deja 15% libre para fragmented allocations del runtime CUDA).</li>
+  <li>Usá cuantización AWQ o GPTQ: reduce 4x la memoria del modelo a cambio de <1% de calidad.</li>
+  <li>Reducí <code>max_model_len</code> si tu workload real no necesita contextos largos.</li>
+  <li>Tensor parallelism: con 2 GPUs, cada una tiene la mitad del modelo y la mitad del KV cache.</li>
+</ol>
+<p><strong>Problema 2: Prefix cache no funciona como esperás.</strong></p>
+<p>Síntoma: dos requests con system prompt idéntico muestran el mismo tiempo de prefill.</p>
+<pre><code class="language-python"># tools/verify_prefix_cache.py
+"""Verifica que prefix caching está funcionando."""
+from __future__ import annotations
+
+import time
+
+from vllm import LLM, SamplingParams
+
+llm = LLM(
+    model="meta-llama/Meta-Llama-3-8B-Instruct",
+    enable_prefix_caching=True,
+    gpu_memory_utilization=0.9,
+)
+
+system = "Eres un experto en física cuántica con 30 años de experiencia."
+prefix = (
+    f"&lt;|start_header_id|&gt;system&lt;|end_header_id|&gt;\n\n{system}&lt;|eot_id|&gt;"
+    f"&lt;|start_header_id|&gt;user&lt;|end_header_id|&gt;\n\n"
+)
+
+prompts = [f"{prefix}Qué es el entrelazamiento?&lt;|eot_id|&gt;&lt;|start_header_id|&gt;assistant&lt;|end_header_id|&gt;\n\n"]
+sampling = SamplingParams(temperature=0.0, max_tokens=100)
+
+t0 = time.perf_counter()
+out1 = llm.generate(prompts, sampling)
+cold_time = time.perf_counter() - t0
+
+prompts2 = [f"{prefix}Explica la decoherencia.&lt;|eot_id|&gt;&lt;|start_header_id|&gt;assistant&lt;|end_header_id|&gt;\n\n"]
+t0 = time.perf_counter()
+out2 = llm.generate(prompts2, sampling)
+warm_time = time.perf_counter() - t0
+
+print(f"Cold prefix time: {cold_time:.3f}s")
+print(f"Warm prefix time: {warm_time:.3f}s")
+print(f"Speedup: {cold_time / warm_time:.2f}x")
+# Esperado: warm debe ser ~1.3-2x más rápido</code></pre>
+<p>Soluciones:</p>
+<ol>
+  <li>Verificá que <code>enable_prefix_caching=True</code> esté activo.</li>
+  <li>Asegurate de que el prompt textual sea IDÉNTICO byte-a-byte (espacios, saltos de línea, todo).</li>
+  <li>Si usás chat templates custom, el hashing puede fallar silenciosamente.</li>
+</ol>
+<p><strong>Problema 3: Throughput degrada con el tiempo.</strong></p>
+<p>Síntoma: en benchmarks largos, los tokens/s caen de 3000 a 800 después de 30 minutos.</p>
+<pre><code class="language-python"># tools/throughput_monitor.py
+"""Monitorea throughput en ventanas deslizantes."""
+from __future__ import annotations
+
+import time
+
+from vllm import LLM, SamplingParams
+
+
+def monitor(llm: LLM, duration_s: int = 1800, window_s: int = 60) -&gt; None:
+    prompts = ["Test prompt " * 50] * 32
+    sampling = SamplingParams(max_tokens=128, temperature=0.0)
+    start = time.perf_counter()
+    window_start = start
+    window_tokens = 0
+
+    while time.perf_counter() - start &lt; duration_s:
+        outputs = llm.generate(prompts, sampling)
+        tokens = sum(len(o.outputs[0].token_ids) for o in outputs)
+        window_tokens += tokens
+
+        elapsed_window = time.perf_counter() - window_start
+        if elapsed_window &gt;= window_s:
+            tps = window_tokens / elapsed_window
+            elapsed = int(time.perf_counter() - start)
+            print(f"[{elapsed}s] Throughput: {tps:.0f} tokens/s")
+            window_start = time.perf_counter()
+            window_tokens = 0
+
+
+if __name__ == "__main__":
+    llm = LLM(model="meta-llama/Meta-Llama-3-8B-Instruct")
+    monitor(llm, duration_s=1800, window_s=60)</code></pre>
+<p>Soluciones:</p>
+<ol>
+  <li>Thermal throttling: revisá <code>nvidia-smi -q -d TEMPERATURE</code>. Idealmente <85°C. Si está throttleando, mejorá airflow del rack.</li>
+  <li>Memory fragmentation: reiniciá el engine cada N horas con health check.</li>
+  <li>CUDA graphs: activá <code>enforce_eager=False</code> (default) para que use CUDA graphs y reduzca overhead de lanzamiento de kernels.</li>
+</ol>
+<h2>7. Optimizaciones de Producción</h2>
+<p><strong>Optimización 1: Speculative decoding (2-3x speedup en generación).</strong></p>
+<p>La idea: usás un modelo chico barato (draft model) que propone 5-8 tokens rápido, y el modelo grande los verifica en paralelo. Si el modelo grande acepta K de los 5, ganaste K-1 tokens de tiempo.</p>
+<pre><code class="language-python"># Configuración speculative via código
+from vllm import LLM, SamplingParams
+
+llm = LLM(
+    model="meta-llama/Meta-Llama-3-8B-Instruct",
+    speculative_model="meta-llama/Llama-3.2-1B-Instruct",
+    num_speculative_tokens=5,
+)
+
+prompts = ["Explica PagedAttention en detalle:"]
+sampling = SamplingParams(temperature=0.7, max_tokens=512)
+
+outputs = llm.generate(prompts, sampling)
+print(outputs[0].outputs[0].text)</code></pre>
+<p>Trade-off real: ~30-50% speedup en workloads interactivos cortos (<200 tokens generados), pero overhead alto en generación larga. Además necesitás cargar dos modelos en GPU. El draft model debe estar en el mismo dispositivo para evitar transferencias PCIe.</p>
+<p><strong>Optimización 2: Quantization (AWQ vs GPTQ vs bitsandbytes).</strong></p>
+<table>
+<thead>
+<tr>
+  <th>Método</th>
+  <th>Bits</th>
+  <th>Memoria modelo</th>
+  <th>Quality loss</th>
+  <th>Throughput gain</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td>FP16</td>
+  <td>16</td>
+  <td>16 GB (8B)</td>
+  <td>0%</td>
+  <td>baseline</td>
+</tr>
+<tr>
+  <td>AWQ</td>
+  <td>4</td>
+  <td>4 GB (8B)</td>
+  <td><1%</td>
+  <td>1.5-2x</td>
+</tr>
+<tr>
+  <td>GPTQ</td>
+  <td>4</td>
+  <td>4 GB (8B)</td>
+  <td>1-2%</td>
+  <td>1.5-2x</td>
+</tr>
+<tr>
+  <td>bnb</td>
+  <td>4</td>
+  <td>4 GB (8B)</td>
+  <td>2-3%</td>
+  <td>1.3-1.7x</td>
+</tr>
+</tbody>
+</table>
+<p>AWQ es mi recomendación default: Activation-aware Weight Quantization preserva los pesos más importantes según las activaciones observadas en calibración. En benchmarks MMLU, AWQ-int4 pierde ~0.5 puntos vs FP16, GPTQ pierde ~1.0, bitsandbytes pierde ~2.0.</p>
+<p>Para levantar AWQ:</p>
+<pre><code class="language-bash">vllm serve Modelo-AWQ \
+    --quantization awq \
+    --dtype float16 \
+    --max-model-len 8192</code></pre>
+<h2>8. Conclusión: Por Qué Esto te Salva el Pellejo en Producción</h2>
 <ul>
-<li>Loss se vuelve NaN o Infinity</li>
-<li>Pesos se vuelven números enormes (10^9, 10^15)</li>
-<li>Training diverge completamente</li>
+  <li><strong>PagedAttention te da 4x más memoria efectiva</strong> en el KV cache, lo que se traduce directamente en 4x más requests concurrentes por GPU. Esa es la diferencia entre pagar 8 GPUs vs 32 GPUs en producción.</li>
+  <li><strong>Continuous batching te quita el tax de las requests lentas</strong>: ya no esperás a que la request más larga termine para liberar el slot. Cada slot se reutiliza apenas la request termina.</li>
+  <li><strong>Prefix caching te ahorra el prefill repetido</strong>: en RAG con system prompt fijo, podés estar pagando el prefill una sola vez por hora en vez de una vez por request. Con <code>enable_prefix_caching=True</code> es prácticamente gratis.</li>
+  <li><strong>OpenAI-compatible API</strong>: migrar de OpenAI a vLLM self-hosted es cambiar la variable <code>OPENAI_API_BASE</code>. Cero código del lado del cliente.</li>
 </ul>
-
-<hr>
-<h2>📐 Cómo Funciona Gradient Clipping</h2>
-
-<p>La formula es simple:</p>
-
-<p>$$g_{clipped} = g \cdot \frac{clip\_norm}{||g||} \quad \text{si } ||g|| > clip\_norm$$</p>
-
-<p>O en palabras: si la norma del gradiente excede un threshold, dividimos todos los elementos del gradiente por la norma y multiplicamos por el threshold.</p>
-
-<p>En código:</p>
-
-<pre><code class="language-python">def clip_gradients_(parameters, max_norm, eps=1e-8):
-    """
-    Gradient clipping by norm.
-    
-    Args:
-        parameters: Model parameters
-        max_norm: Maximum norm value
-        eps: Small epsilon to avoid division by zero
-        
-    Returns:
-        Total norm before clipping (for logging)
-    """
-    parameters = list(parameters)
-    total_norm = 0.0
-    
-    # Calculate total norm across all parameters
-    for p in parameters:
-        if p.grad is None:
-            continue
-        param_norm = p.grad.data.norm(2)
-        total_norm += param_norm.item() ** 2
-    total_norm = total_norm ** 0.5
-    
-    # Compute clipping factor
-    clip_coef = max_norm / (total_norm + eps)
-    if clip_coef < 1:
-        for p in parameters:
-            if p.grad is None:
-                continue
-            p.grad.data.mul_(clip_coef)
-    
-    return total_norm</code></pre>
-
-<hr>
-<h2>💻 PyTorch Native Gradient Clipping</h2>
-
-<p>PyTorch tiene gradient clipping built-in:</p>
-
-<pre><code class="language-python">import torch.optim as optim
-from torch.nn.utils import clip_grad_norm_
-
-# Durante el training loop
-for epoch in range(num_epochs):
-    for batch in dataloader:
-        optimizer.zero_grad()
-        
-        outputs = model(batch)
-        loss = criterion(outputs, targets)
-        loss.backward()
-        
-        # Clip gradientes antes de optimizer.step()
-        # clip_grad_norm_(parameters, max_norm)
-        total_norm = clip_grad_norm_(model.parameters(), max_norm=1.0)
-        
-        optimizer.step()
-        
-        # Log total_norm para monitorear
-        writer.add_scalar('grad_norm', total_norm, global_step)</code></pre>
-
-<hr>
-<h2>⚠️ Errores Comunes con Gradient Clipping</h2>
-
-<h3>Error 1: Clippear después de optimizer.step()</h3>
-<p><strong>El problema</strong>: Si clippeas después de actualizar los pesos, no tiene efecto. Los gradientes ya fueron aplicados a los pesos. Es como cerrar la puerta después de que el caballo escapó.</p>
-<p><strong>Fix:</strong>: SIEMPRE clippear entre loss.backward() y optimizer.step(). El orden correcto es: zero_grad → forward → loss → backward → clip_gradients → step.</p>
-
-<h3>Error 2: Max norm muy alto o muy bajo</h3>
-<p><strong>El problema</strong>: Un max_norm de 100.0 para una red pequeña puede ser inútil. Un max_norm de 0.1 para una red profunda puede matar el aprendizaje. El 70% de developers usan valores por defecto sin entenderlos.</p>
-<p><strong>Fix:</strong>: Empieza con max_norm=1.0 y ajusta basado en la grad_norm que monitoreas. Si grad_norm está siempre cerca del max_norm, auméntalo. Si está muy por debajo, puedes bajar el threshold.</p>
-
-<hr>
-<h2>✅ Resumen y Cierre</h2>
-
+<p><strong>Mini-checklist de deployment:</strong></p>
 <ul>
-<li><strong>Gradient clipping</strong> previene gradientes explosivos que causan divergencia.</li>
-<li><strong>Usa clip_grad_norm_</strong> de PyTorch — es simple y efectivo.</li>
-<li><strong>El orden importa</strong>: backward() → clip() → step().</li>
-<li><strong>Monitorea total_norm</strong> para ajustar max_norm dinámicamente.</li>
-<li><strong>No es magia</strong>: si tus gradientes explotan, puede haber un problema más profundo (learning rate muy alto, mala inicialización).</li>
+  <li>[ ] Model quantization (AWQ o GPTQ) si la latencia importa más que la calidad perfecta</li>
+  <li>[ ] <code>enable_prefix_caching=True</code> siempre que tengas prompts repetitivos (RAG, agentes, system prompts largos)</li>
+  <li>[ ] <code>gpu_memory_utilization=0.85</code> en vez de 0.92 (deja margen para fragmented allocations)</li>
+  <li>[ ] Métricas Prometheus expuestas en <code>/metrics</code> con histogramas de latencia</li>
+  <li>[ ] Health check endpoint y graceful shutdown para k8s rolling updates</li>
+  <li>[ ] Benchmark baseline con tu workload real ANTES de poner en producción</li>
+  <li>[ ] Monitor térmico las primeras 72 horas para descartar throttling</li>
 </ul>
-
-<p>Hágale que gradient clipping es una de esas técnicas que parece simple pero salva modelos de la divergencia. En RNNs y LSTMs es esencial. En transformers modernos también ayuda cuando usas learning rates altos. téngalo en su toolkit, parcero.</p>
-
-<p><em>Eso es todo. Día 178 viene con más.</em></p>
+<p>Si llegaste hasta acá, ya sabés más sobre inferencia de LLMs que el 80% de la gente que mete modelos en producción. Hagale pues, montá tu servidor vLLM, corré el benchmark y dejá de quemar dinero en GPUs subutilizadas.</p>
+<p>🔥</p>
   </article>
+  <nav class="article-nav" aria-label="Navegacion entre articulos">
+    <a class="nav-prev" href="/blog/dia-176365-gguf/">Anterior</a>
+    <a href="/blog/">Todos los articulos</a>
+    <a class="nav-next" href="/blog/dia-178365-eval-llms/" data-date="2026-06-27">Siguiente</a>
+  </nav>
 
-  <script>
-    document.getElementById('themeToggle').addEventListener('click', function() {
-      const html = document.documentElement;
-      const isDark = html.getAttribute('data-theme') === 'dark';
-      html.setAttribute('data-theme', isDark ? 'light' : 'dark');
-      document.getElementById('themeIcon').className = isDark ? 'fas fa-moon' : 'fas fa-sun';
-    });
-  </script>
+
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
   <script>
     hljs.highlightAll();
-    document.addEventListener('DOMContentLoaded', () => {
+    document.addEventListener('DOMContentLoaded', function() {
       renderMathInElement(document.body, {
         delimiters: [
           { left: '$$', right: '$$', display: true },
@@ -262,21 +863,20 @@ for epoch in range(num_epochs):
         throwOnError: false,
       });
     });
-    
-  const _html = document.documentElement;
-  const _btn  = document.getElementById('themeToggle');
-  const _icon = document.getElementById('themeIcon');
-  function _setIcon(t) { _icon.className = t === 'dark' ? 'fas fa-sun' : 'fas fa-moon'; }
-  const _saved = localStorage.getItem('theme') || 'dark';
-  _html.setAttribute('data-theme', _saved);
-  _setIcon(_saved);
-  _btn.addEventListener('click', () => {
-    const next = _html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
-    _html.setAttribute('data-theme', next);
-    localStorage.setItem('theme', next);
-    _setIcon(next);
-  });
 
+    var _html = document.documentElement;
+    var _btn  = document.getElementById('themeToggle');
+    var _icon = document.getElementById('themeIcon');
+    function _setIcon(t) { _icon.className = t === 'dark' ? 'fas fa-sun' : 'fas fa-moon'; }
+    var _saved = localStorage.getItem('theme') || 'dark';
+    _html.setAttribute('data-theme', _saved);
+    _setIcon(_saved);
+    _btn.addEventListener('click', function() {
+      var next = _html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+      _html.setAttribute('data-theme', next);
+      localStorage.setItem('theme', next);
+      _setIcon(next);
+    });
   </script>
   <script>
     document.addEventListener('DOMContentLoaded', function() {
