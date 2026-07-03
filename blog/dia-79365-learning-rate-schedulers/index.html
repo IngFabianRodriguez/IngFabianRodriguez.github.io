@@ -124,7 +124,7 @@ nav {
   <article class="article-body">
 <h2>Introduccion: cuando el modelo aprende pero no generaliza</h2>
 <p>Un junior del equipo me escribió un lunes a las 8 de la mañana. "Hice todo lo del tutorial y el modelo tiene 99.4% en training pero 71.2% en validation. Agregué más dropout, más data augmentation, subí el weight decay a 1e-2. Nada funciona." Eran las 11pm del domingo y llevaba 16 horas con el mismo script. El bug, como suele pasar, estaba en una sola línea: <code>StepLR(step_size=30, gamma=0.1)</code> con <code>Adam(lr=1e-3)</code> sobre un training de 50 epochs. El LR se mantuvo en 1e-3 durante los primeros 30 epochs, o sea, el modelo estuvo saltando con pasos agresivos en la primera mitad del entrenamiento. Para cuando llegó el decay, ya había sobreajustado tanto que ningún LR bajo lo iba a sacar.</p>
-<p>Este articulo es para que no te pase eso. Ni a vos ni a tu equipo. El learning rate scheduler no es un knob cosmético que ajustás al final si te sobra tiempo: es el control de flujo principal de toda la dinámica de optimización. Si lo entendés a fondo, evitás el 80% de los tickets tipo "mi loss oscila" y "mi modelo no converge". Si no, terminás quemando GPUs durante días para descubrir que el problema era un $<code>\gamma</code>$ mal puesto.</p>
+<p>Este articulo es para que no te pase eso. Ni a vos ni a tu equipo. El learning rate scheduler no es un knob cosmético que ajustás al final si te sobra tiempo: es el control de flujo principal de toda la dinámica de optimización. Si lo entendés a fondo, evitás el 80% de los tickets tipo "mi loss oscila" y "mi modelo no converge". Si no, terminás quemando GPUs durante días para descubrir que el problema era un $\gamma$ mal puesto.</p>
 <h2>1. Que es un Learning Rate Scheduler? (Y por que deberia importarte)</h2>
 <h3>1.1 La analogia cotidiana: el arte del café por goteo</h3>
 <p>Mirá, la mejor forma de entender un scheduler no es leyendo papers. Es preparando un V60 a las 7am con algo de sueño encima.</p>
@@ -133,29 +133,29 @@ nav {
 <p>Al final, cuando quedan solo los últimos gramos y el lecho está casi exhausto, terminás con un chorrito fino y controlado. Cualquier movimiento brusco ahora sobre-extrae taninos y amargores.</p>
 <p>La correspondencia elemento por elemento con un learning rate scheduler:</p>
 <ul>
-  <li><strong>Caudal inicial alto</strong> $<code>\leftrightarrow</code>$ <strong>LR inicial alto</strong>. El modelo necesita pasos grandes para escapar de la zona de inicialización (donde los gradientes son chicos o ruidosos) y entrar en regiones prometedoras del espacio de parámetros.</li>
-  <li><strong>Transición gradual</strong> $<code>\leftrightarrow</code>$ <strong>schedule de decay</strong>. Cerca del mínimo, los pasos grandes hacen "saltar" el modelo de un lado al otro del valle. Necesitás pasos finos para asentarte.</li>
-  <li><strong>Goteo final fino</strong> $<code>\leftrightarrow</code>$ <strong>LR cercano a cero</strong>. Permite convergencia al mínimo sin oscilación.</li>
-  <li><strong>Agua hirviendo todo el tiempo</strong> $<code>\leftrightarrow</code>$ <strong>LR constante alto</strong>. Sobre-extracción: el loss diverge, los gradientes explotan.</li>
-  <li><strong>Agua tibia todo el tiempo</strong> $<code>\leftrightarrow</code>$ <strong>LR constante bajo</strong>. Subextracción: el modelo se estanca en un plateau o converge a un mínimo mediocre.</li>
+  <li><strong>Caudal inicial alto</strong> $\leftrightarrow$ <strong>LR inicial alto</strong>. El modelo necesita pasos grandes para escapar de la zona de inicialización (donde los gradientes son chicos o ruidosos) y entrar en regiones prometedoras del espacio de parámetros.</li>
+  <li><strong>Transición gradual</strong> $\leftrightarrow$ <strong>schedule de decay</strong>. Cerca del mínimo, los pasos grandes hacen "saltar" el modelo de un lado al otro del valle. Necesitás pasos finos para asentarte.</li>
+  <li><strong>Goteo final fino</strong> $\leftrightarrow$ <strong>LR cercano a cero</strong>. Permite convergencia al mínimo sin oscilación.</li>
+  <li><strong>Agua hirviendo todo el tiempo</strong> $\leftrightarrow$ <strong>LR constante alto</strong>. Sobre-extracción: el loss diverge, los gradientes explotan.</li>
+  <li><strong>Agua tibia todo el tiempo</strong> $\leftrightarrow$ <strong>LR constante bajo</strong>. Subextracción: el modelo se estanca en un plateau o converge a un mínimo mediocre.</li>
 </ul>
 <h3>1.2 La matematica formal</h3>
-<p>El descenso de gradiente estocástico (SGD) actualiza los parámetros $<code>\theta</code>$ iterativamente. En su forma más general:</p>
+<p>El descenso de gradiente estocástico (SGD) actualiza los parámetros $\theta$ iterativamente. En su forma más general:</p>
 $$`\theta_{t+1} = \theta_t - \eta_t \nabla_\theta L(\theta_t; \mathcal{B}_t)`$$
-<p>donde $<code>\theta_t \in \mathbb{R}^p</code>$ es el vector de parámetros del modelo en el paso $<code>t</code>$, $<code>\eta_t \in \mathbb{R}^+</code>$ es el learning rate en el paso $<code>t</code>$ (el único término que el scheduler modifica), $<code>\nabla_\theta L(\theta_t; \mathcal{B}_t)</code>$ es el gradiente de la pérdida respecto a $<code>\theta</code>$ evaluado sobre el minibatch $<code>\mathcal{B}_t</code>$. Un scheduler es, formalmente, una función $<code>\eta : \mathbb{N} \to \mathbb{R}^+</code>$ que mapea el paso de entrenamiento a un LR.</p>
+<p>donde $\theta_t \in \mathbb{R}^p$ es el vector de parámetros del modelo en el paso $t$, $\eta_t \in \mathbb{R}^+$ es el learning rate en el paso $t$ (el único término que el scheduler modifica), $\nabla_\theta L(\theta_t; \mathcal{B}_t)$ es el gradiente de la pérdida respecto a $\theta$ evaluado sobre el minibatch $\mathcal{B}_t$. Un scheduler es, formalmente, una función $\eta : \mathbb{N} \to \mathbb{R}^+$ que mapea el paso de entrenamiento a un LR.</p>
 <p><strong>Step Decay</strong>, la más simple:</p>
 $$`\eta_t = \eta_0 \cdot \gamma^{\lfloor t / s \rfloor}`$$
-<p>donde $<code>\eta_0</code>$ es el LR inicial, $<code>\gamma \in (0,1)</code>$ el factor de decay (típicamente 0.1 o 0.5), y $<code>s</code>$ el step size en epochs. Produce una función escalonada: LR constante durante $<code>s</code>$ epochs y luego multiplicado por $<code>\gamma</code>$.</p>
+<p>donde $\eta_0$ es el LR inicial, $\gamma \in (0,1)$ el factor de decay (típicamente 0.1 o 0.5), y $s$ el step size en epochs. Produce una función escalonada: LR constante durante $s$ epochs y luego multiplicado por $\gamma$.</p>
 <p><strong>Exponential Decay</strong>, versión continua:</p>
 $$`\eta_t = \eta_0 \cdot \gamma^t`$$
-<p>El decay ocurre en cada paso. Con $<code>\gamma = 0.95</code>$ y $<code>t = 100</code>$, el LR efectivo es $<code>\eta_0 \cdot 0.95^{100} \approx \eta_0 \cdot 0.0059</code>$, una reducción del 99.4%.</p>
+<p>El decay ocurre en cada paso. Con $\gamma = 0.95$ y $t = 100$, el LR efectivo es $\eta_0 \cdot 0.95^{100} \approx \eta_0 \cdot 0.0059$, una reducción del 99.4%.</p>
 <p><strong>Cosine Annealing</strong>, mi default en producción:</p>
 $$`\eta_t = \eta_{\min} + \frac{1}{2}(\eta_{\max} - \eta_{\min})\left(1 + \cos\left(\frac{T_{\text{cur}}}{T_{\max}} \pi\right)\right)`$$
-<p>donde $<code>\eta_{\max}</code>$ es el LR inicial (en $<code>t = 0</code>$, $<code>\cos(0)=1</code>$ así que $<code>\eta_0 = \eta_{\max}</code>$), $<code>\eta_{\min}</code>$ es el LR mínimo al que tiende (en $<code>t = T_{\max}</code>$, $<code>\cos(\pi)=-1</code>$ así que $<code>\eta_{T_{\max}} = \eta_{\min}</code>$), $<code>T_{\text{cur}}</code>$ la época actual, y $<code>T_{\max}</code>$ el total. El coseno tiene derivada suave en los extremos, así que la transición rápido-a-lento no genera picos en la dinámica.</p>
+<p>donde $\eta_{\max}$ es el LR inicial (en $t = 0$, $\cos(0)=1$ así que $\eta_0 = \eta_{\max}$), $\eta_{\min}$ es el LR mínimo al que tiende (en $t = T_{\max}$, $\cos(\pi)=-1$ así que $\eta_{T_{\max}} = \eta_{\min}$), $T_{\text{cur}}$ la época actual, y $T_{\max}$ el total. El coseno tiene derivada suave en los extremos, así que la transición rápido-a-lento no genera picos en la dinámica.</p>
 <p><strong>Cosine Annealing con Warm Restarts</strong> (SGDR, Loshchilov & Hutter 2017):</p>
 $$`T_i = T_0 \cdot T_{\text{mult}}^i`$$
 $$`\eta_t = \eta_{\min} + \frac{1}{2}(\eta_{\max} - \eta_{\min})\left(1 + \cos\left(\frac{T_{\text{cur}}}{T_i} \pi\right)\right)`$$
-<p>donde $<code>T_i</code>$ es la duración del $<code>i</code>$-ésimo ciclo, $<code>T_0</code>$ la duración del primero, y $<code>T_{\text{mult}}</code>$ controla si cada restart es más largo ($<code>>1</code>$) o igual ($<code>=1</code>$). Al completar un ciclo, el LR vuelve a $<code>\eta_{\max}</code>$ instantáneamente: un shock controlado para escapar de mínimos locales angostos.</p>
+<p>donde $T_i$ es la duración del $i$-ésimo ciclo, $T_0$ la duración del primero, y $T_{\text{mult}}$ controla si cada restart es más largo ($>1$) o igual ($=1$). Al completar un ciclo, el LR vuelve a $\eta_{\max}$ instantáneamente: un shock controlado para escapar de mínimos locales angostos.</p>
 <p><strong>ReduceLROnPlateau</strong>, basado en métrica, no en tiempo:</p>
 $$`\eta_{t+1} = \begin{cases} \eta_t \cdot f & \text{si } \Delta_{\text{metric}} < \epsilon \text{ durante } p \text{ pasos} \\ \eta_t & \text{en otro caso} \end{cases}`$$
 <p>donde $<code>f \in (0,1)</code>$ es el factor de reducción, $<code>p</code>$ la paciencia, y $<code>\epsilon</code>$ el umbral mínimo de mejora que cuenta como progreso.</p>
