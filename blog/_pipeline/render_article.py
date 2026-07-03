@@ -32,7 +32,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 sys.path.insert(0, str(Path(__file__).parent))
-from days_table import DAYS, build_path, get_mode  # type: ignore
+from days_table import DAYS, build_path, get_mode, get_date  # type: ignore
 
 
 # ---------------------------------------------------------------------------
@@ -40,9 +40,6 @@ from days_table import DAYS, build_path, get_mode  # type: ignore
 # ---------------------------------------------------------------------------
 
 BLOG_DIR = Path(__file__).resolve().parent.parent  # blog/
-
-# Project day 1 = 29 Dec 2025 (per blog/index.html)
-PROJECT_START = datetime.date(2025, 12, 29)
 
 SPANISH_MONTHS = [
     "enero", "febrero", "marzo", "abril", "mayo", "junio",
@@ -446,7 +443,8 @@ __BODY__
 # ---------------------------------------------------------------------------
 
 def date_for_day(day: int) -> datetime.date:
-    return PROJECT_START + datetime.timedelta(days=day - 1)
+    """Return the canonical calendar date for the given day, from the master table."""
+    return get_date(day)
 
 
 def format_date(d: datetime.date) -> str:
@@ -459,13 +457,13 @@ def build_nav_links(day: int) -> str:
 
     if day > 1:
         prev = day - 1
-        tema_prev = next((t for d, t, _ in DAYS if d == prev), "")
+        tema_prev = next((t for d, t, _, _ in DAYS if d == prev), "")
         slug_prev = build_path(prev, tema_prev)
         parts.insert(0, f'<a class="nav-prev" href="/blog/{slug_prev}/">Anterior</a>')
 
     if day < 365:
         nxt = day + 1
-        tema_nxt = next((t for d, t, _ in DAYS if d == nxt), "")
+        tema_nxt = next((t for d, t, _, _ in DAYS if d == nxt), "")
         slug_nxt = build_path(nxt, tema_nxt)
         date_nxt = date_for_day(nxt).isoformat()
         parts.append(
@@ -668,7 +666,7 @@ def main() -> None:
             repo_root = Path(__file__).resolve().parent.parent.parent
             out_path = (repo_root / out_path).resolve()
     else:
-        tema = next((t for d, t, _ in DAYS if d == args.day), "articulo")
+        tema = next((t for d, t, _, _ in DAYS if d == args.day), "articulo")
         out_path = (BLOG_DIR / build_path(args.day, tema) / "index.html").resolve()
 
     render(args.day, md_text, out_path)
