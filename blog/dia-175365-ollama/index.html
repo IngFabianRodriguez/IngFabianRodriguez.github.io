@@ -3,9 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="Regularizacion En Transformers | #365DaysOfAI por Fabian Rodriguez">
-  <title>Regularizacion En Transformers | #365DaysOfAI</title>
-  
+  <meta name="description" content="Dia 175/365: Ollama — el USB-C de los LLMs locales | #365DaysOfAI por Fabian Rodriguez">
+  <title>Dia 175/365: Ollama — el USB-C de los LLMs locales | #365DaysOfAI</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
@@ -21,7 +20,7 @@
   --shadow: rgba(2,12,27,0.7); --nav-bg: rgba(10,25,47,0.92);
 }
 [data-theme="light"] {
-  --bg: #f0f4fb; --bg-card: #ffffff; --border: #d4dcee;
+  --bg: #f0f4fb; --bg-card: #ffffff; --border: #d4ddee;
   --text-muted: #64748b; --text: #475569; --text-heading: #0f172a;
   --accent: #0d9488; --accent-tint: rgba(13,148,136,0.08);
   --shadow: rgba(15,23,42,0.12); --nav-bg: rgba(240,244,251,0.95);
@@ -81,6 +80,10 @@ nav {
   border-radius: 4px; padding: .15em .4em;
 }
 .article-body pre code { background: none; border: none; padding: 0; font-size: inherit; }
+.article-body table { width: 100%; border-collapse: collapse; margin: 1.5rem 0; font-size: .9rem; }
+.article-body th, .article-body td { border: 1px solid var(--border); padding: .6rem 1rem; text-align: left; }
+.article-body th { background: var(--bg-card); color: var(--text-heading); }
+.article-body .katex-display { overflow-x: auto; padding: .5rem 0; }
 
 .article-nav {
   max-width: 820px; margin: 0 auto; padding: 2rem 1.5rem;
@@ -94,7 +97,8 @@ nav {
   nav { padding: 0 1rem; }
   .article-hero, .article-body { padding-left: 1rem; padding-right: 1rem; }
 }
-</style>
+
+  </style>
 </head>
 <body>
   <nav>
@@ -109,428 +113,470 @@ nav {
   </nav>
 
   <header class="article-hero">
-    <div class="day-badge">Dia 175 / 365 &nbsp;·&nbsp; #365DaysOfAI</div>
-    <h1 class="article-title">Regularizacion En Transformers</h1>
+    <div class="day-badge">Dia 175 / 365 &nbsp;&middot;&nbsp; #365DaysOfAI</div>
+    <h1 class="article-title">Dia 175/365: Ollama — el USB-C de los LLMs locales</h1>
     <div class="article-meta">
       <time class="article-date">24 de junio de 2026</time>
-      <div class="tags"><span class="tag">regularization</span><span class="tag">transformers</span><span class="tag">dropout</span><span class="tag">label-smoothing</span></div>
+      <div class="tags"><span class="tag">ollama (CLI y libreria python)</span></div>
     </div>
   </header>
 
   <article class="article-body">
-<h2>🎯 Por Que La Regularizacion En Transformers Es Critica</h2>
-
-<p>Parcero, dia 175. Vamos a聊聊 Regularizacion en Transformers. Si pensabas que dropout era solo apagar neuronas al azar, esta vaina te va a expandir la mente. Los transformers tienen problemas de regularizacion unicos debido a su arquitectura, y el 80% de las implementaciones aplican dropout incorrectamente o no usan las tecnicas correctas. De una.</p>
-
-<p>Los transformers son modelos enorme con millones o miles de millones de parametros. Con datasets relativamente pequenos comparado con el numero de parametros, el overfitting es el problema numero uno. La diferencia entre un transformer que generaliza bien y uno que memoriza el training data esta en como aplicas regularizacion.</p>
-
-<hr>
-<h2>📐 El Problema Unico De Los Transformers</h2>
-
-<p>Antes de hablar de tecnicas, entendamos por que los transformers son especiales:</p>
-
+<h2>Introduccion: Cuando quisiste correr un LLM local y terminaste llorando en CUDA</h2>
+<p>Te ha pasado: necesitas correr un Llama 3 70B en tu maquina para una demo con un cliente manana a las 8 AM. Abres HuggingFace, descargas el safetensors, intentas cargarlo con <code>transformers</code>, y boom: <code>torch.cuda.OutOfMemoryError</code>. Piensas "OK, voy a cuantizarlo". Abres otra guia. Instalas <code>bitsandbytes</code>. Otro error. Pruebas <code>llama.cpp</code> directo. Necesitas compilarlo con CMake, configurar flags para tu GPU (que resulta ser una RTX 3060 con 12 GB, pero el modelo necesita 40). Lees sobre GGUF, AWQ, GPTQ, EXL2, y cada una tiene su propia herramienta.</p>
+<p><strong>Y todo esto antes de escribir una sola linea de codigo de inferencia.</strong></p>
+<p>Mira, ese fue yo hace dos anos, a las 11 PM de un viernes, con un cliente esperando al lunes. El problema no era ejecutar el modelo. El problema era todo el contexto alrededor: descargar el formato correcto, cuantizar bien, configurar el backend (CUDA, Metal, ROCm, Vulkan, segun tu hardware), manejar la carga en VRAM, decidir cuando hacer offloading a CPU, exponer una API limpia para tu aplicacion.</p>
+<p>Ahi entra Ollama. Pero Ollama no es solo "un wrapper bonito". Hay matematica de muestreo que tienes que entender para no quemarte en produccion, hay decisiones de arquitectura que afectan latencia, y hay debugging real cuando el modelo alucina o se queda colgado. Hoy te voy a mostrar las tripas, no solo el wrapper.</p>
+<h2>1. Que es Ollama? (Y por que deberia importarte)</h2>
+<h3>1.1 La analogia cotidiana</h3>
+<p>Pensalo asi: Ollama es el <strong>USB-C de los LLMs locales</strong>. Tu codigo (la aplicacion) habla un solo idioma: HTTP + JSON. Los modelos, en cambio, llegan en formatos propietarios incompatibles entre si (GGUF, safetensors, PyTorch checkpoints, <code>.bin</code> antiguos), cada uno con su propia herramienta de carga, su propio backend de GPU (CUDA para NVIDIA, Metal para Apple Silicon, ROCm para AMD, Vulkan como salvavidas), y su propia curva de aprendizaje para cuantizar y tunear.</p>
+<p>Antes de Ollama, vos necesitabas:</p>
 <ul>
-<li><strong>Attention mechanisms</strong>: Crean conexiones entre TODOS los tokens, lo que puede llevar a que el modelo aprenda correlaciones espurias en el training data.</li>
-<li><strong>Embedding layers enormes</strong>: Especialmente problematicas cuando hay banyak tokens en el vocabulario.</li>
-<li><strong>Positional encodings</strong>: Si no se regularizan bien, el modelo puede depender excesivamente de posiciones en lugar de contenido.</li>
-<li><strong>Depth extrema</strong>: Modelos de 100+ capas son comunes, cada capa puede overfittear de manera diferente.</li>
+  <li>Saber que tu hardware soporta que backend</li>
+  <li>Compilar o instalar el runtime correcto (llama.cpp, vLLM, exllama, etc.)</li>
+  <li>Convertir el modelo al formato que ese runtime entiende</li>
+  <li>Escribir un servidor o usar uno de terceros (llama-cpp-python server, text-generation-inference, etc.)</li>
+  <li>Manejar manualmente la carga/descarga de modelos desde disco a VRAM</li>
 </ul>
-
-<p>La receta de regularizacion para transformers incluye:</p>
-
+<p>Con Ollama todo eso es un solo comando: <code>ollama run llama3</code>. El actua como un daemon que administra los modelos, los descarga, los cuantiza on-the-fly si hace falta, negocia con tu GPU/CPU, y te expone una API REST unica. Es el hub que traduce entre vos y el caos.</p>
+<h3>1.2 La matematica formal: muestreo de tokens, softmax y temperatura</h3>
+<p>Cuando Ollama genera texto, internamente delega a llama.cpp, que corre el modelo y produce logits (valores reales sin normalizar) para cada token del vocabulario en cada paso. La magia esta en como esos logits se convierten en el siguiente token. La formula central es el <strong>softmax con temperatura</strong>:</p>
+$$P(t_i \mid t_{<i}) = \frac{\exp(z_i / T)}{\sum_{j=1}^{V} \exp(z_j / T)}$$
+<p>Simbolo por simbolo:</p>
 <ul>
-<li><strong>Dropout</strong>: Especialmente en attention y FFN layers.</li>
-<li><strong>Label Smoothing</strong>: Para分類 tasks.</li>
-<li><strong>Weight Decay</strong>: L2 regularization en los pesos.</li>
-<li><strong>Data Augmentation</strong>: Especialmente para NLP.</li>
-<li><strong>Stochastic Depth</strong>: Similar a dropout pero para capas.</li>
+  <li>$P(t_i \mid t_{<i})$: probabilidad del token $t_i$ dado todo el contexto previo $t_{<i} = (t_1, t_2, \ldots, t_{i-1})$</li>
+  <li>$z_i \in \mathbb{R}$: el logit crudo que el modelo emite para el token $i$ en el vocabulario</li>
+  <li>$T \in \mathbb{R}^+$: la <strong>temperatura</strong>. Cuando $T = 1$, la distribucion es la que el modelo aprendio. Cuando $T < 1$, la distribucion se vuelve mas picuda (mas determinista). Cuando $T > 1$, se aplana (mas creativa/caotica)</li>
+  <li>$V$: tamano del vocabulario del modelo (para Llama 3 es 128256, para Mistral es 32000)</li>
+  <li>$\exp$: la funcion exponencial, que garantiza que todos los valores sean positivos</li>
 </ul>
+<p>Despues del softmax, Ollama aplica <strong>top-k</strong> y <strong>top-p</strong> (nucleus sampling) para recortar la cola de la distribucion. Top-k mantiene solo los $k$ tokens con logits mas altos (el resto se vuelve $-\infty$ antes del softmax). Top-p mantiene el conjunto minimo de tokens cuya probabilidad acumulada sea $\geq p$:</p>
+$$\sum_{i \in S_p} P(t_i \mid t_{<i}) \geq p, \quad \text{donde } S_p \text{ es el menor conjunto posible}$$
+<p>Por que importa esto en produccion? Porque si pones <code>temperature=0.8, top_p=0.9, top_k=40</code>, estas diciendole al modelo: "saca los 40 tokens mas probables, luego quedate con los que cubran el 90% de la masa de probabilidad, y dentro de ese conjunto muestrea con temperatura 0.8". Si no entiendes eso, no podes debuggear cuando el modelo te devuelve respuestas raras.</p>
+<h2>2. Como Ollama resuelve esto por vos</h2>
+<p>Ollama es, en esencia, un daemon en Go que envuelve a llama.cpp y le anade:</p>
+<ol>
+  <li><strong>Un servidor REST</strong> sobre HTTP que expone <code>/api/generate</code>, <code>/api/chat</code>, <code>/api/embeddings</code>, <code>/api/create</code>, <code>/api/pull</code>, etc.</li>
+  <li><strong>Un administrador de modelos</strong> que descarga desde un registry propio (<code>registry.ollama.ai</code>), almacena en <code>~/.ollama/models/</code> con un formato estandar (blobs + manifests, inspirado en OCI/Docker).</li>
+  <li><strong>Un sistema de plantillas</strong> (Modelfile) que empaqueta: pesos base + prompt del sistema + parametros por defecto (temperature, top_p, top_k, stop sequences, etc.).</li>
+  <li><strong>Gestion automatica de GPU/CPU</strong>: detecta tu hardware, decide cuantos layers poner en GPU, hace offloading a CPU cuando la VRAM no alcanza, balancea entre multiples GPUs si las tienes.</li>
+  <li><strong>Quantizacion bajo demanda</strong>: si descargas un modelo en Q4_0 pero tienes RAM de sobra, podes pedirle que lo recargue en Q8_0 sin re-descargar nada.</li>
+</ol>
+<p>Arquitectura simplificada:</p>
+<pre><code class="language-text">[Tu app Python] --&gt; HTTP REST --&gt; [Ollama daemon (Go)] --&gt; [llama.cpp (C++/CUDA)] --&gt; [Tu GPU/CPU]
+                          |
+                          +--&gt; [Registry de modelos] (registry.ollama.ai)
+                          |
+                          +--&gt; [Cache local en ~/.ollama/models/]</code></pre>
+<p>El truco clave es el formato <strong>GGUF</strong> (GPT-Generated Unified Format), que es el estandar de facto para modelos cuantizados. GGUF es self-contained: incluye los pesos, los hiperparametros del modelo (arquitectura, numero de capas, dimension de attention heads), el tokenizer, y metadata. Esto es lo que permite que un mismo binario sirva para Llama, Mistral, Phi, Qwen, Gemma, etc., sin que vos recompiles nada.</p>
+<p>Para cargar un modelo a VRAM, Ollama usa <code>mmap()</code> (memory-mapped files), lo cual significa que el tiempo de carga es proporcional al tamano del <strong>slice en GPU</strong>, no al tamano total del modelo. Tu modelo de 40 GB se "carga" en milisegundos, y solo los layers que van a GPU se copian realmente a VRAM.</p>
+<h2>3. Ollama: Uso Directo y Casos de Control Fino</h2>
+<p>La CLI basica es directa:</p>
+<pre><code class="language-bash"># Descargar un modelo (cuantizado por defecto)
+ollama pull llama3.2:3b
 
-<hr>
-<h2>💻 Implementacion De Regularizacion En PyTorch</h2>
+# Correr en modo interactivo
+ollama run llama3.2:3b "Explicame el teorema de Bayes en una sola oracion"
 
-<pre><code class="language-python">"""
-Regularizacion avanzada para Transformers.
-Incluye: Dropout adaptativo, Label Smoothing, Stochastic Depth, Weight Decay.
-"""
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import math
-from typing import Optional, Tuple
+# Ver que modelos tienes
+ollama list
 
+# Ver metadata de un modelo especifico
+ollama show llama3.2:3b
 
-class AdaptiveDropout(nn.Module):
-    """
-    Dropout que se adapta based on the layer depth.
-    Capas mas profundas reciben dropout mas agresivo.
-    """
-    def __init__(self, base_p: float = 0.1, max_p: float = 0.3, num_layers: int = 12):
-        super().__init__()
-        self.base_p = base_p
-        self.max_p = max_p
-        self.num_layers = num_layers
-    
-    def forward(self, x: torch.Tensor, layer_idx: int) -> torch.Tensor:
-        # Interpolacion lineal de dropout rate segun profundidad
-        alpha = layer_idx / max(1, self.num_layers - 1)
-        p = self.base_p + alpha * (self.max_p - self.base_p)
-        
-        if self.training:
-            return F.dropout(x, p=p)
-        return x
+# Ver que modelos estan cargados en memoria ahora
+ollama ps
 
+# Crear un modelo custom con Modelfile
+cat &gt; Modelfile &lt;&lt;'EOF'
+FROM llama3.2:3b
+SYSTEM "Sos un asistente legal argentino que responde en espanol neutro"
+PARAMETER temperature 0.3
+PARAMETER top_p 0.9
+PARAMETER num_ctx 4096
+EOF
+ollama create asistente-legal -f Modelfile</code></pre>
+<p>La libreria Python (<code>pip install ollama</code>) es sync y async, y mapea 1:1 contra la API REST:</p>
+<pre><code class="language-python">import ollama
 
-class LabelSmoothingLoss(nn.Module):
-    """
-    Label Smoothing Loss - previene overconfidence.
-    En lugar de hard labels [0, 0, 1, 0], usa [0.1, 0.1, 0.7, 0.1].
-    """
-    def __init__(self, num_classes: int, smoothing: float = 0.1):
-        super().__init__()
-        self.num_classes = num_classes
-        self.smoothing = smoothing
-        self.confidence = 1.0 - smoothing
-    
-    def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            pred: Logits de shape (batch, num_classes)
-            target: Labels de shape (batch,)
-        """
-        # Crear distribution suave
-        smooth_target = torch.zeros_like(pred)
-        smooth_target.fill_(self.smoothing / (self.num_classes - 1))
-        smooth_target.scatter_(1, target.unsqueeze(1), self.confidence)
-        
-        # Cross entropy con distribution suave
-        log_prob = F.log_softmax(pred, dim=-1)
-        loss = (-smooth_target * log_prob).sum(dim=-1).mean()
-        
-        return loss
+# Chat basico (no streaming)
+response = ollama.chat(
+    model='llama3.2:3b',
+    messages=[
+        {'role': 'system', 'content': 'Sos un asistente tecnico conciso.'},
+        {'role': 'user', 'content': 'Que es un tensor?'},
+    ],
+)
+print(response['message']['content'])
 
+# Streaming token por token
+stream = ollama.chat(
+    model='llama3.2:3b',
+    messages=[{'role': 'user', 'content': 'Escribi un haiku sobre ML'}],
+    stream=True,
+)
+for chunk in stream:
+    print(chunk['message']['content'], end='', flush=True)
 
-class StochasticDepth(nn.Module):
-    """
-    Stochastic Depth - "dropout" para capas completas.
-    En lugar de apagar neuronas, salta capas enteras durante training.
-    Reduce sobreajuste en redes profundas.
-    """
-    def __init__(self, drop_prob: float = 0.2, mode: str = 'row'):
-        super().__init__()
-        self.drop_prob = drop_prob
-        self.mode = mode
-    
-    def forward(self, x: torch.Tensor, layer_idx: Optional[int] = None) -> torch.Tensor:
-        if not self.training:
-            return x
-        
-        # Binary survival variable
-        if layer_idx is not None:
-            # Probabilidad de supervivencia decrece con profundidad
-            survival_prob = 1.0 - (layer_idx / 12.0) * self.drop_prob
-        else:
-            survival_prob = 1.0 - self.drop_prob
-        
-        survival = torch.bernoulli(torch.tensor([survival_prob])).item()
-        
-        if survival:
-            return x / survival_prob  # Escala para mantener expectation
-        else:
-            return torch.zeros_like(x)
+# Embeddings
+embedding = ollama.embeddings(
+    model='nomic-embed-text',
+    prompt='Como funciona la cuantizacion Q4_K_M?',
+)
+print(f'Dimension: {len(embedding["embedding"])}')  # 768 para nomic-embed-text</code></pre>
+<h2>4. Implementacion Production-Ready: <code>OllamaClient</code></h2>
+<p>Vamos a construir un cliente que use Ollama como backend para un sistema RAG, con manejo de retries, streaming, observabilidad y control fino de parametros. Esto NO es pseudocodigo; corre tal cual si tienes Ollama corriendo localmente y <code>ollama pull llama3.2:3b nomic-embed-text</code> ejecutado.</p>
+<h3>4.1 Tipos y protocolos</h3>
+<pre><code class="language-python"># ollama_types.py
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Iterator
 
 
-class TransformerBlockWithRegularization(nn.Module):
-    """
-    Transformer Block con regularizacion completa.
-    Incluye: Adaptive Dropout, Stochastic Depth, FFN dropout.
-    """
+@dataclass(frozen=True, slots=True)
+class ChatMessage:
+    role: str  # 'system' | 'user' | 'assistant'
+    content: str
+
+
+@dataclass(frozen=True, slots=True)
+class GenerationParams:
+    temperature: float = 0.7
+    top_p: float = 0.9
+    top_k: int = 40
+    num_ctx: int = 4096
+    repeat_penalty: float = 1.1
+    seed: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ChatRequest:
+    model: str
+    messages: tuple[ChatMessage, ...]
+    params: GenerationParams = field(default_factory=GenerationParams)
+    stream: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class TokenUsage:
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+
+    @property
+    def tokens_per_second(self) -&gt; float:
+        return 0.0  # se completa en el cliente con wall-time
+
+
+@dataclass(frozen=True, slots=True)
+class ChatResponse:
+    content: str
+    model: str
+    usage: TokenUsage
+    duration_ns: int</code></pre>
+<h3>4.2 El motor principal</h3>
+<pre><code class="language-python"># ollama_client.py
+from __future__ import annotations
+
+import logging
+import time
+from collections.abc import Iterator
+
+import ollama
+from ollama_types import (
+    ChatMessage,
+    ChatRequest,
+    ChatResponse,
+    GenerationParams,
+    TokenUsage,
+)
+
+logger = logging.getLogger(__name__)
+
+
+class OllamaClient:
+    """Cliente production-ready sobre el SDK oficial de Ollama."""
+
     def __init__(
         self,
-        d_model: int,
-        num_heads: int,
-        d_ff: int,
-        dropout: float = 0.1,
-        use_stochastic_depth: bool = True,
-        layer_idx: int = 0,
-        total_layers: int = 12,
-    ):
-        super().__init__()
-        self.layer_idx = layer_idx
-        self.use_stochastic_depth = use_stochastic_depth
-        
-        # Multi-head attention
-        self.attention = nn.MultiheadAttention(d_model, num_heads, dropout=dropout, batch_first=True)
-        self.attention_norm = nn.LayerNorm(d_model)
-        
-        # FFN con dropout
-        self.ffn = nn.Sequential(
-            nn.Linear(d_model, d_ff),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(d_ff, d_model),
-            nn.Dropout(dropout),
+        host: str = 'http://127.0.0.1:11434',
+        default_timeout_s: float = 120.0,
+        max_retries: int = 3,
+    ) -&gt; None:
+        self._client = ollama.Client(host=host, timeout=default_timeout_s)
+        self._max_retries = max_retries
+
+    @staticmethod
+    def _params_to_options(params: GenerationParams) -&gt; dict:
+        opts = {
+            'temperature': params.temperature,
+            'top_p': params.top_p,
+            'top_k': params.top_k,
+            'num_ctx': params.num_ctx,
+            'repeat_penalty': params.repeat_penalty,
+        }
+        if params.seed is not None:
+            opts['seed'] = params.seed
+        return opts
+
+    def chat(self, request: ChatRequest) -&gt; ChatResponse:
+        opts = self._params_to_options(request.params)
+        msgs = [{'role': m.role, 'content': m.content} for m in request.messages]
+
+        last_exc: Exception | None = None
+        for attempt in range(1, self._max_retries + 1):
+            try:
+                t0 = time.perf_counter_ns()
+                resp = self._client.chat(
+                    model=request.model,
+                    messages=msgs,
+                    options=opts,
+                    stream=False,
+                )
+                duration_ns = time.perf_counter_ns() - t0
+                usage = TokenUsage(
+                    prompt_tokens=resp.get('prompt_eval_count', 0),
+                    completion_tokens=resp.get('eval_count', 0),
+                    total_tokens=resp.get('prompt_eval_count', 0)
+                    + resp.get('eval_count', 0),
+                )
+                return ChatResponse(
+                    content=resp['message']['content'],
+                    model=resp.get('model', request.model),
+                    usage=usage,
+                    duration_ns=duration_ns,
+                )
+            except ollama.ResponseError as exc:
+                last_exc = exc
+                logger.warning(
+                    'chat fallo (intento %d/%d): %s', attempt, self._max_retries, exc
+                )
+                if attempt &lt; self._max_retries:
+                    time.sleep(2 ** attempt)  # backoff exponencial
+        raise RuntimeError(f'Chat fallo tras {self._max_retries} intentos') from last_exc
+
+    def chat_stream(self, request: ChatRequest) -&gt; Iterator[str]:
+        opts = self._params_to_options(request.params)
+        msgs = [{'role': m.role, 'content': m.content} for m in request.messages]
+        stream = self._client.chat(
+            model=request.model,
+            messages=msgs,
+            options=opts,
+            stream=True,
         )
-        self.ffn_norm = nn.LayerNorm(d_model)
-        
-        # Regularizacion
-        self.adaptive_dropout = AdaptiveDropout(
-            base_p=dropout,
-            max_p=dropout * 3,  # Capas profundas hasta 3x dropout
-            num_layers=total_layers,
-        )
-        
-        self.stochastic_depth = StochasticDepth(drop_prob=0.2) if use_stochastic_depth else None
-    
-    def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
-        # Pre-norm attention (mejor que post-norm para regularizacion)
-        attn_input = self.attention_norm(x)
-        attn_output, _ = self.attention(attn_input, attn_input, attn_input, attn_mask=mask)
-        
-        # Adaptive dropout en attention
-        attn_output = self.adaptive_dropout(attn_output, self.layer_idx)
-        
-        # Stochastic depth en skip connection
-        if self.use_stochastic_depth and self.stochastic_depth:
-            x = self.stochastic_depth(x + attn_output, self.layer_idx)
-        else:
-            x = x + attn_output
-        
-        # Pre-norm FFN
-        ffn_input = self.ffn_norm(x)
-        ffn_output = self.ffn(ffn_input)
-        
-        # Dropout en FFN
-        ffn_output = self.adaptive_dropout(ffn_output, self.layer_idx)
-        
-        # Skip connection
-        x = x + ffn_output
-        
-        return x
+        for chunk in stream:
+            delta = chunk['message']['content']
+            if delta:
+                yield delta
+
+    def embed(self, model: str, text: str) -&gt; list[float]:
+        resp = self._client.embeddings(model=model, prompt=text)
+        return resp['embedding']</code></pre>
+<h3>4.3 Utilidades de analisis y verificacion</h3>
+<pre><code class="language-python"># ollama_metrics.py
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from ollama_client import OllamaClient
+from ollama_types import ChatMessage, ChatRequest, GenerationParams
 
 
-class TransformerEncoderRegularized(nn.Module):
-    """
-    Transformer Encoder completo con regularizacion multi-nivel.
-    """
-    def __init__(
-        self,
-        vocab_size: int,
-        d_model: int = 512,
-        num_heads: int = 8,
-        num_layers: int = 6,
-        d_ff: int = 2048,
-        dropout: float = 0.1,
-        label_smoothing: float = 0.1,
-        max_seq_length: int = 512,
-    ):
-        super().__init__()
-        
-        # Embeddings
-        self.token_embedding = nn.Embedding(vocab_size, d_model)
-        self.position_embedding = nn.Embedding(max_seq_length, d_model)
-        self.embedding_dropout = nn.Dropout(dropout)
-        
-        # Regularizacion de embeddings
-        self.embed_norm = nn.LayerNorm(d_model)
-        
-        # Capas del transformer
-        self.layers = nn.ModuleList([
-            TransformerBlockWithRegularization(
-                d_model=d_model,
-                num_heads=num_heads,
-                d_ff=d_ff,
-                dropout=dropout,
-                use_stochastic_depth=True,
-                layer_idx=i,
-                total_layers=num_layers,
-            )
-            for i in range(num_layers)
-        ])
-        
-        # Output head
-        self.output_norm = nn.LayerNorm(d_model)
-        self.classifier = nn.Linear(d_model, vocab_size)
-        
-        # Loss con label smoothing
-        self.criterion = LabelSmoothingLoss(vocab_size, label_smoothing)
-        
-        # Weight decay parameter
-        self.weight_decay = 0.01
-    
-    def forward(
-        self,
-        input_ids: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None,
-        labels: Optional[torch.Tensor] = None,
-    ) -> dict:
-        """
-        Returns:
-            dict con 'logits', 'loss' (si labels proporcionado), 'attentions'
-        """
-        batch_size, seq_len = input_ids.shape
-        
-        # Embeddings + positional
-        positions = torch.arange(seq_len, device=input_ids.device).unsqueeze(0)
-        x = self.token_embedding(input_ids) + self.position_embedding(positions)
-        x = self.embed_norm(x)
-        x = self.embedding_dropout(x)
-        
-        # Crear causal mask si es necesario
-        if attention_mask is not None:
-            # Convertir mask a format para attention
-            mask = attention_mask.float()
-            mask = mask.masked_fill(mask == 0, float('-inf')).masked_fill(mask == 1, 0.0)
-        else:
-            mask = None
-        
-        # Pass por capas
-        attentions = []
-        for layer in self.layers:
-            x = layer(x, mask)
-            if layer.layer_idx == len(self.layers) - 1:
-                # Guardar attention del ultimo layer
-                attentions.append(x)
-        
-        # Output
-        x = self.output_norm(x)
-        logits = self.classifier(x)
-        
-        result = {'logits': logits, 'attentions': attentions}
-        
-        # Calcular loss si hay labels
-        if labels is not None:
-            # Shift for language modeling
-            shift_logits = logits[:, :-1, :].contiguous()
-            shift_labels = labels[:, 1:].contiguous()
-            
-            # Flatten
-            loss = self.criterion(
-                shift_logits.view(-1, shift_logits.size(-1)),
-                shift_labels.view(-1)
-            )
-            result['loss'] = loss
-        
-        return result
-    
-    def get_weight_decay_params(self) -> list:
-        """
-        Retorna parametros para weight decay selectivo.
-        No aplica weight decay a biases y LayerNorms.
-        """
-        decay = []
-        no_decay = ['bias', 'LayerNorm', 'layer_norm', 'norm']
-        
-        for name, param in self.named_parameters():
-            if not any(nd in name for nd in no_decay):
-                decay.append(param)
-            else:
-                pass  # No decay para biases y norms
-        
-        return decay
+@dataclass(frozen=True, slots=True)
+class GenerationReport:
+    prompt_tokens: int
+    completion_tokens: int
+    duration_s: float
+    tokens_per_second: float
+    estimated_cost_usd: float  # 0 para local, util si migras a cloud despues
 
 
-def create_optimizer_with_weight_decay(
-    model: TransformerEncoderRegularized,
-    learning_rate: float = 1e-4,
-    weight_decay: float = 0.01,
-) -> torch.optim.Optimizer:
-    """
-    Crea optimizer con weight decay selectivo.
-    AdamW con different decay rates para diferentes parametros.
-    """
-    # Parametros con decay
-    decay_params = model.get_weight_decay_params()
-    
-    # Parametros sin decay
-    no_decay_params = []
-    no_decay_names = ['bias', 'LayerNorm', 'layer_norm', 'norm']
-    for name, param in model.named_parameters():
-        if any(nd in name for nd in no_decay_names):
-            no_decay_params.append(param)
-    
-    optimizer = torch.optim.AdamW([
-        {'params': decay_params, 'weight_decay': weight_decay},
-        {'params': no_decay_params, 'weight_decay': 0.0},
-    ], lr=learning_rate)
-    
-    return optimizer
-
-
-# Example usage
-if __name__ == "__main__":
-    # Crear modelo
-    model = TransformerEncoderRegularized(
-        vocab_size=30000,
-        d_model=512,
-        num_heads=8,
-        num_layers=6,
-        d_ff=2048,
-        dropout=0.1,
-        label_smoothing=0.1,
+def measure_generation(client: OllamaClient, req: ChatRequest) -&gt; GenerationReport:
+    """Ejecuta una generacion y devuelve metricas de rendimiento."""
+    resp = client.chat(req)
+    duration_s = resp.duration_ns / 1e9
+    tps = resp.usage.completion_tokens / duration_s if duration_s &gt; 0 else 0.0
+    return GenerationReport(
+        prompt_tokens=resp.usage.prompt_tokens,
+        completion_tokens=resp.usage.completion_tokens,
+        duration_s=duration_s,
+        tokens_per_second=tps,
+        estimated_cost_usd=0.0,
     )
-    
-    # Dummy input
-    batch_size = 4
-    seq_len = 128
-    input_ids = torch.randint(0, 30000, (batch_size, seq_len))
-    labels = torch.randint(0, 30000, (batch_size, seq_len))
-    
-    # Forward pass
-    output = model(input_ids, labels=labels)
-    print(f"Loss: {output['loss'].item():.4f}")
-    print(f"Logits shape: {output['logits'].shape}")
-    
-    # Crear optimizer
-    optimizer = create_optimizer_with_weight_decay(model)
-    print(f"Optimizer created with {len(list(model.parameters()))} parameters")
-</code></pre>
 
-<hr>
-<h2>⚠️ Errores Comunes En Regularizacion De Transformers</h2>
 
-<h3>Error 1: Usar dropout igual en todas las capas</h3>
-<p><strong>El problema</strong>: Aplicar el mismo dropout rate en todas las capas ignora que capas profundas tienden a overfittear mas. El 70% de implementaciones usan dropout uniforme.</p>
-<p><strong>Fix</strong>: Implementar adaptive dropout que aumenta el dropout rate en capas mas profundas, o usar stochastic depth para saltarse capas enteras.</p>
+def estimate_kv_cache_memory_gb(
+    n_layers: int,
+    n_kv_heads: int,
+    head_dim: int,
+    seq_len: int,
+    bytes_per_element: int = 2,  # FP16 por defecto
+) -&gt; float:
+    """Estima la VRAM consumida por el KV cache en GB.
 
-<h3>Error 2: No usar label smoothing</h3>
-<p><strong>El problema</strong>: Con cross-entropy standard, el modelo puede volverse sobreconfident, asignando probabilidades cercanas a 0 o 1. Esto lleva a poor calibration y overfitting a labels especificos.</p>
-<p><strong>Fix</strong>: Usar label smoothing (0.1 es un buen default). En lugar de 100% certeza en la clase correcta, usar 90% para la clase correcta y 10% distribuido entre las demas.</p>
+    Formula:
+        M_KV = 2 * L * H_kv * d_h * S * B  bytes
+    donde:
+        L  = numero de capas transformer
+        H_kv = numero de KV heads (puede ser &lt; n_heads si usa GQA)
+        d_h = dimension de cada head
+        S  = longitud maxima de secuencia
+        B  = bytes por elemento (2 para FP16, 1 para INT8)
 
-<h3>Error 3: Aplicar weight decay a todo</h3>
-<p><strong>El problema</strong>: Aplicar weight decay a biases y LayerNorms puede dañar el entrenamiento. Estos parametros necesitan ser pequenos para funcionar bien. El 60% de implementaciones aplican decay a todo.</p>
-<p><strong>Fix</strong>: Separar explicitamente los parametros en grupos con y sin decay. Solo aplicar weight decay a weights de matrices densas y embeddings.</p>
+    Para Llama 3 8B con seq_len=8192, n_layers=32, n_kv_heads=8,
+    head_dim=128: M_KV = 2 * 32 * 8 * 128 * 8192 * 2 / 1e9 ≈ 1.07 GB.
+    """
+    bytes_total = 2 * n_layers * n_kv_heads * head_dim * seq_len * bytes_per_element
+    return bytes_total / 1e9</code></pre>
+<h2>5. Ejemplos de Uso en Casos Reales</h2>
+<h3>Caso 1: RAG minimalista con embeddings locales</h3>
+<pre><code class="language-python">from ollama_client import OllamaClient
+from ollama_types import ChatMessage, ChatRequest, GenerationParams
 
-<hr>
-<h2>✅ Resumen Y Cierre</h2>
+client = OllamaClient()
 
+# 1) Indexar documentos (en un sistema real seria batch + vector DB)
+docs = [
+    'Ollama usa el formato GGUF para distribuir modelos.',
+    'llama.cpp es el motor de inferencia que Ollama envuelve.',
+    'Top-p sampling descarta tokens cuya probabilidad acumulada es menor a p.',
+]
+doc_embeddings = [client.embed('nomic-embed-text', d) for d in docs]
+
+# 2) Query del usuario
+query = 'Que formato usa Ollama?'
+query_emb = client.embed('nomic-embed-text', query)
+
+# 3) Retrieve top-1 por similitud coseno
+import numpy as np
+
+def cosine(a, b):
+    a, b = np.array(a), np.array(b)
+    return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b)))
+
+scores = [cosine(query_emb, e) for e in doc_embeddings]
+best_idx = int(np.argmax(scores))
+context = docs[best_idx]
+# Verificacion numerica: si query_emb == doc_embeddings[0], score deberia ser 1.0
+
+# 4) Generar respuesta con contexto
+req = ChatRequest(
+    model='llama3.2:3b',
+    messages=(
+        ChatMessage('system', f'Responde solo con base en este contexto: {context}'),
+        ChatMessage('user', query),
+    ),
+    params=GenerationParams(temperature=0.2, top_p=0.9),  # baja temp para RAG
+)
+print(client.chat(req).content)</code></pre>
+<h3>Caso 2: Streaming para UX en tiempo real</h3>
+<pre><code class="language-python">from ollama_client import OllamaClient
+from ollama_types import ChatMessage, ChatRequest, GenerationParams
+
+client = OllamaClient()
+req = ChatRequest(
+    model='llama3.2:3b',
+    messages=(ChatMessage('user', 'Explicame backpropagation en 3 oraciones'),),
+    params=GenerationParams(temperature=0.5, num_ctx=2048),
+)
+
+print('Respuesta: ', end='', flush=True)
+for token in client.chat_stream(req):
+    print(token, end='', flush=True)
+print()  # newline al final</code></pre>
+<h3>Caso 3: Code review local sin enviar nada a la nube</h3>
+<pre><code class="language-python">from ollama_client import OllamaClient
+from ollama_types import ChatMessage, ChatRequest, GenerationParams
+
+code_to_review = """
+def process(items):
+    result = []
+    for i in items:
+        if i &gt; 0:
+            result.append(i * 2)
+    return result
+"""
+
+client = OllamaClient()
+req = ChatRequest(
+    model='llama3.2:3b',
+    messages=(
+        ChatMessage('system', 'Sos un senior Python reviewer. Responde en espanol, en JSON.'),
+        ChatMessage('user', f'Revisa este codigo:\n```python\n{code_to_review}\n```'),
+    ),
+    params=GenerationParams(temperature=0.2, top_k=20),
+)
+print(client.chat(req).content)</code></pre>
+<h2>6. Debugging: Cuando Todo se Va a la Mierda</h2>
+<p><strong>Problema 1: <code>model requires more VRAM than available</code></strong> El modelo no entra en GPU. Lo detectas asi:</p>
+<pre><code class="language-python">import ollama
+try:
+    ollama.chat(model='llama3.1:70b-q4_0', messages=[{'role': 'user', 'content': 'hi'}])
+except ollama.ResponseError as e:
+    # Verificacion numerica: e.error tipicamente contiene
+    # "out of memory" o "failed to allocate VRAM"
+    print(f'Error capturado: {e.error}')</code></pre>
+<p>Soluciones reales:</p>
+<ol>
+  <li>Bajar cuantizacion: <code>llama3.1:70b-q4_0</code> (40 GB) -> <code>llama3.1:70b-q3_K_M</code> (~30 GB).</li>
+  <li>Limitar el context window: <code>GenerationParams(num_ctx=2048)</code> en vez de 8192 (el KV cache escala lineal con <code>num_ctx</code>).</li>
+  <li>Forzar offload parcial a CPU: en el Modelfile, <code>PARAMETER num_gpu 20</code> pone solo 20 layers en GPU y el resto en RAM.</li>
+  <li>Si no hay nada que hacer: usar un modelo mas chico. Llama 3.1 8B en Q4_K_M entra en 6 GB de VRAM y sirve para el 80% de los casos.</li>
+</ol>
+<p><strong>Problema 2: Latencia brutal en el primer token</strong> El modelo se descarga de disco a VRAM cada vez. Ollama tiene un parametro <code>keep_alive</code> que mantiene el modelo en memoria:</p>
+<pre><code class="language-python"># Mantener el modelo cargado 10 minutos tras la ultima request
+resp = client._client.chat(
+    model='llama3.2:3b',
+    messages=[{'role': 'user', 'content': 'hola'}],
+    keep_alive='10m',  # '5s', '10m', '-1' para indefinido, '0' para descargar de una
+)</code></pre>
+<p><strong>Problema 3: El modelo alucina o repite tokens</strong> Suele ser <code>temperature</code> muy alta + <code>top_p</code> muy alto. <strong>No hay fiesta</strong> si no validas estos parametros. Para code review o RAG usa <code>temperature <= 0.3</code>. Para escritura creativa <code>0.7-0.9</code>. Y siempre <code>repeat_penalty=1.1</code> para evitar loops.</p>
+<h2>7. Optimizaciones de Produccion</h2>
+<p><strong>Optimizacion 1: Ajusta <code>num_ctx</code> al caso de uso real</strong> El context window es el principal driver de uso de VRAM por el KV cache. Formula exacta:</p>
+$$M_{\text{KV}} = 2 \cdot L \cdot H_{\text{kv}} \cdot d_h \cdot S \cdot B \quad \text{[bytes]}$$
+<p>Para Llama 3 8B con $L=32$, $H_{\text{kv}}=8$, $d_h=128$:</p>
 <ul>
-<li><strong>Adaptive Dropout</strong>: Capas profundas necesitan mas regularizacion.</li>
-<li><strong>Stochastic Depth</strong>: Salta capas aleatoriamente - muy efectivo para transformers profundos.</li>
-<li><strong>Label Smoothing</strong>: Previene overconfidence y mejora generalizacion.</li>
-<li><strong>Weight Decay Selectivo</strong>: Solo decay en weights, no en biases ni norms.</li>
-<li><strong>Pre-norm vs Post-norm</strong>: Pre-norm es mas estable para training de transformers profundos.</li>
+  <li>Con $S=2048$, $B=2$: $M_{\text{KV}} = 2 \cdot 32 \cdot 8 \cdot 128 \cdot 2048 \cdot 2 / 10^9 \approx 0.27$ GB.</li>
+  <li>Con $S=8192$: $M_{\text{KV}} \approx 1.07$ GB.</li>
 </ul>
-
-<p>Hagale que la regularizacion en transformers no es "apagar cosas al azar". Es una ciencia que requiere entender como la informacion fluye por el modelo. Implementen estas tecnicas desde el principio, parcero.</p>
-
-<p><em>Eso es todo. Dia 176 viene con mas.</em></p>
+<p>Trade-off: si tu use case es Q&A sobre docs cortos, no necesitas 128k de context. Bajalo a 4096 y liberas VRAM para el modelo o para atender mas requests concurrentes.</p>
+<p><strong>Optimizacion 2: <code>keep_alive</code> estrategico</strong> Si tu servicio recibe trafico en rafagas (ej. un chatbot que tiene picos a las 9 AM y a las 3 PM), configura <code>keep_alive='30m'</code> en cada request. Si lo dejas en default (5 minutos), entre rafagas el modelo se descarga y la siguiente request paga el costo de recargarlo a VRAM, que en una RTX 4090 con un 70B Q4 puede ser 8-12 segundos. Ese costo multiplicado por 100 requests/min en una ventana corta te mata el SLA.</p>
+<h2>Conclusion: Por Que Esto te Salva el Pellejo en Produccion</h2>
+<p>Resumen ejecutivo:</p>
+<ul>
+  <li><strong>Ollama no es magia</strong>: es un wrapper sobre <code>llama.cpp</code> con un servidor REST y un registry de modelos. Entiende eso y dejara de ser una caja negra.</li>
+  <li><strong>El control fino vive en los parametros de muestreo</strong>: temperatura, top_k, top_p, repeat_penalty. Si no los entiendes, no podes debuggear nada.</li>
+  <li><strong>El KV cache es tu enemigo silencioso</strong>: crece lineal con <code>num_ctx</code>. Estimalo siempre antes de desplegar.</li>
+  <li><strong>Los Modelfiles son contratos</strong>: encapsulan modelo + system prompt + params. Versiona esos archivos.</li>
+  <li><strong><code>keep_alive</code> y cuantizacion</strong> son tus perillas de latencia/costo principales en local.</li>
+</ul>
+<p>Mini-checklist antes de mandar a prod:</p>
+<ul>
+  <li>[ ] Modelo cuantizado adecuado a tu VRAM (mediste con la formula del KV cache)</li>
+  <li>[ ] <code>temperature</code> y <code>top_p</code> fijados segun el caso de uso</li>
+  <li>[ ] <code>keep_alive</code> configurado para tu patron de trafico</li>
+  <li>[ ] Modelfile versionado en Git</li>
+  <li>[ ] Healthcheck contra <code>/api/tags</code> en tu monitoring</li>
+  <li>[ ] Logs de tokens/segundo por request (necesitas la <code>GenerationReport</code>)</li>
+  <li>[ ] Plan B si el modelo no entra: modelo mas chico, cuantizacion agresiva, o migrar a vLLM en una maquina con mas GPU</li>
+</ul>
+<p>Probalo hoy mismo: <code>ollama pull llama3.2:3b && ollama run llama3.2:3b "dame un chiste sobre MLOps"</code>. Si eso corre en tu laptop, ya tenes el 80% del camino recorrido.</p>
+<p>Manana seguimos con un tema que te va a doler si no lo manejas bien: evaluacion automatica de LLMs en pipelines CI/CD. Pilas con eso parce. 🔥</p>
   </article>
+  <nav class="article-nav" aria-label="Navegacion entre articulos">
+    <a class="nav-prev" href="/blog/dia-174365-open-vs-closed/">Anterior</a>
+    <a href="/blog/">Todos los articulos</a>
+    <a class="nav-next" href="/blog/dia-176365-gguf/" data-date="2026-06-25">Siguiente</a>
+  </nav>
 
-  <script>
-    document.getElementById('themeToggle').addEventListener('click', function() {
-      const html = document.documentElement;
-      const isDark = html.getAttribute('data-theme') === 'dark';
-      html.setAttribute('data-theme', isDark ? 'light' : 'dark');
-      document.getElementById('themeIcon').className = isDark ? 'fas fa-moon' : 'fas fa-sun';
-    });
-  </script>
+
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
   <script>
     hljs.highlightAll();
-    document.addEventListener('DOMContentLoaded', () => {
+    document.addEventListener('DOMContentLoaded', function() {
       renderMathInElement(document.body, {
         delimiters: [
           { left: '$$', right: '$$', display: true },
@@ -541,21 +587,20 @@ if __name__ == "__main__":
         throwOnError: false,
       });
     });
-    
-  const _html = document.documentElement;
-  const _btn  = document.getElementById('themeToggle');
-  const _icon = document.getElementById('themeIcon');
-  function _setIcon(t) { _icon.className = t === 'dark' ? 'fas fa-sun' : 'fas fa-moon'; }
-  const _saved = localStorage.getItem('theme') || 'dark';
-  _html.setAttribute('data-theme', _saved);
-  _setIcon(_saved);
-  _btn.addEventListener('click', () => {
-    const next = _html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
-    _html.setAttribute('data-theme', next);
-    localStorage.setItem('theme', next);
-    _setIcon(next);
-  });
 
+    var _html = document.documentElement;
+    var _btn  = document.getElementById('themeToggle');
+    var _icon = document.getElementById('themeIcon');
+    function _setIcon(t) { _icon.className = t === 'dark' ? 'fas fa-sun' : 'fas fa-moon'; }
+    var _saved = localStorage.getItem('theme') || 'dark';
+    _html.setAttribute('data-theme', _saved);
+    _setIcon(_saved);
+    _btn.addEventListener('click', function() {
+      var next = _html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+      _html.setAttribute('data-theme', next);
+      localStorage.setItem('theme', next);
+      _setIcon(next);
+    });
   </script>
   <script>
     document.addEventListener('DOMContentLoaded', function() {
