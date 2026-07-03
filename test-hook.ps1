@@ -1,31 +1,24 @@
-$ErrorActionPreference = 'Stop'
-
-# Debug: que devuelve git diff --cached
-Write-Host "=== Staged files (todos) ==="
-git diff --cached --name-only
-
-Write-Host ""
-Write-Host "=== Staged files del blog ==="
-$stagedFiles = git diff --cached --name-only --diff-filter=ACM | Where-Object { $_ -like 'blog\*' }
-Write-Host "Count: $($stagedFiles.Count)"
-foreach ($f in $stagedFiles) { Write-Host "  - $f" }
-
-Write-Host ""
-Write-Host "=== git show del archivo ==="
-$content = git show ":blog/dia-84365-layer-normalization/index.html"
+$content = git show ":blog/dia-92365-convolucion/index.html"
 Write-Host "Length: $($content.Length)"
-Write-Host "Tiene el bug: $($content -like '*$<code>*')"
-
-Write-Host ""
-Write-Host "=== Aplicando regex ==="
 $pattern = '\$[^$]*\<code\>'
-$m = [regex]::Matches($content, $pattern)
-Write-Host "Matches: $($m.Count)"
-
-if ($m.Count -gt 0) {
-    Write-Host "DEBERIA DETECTAR BUG"
-    exit 1
-} else {
-    Write-Host "No se detecta bug"
-    exit 0
+$matchesFound = [regex]::Matches($content, $pattern)
+Write-Host "Matches: $($matchesFound.Count)"
+foreach ($m in $matchesFound) {
+    Write-Host "  Match index: $($m.Index), length: $($m.Length), value: $($m.Value)"
+    Write-Host "  Content length: $($content.Length)"
+    if ($m.Index -ge $content.Length) {
+        Write-Host "  INDEX FUERA DE RANGO"
+        continue
+    }
+    if ($m.Index -eq 0) {
+        Write-Host "  Line: 1"
+    } else {
+        try {
+            $upToMatch = $content.Substring(0, $m.Index)
+            $lineNum = ([regex]::Matches($upToMatch, '\n')).Count + 1
+            Write-Host "  Line: $lineNum"
+        } catch {
+            Write-Host "  Error: $($_.Exception.Message)"
+        }
+    }
 }
