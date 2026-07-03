@@ -125,12 +125,12 @@ nav {
 <h2>Introduccion: Cuando el modelo "ya estaba entrenado" y nadie sabe por que falla</h2>
 <p>Era un martes a las 11 de la noche. Tenia un paper que reproducir para una submission de un cliente financiero, y el autor original habia publicado su implementacion en TensorFlow 2.x con Keras. Mi pipeline interno estaba todo en PyTorch. "Lo porto y listo" — me dije. Tarea sencilla: copiar la arquitectura, mover los pesos, correr.</p>
 <p>Dos dias despues, mi modelo estaba dando 2.1% menos de accuracy que el paper. Mismo dataset, mismas semillas, mismos hiperparametros. La gerencia respirandome en la nuca.</p>
-<p>Cuando destripe el asunto, encontre que <strong>PyTorch y TensorFlow no calculan la misma convolucion 2D de la misma manera</strong>. La diferencia es sutil, del orden de $<code>10^{-5}</code>$ por elemento, pero cuando apilas 50 capas convolucionales con BatchNorm y ReLU, esos $<code>10^{-5}</code>$ se acumulan y la frontera de decision termina corrida varios pixeles. En clasificacion con 10 clases balanceadas, eso son los 2% que me faltaban.</p>
+<p>Cuando destripe el asunto, encontre que <strong>PyTorch y TensorFlow no calculan la misma convolucion 2D de la misma manera</strong>. La diferencia es sutil, del orden de $10^{-5}$ por elemento, pero cuando apilas 50 capas convolucionales con BatchNorm y ReLU, esos $10^{-5}$ se acumulan y la frontera de decision termina corrida varios pixeles. En clasificacion con 10 clases balanceadas, eso son los 2% que me faltaban.</p>
 <p>Eso es lo que te voy a contar hoy, parce. No un "PyTorch es mejor que TensorFlow" — esa vaina no la va a encontrar aca, porque los dos son excelentes y los dos te pueden morder. Lo que te voy a dar es el modelo mental matematico para entender que pasa adentro de cada uno, y como escribir codigo que se porta igual en los dos frameworks.</p>
 <h2>1. Que es PyTorch vs TensorFlow? (Y por que deberia importarte)</h2>
 <h3>1.1 La analogia cotidiana</h3>
 <p>Imaginate dos traductores oficiales que llevan el mismo libro del frances al espanol. Ambos son profesionales, ambos saben gramatica, ambos revisan tres veces. Pero uno aprendio frances en Paris y el otro en Montreal. Cuando se enfrentan a un modismo como "il pleut des cordes", el primero escribe "llueve a cantaros" (correcto en espanol de Espana), el segundo escribe "esta lloviendo muy fuerte" (correcto en espanol de Mexico). Las dos traducciones son validas, pero <strong>no son identicas palabra por palabra</strong>.</p>
-<p>Asi funcionan PyTorch y TensorFlow cuando "traducen" tu modelo matematico a operaciones de GPU. Tu defines una capa convolucional con kernel $<code>3 \times 3</code>$, padding "same", stride 1. Los dos frameworks <strong>deberian</strong> darte el mismo tensor de salida. Pero:</p>
+<p>Asi funcionan PyTorch y TensorFlow cuando "traducen" tu modelo matematico a operaciones de GPU. Tu defines una capa convolucional con kernel $3 \times 3$, padding "same", stride 1. Los dos frameworks <strong>deberian</strong> darte el mismo tensor de salida. Pero:</p>
 <ul>
   <li><strong>PyTorch</strong> puede elegir entre GEMM, Winograd, FFT o implicit GEMM segun el tamano del input y el flag <code>torch.backends.cudnn.benchmark</code>.</li>
   <li><strong>TensorFlow</strong> por defecto usa <code>tf.nn.conv2d</code> que mapea a cuDNN con un algoritmo de padding diferente (<code>EXPLICIT</code> vs <code>SAME_UPPER</code>).</li>
@@ -180,22 +180,22 @@ nav {
 <h3>1.2 La matematica formal</h3>
 <p>Un <strong>tensor</strong> es la generalizacion n-dimensional de un escalar (0D), un vector (1D) y una matriz (2D). Formalmente:</p>
 $$`T \in \mathbb{R}^{d_1 \times d_2 \times \ldots \times d_n}`$$
-<p>Donde $<code>d_i</code>$ es el tamano de la dimension $<code>i</code>$. Para una imagen RGB de 224x224 pixeles, el tensor es de forma $<code>[3, 224, 224]</code>$ (canales, alto, ancho) en PyTorch o $<code>[224, 224, 3]</code>$ (alto, ancho, canales) en TensorFlow. Esa diferencia de orden de dimensiones se llama <strong>NHWC vs NCHW</strong> y es la primera fuente de bugs silenciosos al portar modelos.</p>
+<p>Donde $d_i$ es el tamano de la dimension $i$. Para una imagen RGB de 224x224 pixeles, el tensor es de forma $[3, 224, 224]$ (canales, alto, ancho) en PyTorch o $[224, 224, 3]$ (alto, ancho, canales) en TensorFlow. Esa diferencia de orden de dimensiones se llama <strong>NHWC vs NCHW</strong> y es la primera fuente de bugs silenciosos al portar modelos.</p>
 <p>La <strong>convolucion discreta 2D</strong> que ambas librerias implementan es:</p>
 $$`(I * K)[i, j] = \sum_{m=0}^{M-1} \sum_{n=0}^{N-1} I[i + m - p_h,\, j + n - p_w] \cdot K[m, n]`$$
 <p>Donde:</p>
 <ul>
-  <li>$<code>I</code>$ es el tensor de entrada (input)</li>
-  <li>$<code>K</code>$ es el kernel de tamano $<code>M \times N</code>$</li>
-  <li>$<code>p_h, p_w</code>$ son los paddings verticales y horizontales</li>
-  <li>$<code>(I * K)[i,j]</code>$ es la salida en la posicion $<code>(i,j)</code>$</li>
+  <li>$I$ es el tensor de entrada (input)</li>
+  <li>$K$ es el kernel de tamano $M \times N$</li>
+  <li>$p_h, p_w$ son los paddings verticales y horizontales</li>
+  <li>$(I * K)[i,j]$ es la salida en la posicion $(i,j)$</li>
 </ul>
-<p>El <strong>algoritmo de Winograd</strong> $<code>F(2 \times 2, 3 \times 3)</code>$ reduce esta operacion de 6 multiplicaciones por pixel a 4, usando la identidad:</p>
+<p>El <strong>algoritmo de Winograd</strong> $F(2 \times 2, 3 \times 3)$ reduce esta operacion de 6 multiplicaciones por pixel a 4, usando la identidad:</p>
 $$`Y = A^T \left[ (G\, g) \odot (B^T d) \right] A`$$
-<p>Donde $<code>G, B, A</code>$ son matrices de transformacion precalculadas, $<code>g</code>$ es el kernel, $<code>d</code>$ es el tile de input y $<code>\odot</code>$ es producto elemento a elemento. PyTorch puede usar Winograd o no segun el tamano del input. TensorFlow por defecto usa GEMM directo (im2col + multiplicacion de matrices). <strong>Mismo resultado matematico, diferente ruta numerica, diferente error de punto flotante acumulado</strong>.</p>
+<p>Donde $G, B, A$ son matrices de transformacion precalculadas, $g$ es el kernel, $d$ es el tile de input y $\odot$ es producto elemento a elemento. PyTorch puede usar Winograd o no segun el tamano del input. TensorFlow por defecto usa GEMM directo (im2col + multiplicacion de matrices). <strong>Mismo resultado matematico, diferente ruta numerica, diferente error de punto flotante acumulado</strong>.</p>
 <p>El <strong>autograd</strong> (gradientes automaticos) se basa en la regla de la cadena:</p>
 $$`\frac{\partial L}{\partial \theta_i} = \frac{\partial L}{\partial y_N} \cdot \prod_{k=i}^{N-1} \frac{\partial y_{k+1}}{\partial y_k} \cdot \frac{\partial y_i}{\partial \theta_i}`$$
-<p>Donde $<code>L</code>$ es la perdida, $<code>\theta_i</code>$ es el parametro $<code>i</code>$, y $<code>y_k</code>$ es la salida de la capa $<code>k</code>$. La diferencia entre PyTorch y TensorFlow no es la formula, sino <strong>cuando se evalua</strong>:</p>
+<p>Donde $L$ es la perdida, $\theta_i$ es el parametro $i$, y $y_k$ es la salida de la capa $k$. La diferencia entre PyTorch y TensorFlow no es la formula, sino <strong>cuando se evalua</strong>:</p>
 <ul>
   <li><strong>PyTorch (eager)</strong>: Cada operacion construye un nodo en el grafo dinamicamente. Cuando llamas <code>loss.backward()</code>, el grafo se recorre en orden inverso inmediatamente.</li>
   <li><strong>TensorFlow (eager por defecto en TF2)</strong>: Igual que PyTorch, pero si decoras con <code>@tf.function</code>, se hace tracing la primera vez y las siguientes llamadas usan el grafo estatico compilado con XLA.</li>
@@ -676,7 +676,7 @@ scaler.update()</code></pre>
 <ul>
   <li>[ ] ¿Sembraste <code>torch.manual_seed</code>, <code>tf.random.set_seed</code> y <code>numpy.random.seed</code> con el mismo valor?</li>
   <li>[ ] ¿Verificaste que las dimensiones son NCHW en PyTorch y NHWC en TensorFlow antes del primer forward?</li>
-  <li>[ ] ¿Comparaste <code>max_absolute_difference</code> contra $<code>10^{-4}</code>$ con <code>compare_predictions</code>?</li>
+  <li>[ ] ¿Comparaste <code>max_absolute_difference</code> contra $10^{-4}$ con <code>compare_predictions</code>?</li>
 </ul>
 <p>Pilas con esto: la proxima vez que alguien te diga "es el mismo modelo, solo cambio de framework", ya sabes que mienten. El modelo logico es el mismo. La traduccion numerica no. Ahora tienes las herramientas para medirla y compensarla. Al toque, sin drama.</p>
   </article>
