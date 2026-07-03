@@ -546,7 +546,7 @@ for _ in range(50):
   <li><strong>Reemplazar sigmoid por ReLU/GELU en capas ocultas</strong> — ReLU tiene derivada máxima 1 vs 0.25 de sigmoid, eliminando la contracción geométrica capa a capa.</li>
   <li><strong>Inicialización He (Kaiming) en vez de Xavier cuando usás ReLU</strong> — He inicializa con $\text{Var}(W) = 2 / n_{\text{in}}$, manteniendo la varianza de las activaciones a través de las capas con ReLU. Con Xavier $1/n_{\text{in}}$$, ReLU mata la mitad de la varianza por capa (porque la mitad de las salidas son 0).</li>
   <li><strong>Residual connections</strong> ($y = x + F(x)$) — el camino identidad preserva gradiente; el $+x$ en el Jacobiano evita la cadena multiplicativa pura. Matemáticamente, $\frac{\partial L}{\partial x} = \frac{\partial L}{\partial y}\bigl(1 + \frac{\partial F}{\partial x}\bigr)$, donde el "1" es el atajo identidad y <strong>nunca se contrae</strong>, sin importar cuántas capas apiles.</li>
-  <li><strong>Layer Normalization</strong> — normaliza activaciones antes de la no-linealidad, manteniendo las entradas de sigmoid/tanh lejos de la zona de saturación (donde $<code>\sigma' \approx 0</code>$). Sin esto, cualquier sigmoid/tanh profundo tiende a saturar.</li>
+  <li><strong>Layer Normalization</strong> — normaliza activaciones antes de la no-linealidad, manteniendo las entradas de sigmoid/tanh lejos de la zona de saturación (donde $\sigma' \approx 0$). Sin esto, cualquier sigmoid/tanh profundo tiende a saturar.</li>
 </ol>
 <h3>6.2 Problema: NaNs en loss despues de algunas iteraciones</h3>
 <pre><code class="language-python"># Repro: lr muy alto con red profunda
@@ -564,8 +564,8 @@ for _ in range(100):
 <p><strong>Soluciones</strong>:</p>
 <ol>
   <li><strong>Gradient clipping</strong> — <code>torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)</code> recorta la norma global del gradiente antes del step. Útil cuando hay una capa que ocasionalmente dispara gradientes enormes. <strong>Lo que ganás</strong>: estabilidad numérica. <strong>Lo que sacrificás</strong>: si recorto demasiado, el aprendizaje se vuelve ultra lento.</li>
-  <li><strong>Bajar learning rate</strong> drásticamente (10x–100x) y subirlo gradualmente con un warmup scheduler (<code>torch.optim.lr_scheduler.LinearLR</code> o <code>LambdaLR</code>). Si el lr es demasiado alto, los pesos saltan fuera de la zona donde las activaciones son productivas (region $<code>x > 0</code>$ en ReLU, region lineal en sigmoid).</li>
-  <li><strong>Weight decay selectivo o regularización L2</strong> — limita la magnitud de los pesos, lo que indirectamente limita la magnitud del Jacobiano $<code>W^{(k)}</code>$ en la cadena de gradientes. Funciona como guardia silenciosa.</li>
+  <li><strong>Bajar learning rate</strong> drásticamente (10x–100x) y subirlo gradualmente con un warmup scheduler (<code>torch.optim.lr_scheduler.LinearLR</code> o <code>LambdaLR</code>). Si el lr es demasiado alto, los pesos saltan fuera de la zona donde las activaciones son productivas (region $x > 0$ en ReLU, region lineal en sigmoid).</li>
+  <li><strong>Weight decay selectivo o regularización L2</strong> — limita la magnitud de los pesos, lo que indirectamente limita la magnitud del Jacobiano $W^{(k)}$ en la cadena de gradientes. Funciona como guardia silenciosa.</li>
   <li><strong>Numerics check en la loss</strong> — si <code>loss.item()</code> es <code>nan</code> o <code>inf</code>, salteá el step y reanuda con un lr 10x menor. Esta es la versión "ingenieril" del manejo, no elegante pero funcional en producción.</li>
 </ol>
 <h2>7. Optimizaciones de Produccion</h2>
@@ -586,7 +586,7 @@ for i, (xb, yb) in enumerate(loader):
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         opt.step()
         opt.zero_grad()</code></pre>
-<p><strong>Trade-off</strong>: el <code>register_hook</code> se invoca en cada <code>loss.backward()</code> intermedio, así que tu monitor acumula stats por cada micro-step. Si querés diagnosticar solo en steps efectivos, llama <code>monitor.collect_stats()</code> solo cuando <code>(i + 1) % accum_steps == 0</code>. <strong>Lo que ganás</strong>: podés entrenar con batch size efectivo grande sin quedarte sin VRAM. <strong>Lo que sacrificás</strong>: el backward se ejecuta $<code>N_{\text{accum}}</code>$ veces más, aumentando overhead de Python (no de cómputo GPU).</p>
+<p><strong>Trade-off</strong>: el <code>register_hook</code> se invoca en cada <code>loss.backward()</code> intermedio, así que tu monitor acumula stats por cada micro-step. Si querés diagnosticar solo en steps efectivos, llama <code>monitor.collect_stats()</code> solo cuando <code>(i + 1) % accum_steps == 0</code>. <strong>Lo que ganás</strong>: podés entrenar con batch size efectivo grande sin quedarte sin VRAM. <strong>Lo que sacrificás</strong>: el backward se ejecuta $N_{\text{accum}}$ veces más, aumentando overhead de Python (no de cómputo GPU).</p>
 <h3>7.2 Mixed precision + monitoreo de escala</h3>
 <pre><code class="language-python">scaler = torch.amp.GradScaler("cuda")
 monitor = GradientHealthMonitor(model)
