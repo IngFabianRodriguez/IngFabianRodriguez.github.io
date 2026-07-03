@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="Dia 113/365: OCR — Del recibo arrugado al JSON validado | #365DaysOfAI por Fabian Rodriguez">
-  <title>Dia 113/365: OCR — Del recibo arrugado al JSON validado | #365DaysOfAI</title>
+  <meta name="description" content="Dia 113/365: OCR — El perito caligrafo que nunca duerme (production-ready con PaddleOCR y PyTesseract) | #365DaysOfAI por Fabian Rodriguez">
+  <title>Dia 113/365: OCR — El perito caligrafo que nunca duerme (production-ready con PaddleOCR y PyTesseract) | #365DaysOfAI</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
@@ -114,7 +114,7 @@ nav {
 
   <header class="article-hero">
     <div class="day-badge">Dia 113 / 365 &nbsp;&middot;&nbsp; #365DaysOfAI</div>
-    <h1 class="article-title">Dia 113/365: OCR — Del recibo arrugado al JSON validado</h1>
+    <h1 class="article-title">Dia 113/365: OCR — El perito caligrafo que nunca duerme (production-ready con PaddleOCR y PyTesseract)</h1>
     <div class="article-meta">
       <time class="article-date">23 de abril de 2026</time>
       <div class="tags"><span class="tag">paddleocr, pytesseract</span></div>
@@ -122,604 +122,463 @@ nav {
   </header>
 
   <article class="article-body">
-<h2>Introduccion: Cuando el modelo "ve letras" que no existen</h2>
-<p>El viernes pasado un junior me mandó un screenshot de su salida de PaddleOCR con tres emojis de fuego y un "parce, esto funciona del 10!". Cuando le pedí que validara contra ground-truth de 200 facturas reales, la precisión "brutal" que reportaba cayó del 96% al 71%. ¿La razón? Estaba evaluando sobre las fotos nítidas que él mismo seleccionó, no sobre el cafetal de facturas arrugadas, escaneadas a 200 DPI, con sellos rotos y media firma del gerente encima del RUT.</p>
-<p>Eso me pasa seguido. La gente confunde "OCR funciona" con "OCR funciona en mi laptop con esta foto". Y peor: cuando les preguntas por qué falla en producción, te responden "es que las imágenes son malas". No, parce. Las imágenes siempre son malas. Que tu pipeline no las aguante es un problema tuyo, no del cliente.</p>
-<p>Si no entendés qué pasa matemáticamente bajo el capó de <code>pytesseract.image_to_string</code> o de <code>PaddleOCR(...).ocr(...)</code>, estás manejándola a ciegas. Hoy te voy a mostrar la matemática real — Otsu, DB, CTC, distancia de Levenshtein — y un motor production-ready que no se cae cuando le meten una foto de un recibo de taxi a las 2am.</p>
+<h2>Introduccion: cuando la factura llega como foto y la gerencia la quiere en Excel</h2>
+<p>Parce, te lo resumo rapido porque a ti te toca ejecutarlo manana. Llega una factura al correo del area de contabilidad como un PDF escaneado a 72 DPI, con sombra en la esquina superior derecha, ligeramente torcida y con un sello redondo a medio camino entre magenta y morado. El contador te dice: "necesito el NIT, el numero de factura, la fecha y el subtotal en una tabla para el cierre del viernes". Vos pensas en una API magica que "lee" el documento como un humano, pero la realidad es muy distinta: lo que hay debajo es geometria computacional para localizar el texto, una red neuronal secuencia-a-secuencia para transcribirlo, y un monton de pre-procesamiento en pixeles para que esa red no se confunda.</p>
+<p>OCR en produccion no es <code>pytesseract.image_to_string(path)</code> y ya. Esa linea te da 60% de aciertos en imagenes limpias y cae a 20% en condiciones reales (foto de celular, baja luz, perspectiva). La diferencia entre un demo de notebook y un sistema que mueve 50.000 imagenes al dia la marcan tres cosas: pre-procesamiento adaptativo, eleccion correcta del backend segun el tipo de documento, y un umbral de confianza calibrado que te permita rechazar lo que el modelo no sabe.</p>
+<p>Este articulo no es un tutorial de "instala Tesseract y lee tu primer PDF". Esto es como construir el motor de un sistema que ya esta en produccion en empresas de facturacion electronica, KYC bancario y digitalizacion de expedientes. Vas a ver la matematica del DB++ (el detector de PaddleOCR), la formulacion del CTC loss (el pegamento entre la imagen y el texto), la implementacion con tipos estrictos, batching, fallback entre motores, y los tres escenarios de debug que te van a explotar en la cara tarde o temprano.</p>
 <h2>1. Que es OCR? (Y por que deberia importarte)</h2>
-<p>OCR es la traducción de una matriz de píxeles a una secuencia de tokens discretos. Suena simple hasta que entendés que el input es un tensor 3D de valores en $[0, 255]^{H \times W \times C}$ con ruido, iluminación variable, distorsión afín y caracteres que pueden tener 50 fuentes distintas en la misma página.</p>
 <h3>1.1 La analogia cotidiana</h3>
-<p>Pensá en leer la factura de un restaurante en una servilleta, bajo la luz tenue de un bar, mientras un tipo con un parlante pasa reggaetón al lado. Tu cerebro hace esto en orden:</p>
-<ol>
-  <li><strong>Segmentacion</strong>: separa la servilleta del fondo, ignora la mancha de café, aisla cada bloque de texto.</li>
-  <li><strong>Binarizacion</strong>: convierte lo que ve a "tinta vs. no tinta", descartando variaciones de luz.</li>
-  <li><strong>Reconocimiento</strong>: lee carácter por carácter, pero no literal — usa contexto ("si dice _to_l_, probablemente es _total_").</li>
-  <li><strong>Verificacion</strong>: si la palabra no encaja con nada conocido, la corrige ("_hab_ones" no existe -> es _habones_, no, es _bebidas_).</li>
-</ol>
-<p>El motor OCR hace exactamente eso, pero con matemática dura. La segmentación es búsqueda de componentes conexos. La binarización es maximización de varianza inter-clase (Otsu). El reconocimiento es una red neuronal con CTC loss. La verificación es distancia de edición mínima (Levenshtein).</p>
-<h3>1.2 La matematica formal</h3>
-<p><strong>Otsu's method para binarizacion.</strong> Dada una imagen en escala de grises con $L = 256$ niveles, definimos el histograma normalizado $p_i$ como la frecuencia relativa del nivel $i$. Para un umbral $t$ que separa la imagen en dos clases $C_0 = \{0, \dots, t\}$ y $C_1 = \{t+1, \dots, L-1\}$:</p>
-$$w_0(t) = \sum_{i=0}^{t} p_i, \quad w_1(t) = \sum_{i=t+1}^{L-1} p_i$$
-<p>donde $w_0$ y $w_1$ son las <strong>probabilidades acumuladas</strong> de cada clase: la fracción de píxeles que caen en foreground y background, respectivamente. Las medias de clase son:</p>
-$$\mu_0(t) = \frac{\sum_{i=0}^{t} i \cdot p_i}{w_0(t)}, \quad \mu_1(t) = \frac{\sum_{i=t+1}^{L-1} i \cdot p_i}{w_1(t)}$$
-<p>Otsu busca el $t^*$ que maximiza la <strong>varianza entre clases</strong>:</p>
-$$\sigma_b^2(t) = w_0(t) \cdot w_1(t) \cdot \left[ \mu_0(t) - \mu_1(t) \right]^2$$
-<p>El umbral optimo es $t^* = \arg\max_t \sigma_b^2(t)$. Es contraintuitivo: maximizás la separación entre las medias de las dos clases, no la diferencia entre píxeles individuales. Por eso Otsu es robusto incluso con iluminación desigual: lo que importa es la separación de las distribuciones de "tinta" y "papel", no el contraste local.</p>
-<p><strong>CTC (Connectionist Temporal Classification) para reconocimiento.</strong> Dada una secuencia de features de longitud $T$ extraida por la CNN, $X = (x_1, \dots, x_T)$ con $x_t \in \mathbb{R}^d$, queremos mapearla a una cadena de texto $Y = (y_1, \dots, y_U)$ con $U \leq T$. CTC introduce un símbolo especial "en blanco" $\epsilon$ y define $\mathcal{B}^{-1}(Y)$ como el conjunto de todas las secuencias de longitud $T$ que se reducen a $Y$ tras colapsar repetidos y eliminar $\epsilon$.</p>
-<p>La probabilidad de $Y$ dado $X$ es:</p>
-$$P(Y|X) = \sum_{\pi \in \mathcal{B}^{-1}(Y)} \prod_{t=1}^{T} P(\pi_t \mid x_t)$$
-<p>Esto se computa con programacion dinamica forward-backward en $O(T \cdot U)$. Por eso PaddleOCR puede emitir texto de longitud variable sin necesidad de un decoder autoregresivo costoso en inferencia: el "blanco" actúa como separador natural entre caracteres repetidos.</p>
-<p><strong>Distancia de Levenshtein para post-procesado.</strong> Dados dos strings $a$ y $b$ de longitudes $m$ y $n$, la distancia de edicion $D$ cumple la recurrencia:</p>
-$$
-D(i, j) = \begin{cases} i & \text{si } j = 0 \\ j & \text{si } i = 0 \\ D(i-1, j-1) & \text{si } a_i = b_j \\ 1 + \min\begin{cases} D(i-1, j) \\ D(i, j-1) \\ D(i-1, j-1) \end{cases} & \text{en otro caso} \end{cases}
-$$
-<p>donde $D(i, j)$ es la distancia entre los primeros $i$ caracteres de $a$ y los primeros $j$ de $b$. La usamos para corregir errores tipograficos contra un diccionario del dominio (<code>"factra" -> "factura"</code>).</p>
+<p>Imaginate un perito caligrafo trabajando en un caso de suplantacion de identidad. Tiene una firma en un pagaré, una fotocopia del documento de identidad y un sello notarial. Su trabajo no es "leer" en el sentido que vos y yo leemos: el no escanea de izquierda a derecha como un nino de primaria. Primero mira el documento completo, identifica las regiones de interes (la firma aca, el sello alla, el numero de identificacion en la esquina), valida que la proporcion, la alineacion y el tipo de letra sean consistentes con lo que espera, y solo ahi empieza a transcribir caracter por caracter, validando contra reglas contextuales (el NIT colombiano empieza con un digito especifico, una fecha de expedicion no puede ser del 2099, etc).</p>
+<p>Un sistema de OCR moderno replica exactamente ese flujo en dos etapas desacopladas: <strong>deteccion</strong> (donde esta el texto?) y <strong>reconocimiento</strong> (que caracteres hay ahi?). PaddleOCR y Tesseract resuelven estas etapas con arquitecturas distintas pero compatibles, y entender cuando usar cada uno es la diferencia entre 4 horas de procesamiento batch y 40 minutos.</p>
+<h3>1.2 La matematica formal con KaTeX</h3>
+<p><strong>Etapa 1: Deteccion con Differentiable Binarization (DB++)</strong>. PaddleOCR usa una red FPN (Feature Pyramid Network) que produce dos mapas: un mapa de probabilidad $P_{i,j} \in [0,1]$ que indica que tan seguro esta el modelo de que hay texto en el pixel $(i,j)$, y un mapa de umbral $T_{i,j} \in [0,1]$ que aprende el umbral optimo local. El mapa binarizado final se calcula como:</p>
+$$\hat{B}_{i,j} = \sigma\left(k \cdot \left(P_{i,j} - T_{i,j}\right)\right)$$
+<p>Donde $\sigma$ es la funcion sigmoide y $k$ es un factor de amplificacion (tipicamente $k=50$). La intuicion: cuando $P_{i,j} \gg T_{i,j}$ (zona claramente de texto), $\hat{B} \to 1$; cuando $P_{i,j} \ll T_{i,j}$ (zona claramente de fondo), $\hat{B} \to 0$; en el borde entre texto y fondo, la diferencia es pequena y $\hat{B}$ queda cercano a $0.5$, separando las regiones. La funcion de perdida total del detector es:</p>
+$$L_{det} = L_{s} + \alpha \cdot L_{b} + \beta \cdot L_{t}$$
+<p>Donde $L_{s}$ es la perdida balanceada de entropia cruzada sobre el mapa de probabilidad (con sampling positivo/negativo 1:3 para manejar el desbalance de clases), $L_{b}$ es la perdida Dice sobre el mapa binarizado, $L_{t}$ es L1 sobre el mapa de umbral, $\alpha=1$ y $\beta=10$. Los hiperparametros no son arbitrarios: $\beta$ pesa mas el umbral porque si este se descalibra, todo el detector falla.</p>
+<p><strong>Etapa 2: Reconocimiento con CRNN + CTC</strong>. Una vez que tenemos el bounding box del texto, recortamos la region, la redimensionamos a una altura fija (tipicamente 32 pixeles) manteniendo aspect ratio, y la pasamos por una red convolucional que extrae un mapa de features $X \in \mathbb{R}^{T \times D}$ donde $T$ es el ancho reducido y $D$ la dimension del embedding. Luego una BiLSTM produce $H \in \mathbb{R}^{T \times C}$ donde $C$ es el numero de clases (caracteres + blank). La transcripcion se hace con CTC (Connectionist Temporal Classification), que permite entrenar sin alineamiento explico entre pixeles y caracteres:</p>
+$$P(y \mid x) = \sum_{\pi \in \mathcal{B}^{-1}(y)} \prod_{t=1}^{T} P(\pi_t \mid x_t)$$
+<p>Donde $\mathcal{B}^{-1}(y)$ es el conjunto de todas las secuencias $\pi$ que, al colapsar repetidos y remover blanks, producen $y$. La perdida es:</p>
+$$L_{CTC} = -\log P(y \mid x)$$
+<p>Esto se calcula con el algoritmo de programacion dinamica forward-backward en $O(T \cdot |y|)$. La inteligencia de CTC es que te permite entrenar reconocimiento de texto sin necesidad de anotar en que pixel exacto esta cada letra, algo humanamente imposible.</p>
+<p><strong>Metrica de evaluacion: IoU y edit distance</strong>. Para medir precision de deteccion usamos Intersection over Union:</p>
+$$\text{IoU}(A, B) = \frac{|A \cap B|}{|A \cup B|}$$
+<p>Para medir precision de reconocimiento usamos la distancia de Levenshtein normalizada:</p>
+$$\text{NED} = \frac{\text{ED}(y_{pred}, y_{true})}{\max(|y_{pred}|, |y_{true}|)}$$
+<p>Un sistema OCR production-grade apunta a $\text{IoU} > 0.7$ en deteccion y $\text{NED} < 0.05$ en reconocimiento (95% de caracteres correctos).</p>
 <h2>2. Como PaddleOCR y Tesseract resuelven esto por vos</h2>
-<p><strong>PaddleOCR</strong> corre dos modelos en cascada. El primero es <strong>DB (Differentiable Binarization)</strong> para deteccion: una red tipo U-Net predice un mapa de probabilidad $P$ y un mapa de umbral $T$. La binarizacion final es:</p>
-$$B(x, y) = \mathbb{1}\left[ P(x, y) \geq T(x, y) \right]$$
-<p>Lo genial de DB es que el umbral se aprende end-to-end con backpropagation, evitando el post-procesado manual de NMS y contornos. Despues del detector, cada caja recortada pasa por un <strong>SVTR</strong> (un Transformer visual) o un <strong>CRNN</strong> (CNN + BiGRU + CTC) que emite la transcripcion.</p>
-<p><strong>Tesseract</strong> toma otro camino. Hace layout analysis con un algoritmo de connected components sobre una imagen binarizada adaptativamente (no Otsu global, sino ventana local), luego agrupa componentes en lineas de texto, y finalmente un LSTM de 4 capas entrenado sobre ~400k lineas sintetizadas emite los caracteres. La magia de Tesseract es su <strong>LSTM con CTC</strong> y su <strong>diccionario de palabras</strong> para resolucion de ambiguedades por frecuencia.</p>
-<p><strong>Diagrama de flujo simplificado:</strong></p>
-<pre><code class="language-text">Imagen cruda
-    |
-    v
-[Pre-procesado] -- resize, denoise, deskew, threshold
-    |
-    v
-[Detector] -- PaddleOCR: DB++ U-Net  |  Tesseract: componentes conexos
-    |
-    v
-[Lista de cajas (x1,y1,x2,y2)] + recortes
-    |
-    v
-[Reconocedor] -- PaddleOCR: SVTR/CRNN+CTC  |  Tesseract: LSTM+CTC
-    |
-    v
-[Cadena de texto por caja]
-    |
-    v
-[Post-procesado] -- correccion con diccionario, regex, validacion
-    |
-    v
-[JSON estructurado]</code></pre>
-<h2>3. PaddleOCR + pytesseract: Uso Directo y Casos de Control Fino</h2>
-<p><code>pytesseract</code> es el wrapper Python de Tesseract via subprocess. <code>PaddleOCR</code> es la API oficial de PaddlePaddle. Cada uno gana en escenarios distintos:</p>
-<ul>
-  <li><strong>PaddleOCR</strong> gana en: textos rotados, idiomas asiaticos, deteccion robusta en escenas naturales, scripts verticales.</li>
-  <li><strong>pytesseract</strong> gana en: documentos impresos limpios en latin, integracion con PDFs multipagina via <code>image_to_pdf_or_hocr</code>, control fino del LSTM, soporte de <code>tsv</code> con coordenadas palabra por palabra.</li>
-</ul>
+<p><strong>PaddleOCR (de Baidu)</strong> es un pipeline end-to-end de dos etapas con pesos pre-entrenados para 80+ idiomas. Internamente corre DB++ para deteccion, CRNN con backbone MobileNetV3 (rapido) o ResNet50 (mas preciso) para reconocimiento, y opcionalmente un clasificador de direccion del texto (util para facturas rotadas). Esta optimizado para texto de escena (letreros, capturas de celular) pero tambien funciona bien en documentos. Su punto fuerte: el detector maneja texto curvo, en perspectiva y multilinea sin que vos escribas una linea de codigo de post-procesamiento.</p>
+<p><strong>Tesseract (originalmente de HP, ahora mantenido por Google)</strong> usa una arquitectura LSTM (en su OEM 1) y es el rey del OCR de documentos limpios. Su punto fuerte: configurable hasta el hueso (whitelist de caracteres, blacklist, configuracion de segmentacion PSM 0-13), rapido en CPU puro, y maduro como el vino. Su debilidad: el detector de layout es basico (asume lineas horizontales), y en texto de escena se cae.</p>
+<pre><code class="language-text">Diagrama de flujo:
+  imagen -&gt; [preproc] -&gt; PaddleOCR (detectar + recortar) -&gt; CRNN -&gt; texto
+                  \-&gt; Tesseract (todo en uno, fallback)</code></pre>
+<p>La estrategia production-grade: <strong>PaddleOCR como motor primario, Tesseract como fallback</strong> cuando la confianza de Paddle cae bajo umbral o el texto no aparece. Esto te da lo mejor de ambos mundos.</p>
+<h2>3. PaddleOCR y PyTesseract: Uso Directo y Casos de Control Fino</h2>
+<p>Uso directo de PaddleOCR (lo que cualquier tutorial te muestra):</p>
 <pre><code class="language-python">from paddleocr import PaddleOCR
-import pytesseract
+import cv2
+
+ocr = PaddleOCR(use_angle_cls=True, lang="es", use_gpu=False, show_log=False)
+img = cv2.imread("factura.jpg")
+raw = ocr.ocr(img, cls=True)
+
+for line in raw[0]:
+    bbox, (text, conf) = line
+    print(f"{conf:.3f} {text}")</code></pre>
+<p>Uso directo de Tesseract con control fino:</p>
+<pre><code class="language-python">import pytesseract
 from PIL import Image
-import numpy as np
 
-# Inicializacion lazy: ambos cargan modelos pesados la primera vez.
-# show_log=False silencia el spam de PaddlePaddle en stdout.
-_ocr_easy = PaddleOCR(use_angle_cls=True, lang="es", show_log=False)
-
-
-def ocr_paddle(image_path: str) -&gt; list[dict]:
-    """Wrapper directo. Devuelve lista de {box, text, score}."""
-    result = _ocr_easy.ocr(image_path, cls=True)
-    out: list[dict] = []
-    for line in result[0]:
-        box, (text, score) = line
-        out.append({
-            "box": np.array(box).tolist(),
-            "text": text,
-            "score": float(score),
-        })
-    return out
-
-
-def ocr_tesseract(image_path: str, lang: str = "spa") -&gt; list[dict]:
-    """Wrapper con TSV para obtener coordenadas palabra a palabra."""
-    img = Image.open(image_path)
-    data = pytesseract.image_to_data(
-        img, lang=lang, output_type=pytesseract.Output.DICT
-    )
-    words: list[dict] = []
-    for i, txt in enumerate(data["text"]):
-        if not txt.strip():
-            continue
-        words.append({
-            "text": txt,
-            "conf": int(data["conf"][i]),
-            "box": (
-                data["left"][i], data["top"][i],
-                data["left"][i] + data["width"][i],
-                data["top"][i] + data["height"][i],
-            ),
-        })
-    return words</code></pre>
-<p>Cuando usar el wrapper directo: para prototipado rapido, batch processing de documentos uniformes, o cuando ya tenes el pre-procesado resuelto y queres delegar todo al modelo. Para control fino (OCR parcial por region, multi-idioma por zona, scoring personalizado), construimos el motor de la seccion 4.</p>
-<h2>4. Implementacion Production-Ready: <code>RobustOCREngine</code></h2>
-<p>Diseñe esta clase para un pipeline de facturas en produccion. Maneja validacion de inputs, fallback entre motores, normalizacion de coordenadas y metricas de calidad.</p>
+# psm 6 = bloque uniforme de texto, oem 3 = LSTM por defecto
+config = "--oem 3 --psm 6 -c tessedit_char_whitelist=0123456789-$.,"
+img = Image.open("recibo.png")
+text = pytesseract.image_to_string(img, lang="spa", config=config)</code></pre>
+<p>Estos funcionan para un demo. Para produccion necesitas: tipado estricto, metricas, batching, fallback y pre-procesamiento.</p>
+<h2>4. Implementacion Production-Ready: OCR Engine</h2>
 <h3>4.1 Tipos y protocolos</h3>
-<pre><code class="language-python">from __future__ import annotations
+<pre><code class="language-python"># ocr/types.py
+from __future__ import annotations
 
-from dataclasses import dataclass, field
-from enum import Enum
-from pathlib import Path
-from typing import Iterable, Protocol, runtime_checkable
+from dataclasses import dataclass
+from typing import Protocol
 
-
-class OCRBackend(str, Enum):
-    PADDLE = "paddle"
-    TESSERACT = "tesseract"
-
-
-class OCRQuality(str, Enum):
-    HIGH = "high"           # confianza media &gt;= 85
-    MEDIUM = "medium"       # 60 &lt;= conf &lt; 85
-    LOW = "low"             # 30 &lt;= conf &lt; 60
-    UNRELIABLE = "unreliable"  # conf &lt; 30
+import numpy as np
 
 
 @dataclass(frozen=True, slots=True)
-class BoundingBox:
-    x1: float
-    y1: float
-    x2: float
-    y2: float
-
-    @property
-    def area(self) -&gt; float:
-        return max(0.0, self.x2 - self.x1) * max(0.0, self.y2 - self.y1)
-
-
-@dataclass(slots=True)
-class OCRToken:
+class OCRRegion:
+    """Region de texto detectada y reconocida."""
+    bbox: tuple[tuple[int, int], ...]  # 4 puntos en orden TL, TR, BR, BL
     text: str
-    confidence: float
-    bbox: BoundingBox
-    page: int = 0
+    confidence: float  # en [0, 1]
+
+    def __post_init__(self) -&gt; None:
+        if not 0.0 &lt;= self.confidence &lt;= 1.0:
+            raise ValueError(f"confidence fuera de rango: {self.confidence}")
+
+
+@dataclass(frozen=True, slots=True)
+class OCRResult:
+    regions: tuple[OCRRegion, ...]
+    image_shape: tuple[int, int]  # (alto, ancho)
+    engine: str
+    elapsed_ms: float
 
     @property
-    def quality(self) -&gt; OCRQuality:
-        c = self.confidence
-        if c &gt;= 85.0:
-            return OCRQuality.HIGH
-        if c &gt;= 60.0:
-            return OCRQuality.MEDIUM
-        if c &gt;= 30.0:
-            return OCRQuality.LOW
-        return OCRQuality.UNRELIABLE
+    def avg_confidence(self) -&gt; float:
+        if not self.regions:
+            return 0.0
+        return sum(r.confidence for r in self.regions) / len(self.regions)
+
+    @property
+    def full_text(self) -&gt; str:
+        return "\n".join(r.text for r in self.regions)
 
 
-@runtime_checkable
-class PostProcessor(Protocol):
-    """Post-procesador inyectable de texto OCR -&gt; texto corregido."""
-    def correct(self, text: str) -&gt; str: ...</code></pre>
-<p><code>frozen=True, slots=True</code> en <code>BoundingBox</code> evita overhead y mutacion accidental. El <code>Protocol</code> nos permite inyectar distintos correctores sin acoplar la clase al motor.</p>
+class OCRBackend(Protocol):
+    """Contrato que cualquier backend de OCR debe cumplir."""
+    name: str
+
+    def predict(self, image: np.ndarray) -&gt; list[OCRRegion]: ...</code></pre>
 <h3>4.2 El motor principal</h3>
-<pre><code class="language-python">import logging
-from collections import Counter
+<pre><code class="language-python"># ocr/engine.py
+from __future__ import annotations
+
+import logging
+import time
 from pathlib import Path
+from typing import Iterable
 
 import cv2
 import numpy as np
-from PIL import Image
 
-from paddleocr import PaddleOCR
+from ocr.types import OCRBackend, OCRRegion, OCRResult
 
 logger = logging.getLogger(__name__)
 
 
-class OCRError(Exception):
-    """Error base del motor OCR."""
+def preprocess_for_ocr(image: np.ndarray, target_height: int = 1280) -&gt; np.ndarray:
+    """Pre-procesamiento adaptativo para OCR robusto.
+
+    Estrategias:
+      1. Resize manteniendo aspect ratio (mejora velocidad y accuracy).
+      2. Conversion a escala de grises.
+      3. CLAHE para ecualizar iluminacion local.
+      4. Denoising no-local para eliminar ruido de compresion JPEG.
+    """
+    h, w = image.shape[:2]
+    if h &gt; target_height:
+        scale = target_height / h
+        image = cv2.resize(image, (int(w * scale), target_height),
+                           interpolation=cv2.INTER_AREA)
+
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
+
+    # CLAHE ecualiza contraste en zonas con iluminacion desigual
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    eq = clahe.apply(gray)
+
+    # Denoising no-local (preserva bordes, elimina grano)
+    denoised = cv2.fastNlMeansDenoising(eq, h=7)
+    return denoised
 
 
-class ImageLoadError(OCRError):
-    """No se pudo cargar la imagen de entrada."""
-
-
-class UnsupportedBackendError(OCRError):
-    """Backend solicitado no disponible."""
-
-
-class RobustOCREngine:
-    """Motor OCR con pre-procesado robusto, fallback entre backends
-    y metricas de calidad por token."""
-
-    MIN_SIDE_PX = 32
-    MAX_ASPECT_RATIO = 25.0
+class OCREngine:
+    """Motor OCR con fallback automatico y batching."""
 
     def __init__(
         self,
-        backends: tuple[OCRBackend, ...] = (
-            OCRBackend.PADDLE, OCRBackend.TESSERACT,
-        ),
-        languages: tuple[str, ...] = ("es",),
-        min_confidence: float = 30.0,
+        primary: OCRBackend,
+        fallback: OCRBackend | None = None,
+        confidence_threshold: float = 0.5,
+        preprocess: bool = True,
     ) -&gt; None:
-        if not backends:
-            raise ValueError("backends no puede estar vacio")
-        self.backends = backends
-        self.languages = languages
-        self.min_confidence = min_confidence
-        self._paddle: PaddleOCR | None = None
-        if OCRBackend.PADDLE in backends:
-            # PaddleOCR 2.x. Para 3.x, migrar a .predict(img).
-            self._paddle = PaddleOCR(
-                use_angle_cls=True,
-                lang=languages[0],
-                show_log=False,
-                use_gpu=False,
-            )
+        self._primary = primary
+        self._fallback = fallback
+        self._threshold = confidence_threshold
+        self._preprocess = preprocess
 
-    # -- API publica ----------------------------------------------------
+    def extract(self, image: np.ndarray) -&gt; OCRResult:
+        if image is None or image.size == 0:
+            raise ValueError("imagen vacia o None")
 
-    def recognize(self, source: str | Path) -&gt; list[OCRToken]:
-        img = self._load_image(source)
-        self._validate_image(img)
-        preprocessed = self._preprocess(img)
+        proc = preprocess_for_ocr(image) if self._preprocess else image
+        t0 = time.perf_counter()
 
-        last_error: Exception | None = None
-        for backend in self.backends:
-            try:
-                tokens = self._run_backend(backend, preprocessed)
-                return self._filter_low_confidence(tokens)
-            except Exception as exc:  # noqa: BLE001
-                # Fallback entre backends: capturar amplio es intencional
-                # para que un fallo de Tesseract no tumbe todo el pipeline.
+        regions = self._primary.predict(proc)
+
+        # Fallback si la confianza promedio es muy baja
+        if regions:
+            avg = sum(r.confidence for r in regions) / len(regions)
+            if avg &lt; self._threshold and self._fallback is not None:
                 logger.warning(
-                    "backend %s fallo: %s. Probando siguiente.",
-                    backend.value, exc,
+                    "primary %s avg_conf=%.2f &lt; %.2f, usando fallback %s",
+                    self._primary.name, avg, self._threshold, self._fallback.name,
                 )
-                last_error = exc
-
-        raise OCRError(
-            f"todos los backends fallaron. ultimo error: {last_error}"
-        )
-
-    # -- Carga y validacion --------------------------------------------
-
-    def _load_image(self, source: str | Path) -&gt; np.ndarray:
-        path = Path(source)
-        if not path.exists():
-            raise ImageLoadError(f"no existe el archivo: {path}")
-        img = cv2.imread(str(path), cv2.IMREAD_COLOR)
-        if img is None:
-            raise ImageLoadError(
-                f"cv2 no pudo decodificar {path}. "
-                "Posible causa: archivo corrupto o formato no soportado."
-            )
-        return img
-
-    def _validate_image(self, img: np.ndarray) -&gt; None:
-        h, w = img.shape[:2]
-        if h &lt; self.MIN_SIDE_PX or w &lt; self.MIN_SIDE_PX:
-            raise OCRError(
-                f"imagen demasiado pequena ({w}x{h}). "
-                f"minimo lado: {self.MIN_SIDE_PX}px"
-            )
-        ratio = max(h / w, w / h)
-        if ratio &gt; self.MAX_ASPECT_RATIO:
-            raise OCRError(
-                f"aspecto {ratio:.1f} supera {self.MAX_ASPECT_RATIO}. "
-                "Posible causa: tira horizontal de 1px detectada como pagina."
-            )
-
-    # -- Pre-procesado -------------------------------------------------
-
-    def _preprocess(self, img: np.ndarray) -&gt; np.ndarray:
-        """Deskew ligero + denoise. NO binariza: el modelo ya lo hace."""
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        denoised = cv2.fastNlMeansDenoising(gray, h=10)
-        deskewed = self._deskew(denoised)
-        return cv2.cvtColor(deskewed, cv2.COLOR_GRAY2BGR)
-
-    @staticmethod
-    def _deskew(gray: np.ndarray) -&gt; np.ndarray:
-        """Corrige rotacion global usando minAreaRect sobre bordes."""
-        inv = cv2.bitwise_not(gray)
-        thresh = cv2.threshold(
-            inv, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU
-        )[1]
-        coords = np.column_stack(np.where(thresh &gt; 0))
-        if len(coords) &lt; 100:
-            return gray
-        angle = cv2.minAreaRect(coords)[-1]
-        if angle &lt; -45:
-            angle = -(90 + angle)
+                regions = self._fallback.predict(proc)
+                engine_used = self._fallback.name
+            else:
+                engine_used = self._primary.name
+        elif self._fallback is not None:
+            logger.info("primary no devolvio regiones, usando fallback")
+            regions = self._fallback.predict(proc)
+            engine_used = self._fallback.name
         else:
-            angle = -angle
-        if abs(angle) &lt; 0.3:
-            return gray
-        h, w = gray.shape
-        M = cv2.getRotationMatrix2D((w / 2, h / 2), angle, 1.0)
-        return cv2.warpAffine(
-            gray, M, (w, h),
-            flags=cv2.INTER_CUBIC,
-            borderMode=cv2.BORDER_REPLICATE,
+            engine_used = self._primary.name
+
+        elapsed = (time.perf_counter() - t0) * 1000
+        return OCRResult(
+            regions=tuple(regions),
+            image_shape=image.shape[:2],
+            engine=engine_used,
+            elapsed_ms=elapsed,
         )
 
-    # -- Ejecucion por backend ----------------------------------------
+    def batch_extract(
+        self, images: Iterable[np.ndarray], batch_size: int = 8,
+    ) -&gt; list[OCRResult]:
+        """Procesa un lote. batch_size aplica a pre-procesamiento paralelo
+        con ThreadPoolExecutor (I/O bound), no a inferencia (eso es GPU)."""
+        from concurrent.futures import ThreadPoolExecutor
 
-    def _run_backend(
-        self, backend: OCRBackend, img: np.ndarray,
-    ) -&gt; list[OCRToken]:
-        if backend is OCRBackend.PADDLE:
-            return self._run_paddle(img)
-        if backend is OCRBackend.TESSERACT:
-            return self._run_tesseract(img)
-        raise UnsupportedBackendError(
-            f"backend no soportado: {backend}"
-        )
+        imgs = list(images)
+        with ThreadPoolExecutor(max_workers=batch_size) as ex:
+            return list(ex.map(self.extract, imgs))</code></pre>
+<h3>4.3 Utilidades de analisis y verificacion</h3>
+<pre><code class="language-python"># ocr/metrics.py
+from __future__ import annotations
 
-    def _run_paddle(self, img: np.ndarray) -&gt; list[OCRToken]:
-        if self._paddle is None:
-            raise UnsupportedBackendError(
-                "PaddleOCR no fue inicializado"
-            )
-        result = self._paddle.ocr(img, cls=True)
-        if not result or not result[0]:
-            return []
-        return [
-            OCRToken(
-                text=text,
-                confidence=float(score) * 100.0,
-                bbox=self._box_to_bbox(box_pts),
-            )
-            for box_pts, (text, score) in result[0]
-        ]
+import numpy as np
 
-    def _run_tesseract(self, img: np.ndarray) -&gt; list[OCRToken]:
-        import pytesseract  # import local: opcional si no usas este backend
-        pil = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
-        data = pytesseract.image_to_data(
-            pil,
-            lang="+".join(self.languages),
-            output_type=pytesseract.Output.DICT,
-        )
-        out: list[OCRToken] = []
-        for i, txt in enumerate(data["text"]):
-            if not txt or not txt.strip():
-                continue
-            try:
-                conf = float(data["conf"][i])
-            except (ValueError, TypeError):
-                continue
-            if conf &lt; 0:
-                continue
-            out.append(OCRToken(
-                text=txt,
-                confidence=conf,
-                bbox=BoundingBox(
-                    float(data["left"][i]),
-                    float(data["top"][i]),
-                    float(data["left"][i] + data["width"][i]),
-                    float(data["top"][i] + data["height"][i]),
-                ),
-            ))
-        return out
-
-    @staticmethod
-    def _box_to_bbox(box_pts: list[list[float]]) -&gt; BoundingBox:
-        xs = [p[0] for p in box_pts]
-        ys = [p[1] for p in box_pts]
-        return BoundingBox(min(xs), min(ys), max(xs), max(ys))
-
-    def _filter_low_confidence(
-        self, tokens: list[OCRToken],
-    ) -&gt; list[OCRToken]:
-        return [t for t in tokens if t.confidence &gt;= self.min_confidence]</code></pre>
-<p>Pilas con el <code>_filter_low_confidence</code>: muchos juniors lo omiten y despues el JSON sale con basura. Mejor filtrar en el motor y devolver solo tokens usables; bajar el umbral solo cuando estes depurando.</p>
-<h3>4.3 Analisis de salud</h3>
-<pre><code class="language-python">@dataclass(slots=True)
-class OCRHealthReport:
-    total_tokens: int
-    mean_confidence: float
-    quality_histogram: dict[OCRQuality, int]
-    empty_boxes_ratio: float
-    coverage_ratio: float
-    warnings: list[str] = field(default_factory=list)
-
-    @property
-    def is_healthy(self) -&gt; bool:
-        return (
-            self.empty_boxes_ratio &lt; 0.05
-            and self.mean_confidence &gt;= 70.0
-            and self.coverage_ratio &gt; 0.01
-            and self.quality_histogram[OCRQuality.UNRELIABLE] == 0
-        )
+from ocr.types import OCRRegion
 
 
-def analyze_health(
-    tokens: Iterable[OCRToken], image_area: float,
-) -&gt; OCRHealthReport:
-    tokens = list(tokens)
-    if not tokens:
-        return OCRHealthReport(
-            total_tokens=0,
-            mean_confidence=0.0,
-            quality_histogram=dict.fromkeys(OCRQuality, 0),
-            empty_boxes_ratio=0.0,
-            coverage_ratio=0.0,
-            warnings=["sin tokens detectados: revise umbral/pre-procesado"],
-        )
-    qualities = Counter(t.quality for t in tokens)
-    empty_boxes = sum(1 for t in tokens if t.bbox.area == 0)
-    total_area = sum(t.bbox.area for t in tokens)
-    mean_conf = sum(t.confidence for t in tokens) / len(tokens)
-    coverage = total_area / image_area if image_area &gt; 0 else 0.0
-    warnings: list[str] = []
-    if mean_conf &lt; 70.0:
-        warnings.append(
-            f"confianza media baja ({mean_conf:.1f}). revise DPI o luz."
-        )
-    if qualities[OCRQuality.UNRELIABLE] / len(tokens) &gt; 0.10:
-        warnings.append("mas del 10% de tokens en zona unreliable.")
-    return OCRHealthReport(
-        total_tokens=len(tokens),
-        mean_confidence=mean_conf,
-        quality_histogram=dict(qualities),
-        empty_boxes_ratio=empty_boxes / len(tokens),
-        coverage_ratio=coverage,
-        warnings=warnings,
-    )</code></pre>
-<h2>5. Ejemplos de Uso en Casos Reales</h2>
-<h3>5.1 OCR de una factura nitida</h3>
-<pre><code class="language-python">import numpy as np
-import cv2
+def polygon_iou(a: tuple[tuple[int, int], ...], b: tuple[tuple[int, int], ...]) -&gt; float:
+    """IoU entre dos poligonos quadrilateros usando OpenCV."""
+    import cv2
+    pa = np.array(a, dtype=np.float32).reshape(-1, 1, 2)
+    pb = np.array(b, dtype=np.float32).reshape(-1, 1, 2)
+    inter_area, _ = cv2.intersectConvexConvex(pa, pb, handleNested=True)
+    area_a = cv2.contourArea(pa)
+    area_b = cv2.contourArea(pb)
+    union = area_a + area_b - inter_area
+    if union &lt;= 0:
+        return 0.0
+    return float(inter_area / union)
 
 
-def _synth_invoice(path: str, text_lines: list[str]) -&gt; None:
-    """Genera imagen sintetica para tests reproducibles."""
-    img = np.full((480, 640, 3), 255, dtype=np.uint8)
-    y = 60
-    for line in text_lines:
-        cv2.putText(
-            img, line, (40, y), cv2.FONT_HERSHEY_SIMPLEX,
-            0.8, (0, 0, 0), 2, cv2.LINE_AA,
-        )
-        y += 50
-    cv2.imwrite(path, img)
+def normalize_text(s: str) -&gt; str:
+    """Normalizacion para comparacion de strings OCR.
+
+    Quita tildes, lower-case, colapsa espacios y remueve simbolos no alfanumericos.
+    Esencial porque 'NIT 900.123.456-1' vs 'Nit 900-123-456-1' debe contar como match.
+    """
+    import unicodedata
+    s = unicodedata.normalize("NFD", s)
+    s = "".join(c for c in s if unicodedata.category(c) != "Mn")
+    s = s.lower()
+    s = "".join(c if c.isalnum() else " " for c in s)
+    return " ".join(s.split())
 
 
-_synth_invoice("/tmp/factura_test.png", [
-    "FACTURA #001-12345",
-    "TOTAL: $1.250.000",
-    "FECHA: 2026-07-01",
-])
-
-engine = RobustOCREngine(backends=(OCRBackend.PADDLE,))
-tokens = engine.recognize("/tmp/factura_test.png")
-
-# Verificacion manual:
-# Input sintetico: 3 lineas claras, fondo blanco, fuente HERSHEY.
-# Salida esperada: 3 OCRToken, todos con conf &gt; 85 y bboxes razonables.
-for t in tokens:
-    print(
-        f"{t.text!r:25s} conf={t.confidence:5.1f} "
-        f"box=({t.bbox.x1:.0f},{t.bbox.y1:.0f})"
-    )
-assert len(tokens) &gt;= 3, f"se esperaban &gt;=3 tokens, hay {len(tokens)}"
-assert all(t.confidence &gt; 60 for t in tokens), "todas las lineas deberian tener alta confianza"</code></pre>
-<h3>5.2 Verificacion de salud del motor</h3>
-<pre><code class="language-python">img = cv2.imread("/tmp/factura_test.png")
-area = float(img.shape[0] * img.shape[1])
-report = analyze_health(tokens, area)
-print(f"healthy={report.is_healthy} mean_conf={report.mean_confidence:.1f}")
-print(f"histogram={report.quality_histogram}")
-
-# Verificacion manual:
-# Imagen 480x640 -&gt; area = 307200 px^2.
-# 3 lineas de texto cubren ~5% del area -&gt; coverage ~ 0.05.
-# Salida esperada: healthy=True, mean_conf &gt; 85, mayoria en HIGH.
-assert report.is_healthy, f"reporte no saludable: {report.warnings}"
-assert report.mean_confidence &gt; 70.0
-assert report.quality_histogram[OCRQuality.HIGH] &gt;= 1</code></pre>
-<h3>5.3 Post-procesado con Levenshtein</h3>
-<pre><code class="language-python">def levenshtein(a: str, b: str) -&gt; int:
-    """Distancia de edicion. O(min(len(a), len(b))) en espacio."""
+def levenshtein(a: str, b: str) -&gt; int:
+    """Distancia de edicion clasica. O(|a| * |b|) en tiempo, O(min) en espacio."""
     if len(a) &lt; len(b):
         a, b = b, a
     if not b:
         return len(a)
     prev = list(range(len(b) + 1))
     for i, ca in enumerate(a, 1):
-        curr = [i] + [0] * len(b)
+        curr = [i]
         for j, cb in enumerate(b, 1):
             cost = 0 if ca == cb else 1
-            curr[j] = min(
-                curr[j - 1] + 1,
-                prev[j] + 1,
-                prev[j - 1] + cost,
-            )
+            curr.append(min(curr[-1] + 1, prev[j] + 1, prev[j - 1] + cost))
         prev = curr
     return prev[-1]
 
 
-DICT = ["factura", "total", "fecha", "cliente", "subtotal", "iva"]
+def normalized_edit_distance(a: str, b: str) -&gt; float:
+    """NED en [0, 1]. 0 = match perfecto, 1 = nada coincide."""
+    if not a and not b:
+        return 0.0
+    return levenshtein(normalize_text(a), normalize_text(b)) / max(len(a), len(b))</code></pre>
+<h2>5. Ejemplos de Uso en Casos Reales</h2>
+<p><strong>Caso 1: Backends concretos</strong> — instanciar PaddleOCR y Tesseract cumpliendo el <code>Protocol</code>:</p>
+<pre><code class="language-python"># ocr/backends.py
+import numpy as np
+
+from ocr.types import OCRBackend, OCRRegion
 
 
-def correct_token(text: str, max_dist: int = 2) -&gt; str:
-    """Corrige contra diccionario del dominio por distancia minima."""
-    lo = text.lower()
-    best, best_d = lo, max_dist + 1
-    for w in DICT:
-        d = levenshtein(lo, w)
-        if d &lt; best_d:
-            best, best_d = w, d
-    return best if best_d &lt;= max_dist else lo
+class PaddleBackend:
+    name = "paddleocr"
+
+    def __init__(self, lang: str = "es", use_gpu: bool = False) -&gt; None:
+        from paddleocr import PaddleOCR
+        self._ocr = PaddleOCR(
+            use_angle_cls=True, lang=lang, use_gpu=use_gpu, show_log=False,
+        )
+
+    def predict(self, image: np.ndarray) -&gt; list[OCRRegion]:
+        raw = self._ocr.ocr(image, cls=True)
+        if not raw or raw[0] is None:
+            return []
+        out: list[OCRRegion] = []
+        for line in raw[0]:
+            bbox, (text, conf) = line
+            out.append(OCRRegion(
+                bbox=tuple(map(tuple, bbox)),
+                text=text,
+                confidence=float(conf),
+            ))
+        return out
 
 
-raw = "factra"  # OCR perdio la 'u'
-# Verificacion: levenshtein("factra", "factura") = 1 (insert 'u' en pos 4).
-assert levenshtein("factra", "factura") == 1
-print(correct_token(raw))  # -&gt; "factura"</code></pre>
+class TesseractBackend:
+    name = "tesseract"
+
+    def __init__(self, lang: str = "spa", psm: int = 6, oem: int = 3) -&gt; None:
+        import pytesseract
+        self._pt = pytesseract
+        self._lang = lang
+        self._config = f"--oem {oem} --psm {psm}"
+
+    def predict(self, image: np.ndarray) -&gt; list[OCRRegion]:
+        data = self._pt.image_to_data(
+            image, lang=self._lang, config=self._config,
+            output_type=self._pt.Output.DICT,
+        )
+        out: list[OCRRegion] = []
+        for i, txt in enumerate(data["text"]):
+            txt = txt.strip()
+            if not txt:
+                continue
+            conf = float(data["conf"][i])
+            if conf &lt; 0:  # -1 = sin clasificador
+                continue
+            x, y, w, h = data["left"][i], data["top"][i], data["width"][i], data["height"][i]
+            out.append(OCRRegion(
+                bbox=((x, y), (x + w, y), (x + w, y + h), (x, y + h)),
+                text=txt,
+                confidence=conf / 100.0,  # Tesseract da [0, 100]
+            ))
+        return out</code></pre>
+<p><strong>Caso 2: Pipeline de facturacion</strong> — verificacion numerica manual:</p>
+<pre><code class="language-python">import cv2
+from ocr.engine import OCREngine
+from ocr.backends import PaddleBackend, TesseractBackend
+from ocr.metrics import normalized_edit_distance
+
+engine = OCREngine(
+    primary=PaddleBackend(lang="es"),
+    fallback=TesseractBackend(lang="spa"),
+    confidence_threshold=0.5,
+)
+
+img = cv2.imread("factura_test.jpg")
+result = engine.extract(img)
+
+print(f"Motor: {result.engine}, tiempo: {result.elapsed_ms:.1f} ms")
+print(f"Confianza promedio: {result.avg_confidence:.3f}")
+print("---")
+
+# Busqueda por regex sobre las regiones (no el texto concatenado)
+import re
+nit_pattern = re.compile(r"\b\d{9}-\d\b")
+for r in result.regions:
+    if nit_pattern.search(r.text):
+        print(f"NIT detectado: {r.text} (conf={r.confidence:.2f})")
+        # Verificacion: la confianza debe estar sobre 0.7 para datos criticos
+        assert r.confidence &gt; 0.7, f"NIT con baja confianza: {r.confidence}"</code></pre>
+<p><strong>Caso 3: Metricas agregadas para un dataset de validacion</strong> — esto es lo que corre en CI antes de cualquier deploy:</p>
+<pre><code class="language-python"># scripts/eval_ocr.py
+from pathlib import Path
+import json
+from ocr.engine import OCREngine
+from ocr.backends import PaddleBackend, TesseractBackend
+from ocr.metrics import normalized_edit_distance
+
+engine = OCREngine(primary=PaddleBackend(), fallback=TesseractBackend())
+ground_truth = json.loads(Path("ground_truth.json").read_text())
+
+ned_scores: list[float] = []
+low_conf = 0
+for sample in ground_truth:
+    img = cv2.imread(sample["image_path"])
+    pred = engine.extract(img)
+    ned = normalized_edit_distance(pred.full_text, sample["expected_text"])
+    ned_scores.append(ned)
+    if pred.avg_confidence &lt; 0.5:
+        low_conf += 1
+
+mean_ned = sum(ned_scores) / len(ned_scores)
+print(f"NED promedio: {mean_ned:.4f}")  # Verificacion: debe ser &lt; 0.05
+print(f"Imagenes con baja confianza: {low_conf}/{len(ground_truth)}")
+assert mean_ned &lt; 0.05, f"NED {mean_ned} excede umbral de 0.05"</code></pre>
 <h2>6. Debugging: Cuando Todo se Va a la Mierda</h2>
-<h3>6.1 "El OCR devuelve texto pero todo mal"</h3>
-<p><strong>Como detectarlo numericamente</strong>: el reporte de salud marca <code>mean_confidence < 50</code> y <code>quality_histogram[LOW] > 0.5 * total_tokens</code>.</p>
-<p><strong>Causa tipica</strong>: imagen con DPI insuficiente o rotada.</p>
-<pre><code class="language-python"># Reproduccion: rotamos 12 grados y vemos caer la confianza.
-img = cv2.imread("/tmp/factura_test.png")
-h, w = img.shape[:2]
-M = cv2.getRotationMatrix2D((w / 2, h / 2), 12, 1.0)
-rotated = cv2.warpAffine(img, M, (w, h))
-cv2.imwrite("/tmp/factura_rot.png", rotated)
+<p><strong>Problema 1: Confianza alta pero texto incorrecto</strong> — esto pasa cuando el modelo "esta seguro" pero lo que ve no es lo que tu crees. Reproduccion:</p>
+<pre><code class="language-python">img = cv2.imread("factura_ruidosa.jpg")
+result = engine.extract(img)
+# Confianza 0.95 pero el texto dice "NIT 900123456-1" cuando deberia ser "900.123.456-1"</code></pre>
+<p><strong>Deteccion</strong>: el <code>OCRRegion.text</code> no normaliza (puntos, guiones, espacios), asi que una variacion de un caracter te dispara falso positivo en regexes. <strong>Soluciones</strong>:</p>
+<pre><code class="language-python">import re
 
-bad_tokens = engine.recognize("/tmp/factura_rot.png")
-mean_bad = sum(t.confidence for t in bad_tokens) / max(1, len(bad_tokens))
-print(f"mean_conf con rotacion 12deg: {mean_bad:.1f}")
-# Esperado: caida de 15-30 puntos vs. el caso sin rotar.</code></pre>
-<p><strong>Soluciones</strong>:</p>
-<ol>
-  <li>Aplicar deskew automatico (ya incluido en <code>_preprocess</code>): elimina el 70% de los casos en fotos de celular.</li>
-  <li>Subir DPI al menos a 300 antes de OCR (<code>cv2.resize(img, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)</code>): mejora ~15% de confianza media en PaddleOCR.</li>
-  <li>Binarizar adaptativo (<code>cv2.adaptiveThreshold</code>) si el documento tiene sombras, pero ojo: PaddleOCR va mejor con imagen en gris puro, asi que solo como ultimo recurso.</li>
-  <li>Verificar con <code>analyze_health</code>: si <code>empty_boxes_ratio > 0.1</code>, el modelo no detecto nada. No es problema de confianza sino de pre-procesado.</li>
-</ol>
-<h3>6.2 "Detecta texto fantasma donde no hay"</h3>
-<p><strong>Como detectarlo</strong>: tokens con <code>bbox.area < 5</code> o <code>confidence < 20</code>.</p>
-<p><strong>Causa tipica</strong>: umbral de deteccion muy bajo o imagen con ruido tipo papel granulado.</p>
-<pre><code class="language-python"># Reproduccion: anadimos ruido sal-y-pimienta.
-img = cv2.imread("/tmp/factura_test.png")
-noise = np.random.randint(0, 50, img.shape, dtype=np.uint8)
-noisy = cv2.add(img, noise)
-cv2.imwrite("/tmp/factura_noisy.png", noisy)
+def extract_nit(text: str) -&gt; str | None:
+    """Extrae NIT colombiano normalizado a partir de cualquier variante OCR."""
+    digits = re.sub(r"\D", "", text)
+    if len(digits) == 10:
+        return f"{digits[:9]}-{digits[9]}"
+    return None</code></pre>
+<p>Ademas: subir <code>--psm</code> a 11 (sparse text) en Tesseract si la factura tiene layout mixto, y aplicar <code>cv2.bilateralFilter</code> en lugar de <code>fastNlMeansDenoising</code> cuando el ruido es cromatico (sellos, sombras de color).</p>
+<p><strong>Problema 2: Nada detectado, imagen parece buena</strong> — el clasificador de angulo de PaddleOCR rota mal la imagen. <strong>Deteccion numerica</strong>: el <code>OCRResult.engine</code> es el fallback y las regiones vienen vacias. <strong>Soluciones al toque</strong>:</p>
+<pre><code class="language-python"># Forzar rotacion manual si sabes la orientacion esperada
+def deskew(image: np.ndarray) -&gt; np.ndarray:
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
+    gray = cv2.bitwise_not(gray)
+    thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)[1]
+    coords = np.column_stack(np.where(thresh &gt; 0))
+    if len(coords) &lt; 100:
+        return image
+    angle = cv2.minAreaRect(coords)[-1]
+    if angle &lt; -45:
+        angle = -(90 + angle)
+    else:
+        angle = -angle
+    h, w = image.shape[:2]
+    M = cv2.getRotationMatrix2D((w // 2, h // 2), angle, 1.0)
+    return cv2.warpAffine(image, M, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)</code></pre>
+<p>Si la imagen es un PDF de multiples paginas, rasteriza con <code>pdf2image</code> a 300 DPI minimo (no 150, no 72) antes de mandar al OCR.</p>
+<p><strong>Problema 3: Throughput bajo</strong> — <code>paddleocr</code> no libera memoria GPU entre llamadas en algunos entornos. <strong>Deteccion</strong>: el <code>elapsed_ms</code> crece monoticamente entre llamadas. <strong>Soluciones</strong>:</p>
+<pre><code class="language-python"># Re-instanciar el backend periodicamente o usar context manager
+import gc
 
-ghost_engine = RobustOCREngine(min_confidence=20.0)  # umbral bajo a proposito
-ghost_tokens = ghost_engine.recognize("/tmp/factura_noisy.png")
-ghosts = [t for t in ghost_tokens if t.confidence &lt; 30]
-print(f"fantasmas: {len(ghosts)} de {len(ghost_tokens)}")
-# Esperado: aumento de tokens spurious vs. caso limpio.</code></pre>
-<p><strong>Soluciones</strong>:</p>
-<ol>
-  <li>Subir <code>min_confidence</code> en <code>RobustOCREngine</code> a 50-60: corta el 95% de los fantasmas sin perder tokens validos.</li>
-  <li>Aplicar <code>cv2.fastNlMeansDenoising</code> con <code>h=10</code> antes de OCR (ya lo hacemos). Parametro critico: no uses <code>h > 20</code> o difumina caracteres.</li>
-  <li>Filtrar por area minima de bbox (descartar tokens con <code>bbox.area < 50 px^2</code>) solo si sabes el tamaño esperado de caracter; en documentos a DPI variable esto falla.</li>
-  <li>Pasar <code>lang="spa"</code> explicito a Tesseract (no <code>lang="es"</code> ni el default <code>eng</code>): ahorra horas de debugging.</li>
-</ol>
+class PaddleBackendPool:
+    def __init__(self, size: int = 2, lang: str = "es") -&gt; None:
+        from paddleocr import PaddleOCR
+        self._pool = [
+            PaddleOCR(use_angle_cls=True, lang=lang, use_gpu=True, show_log=False)
+            for _ in range(size)
+        ]
+        self._idx = 0
+
+    def acquire(self) -&gt; PaddleOCR:
+        ocr = self._pool[self._idx]
+        self._idx = (self._idx + 1) % len(self._pool)
+        return ocr
+
+    def release(self, ocr: PaddleOCR) -&gt; None:
+        gc.collect()  # Libera cache CUDA residual</code></pre>
 <h2>7. Optimizaciones de Produccion</h2>
-<p><strong>Batch processing con un solo modelo cargado</strong>: instanciar <code>PaddleOCR</code> cuesta 1.5-3 segundos y ~1.5 GB de RAM. Hace el motor singleton en tu API:</p>
-<pre><code class="language-python">_engine_singleton: RobustOCREngine | None = None
+<p><strong>Optimizacion 1: Pre-procesamiento adaptativo por tipo de documento</strong>. No apliques CLAHE a un PDF escaneado limpio (introduces ruido); aplicalo a una foto de celular con sombra.</p>
+<pre><code class="language-python">def adaptive_preprocess(image: np.ndarray) -&gt; np.ndarray:
+    """Elige la estrategia segun varianza y rango dinamico del histograma."""
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
+    std = gray.std()
+    hist_range = float(gray.max() - gray.min())
 
-
-def get_engine() -&gt; RobustOCREngine:
-    global _engine_singleton
-    if _engine_singleton is None:
-        _engine_singleton = RobustOCREngine()
-    return _engine_singleton</code></pre>
-<p><strong>Trade-off</strong>: ganas latencia y memoria; pierdes flexibilidad para reconfigurar idiomas por request. Si necesitas multi-idioma dinamico, mantene un pool con TTL tipo LRU y recicla instancias despues de N requests o T segundos.</p>
-<p><strong>Ejecucion en GPU con <code>use_gpu=True</code></strong>: ~3x mas rapido en batch grande, pero requiere CUDA y monitoreo de VRAM. Para documentos chicos (< 1080p), la CPU es suficiente y mas predecible en latencia. Hace benchmark con tu dataset real: la ganancia GPU puede no justificar el costo en volumen bajo. Regla de pulgar: si procesas < 5 imagenes/segundo sostenido, no actives GPU todavia.</p>
+    if std &lt; 40:
+        # Imagen lavada / bajo contraste -&gt; CLAHE agresivo
+        return cv2.createCLAHE(clipLimit=4.0, tileGridSize=(8, 8)).apply(gray)
+    if hist_range &lt; 128:
+        # Imagen subexpuesta -&gt; estirar histograma
+        return cv2.normalize(gray, None, 0, 255, cv2.NORM_MINMAX)
+    # Imagen limpia -&gt; solo denoising suave
+    return cv2.GaussianBlur(gray, (3, 3), 0)</code></pre>
+<p><strong>Trade-off</strong>: agregar <code>cv2.bilateralFilter</code> (preserva bordes mejor que Gaussian) cuesta ~5x mas CPU. Solo vale la pena en texto manuscrito o facturas con sellos sobre el texto. En texto impreso limpio, Gaussian de 3x3 es suficiente.</p>
+<p><strong>Optimizacion 2: Batching de pre-procesamiento, no de inferencia</strong>. El cuello de botella en CPU suele ser el pre-procesamiento (resize, denoising, CLAHE), no la inferencia del modelo. Paraleliza con <code>ThreadPoolExecutor</code> (el GIL no aplica porque <code>cv2</code> libera el GIL en operaciones grandes). En GPU, el cuello de botella es el transfer CPU<->GPU, asi que usa <code>paddleocr.PaddleOCR(use_gpu=True, enable_mkldnn=False)</code> y mantén un pool de instancias.</p>
 <h2>8. Conclusion: Por Que Esto te Salva el Pellejo en Produccion</h2>
+<p>OCR no es "instalar Tesseract y ya". Es un sistema de dos etapas (deteccion + reconocimiento) con matematica real detras (DB++ y CTC), pre-procesamiento adaptativo, fallback entre motores, y metricas que te permitan saber cuando el sistema se degrada silenciosamente.</p>
+<p><strong>Mini-checklist antes de poner esto en produccion</strong>:</p>
 <ul>
-  <li>Si dominas Otsu y entiendes por que tu umbral es lo que es, dejás de ajustar parametros a ciegas y empezas a diagnosticar imagenes en minutos, no en horas.</li>
-  <li>Si entendes CTC, podes explicar por que PaddleOCR emite "t0tal" en vez de "total" en una foto borrosa, y dejar de pelearte con tu PM por "fallos inexplicables".</li>
-  <li>Si tenes un motor con <code>analyze_health</code>, tu monitoring en produccion detecta drift de calidad antes de que el cliente se queje — y eso, parce, es lo que separa un sistema que escala de uno que se cae cada lunes.</li>
-  <li>Si filtras por confianza desde el motor, tu pipeline downstream (regex, parsers, base de datos) recibe solo tokens usables y no propaga basura a tres servicios mas.</li>
+  <li>Tu pipeline incluye CLAHE + denoising + binarizacion adaptativa, no solo <code>image_to_string</code></li>
+  <li>Tienes umbral de confianza calibrado contra un dataset de validacion de tu dominio (no el default 0.5)</li>
+  <li>Tu backend primario (Paddle) tiene fallback (Tesseract) cuando la confianza cae bajo umbral</li>
+  <li>Tus metricas (NED, IoU) corren en CI y bloquean el deploy si NED > 0.05</li>
+  <li>Normalizas el texto OCR antes de regex (quitar tildes, colapsar simbolos)</li>
+  <li>Si usas GPU, tienes un pool de instancias y reinicio periodico para evitar leaks de memoria</li>
 </ul>
-<p>Este codigo es el mismo patron que uso en produccion, con los nombres cambiados y los paths absolutos reemplazados. No es un tutorial de "primero instala Python".</p>
-<p><strong>Mini-checklist de troubleshooting ahora mismo</strong>:</p>
-<ol>
-  <li>Corre <code>analyze_health</code> sobre las ultimas 100 salidas de tu OCR. Si <code>mean_confidence < 60</code>, tenes un problema de pre-procesado, no de modelo.</li>
-  <li>Verifica que estas instanciando <code>PaddleOCR</code> una sola vez por proceso. Si lo haces por request, estas perdiendo ~1.5 segundos por llamada.</li>
-  <li>Si usas Tesseract, asegurate de pasar <code>lang="spa"</code> (no <code>lang="es"</code> ni el default <code>eng</code>). Esos dos detalles te ahorran horas.</li>
-</ol>
-<p>Mañana seguimos.</p>
+<p>Pilas con esto: la diferencia entre "OCR que funciona en el notebook" y "OCR que mueve facturacion electronica de una empresa" es disciplina de ingenieria, no magia del modelo. Si no puedes medir NED en CI, no sabes si tu cambio empeoro las cosas.</p>
+<p>Manana seguimos con otro tema del reto. Nos vemos.</p>
   </article>
   <nav class="article-nav" aria-label="Navegacion entre articulos">
     <a class="nav-prev" href="/blog/dia-112365-reconocimiento-facial/">Anterior</a>
