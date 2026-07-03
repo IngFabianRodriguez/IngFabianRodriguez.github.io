@@ -643,11 +643,34 @@ def build_tags_html(stack: str) -> str:
 
 
 def build_tags_inner(stack: str) -> str:
-    """Build the inner spans (no <div> wrapper) for the index card tags."""
-    # Split by comma, lowercase, strip, drop empties.
-    tags = [t.strip().lower() for t in stack.split(",") if t.strip()]
-    if not tags:
-        tags = ["ai"]
+    """Build the inner spans (no <div> wrapper) for the index card tags.
+
+    Generates 4-7 tags from the stack string by splitting on commas,
+    stripping parentheses/parameters, splitting library names on '.',
+    and capping at 7 to keep the card compact.
+    """
+    raw = [t.strip() for t in stack.split(",") if t.strip()]
+    if not raw:
+        raw = ["ai"]
+    tags: list[str] = []
+    seen: set[str] = set()
+    for piece in raw:
+        # Split on '.' to break "torch.nn.init" into "torch", "nn", "init"
+        parts = piece.replace("(", " ").replace(")", " ").split(".")
+        for p in parts:
+            p = p.strip().lower()
+            # Skip empty / pure-noise tokens
+            if not p or p in {"import", "from", "el", "la", "de", "los", "las"}:
+                continue
+            # Trim long descriptive tails (e.g. "torchvision.models (param pretrained=True)")
+            if len(p) > 22:
+                continue
+            if p in seen:
+                continue
+            seen.add(p)
+            tags.append(p)
+            if len(tags) >= 7:
+                return "".join(f'<span class="tag">{escape_html(t)}</span>' for t in tags)
     return "".join(f'<span class="tag">{escape_html(t)}</span>' for t in tags)
 
 
