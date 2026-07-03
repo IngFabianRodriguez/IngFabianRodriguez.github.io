@@ -176,14 +176,14 @@ $$`m_i \sim \text{Bernoulli}(1-p)`$$
 <p>donde $p \in [0, 1)$ es la <strong>probabilidad de dropout</strong> (la fraccion de neuronas que se apagan), y $(1-p)$ es la probabilidad de que la neurona $i$ sobreviva. El caso comun es $p = 0.5$ para capas densas y $p = 0.1$ a $0.3$ para capas convolucionales.</p>
 <p>La salida con dropout <strong>invertido</strong> (el esquema que usa PyTorch) es:</p>
 $$`\tilde{h}_i = \frac{1}{1-p} \cdot m_i \cdot h_i`$$
-<p>Los simbolos: $<code>\tilde{h}_i</code>$ es la salida regularizada de la neurona $<code>i</code>$ (la que sigue a la siguiente capa); $<code>m_i</code>$ es 0 o 1 e indica si la neurona sobrevive este forward pass; $<code>h_i</code>$ es la activacion original sin dropout; $<code>1/(1-p)</code>$ es el <strong>factor de escala</strong> (inverted dropout), que multiplica las activaciones supervivientes para que la suma esperada se conserve.</p>
-<p><strong>Por que se divide entre $<code>(1-p)</code>$?</strong> Calculemos el valor esperado de la salida con dropout:</p>
-<p>$$<code>E[\tilde{h}_i] = E\left[\frac{m_i \cdot h_i}{1-p}\right] = \frac{h_i}{1-p} \cdot E[m_i] = \frac{h_i}{1-p} \cdot (1-p) = h_i</code>$</p>
-<p>Es decir: aunque matamos una fraccion $<code>p</code>$ de las neuronas en cada forward pass, las que quedan se inflan por $<code>1/(1-p)</code>$ para que la esperanza de la salida siga siendo $<code>h_i</code>$. Esto importa porque significa que en <code>eval()</code> no tenemos que aplicar ninguna escala: la salida esperada ya esta calibrada. Esto no era el caso en el paper original de Srivastava et al. 2014 (alli la escala se aplicaba en inference), pero la comunidad migro al "inverted dropout" porque simplifica el deployment: cambias el modo y listo, no tocas los pesos.</p>
+<p>Los simbolos: $\tilde{h}_i$ es la salida regularizada de la neurona $i$ (la que sigue a la siguiente capa); $m_i$ es 0 o 1 e indica si la neurona sobrevive este forward pass; $h_i$ es la activacion original sin dropout; $1/(1-p)$ es el <strong>factor de escala</strong> (inverted dropout), que multiplica las activaciones supervivientes para que la suma esperada se conserve.</p>
+<p><strong>Por que se divide entre $(1-p)$?</strong> Calculemos el valor esperado de la salida con dropout:</p>
+<p>$$E[\tilde{h}_i] = E\left[\frac{m_i \cdot h_i}{1-p}\right] = \frac{h_i}{1-p} \cdot E[m_i] = \frac{h_i}{1-p} \cdot (1-p) = h_i$$</p>
+<p>Es decir: aunque matamos una fraccion $p$ de las neuronas en cada forward pass, las que quedan se inflan por $1/(1-p)$ para que la esperanza de la salida siga siendo $h_i$. Esto importa porque significa que en <code>eval()</code> no tenemos que aplicar ninguna escala: la salida esperada ya esta calibrada. Esto no era el caso en el paper original de Srivastava et al. 2014 (alli la escala se aplicaba en inference), pero la comunidad migro al "inverted dropout" porque simplifica el deployment: cambias el modo y listo, no tocas los pesos.</p>
 <p><strong>Varianza</strong>: la varianza de la salida con dropout es:</p>
-<p>$$<code>Var[\tilde{h}_i] = \frac{p}{1-p} \cdot h_i^2</code>$</p>
-<p>Esto introduce ruido en la salida durante el entrenamiento, lo cual actua como regularizador: la red no puede confiar en que $<code>\tilde{h}_i</code>$ sea estable, asi que aprende pesos mas pequenos y redundantes. Es equivalente, en primera aproximacion, a un regularizador $<code>L2</code>$ sobre los pesos (Srivastava et al. lo demostraron empiricamente en el paper original, capitulo 3).</p>
-<p><strong>Interpretacion como ensemble</strong>: durante el entrenamiento con dropout, cada forward pass samplea una submascara diferente. Con $<code>N</code>$ neuronas, hay $<code>2^N</code>$ sub-redes posibles. La red entrenada se comporta como el promedio de predicciones de un ensemble exponencial de sub-redes, lo cual es el motivo fundamental por el que dropout mejora la generalizacion: reduce la varianza del predictor final de la misma forma que un ensemble de modelos reduce la varianza frente a un modelo unico.</p>
+<p>$$Var[\tilde{h}_i] = \frac{p}{1-p} \cdot h_i^2$$</p>
+<p>Esto introduce ruido en la salida durante el entrenamiento, lo cual actua como regularizador: la red no puede confiar en que $\tilde{h}_i$ sea estable, asi que aprende pesos mas pequenos y redundantes. Es equivalente, en primera aproximacion, a un regularizador $L2$ sobre los pesos (Srivastava et al. lo demostraron empiricamente en el paper original, capitulo 3).</p>
+<p><strong>Interpretacion como ensemble</strong>: durante el entrenamiento con dropout, cada forward pass samplea una submascara diferente. Con $N$ neuronas, hay $2^N$ sub-redes posibles. La red entrenada se comporta como el promedio de predicciones de un ensemble exponencial de sub-redes, lo cual es el motivo fundamental por el que dropout mejora la generalizacion: reduce la varianza del predictor final de la misma forma que un ensemble de modelos reduce la varianza frente a un modelo unico.</p>
 <h2>2. Como <code>torch.nn.Dropout</code> resuelve esto por vos</h2>
 <p><code>torch.nn.Dropout(p=0.5, inplace=False)</code> es una subclase de <code>nn.Module</code> que envuelve <code>torch.nn.functional.dropout</code>. Mira, bajo el capo hace esto:</p>
 <pre><code class="language-text">forward(x, training=True):
@@ -603,7 +603,7 @@ print(f"max diff: {(y_train_mode - y_eval_mode).abs().max().item():.6f}")
   <li><strong>Test unitario</strong>: un test que verifique que <code>model.eval()</code> cambia el comportamiento cuando hay dropout en el grafo.</li>
 </ol>
 <h3>6.2 "Loss = NaN despues de subir dropout a 0.7"</h3>
-<p><strong>Sintoma</strong>: la loss explota a NaN cuando subes $<code>p</code>$ mucho.</p>
+<p><strong>Sintoma</strong>: la loss explota a NaN cuando subes $p$ mucho.</p>
 <p><strong>Causa</strong>: combinacion de (a) learning rate muy alto para una red tan regularizada, o (b) la red es muy poco profunda y apagar 70% de las neuronas la deja sin capacidad minima para propagar gradiente.</p>
 <p><strong>Deteccion numerica</strong>:</p>
 <pre><code class="language-python">import torch
@@ -625,9 +625,9 @@ print(f"ultimos 5:  {losses[-5:]}")
 print(f"NaN?: {any(loss != loss for loss in losses)}")  # NaN != NaN</code></pre>
 <p><strong>Soluciones</strong>:</p>
 <ol>
-  <li><strong>Bajar learning rate</strong>: con $<code>p</code>$ alto, los gradientes son mas ruidosos. Divide LR por 2 o 3 antes de tocar $<code>p</code>$.</li>
-  <li><strong>Warmup</strong>: las primeras 100-500 iteraciones con $<code>p=0</code>$, luego sube gradualmente. Esto es lo que hace el <code>DropoutScheduler.CURRICULUM</code> que implementamos arriba.</li>
-  <li><strong>Capacidad</strong>: si la red es muy chica para la tarea, dropout alto la mata. Sube el <code>d_model</code> o el <code>d_ff</code> antes de subir $<code>p</code>$.</li>
+  <li><strong>Bajar learning rate</strong>: con $p$ alto, los gradientes son mas ruidosos. Divide LR por 2 o 3 antes de tocar $p$.</li>
+  <li><strong>Warmup</strong>: las primeras 100-500 iteraciones con $p=0$, luego sube gradualmente. Esto es lo que hace el <code>DropoutScheduler.CURRICULUM</code> que implementamos arriba.</li>
+  <li><strong>Capacidad</strong>: si la red es muy chica para la tarea, dropout alto la mata. Sube el <code>d_model</code> o el <code>d_ff</code> antes de subir $p$.</li>
   <li><strong>Gradient clipping</strong>: <code>torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)</code> estabiliza el entrenamiento ruidoso.</li>
 </ol>
 <h3>6.3 "Dropout2d lanza error de shape"</h3>
@@ -675,7 +675,7 @@ class DropPath(nn.Module):
 <p>Mini-checklist de troubleshooting:</p>
 <ul>
   <li>¿Train >> test? Verifica que el loop de eval llama <code>model.eval()</code> y el de train llama <code>model.train()</code>. El 80% de las veces es eso.</li>
-  <li>¿Loss = NaN con dropout alto? Baja learning rate y agrega warmup; no subas $<code>p > 0.7</code>$ en redes pequenas.</li>
+  <li>¿Loss = NaN con dropout alto? Baja learning rate y agrega warmup; no subas $p > 0.7$ en redes pequenas.</li>
   <li>¿Dropout2d explota con shape? Casi seguro lo estas pegando despues de una capa que produce tensores 2D. Usa <code>nn.Dropout</code> plano.</li>
 </ul>
 <p>No hay fiesta sin dropout bien puesto. 🎯</p>
