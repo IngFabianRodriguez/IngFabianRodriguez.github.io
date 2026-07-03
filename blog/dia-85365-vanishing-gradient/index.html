@@ -123,49 +123,49 @@ nav {
 
   <article class="article-body">
 <h2>Introduccion: El modelo que se negaba a aprender</h2>
-<p>Era un martes a las 11 de la noche, en un proyecto de predicción de churn para una fintech en Bogotá. El modelo era "sencillo": 8 capas densas, sigmoid en cada una, Adam con lr=1e-3, BCE loss. El AUC llevaba cinco días clavado en 0.62, no subía ni un pelo. El data scientist del cliente ya había bajado el learning rate, cambiado el batch size, hasta añadido BatchNorm. Nada. Cuando abrí el debugger de PyTorch y registré un hook en cada <code>tensor.grad</code>, los primeros 4 layers tenían gradientes del orden de $<code>10^{-7}</code>$. Eso era vanishing gradient textbook, multiplicado por sigmoid tras sigmoid.</p>
+<p>Era un martes a las 11 de la noche, en un proyecto de predicción de churn para una fintech en Bogotá. El modelo era "sencillo": 8 capas densas, sigmoid en cada una, Adam con lr=1e-3, BCE loss. El AUC llevaba cinco días clavado en 0.62, no subía ni un pelo. El data scientist del cliente ya había bajado el learning rate, cambiado el batch size, hasta añadido BatchNorm. Nada. Cuando abrí el debugger de PyTorch y registré un hook en cada <code>tensor.grad</code>, los primeros 4 layers tenían gradientes del orden de $10^{-7}$. Eso era vanishing gradient textbook, multiplicado por sigmoid tras sigmoid.</p>
 <p>No hay fiesta: si no entendés qué es, este tema te va a morder las costillas. Redes que no aprenden, AUCs estancadas, transformers donde solo las últimas capas actualizan pesos, RNNs donde los gradientes hacia los primeros timesteps son prácticamente cero. Y peor: cuando esto pasa, el optimizador "corre" creyendo que todo está bien porque la pérdida oscila suavemente. Lo que falla es el flujo de señal entre capas, y sin ese flujo, las primeras capas son peso muerto.</p>
 <p>En este artículo te voy a mostrar el por qué matemático, cómo PyTorch te expone <code>tensor.grad</code> y <code>register_hook</code> para que diagnostiques esto en minutos, y un monitor production-ready que podés meter en tu pipeline de training hoy mismo. Nada de teoría abstracta: código que corre y que uso en proyectos reales.</p>
 <h2>1. Que es Vanishing Gradient? (Y por que deberia importarte)</h2>
 <h3>1.1 La analogia cotidiana</h3>
 <p>Imaginate un túnel de 1.2 km entre dos casetas de vigilancia en una obra vial. En la caseta de origen hay un capataz con megáfono gritando "Paremos a las 18:00". Cada 100 metros hay un relay: un capataz intermedio que escucha al anterior y le pasa el mensaje al siguiente, pero su megáfono solo alcanza <strong>la mitad del volumen</strong> del que recibió. ¿Por qué? Porque está cada vez más lejos, con más ruido ambiental acumulado, y pierde fidelidad.</p>
 <p>Si seguimos la cadena de 12 relays (12 capas), el volumen en la caseta final es:</p>
-<p>$$<code>V_{\text{final}} = V_0 \cdot \left(\frac{1}{2}\right)^{12} = V_0 \cdot 2^{-12} \approx V_0 \cdot 2.44 \times 10^{-4}</code>$</p>
+<p>$$V_{\text{final}} = V_0 \cdot \left(\frac{1}{2}\right)^{12} = V_0 \cdot 2^{-12} \approx V_0 \cdot 2.44 \times 10^{-4}$$</p>
 <p>El último capataz escucha un susurro del 0.024% del mensaje original. No entiende nada, así que no actúa.</p>
 <p>Mapeo elemento a elemento con el vanishing gradient:</p>
 <ul>
   <li>El capataz inicial (cerca del loss) = última capa de la red</li>
   <li>Los relays = capas intermedias; cada uno amplifica a la mitad = magnitud típica de la derivada de la activación</li>
   <li>El último capataz = primera capa (cerca del input); recibe señal casi nula</li>
-  <li>$<code>V_0</code>$ = magnitud del gradiente del loss respecto a la última capa</li>
-  <li>$<code>V_{\text{final}}</code>$ = magnitud del gradiente respecto a los pesos de la primera capa</li>
+  <li>$V_0$ = magnitud del gradiente del loss respecto a la última capa</li>
+  <li>$V_{\text{final}}$ = magnitud del gradiente respecto a los pesos de la primera capa</li>
 </ul>
 <p>Lo crítico: el último capataz recibe señal minúscula, así que apenas ajusta sus parámetros. La primera capa de tu red aprende ultra lento, mientras las últimas aprenden "al toque". El resultado: el modelo solo refina features de alto nivel y nunca toca las de bajo nivel. Predicciones mediocres, días perdidos.</p>
 <h3>1.2 La matematica formal</h3>
-<p>Durante backpropagation, el gradiente del loss $<code>L</code>$ respecto a los pesos $<code>W^{(l)}</code>$ de la capa $<code>l</code>$ se calcula por la regla de la cadena:</p>
+<p>Durante backpropagation, el gradiente del loss $L$ respecto a los pesos $W^{(l)}$ de la capa $l$ se calcula por la regla de la cadena:</p>
 $$`\frac{\partial L}{\partial W^{(l)}} = \frac{\partial L}{\partial a^{(L)}} \cdot \prod_{k=l+1}^{L} \left( \frac{\partial a^{(k)}}{\partial a^{(k-1)}} \cdot W^{(k)} \right) \cdot \frac{\partial a^{(l)}}{\partial W^{(l)}}`$$
 <p>Explicación símbolo por símbolo:</p>
 <ul>
-  <li>$<code>L</code>$ = función de pérdida (loss) que el modelo minimiza</li>
-  <li>$<code>W^{(l)}</code>$ = matriz de pesos de la capa $<code>l</code>$</li>
-  <li>$<code>a^{(k)}</code>$ = vector de activaciones de la capa $<code>k</code>$ (salida después de aplicar la función de activación)</li>
-  <li>El superíndice $<code>L</code>$ (fuera del producto) = índice de la última capa (no confundir con el loss)</li>
-  <li>$<code>\frac{\partial a^{(k)}}{\partial a^{(k-1)}}</code>$ = Jacobiano de las activaciones de capa $<code>k</code>$ respecto a $<code>k-1</code>$; en la práctica es la <strong>derivada de la función de activación</strong> evaluada en el estado de esa neurona</li>
+  <li>$L$ = función de pérdida (loss) que el modelo minimiza</li>
+  <li>$W^{(l)}$ = matriz de pesos de la capa $l$</li>
+  <li>$a^{(k)}$ = vector de activaciones de la capa $k$ (salida después de aplicar la función de activación)</li>
+  <li>El superíndice $L$ (fuera del producto) = índice de la última capa (no confundir con el loss)</li>
+  <li>$\frac{\partial a^{(k)}}{\partial a^{(k-1)}}$ = Jacobiano de las activaciones de capa $k$ respecto a $k-1$; en la práctica es la <strong>derivada de la función de activación</strong> evaluada en el estado de esa neurona</li>
 </ul>
-<p>Para una red con activación sigmoid $<code>\sigma(x)</code>$:</p>
+<p>Para una red con activación sigmoid $\sigma(x)$:</p>
 $$`\sigma(x) = \frac{1}{1 + e^{-x}}`$$
 $$`\sigma'(x) = \sigma(x)\bigl(1 - \sigma(x)\bigr)`$$
-<p>Donde $<code>\sigma(x)</code>$ es la salida de la sigmoide, un valor entre 0 y 1. El producto $<code>\sigma(x)\bigl(1 - \sigma(x)\bigr)</code>$ alcanza su máximo cuando $<code>\sigma(x) = 0.5</code>$, dando:</p>
+<p>Donde $\sigma(x)$ es la salida de la sigmoide, un valor entre 0 y 1. El producto $\sigma(x)\bigl(1 - \sigma(x)\bigr)$ alcanza su máximo cuando $\sigma(x) = 0.5$, dando:</p>
 $$`\max_{x} \sigma'(x) = \frac{1}{4} = 0.25`$$
-<p>Esto significa que <strong>cada capa sigmoid multiplica el gradiente entrante por, como máximo, 0.25</strong>. Si apilamos $<code>n</code>$ capas con sigmoide, el gradiente en la primera capa escala como:</p>
+<p>Esto significa que <strong>cada capa sigmoid multiplica el gradiente entrante por, como máximo, 0.25</strong>. Si apilamos $n$ capas con sigmoide, el gradiente en la primera capa escala como:</p>
 $$`\left\|\frac{\partial L}{\partial W^{(1)}}\right\| \leq \left\|\frac{\partial L}{\partial W^{(L)}}\right\| \cdot (0.25)^{L-1} \cdot \prod_{k} \|W^{(k)}\|_2`$$
-<p>Para $<code>L = 12</code>$ capas: $<code>(0.25)^{11} \approx 1.5 \times 10^{-7}</code>$. Si los pesos $<code>W^{(k)}</code>$ están bien inicializados (norma $<code>\approx 1</code>$), el gradiente es prácticamente cero.</p>
-<p>Con tanh el panorama es similar: $<code>\max \tanh'(x) = 1</code>$, pero en la práctica las neuronas saturan en $<code>\pm 1</code>$ y la derivada local cae a $<code>\approx 0</code>$. Por eso la inicialización Xavier/Glorot era crítica con tanh.</p>
-<p>Con ReLU $<code>\phi(x) = \max(0, x)</code>$:</p>
+<p>Para $L = 12$ capas: $(0.25)^{11} \approx 1.5 \times 10^{-7}$. Si los pesos $W^{(k)}$ están bien inicializados (norma $\approx 1$), el gradiente es prácticamente cero.</p>
+<p>Con tanh el panorama es similar: $\max \tanh'(x) = 1$, pero en la práctica las neuronas saturan en $\pm 1$ y la derivada local cae a $\approx 0$. Por eso la inicialización Xavier/Glorot era crítica con tanh.</p>
+<p>Con ReLU $\phi(x) = \max(0, x)$:</p>
 $$`\phi'(x) = \begin{cases} 1 & \text{si } x > 0 \\ 0 & \text{si } x \leq 0 \end{cases}`$$
 <p>El máximo de la derivada es 1, así que el gradiente no se contrae por la activación. PERO introduce dos riesgos:</p>
 <ol>
-  <li><strong>Dying ReLU</strong>: si la neurona entra en la región $<code>x \leq 0</code>$ y se queda ahí, su gradiente es cero para siempre. Aprendió a morir.</li>
+  <li><strong>Dying ReLU</strong>: si la neurona entra en la región $x \leq 0$ y se queda ahí, su gradiente es cero para siempre. Aprendió a morir.</li>
   <li><strong>Exploding gradient</strong>: si muchas neuronas quedan activas, el Jacobiano puede amplificar en lugar de atenuar.</li>
 </ol>
 <p>El balance ideal: gradientes con norma estable capa a capa, ni creciendo ni decreciendo. Monitorear <code>tensor.grad</code> es la única forma de saber si tu red está en esa zona.</p>
@@ -544,8 +544,8 @@ for _ in range(50):
 <p><strong>Soluciones</strong> (con justificación técnica):</p>
 <ol>
   <li><strong>Reemplazar sigmoid por ReLU/GELU en capas ocultas</strong> — ReLU tiene derivada máxima 1 vs 0.25 de sigmoid, eliminando la contracción geométrica capa a capa.</li>
-  <li><strong>Inicialización He (Kaiming) en vez de Xavier cuando usás ReLU</strong> — He inicializa con $<code>\text{Var}(W) = 2 / n_{\text{in}}</code>$, manteniendo la varianza de las activaciones a través de las capas con ReLU. Con Xavier $<code>1/n_{\text{in}}</code>$, ReLU mata la mitad de la varianza por capa (porque la mitad de las salidas son 0).</li>
-  <li><strong>Residual connections</strong> ($<code>y = x + F(x)</code>$) — el camino identidad preserva gradiente; el $<code>+x</code>$ en el Jacobiano evita la cadena multiplicativa pura. Matemáticamente, $<code>\frac{\partial L}{\partial x} = \frac{\partial L}{\partial y}\bigl(1 + \frac{\partial F}{\partial x}\bigr)</code>$, donde el "1" es el atajo identidad y <strong>nunca se contrae</strong>, sin importar cuántas capas apiles.</li>
+  <li><strong>Inicialización He (Kaiming) en vez de Xavier cuando usás ReLU</strong> — He inicializa con $\text{Var}(W) = 2 / n_{\text{in}}$, manteniendo la varianza de las activaciones a través de las capas con ReLU. Con Xavier $1/n_{\text{in}}$$, ReLU mata la mitad de la varianza por capa (porque la mitad de las salidas son 0).</li>
+  <li><strong>Residual connections</strong> ($y = x + F(x)$) — el camino identidad preserva gradiente; el $+x$ en el Jacobiano evita la cadena multiplicativa pura. Matemáticamente, $\frac{\partial L}{\partial x} = \frac{\partial L}{\partial y}\bigl(1 + \frac{\partial F}{\partial x}\bigr)$, donde el "1" es el atajo identidad y <strong>nunca se contrae</strong>, sin importar cuántas capas apiles.</li>
   <li><strong>Layer Normalization</strong> — normaliza activaciones antes de la no-linealidad, manteniendo las entradas de sigmoid/tanh lejos de la zona de saturación (donde $<code>\sigma' \approx 0</code>$). Sin esto, cualquier sigmoid/tanh profundo tiende a saturar.</li>
 </ol>
 <h3>6.2 Problema: NaNs en loss despues de algunas iteraciones</h3>
