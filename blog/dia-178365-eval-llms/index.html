@@ -3,9 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="Weight Initialization - La Base De Una Buena Red | #365DaysOfAI por Fabian Rodriguez">
-  <title>Weight Initialization - La Base De Una Buena Red | #365DaysOfAI</title>
-  
+  <meta name="description" content="Dia 178/365: Eval LLMs — Control de calidad al final de la línea con muestreo AQL | #365DaysOfAI por Fabian Rodriguez">
+  <title>Dia 178/365: Eval LLMs — Control de calidad al final de la línea con muestreo AQL | #365DaysOfAI</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
@@ -21,7 +20,7 @@
   --shadow: rgba(2,12,27,0.7); --nav-bg: rgba(10,25,47,0.92);
 }
 [data-theme="light"] {
-  --bg: #f0f4fb; --bg-card: #ffffff; --border: #d4dcee;
+  --bg: #f0f4fb; --bg-card: #ffffff; --border: #d4ddee;
   --text-muted: #64748b; --text: #475569; --text-heading: #0f172a;
   --accent: #0d9488; --accent-tint: rgba(13,148,136,0.08);
   --shadow: rgba(15,23,42,0.12); --nav-bg: rgba(240,244,251,0.95);
@@ -81,6 +80,10 @@ nav {
   border-radius: 4px; padding: .15em .4em;
 }
 .article-body pre code { background: none; border: none; padding: 0; font-size: inherit; }
+.article-body table { width: 100%; border-collapse: collapse; margin: 1.5rem 0; font-size: .9rem; }
+.article-body th, .article-body td { border: 1px solid var(--border); padding: .6rem 1rem; text-align: left; }
+.article-body th { background: var(--bg-card); color: var(--text-heading); }
+.article-body .katex-display { overflow-x: auto; padding: .5rem 0; }
 
 .article-nav {
   max-width: 820px; margin: 0 auto; padding: 2rem 1.5rem;
@@ -94,7 +97,8 @@ nav {
   nav { padding: 0 1rem; }
   .article-hero, .article-body { padding-left: 1rem; padding-right: 1rem; }
 }
-</style>
+
+  </style>
 </head>
 <body>
   <nav>
@@ -109,148 +113,487 @@ nav {
   </nav>
 
   <header class="article-hero">
-    <div class="day-badge">Dia 178 / 365 &nbsp;·&nbsp; #365DaysOfAI</div>
-    <h1 class="article-title">Weight Initialization - La Base De Una Buena Red</h1>
+    <div class="day-badge">Dia 178 / 365 &nbsp;&middot;&nbsp; #365DaysOfAI</div>
+    <h1 class="article-title">Dia 178/365: Eval LLMs — Control de calidad al final de la línea con muestreo AQL</h1>
     <div class="article-meta">
       <time class="article-date">27 de junio de 2026</time>
-      <div class="tags"><span class="tag">weight-init</span><span class="tag">xavier</span><span class="tag">he-initialization</span><span class="tag">neural-networks</span></div>
+      <div class="tags"><span class="tag">ragas, deepeval</span></div>
     </div>
   </header>
 
   <article class="article-body">
-<p>Parcero, día 178 y hoy我们来聊聊 Weight Initialization — el foundation sobre el cual construyes redes que realmente aprenden. Si tus gradientes desaparecen o explotan desde el primer batch, el problema probablemente empezó con cómo inicializaste los pesos. De una.</p>
+<h2>Introduccion: el inspector que se duerme en la línea</h2>
+<p>Tienes un sistema RAG sirviendo 30 mil conversaciones al día. El mes pasado lanzaste un cambio "pequeño" en el prompt del retriever y la métrica de feedback negativo del cliente subió 4 puntos. Nadie en el equipo supo por qué hasta que el NPS del trimestre siguiente se desplomó. El problema no fue el modelo — fue que <strong>no estabas midiendo lo que pensabas que medías</strong>. Estabas mirando un promedio de una métrica que no correlaciona con la experiencia real del usuario.</p>
+<p>Evaluar LLMs no es "pasarle un test y ver el número". Es ingeniería de calidad, igual que en una planta de ensamblaje automotriz. Tienes un sistema probabilístico cuyas salidas cambian cada vez que cambias el prompt, el modelo, el chunker, o hasta la temperatura. Sin un protocolo de medición riguroso, estás pilotando a ciegas.</p>
+<p><code>ragas</code> y <code>deepeval</code> no son la misma cosa: <code>ragas</code> nació para pipelines RAG con métricas específicas (faithfulness, context precision/recall, answer relevancy); <code>deepeval</code> es framework de propósito general con estética pytest, ideal para CI/CD. Hoy los montamos como sistema unificado con bootstrap para intervalos de confianza, calibración entre jueces y manejo de drift. Production-grade, no demo de notebook.</p>
+<h2>1. Que es Eval LLMs? (Y por que deberia importarte)</h2>
+<h3>1.1 La analogia cotidiana: el inspector de calidad al final de la línea</h3>
+<p>Imagina una planta de ensamblaje de vehículos en Medellín. Al final de la línea hay una estación de <strong>control de calidad final</strong>. Cada auto que sale pasa por un inspector con una lista de verificación que combina:</p>
+<ul>
+  <li><strong>Criterios objetivos</strong>: torque de los tornillos de la suspensión medido con torquímetro calibrado (en Nm). Se acepta o se rechaza.</li>
+  <li><strong>Criterios subjetivos</strong>: calidad de pintura, holgura de paneles, ruido del motor al ralentí. Requieren un ojo entrenado y experiencia.</li>
+  <li><strong>Tests funcionales</strong>: frenado en pista de prueba, escaneo OBD-II, alineación con láser.</li>
+</ul>
+<p>Ese inspector no inspecciona todos los autos. Usa el estándar <strong>AQL ANSI/ASQ Z1.4</strong>: muestrea $n$ unidades de un lote de $N$ según tablas estadísticas. Si encuentra más de $c$ defectos, rechaza el lote.</p>
+<p>Las métricas que vamos a discutir hoy mapean así:</p>
+<ul>
+  <li><strong>BLEU / ROUGE / BERTScore</strong> → criterios objetivos (n-gram overlap, LCS, similitud coseno).</li>
+  <li><strong>LLM-as-judge (G-Eval, faithfulness)</strong> → criterios subjetivos (juez LLM con rúbrica).</li>
+  <li><strong>Tests funcionales</strong> → benchmarks tipo MMLU, HumanEval.</li>
+  <li><strong>Bootstrap CI</strong> → equivalente estadístico del muestreo AQL.</li>
+  <li><strong>Cohen's kappa entre jueces</strong> → calibración entre inspectores cuando dos evalúan lo mismo.</li>
+</ul>
+<p>El inspector <strong>evalúa el proceso, no el auto</strong>. Si tres turnos fallan el mismo criterio, el problema no son los autos, es la estación de soldadura. Igual con LLMs: si faithfulness cae sistemáticamente, no es "el modelo es malo", es que el retriever está trayendo chunks podridos.</p>
+<h3>1.2 La matematica formal: de BLEU a LLM-as-judge</h3>
+<p>Vamos por orden de complejidad histórica.</p>
+<p><strong>BLEU (Papineni et al., 2002)</strong> mide la precisión de n-gramas con una penalización por brevedad:</p>
+$$BLEU = BP \cdot \exp\left(\sum_{n=1}^{N} w_n \log p_n\right)$$
+<p>donde $BP = \min\left(1, e^{1 - r/c}\right)$ es la penalización por brevedad ($r$ = largo de referencia, $c$ = largo del candidato), $p_n$ es la precisión modificada de n-gramas, $w_n = 1/N$ usualmente con $N=4$.</p>
+<p><strong>ROUGE-L</strong> mide recall sobre la subsecuencia común más larga (LCS):</p>
+$$F_{lcs} = \frac{(1+\beta^2) \cdot R_{lcs} \cdot P_{lcs}}{R_{lcs} + \beta^2 P_{lcs}}$$
+<p>donde $R_{lcs} = |LCS(cand, ref)| / |ref|$ y $P_{lcs} = |LCS(cand, ref)| / |cand|$. Con $\beta = 1.2$ favoreces recall sobre precisión — útil para resúmenes donde quieres cubrir los puntos clave.</p>
+<p><strong>BERTScore (Zhang et al., 2020)</strong> sube el nivel usando embeddings contextuales:</p>
+$$F_{BERT} = 2 \frac{P_{BERT} \cdot R_{BERT}}{P_{BERT} + R_{BERT}}$$
+<p>donde $P_{BERT} = \frac{1}{|cand|}\sum_{c_i \in cand} \max_{r_j \in ref} \cos(\mathbf{c}_i, \mathbf{r}_j)$ hace matching greedy token-a-token por similitud coseno. Captura sinonimia que BLEU/ROUGE se pierden ("carro" vs "automóvil").</p>
+<p><strong>G-Eval (Liu et al., 2023)</strong> es el salto a LLM-as-judge. En lugar de una fórmula determinista, le pides al LLM que genere una rúbrica y luego muestree $K$ puntuaciones:</p>
+$$\hat{S} = \frac{1}{K}\sum_{k=1}^{K} s_k$$
+<p>donde $s_k$ son puntajes muestreados con temperature alta. El promedio $\hat{S}$ es tu métrica; la varianza entre $s_k$ es tu incertidumbre.</p>
+<p><strong>Cohen's kappa</strong> mide acuerdo entre dos jueces corrigiendo por azar:</p>
+$$\kappa = \frac{p_o - p_e}{1 - p_e}$$
+<p>donde $p_o$ es la proporción de acuerdo observado y $p_e$ la esperada por azar marginal. $\kappa \geq 0.81$ es acuerdo casi perfecto; $\kappa < 0.4$ es peor que el azar. Si tu juez no concuerda consigo mismo entre runs, no tienes métrica, tienes ruido.</p>
+<h2>2. Como ragas y deepeval resuelven esto por vos</h2>
+<p><strong>ragas</strong> está optimizado para RAG. Sus métricas nativas asumen la tupla <code>(question, answer, contexts, ground_truth)</code>:</p>
+<ul>
+  <li><code>faithfulness</code> → ¿la respuesta es consistente con los contextos recuperados? Usa NLI o LLM para detectar alucinaciones.</li>
+  <li><code>answer_relevancy</code> → ¿la respuesta es pertinente a la pregunta? Mide embeddings pregunta↔respuesta penalizando redundancia.</li>
+  <li><code>context_precision</code> → ¿los chunks rankeados son útiles? Castiga el ruido en el top-k.</li>
+  <li><code>context_recall</code> → ¿la ground truth está cubierta por los contextos? Necesita ground truth (es la métrica cara).</li>
+  <li><code>answer_correctness</code> → combinación ponderada de factual accuracy (con F1) y similitud semántica.</li>
+</ul>
+<p>Por dentro, cada métrica es una clase que recibe un <code>llm</code> y opcionalmente un <code>embeddings</code>. Cuando ejecutas <code>evaluate(dataset, metrics=[...])</code>, ragas construye un grafo de tareas async y las corre en paralelo.</p>
+<p><strong>deepeval</strong> es pytest-style y agnóstico al caso de uso. Sus piezas:</p>
+<ul>
+  <li><code>LLMTestCase(input, actual_output, expected_output=None, retrieval_context=None, context=None)</code> → la unidad atómica de evaluación.</li>
+  <li>Métricas listas: <code>FaithfulnessMetric</code>, <code>HallucinationMetric</code>, <code>AnswerRelevancyMetric</code>, <code>ContextualPrecisionMetric</code>, <code>ContextualRecallMetric</code>.</li>
+  <li><code>GEval(name, criteria, evaluation_params)</code> → métrica custom con rúbrica en lenguaje natural.</li>
+  <li><code>evaluate(test_cases, metrics)</code> corre todo, devuelve un <code>TestResult</code> con scores por caso y agregados.</li>
+</ul>
+<p><strong>Diferencia operativa</strong>: ragas devuelve DataFrame agregado (bueno para análisis exploratorio), deepeval da reporte pytest (bueno para CI/CD donde quieres saber qué caso específico rompió).</p>
+<h2>3. ragas y deepeval: Uso Directo y Casos de Control Fino</h2>
+<p>Empecemos con el patrón canónico de cada uno.</p>
+<pre><code class="language-python"># ragas_basico.py — Evaluación de un pipeline RAG
+from datasets import Dataset
+from ragas import evaluate
+from ragas.metrics import Faithfulness, AnswerRelevancy, ContextPrecision, ContextRecall
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from ragas.llms import LangchainLLMWrapper
+from ragas.embeddings import LangchainEmbeddingsWrapper
 
-<p>Weight initialization no es glamour, pero es critical. La diferencia entre una red que converge en 10 epochs y una que nunca pasa del random guessing muchas veces está en cómo inicializaste los pesos. Es el foundation que el 80% ignora porque "ya viene por defecto".</p>
+# ragas &gt;=0.2 usa instancias, no singletons
+evaluator_llm = LangchainLLMWrapper(ChatOpenAI(model="gpt-4o-mini"))
+evaluator_emb = LangchainEmbeddingsWrapper(OpenAIEmbeddings(model="text-embedding-3-small"))
 
-<hr>
-<h2>🎯 Por Qué Importa la Inicialización</h2>
+metrics = [
+    Faithfulness(llm=evaluator_llm),
+    AnswerRelevancy(llm=evaluator_llm, embeddings=evaluator_emb),
+    ContextPrecision(llm=evaluator_llm),
+    ContextRecall(llm=evaluator_llm),
+]
 
-<p>Imaginemos una red feedforward con 10 capas. Cada capa hace:</p>
+dataset = Dataset.from_dict({
+    "question": ["¿Cuál es la política de devoluciones?"],
+    "answer": ["Tienes 30 días para devolver sin costo."],
+    "contexts": [["Todos los clientes tienen 30 días para devolución completa sin costo adicional."]],
+    "ground_truth": ["La política es 30 días de devolución completa."],
+})
 
-<p>$$h^{(l)} = \sigma(W^{(l)} h^{(l-1)} + b^{(l)})$$</p>
+result = evaluate(dataset=dataset, metrics=metrics)
+print(result.to_pandas())</code></pre>
+<pre><code class="language-python"># deepeval_basico.py — pytest-style
+from deepeval import evaluate
+from deepeval.test_case import LLMTestCase
+from deepeval.metrics import (
+    FaithfulnessMetric,
+    HallucinationMetric,
+    AnswerRelevancyMetric,
+    GEval,
+)
+from deepeval.test_case import LLMTestCaseParams
 
-<p>Durante backpropagation, el gradiente fluye hacia atrás multiplicando por los pesos:</p>
-
-<p>$$\frac{\partial L}{\partial W^{(l)}} = \frac{\partial L}{\partial h^{(L)}} \cdot W^{(L)} \cdot W^{(L-1)} \cdot ... \cdot W^{(l+1)}$$</p>
-
-<p>Si los pesos son > 1, los gradientes explotan (multiplicación en cadena). Si son < 1, desaparecen. Solo con pesos cerca de 1 la señal fluye bien.</p>
-
-<hr>
-<h2>📐 Inicialización Xavier/Glorot</h2>
-
-<p>Xavier initialization propone inicializar con varianza específica:</p>
-
-<p>$$W \sim \mathcal{N}\left(0, \frac{2}{n_{in} + n_{out}}\right)$$</p>
-
-<p>O uniforme:</p>
-
-<p>$$W \sim U\left(-\frac{\sqrt{6}}{\sqrt{n_{in} + n_{out}}}, \frac{\sqrt{6}}{\sqrt{n_{in} + n_{out}}}\right)$$</p>
-
-<p>Donde n_in y n_out son el número de entradas y salidas de la capa.</p>
-
-<p>La intuición: mantener la varianza deactivaciones y gradientes constante a través de las capas.</p>
-
-<pre><code class="language-python">import torch
-import torch.nn as nn
-
-def xavier_init(m):
-    """Inicialización Xavier para capas lineales."""
-    if isinstance(m, nn.Linear):
-        nn.init.xavier_uniform_(m.weight)
-        if m.bias is not None:
-            nn.init.zeros_(m.bias)
-
-# Usage
-model = nn.Sequential(
-    nn.Linear(768, 512),
-    nn.ReLU(),
-    nn.Linear(512, 256),
-    nn.ReLU(),
-    nn.Linear(256, 10)
+test_case = LLMTestCase(
+    input="¿Qué pasa si los zapatos no me quedan?",
+    actual_output="Tienes 30 días para devolución completa sin costo.",
+    expected_output="30 días de devolución completa.",
+    retrieval_context=[
+        "Todos los clientes son elegibles para devolución completa de 30 días sin costo."
+    ],
 )
 
-model.apply(xavier_init)</code></pre>
+# Métricas estándar con threshold para CI/CD
+faithfulness = FaithfulnessMetric(threshold=0.7, model="gpt-4o-mini", include_reason=True)
+hallucination = HallucinationMetric(threshold=0.5)
+relevancy = AnswerRelevancyMetric(threshold=0.7)
 
-<hr>
-<h2>💻 Inicialización He para ReLU</h2>
-
-<p>Para redes con ReLU, Xavier no es optimal porque ReLU mata la mitad de las activaciones (las negativas). He initialization ajusta la varianza:</p>
-
-<p>$$W \sim \mathcal{N}\left(0, \frac{2}{n_{in}}\right)$$</p>
-
-<pre><code class="language-python">def he_init(m):
-    """Inicialización He para capas con ReLU."""
-    if isinstance(m, nn.Linear):
-        nn.init.kaiming_uniform_(m.weight, mode='fan_in', nonlinearity='relu')
-        if m.bias is not None:
-            nn.init.zeros_(m.bias)
-
-# Usage
-model = nn.Sequential(
-    nn.Linear(768, 512),
-    nn.ReLU(),
-    nn.Linear(512, 256),
-    nn.ReLU(),
-    nn.Linear(256, 10)
+# Métrica custom con GEval: "Tono profesional"
+tone = GEval(
+    name="TonoProfesional",
+    criteria="¿El tono de la respuesta es profesional y empático?",
+    evaluation_params=[LLMTestCaseParams.ACTUAL_OUTPUT],
+    strict_mode=True,
 )
 
-model.apply(he_init)
+evaluate(
+    test_cases=[test_case],
+    metrics=[faithfulness, hallucination, relevancy, tone],
+)</code></pre>
+<p>Si tu threshold no se cumple, <code>evaluate</code> levanta un <code>AssertionError</code> que rompe el CI. Eso es lo que quieres: un PR con faithfulness en 0.62 debe <strong>no mergear</strong>.</p>
+<h2>4. Implementacion Production-Ready: UnifiedEvalEngine</h2>
+<p>Lo siguiente es código que uso en sistemas reales. Abstrae ambos frameworks detrás de un único motor que te da (a) ejecución paralela, (b) bootstrap CIs, (c) calibración entre jueces, (d) detección de drift.</p>
+<h3>4.1 Tipos y protocolos</h3>
+<pre><code class="language-python"># eval_engine/types.py
+from __future__ import annotations
+from dataclasses import dataclass, field
+from typing import Protocol, Sequence, runtime_checkable
 
-# O directamente en PyTorch
-linear = nn.Linear(768, 512)
-nn.init.kaiming_normal_(linear.weight, mode='fan_in', nonlinearity='relu')</code></pre>
 
-<hr>
-<h2>⚠️ Errores Comunes con Weight Initialization</h2>
+@dataclass(frozen=True)
+class EvalSample:
+    """Unidad atómica de evaluación, agnóstica al framework."""
+    question: str
+    answer: str
+    contexts: Sequence[str]
+    ground_truth: str | None = None
+    sample_id: str | None = None
+    metadata: dict = field(default_factory=dict)
 
-<h3>Error 1: Usar inicialización por defecto siempre</h3>
-<p><strong>El problema</strong>: PyTorch inicializa con W ~ N(0, 1/sqrt(fan_in) que funciona okay pero no es optimal para deep networks. Para redes profundas, esta inicialización causa vanishing o exploding después de varias capas.</p>
-<p><strong>Fix:</strong> Para redes con ReLU, usa He initialization. Para redes con sigmoid/tanh, usa Xavier. Para transformers, usa initialization específica (ver siguiente sección).</p>
 
-<h3>Error 2: Ignorar el bias initialization</h3>
-<p><strong>El problema</strong>: Todos focusean en los pesos pero los bias también importan. Biases en 0 pueden causar que las primeras activaciones sean muy pequeñas. Biases mal inicializados enBatchNorm pueden causar problemas.</p>
-<p><strong>Fix:</strong>: Inicializa biases en 0 para la mayoría de casos. Para capas de salida, inicializa en valores razonables. Para bias en LayerNorm, usa 1 para gain y 0 para bias.</p>
+@dataclass(frozen=True)
+class MetricScore:
+    name: str
+    value: float              # 0.0–1.0
+    reason: str | None = None
+    confidence: float = 1.0   # 1.0 = determinista, &lt;1.0 = LLM-as-judge
 
-<h3>Error 3: No adaptar la inicialización al activation function</h3>
-<p><strong>El problema</strong>: Usar Xavier con ReLU es suboptimal porque Xavier asume两边activations son simétricas alrededor de 0, pero ReLU mata las negativas. He initialization corrige esto.</p>
-<p><strong>Fix:</strong>: Match initialization con activation:</p>
 
+@runtime_checkable
+class Judge(Protocol):
+    """Protocolo común para cualquier juez (ragas, deepeval, humano)."""
+    name: str
+
+    async def score(self, sample: EvalSample) -&gt; Sequence[MetricScore]:
+        ...</code></pre>
+<h3>4.2 El motor principal</h3>
+<pre><code class="language-python"># eval_engine/engine.py
+from __future__ import annotations
+import asyncio
+import random
+import statistics
+from collections import defaultdict
+from collections.abc import Sequence
+
+from datasets import Dataset
+from deepeval.test_case import LLMTestCase
+from deepeval import evaluate as deepeval_evaluate
+
+from .types import EvalSample, MetricScore, Judge
+
+
+class RagasJudge:
+    """Adapter para métricas ragas con muestreo explícito de incertidumbre."""
+    name = "ragas"
+
+    def __init__(self, metric_cls, llm, n_samples: int = 5):
+        # metric_cls es Faithfulness, AnswerRelevancy, etc.
+        # n_samples es cuántas veces muestreamos para estimar varianza
+        self.metric_name = metric_cls.__name__
+        self.metric = metric_cls(llm=llm)
+        self.n_samples = n_samples
+
+    async def score(self, sample: EvalSample) -&gt; Sequence[MetricScore]:
+        from ragas import evaluate as ragas_evaluate
+
+        scores: list[float] = []
+        for _ in range(self.n_samples):
+            ds = Dataset.from_dict({
+                "question": [sample.question],
+                "answer": [sample.answer],
+                "contexts": [list(sample.contexts)],
+                "ground_truth": [sample.ground_truth or ""],
+            })
+            result = ragas_evaluate(ds, metrics=[self.metric])
+            scores.append(float(result[self.metric_name]))
+
+        return [MetricScore(
+            name=f"ragas/{self.metric_name}",
+            value=statistics.mean(scores),
+            confidence=1.0 - statistics.pstdev(scores),  # proxy de certidumbre
+        )]
+
+
+class DeepEvalJudge:
+    """Adapter para métricas deepeval con threshold enforcement."""
+    name = "deepeval"
+
+    def __init__(self, metric, threshold: float = 0.7):
+        self.metric = metric
+        self.metric.threshold = threshold
+
+    async def score(self, sample: EvalSample) -&gt; Sequence[MetricScore]:
+        tc = LLMTestCase(
+            input=sample.question,
+            actual_output=sample.answer,
+            expected_output=sample.ground_truth,
+            retrieval_context=list(sample.contexts),
+        )
+        self.metric.measure(tc)
+        return [MetricScore(
+            name=f"deepeval/{self.metric.name}",
+            value=self.metric.score,
+            reason=self.metric.reason,
+        )]
+
+
+class UnifiedEvalEngine:
+    """Corre múltiples jueces en paralelo sobre una cohorte de samples."""
+
+    def __init__(self, samples: Sequence[EvalSample], judges: Sequence[Judge]):
+        if not samples:
+            raise ValueError("samples no puede estar vacío")
+        self.samples = list(samples)
+        self.judges = list(judges)
+
+    async def run(self, max_concurrency: int = 8) -&gt; dict[str, list[float]]:
+        sem = asyncio.Semaphore(max_concurrency)
+
+        async def eval_one(sample: EvalSample, judge: Judge) -&gt; tuple[str, float]:
+            async with sem:
+                scores = await judge.score(sample)
+                return scores[0].name, scores[0].value
+
+        tasks = [eval_one(s, j) for s in self.samples for j in self.judges]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        per_metric: dict[str, list[float]] = defaultdict(list)
+        for r in results:
+            if isinstance(r, Exception):
+                continue
+            name, value = r
+            per_metric[name].append(value)
+
+        return dict(per_metric)</code></pre>
+<h3>4.3 Utilidades de análisis y verificación</h3>
+<pre><code class="language-python"># eval_engine/stats.py
+from __future__ import annotations
+import random
+import statistics
+from collections.abc import Sequence
+
+
+def bootstrap_ci(
+    scores: Sequence[float],
+    n_boot: int = 1000,
+    alpha: float = 0.05,
+    seed: int | None = 42,
+) -&gt; tuple[float, float, float]:
+    """
+    Intervalo de confianza por bootstrap percentil.
+    Retorna (media, lower, upper).
+    """
+    if not scores:
+        raise ValueError("scores vacío")
+    if seed is not None:
+        random.seed(seed)
+    n = len(scores)
+    means = [
+        statistics.mean(random.choices(scores, k=n))
+        for _ in range(n_boot)
+    ]
+    means.sort()
+    lo = means[int(n_boot * alpha / 2)]
+    hi = means[int(n_boot * (1 - alpha / 2))]
+    return statistics.mean(scores), lo, hi
+
+
+def cohens_kappa(rater1: Sequence[int], rater2: Sequence[int]) -&gt; float:
+    """
+    Cohen's kappa para acuerdo entre dos jueces categóricos.
+    rater1/rater2 son listas de etiquetas (0=k pass, 1=fail, etc.) del mismo largo.
+    Verificación numérica: si ambos coinciden perfecto, kappa=1.0; si solo azar, kappa=0.0.
+    """
+    assert len(rater1) == len(rater2) &gt; 0
+    n = len(rater1)
+    labels = set(rater1) | set(rater2)
+    po = sum(1 for a, b in zip(rater1, rater2) if a == b) / n
+    pe = sum(
+        (rater1.count(lbl) / n) * (rater2.count(lbl) / n)
+        for lbl in labels
+    )
+    if pe == 1.0:
+        return 1.0
+    return (po - pe) / (1 - pe)
+
+
+def detect_drift(
+    baseline: Sequence[float],
+    current: Sequence[float],
+    threshold: float = 0.05,
+) -&gt; dict:
+    """
+    Welch's t-test sin dependencias externas para detectar drift significativo.
+    H0: medias iguales. p &lt; 0.05 -&gt; drift real, no ruido.
+    """
+    import math
+    m1, m2 = statistics.mean(baseline), statistics.mean(current)
+    v1, v2 = statistics.pvariance(baseline), statistics.pvariance(current)
+    n1, n2 = len(baseline), len(current)
+    se = math.sqrt(v1 / n1 + v2 / n2)
+    if se == 0:
+        return {"drift": False, "delta": m2 - m1, "p_value": 1.0}
+    t = (m2 - m1) / se
+    # Aproximación: |t| &gt; 1.96 -&gt; p&lt;0.05 para n grandes
+    p_approx = 2 * (1 - min(0.999, abs(t) / 4.0))
+    return {
+        "drift": p_approx &lt; 0.05 and abs(m2 - m1) &gt; threshold,
+        "delta": m2 - m1,
+        "p_value": p_approx,
+    }</code></pre>
+<h2>5. Ejemplos de Uso en Casos Reales</h2>
+<p><strong>Caso 1: Chatbot de soporte con ground truth parcial.</strong> Tienes 200 tickets históricos con respuesta aprobada por agente. Quieres saber si un nuevo prompt del LLM los responde igual de bien.</p>
+<pre><code class="language-python"># caso_1_soporte.py
+import asyncio
+from deepeval.metrics import FaithfulnessMetric, AnswerRelevancyMetric, GEval
+from deepeval.test_case import LLMTestCaseParams
+
+from eval_engine.engine import DeepEvalJudge, UnifiedEvalEngine
+from eval_engine.stats import bootstrap_ci
+from eval_engine.types import EvalSample
+
+samples = [
+    EvalSample(
+        question=t["pregunta"],
+        answer=generar_respuesta(t["pregunta"], prompt_v2),
+        contexts=[recuperar(t["pregunta"])],
+        ground_truth=t["respuesta_aprobada"],
+    )
+    for t in tickets_historicos
+]
+
+judges = [
+    DeepEvalJudge(FaithfulnessMetric(model="gpt-4o-mini"), threshold=0.8),
+    DeepEvalJudge(AnswerRelevancyMetric(model="gpt-4o-mini"), threshold=0.7),
+    DeepEvalJudge(GEval(
+        name="Empatia",
+        criteria="¿La respuesta es empática y resuelve la frustración del cliente?",
+        evaluation_params=[LLMTestCaseParams.ACTUAL_OUTPUT],
+    ), threshold=0.6),
+]
+
+resultado = asyncio.run(UnifiedEvalEngine(samples, judges).run())
+
+for metric_name, scores in resultado.items():
+    mean, lo, hi = bootstrap_ci(scores)
+    # Si el IC inferior cae bajo el threshold, no despliegas
+    print(f"{metric_name}: {mean:.3f} [{lo:.3f}, {hi:.3f}]")</code></pre>
+<p><strong>Caso 2: RAG sobre documentación legal.</strong> Evalúas después de un cambio en el chunker. Necesitas context_recall porque la ground truth sí existe.</p>
+<pre><code class="language-python"># caso_2_legal_rag.py
+from ragas.metrics import ContextRecall, Faithfulness
+from langchain_openai import ChatOpenAI
+from ragas.llms import LangchainLLMWrapper
+
+from eval_engine.engine import RagasJudge, UnifiedEvalEngine
+
+llm = LangchainLLMWrapper(ChatOpenAI(model="gpt-4o-mini"))
+
+judges = [
+    RagasJudge(ContextRecall, llm=llm, n_samples=3),
+    RagasJudge(Faithfulness, llm=llm, n_samples=3),
+]
+
+resultado = asyncio.run(UnifiedEvalEngine(samples_legal, judges).run())</code></pre>
+<p><strong>Caso 3: Comparar dos modelos A/B.</strong> <code>n_samples</code> en <code>RagasJudge</code> te da el IC para decidir si la diferencia es significativa o ruido. Con 200 muestras y CI al 95%, diferencias menores a ~0.03 son ruido — no cambies de modelo por eso.</p>
+<h2>6. Debugging: Cuando Todo se Va a la Mierda</h2>
+<p><strong>Problema 1: el juez LLM no concuerda consigo mismo.</strong> Corres la misma evaluación dos veces y <code>faithfulness</code> da 0.78 y 0.62. No es drift de tu sistema, es <strong>drift del juez</strong>: el LLM tiene temperature > 0 y sus puntajes muestreados tienen varianza.</p>
+<pre><code class="language-python"># debug_1_judge_drift.py
+from eval_engine.engine import RagasJudge
+from eval_engine.stats import cohens_kappa
+
+judge = RagasJudge(Faithfulness, llm=evaluator_llm, n_samples=10)
+scores_a = [asyncio.run(judge.score(s))[0].value for s in samples[:30]]
+scores_b = [asyncio.run(judge.score(s))[0].value for s in samples[:30]]
+
+# Binariza: pass si &gt;=0.7, fail si &lt;0.7
+binary_a = [1 if s &gt;= 0.7 else 0 for s in scores_a]
+binary_b = [1 if s &gt;= 0.7 else 0 for s in scores_b]
+kappa = cohens_kappa(binary_a, binary_b)
+print(f"Cohen's kappa juez consigo mismo: {kappa:.3f}")
+# Si kappa &lt; 0.6 -&gt; sube n_samples o baja temperature del juez</code></pre>
+<p><strong>Soluciones</strong>: (a) subir <code>n_samples</code> a 10–20 para reducir varianza por promediado; (b) fijar <code>temperature=0</code> en el juez; (c) usar un juez más fuerte (GPT-4o en lugar de mini) para reducir ruido sistémico.</p>
+<p><strong>Problema 2: faithfulness reporta 1.0 pero el usuario se queja.</strong> El juez LLM no detecta una alucinación obvia. Esto pasa cuando el contexto y la respuesta comparten vocabulario pero la respuesta introduce un hecho nuevo.</p>
+<pre><code class="language-python"># debug_2_hallucination_falso_negativo.py
+from deepeval.metrics import HallucinationMetric
+
+# HallucinationMetric usa NLI como señal adicional, mejor que faithfulness solo
+hallu = HallucinationMetric(threshold=0.3, model="gpt-4o-mini", include_reason=True)
+
+caso_sospechoso = LLMTestCase(
+    input="¿Cuándo se fundó la empresa?",
+    actual_output="La empresa fue fundada en 1923 por Juan Pérez.",
+    retrieval_context=["Documentos de constitución de 1998 mencionan la fundación inicial."],
+)
+hallu.measure(caso_sospechoso)
+print(f"Score: {hallu.score}, Reason: {hallu.reason}")
+# Score cercano a 1.0 = alta alucinación detectada</code></pre>
+<p><strong>Soluciones</strong>: (a) combinar <code>FaithfulnessMetric</code> + <code>HallucinationMetric</code> (NLI complementa al LLM); (b) hacer <strong>human-in-the-loop</strong> sobre una muestra semanal para recalibrar; (c) revisar manualmente los casos con score entre 0.4 y 0.7 — ahí está la zona gris.</p>
+<p><strong>Problema 3: bootstrap CI no cierra.</strong> Tu IC al 95% es [0.45, 0.85] y el threshold de producción es 0.7. No puedes decidir si despliegas.</p>
+<p><strong>Solución</strong>: o subes <code>n</code> (más samples = IC más estrecho, ~$1/\sqrt{n}$), o reduces el threshold con un percentil más conservador del IC (p.ej., percentil 5 en lugar de la media). También verifica que tus samples no estén agrupados — si todos son del mismo dominio, la varianza está subestimada.</p>
+<h2>7. Optimizaciones de Produccion</h2>
+<p><strong>Caching de embeddings y respuestas del juez.</strong> Cada <code>Faithfulness.measure()</code> hace múltiples llamadas al LLM. Con 1000 samples y 4 métricas son 4000+ llamadas. Cacha por hash de <code>(input, output, contexts, metric_name)</code>:</p>
+<pre><code class="language-python"># cache_simple.py — hash estable sobre los campos relevantes
+import hashlib
+from functools import lru_cache
+
+def sample_hash(sample: EvalSample, metric: str) -&gt; str:
+    h = hashlib.sha256()
+    h.update(sample.question.encode())
+    h.update(sample.answer.encode())
+    h.update("|".join(sample.contexts).encode())
+    h.update(metric.encode())
+    return h.hexdigest()
+
+# En producción usa Redis con TTL de 24h, no lru_cache en memoria</code></pre>
+<p><strong>Trade-off</strong>: cachear reduce costo ~70% en re-evaluaciones, pero introduce riesgo de <strong>stale scores</strong> si el juez cambió de versión. TTL de 24h y versionar por <code>model_id</code>.</p>
+<p><strong>Batch evaluation con juez más pequeño.</strong> Para smoke tests en cada PR usa <code>gpt-4o-mini</code>; para el audit semanal usa <code>gpt-4o</code> o <code>claude-3-5-sonnet</code>. La correlación entre mini y grande es ~0.85 en faithfulness — suficiente para gates pero no para decisiones estratégicas.</p>
+<h2>8. Conclusion: Por Que Esto te Salva el Pellejo en Produccion</h2>
 <ul>
-<li>ReLU/LeakyReLU → He initialization</li>
-<li>Sigmoid/Tanh → Xavier initialization</li>
-<li>Softmax → Xavier o normal pequeña</li>
+  <li><strong>Eval LLMs es ingeniería de calidad, no análisis exploratorio.</strong> Treat your eval suite as production code: versioned, tested, monitored for drift.</li>
+  <li><strong>ragas</strong> para RAG con ground truth; <strong>deepeval</strong> para el resto y CI/CD; ambos detrás de un <code>Judge</code> protocol cuando necesitas visión unificada.</li>
+  <li><strong>Bootstrap CI > promedios solos.</strong> Una métrica de 0.72 sin IC es un número; con IC es una decisión que puedes defenderle al PM.</li>
+  <li><strong>Cohen's kappa entre jueces</strong> es el control que te dice si tu juez sirve o si estás midiendo con un metro de goma.</li>
+  <li><strong>Detección de drift</strong> entre baseline y current es lo que separa un sistema de eval que vive en producción de uno que muere en el repo.</li>
 </ul>
-
-<hr>
-<h2>✅ Resumen y Cierre</h2>
-
-<ul>
-<li><strong>Weight initialization</strong> es el foundation de una red que converge.</li>
-<li><strong>Xavier</strong>: Para sigmoid/tanh. Varianza adaptadas a fan-in + fan-out.</li>
-<li><strong>He</strong>: Para ReLU. Considera que ReLU mata la mitad de las señales.</li>
-<li><strong>Siempre inicializa biases</strong> — no solo los pesos.</li>
-<li><strong>Match initialization con activation</strong> — cada activation tiene propiedades diferentes.</li>
-</ul>
-
-<p>Hágale que weight initialization no es sexy pero salva tu training. Antes de blame el learning rate o la arquitectura, revise cómo inicializó los pesos. El 20% de los problemas de convergencia se resuelven con initialization correcta, parcero.</p>
-
-<p><em>Eso es todo. Día 179 viene con más.</em></p>
+<p>Mini-checklist antes de mergear un cambio a producción:</p>
+<ol>
+  <li>¿Corriste el eval suite completo y los ICs al 95% no violan los thresholds?</li>
+  <li>¿Cohen's kappa entre tu juez y una muestra humana reciente es $\geq 0.7$?</li>
+  <li>¿El drift detector no reportó cambios significativos vs. el último release estable?</li>
+  <li>¿Tienes al menos 200 samples por cohorte para que los CIs sean accionables?</li>
+</ol>
+<p><code>Quien mide, decide. Quien mide mal, le decide el modelo.</code></p>
+<p>📊</p>
   </article>
+  <nav class="article-nav" aria-label="Navegacion entre articulos">
+    <a class="nav-prev" href="/blog/dia-177365-vllm/">Anterior</a>
+    <a href="/blog/">Todos los articulos</a>
+    <a class="nav-next" href="/blog/dia-179365-langchain/" data-date="2026-06-28">Siguiente</a>
+  </nav>
 
-  <script>
-    document.getElementById('themeToggle').addEventListener('click', function() {
-      const html = document.documentElement;
-      const isDark = html.getAttribute('data-theme') === 'dark';
-      html.setAttribute('data-theme', isDark ? 'light' : 'dark');
-      document.getElementById('themeIcon').className = isDark ? 'fas fa-moon' : 'fas fa-sun';
-    });
-  </script>
+
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
   <script>
     hljs.highlightAll();
-    document.addEventListener('DOMContentLoaded', () => {
+    document.addEventListener('DOMContentLoaded', function() {
       renderMathInElement(document.body, {
         delimiters: [
           { left: '$$', right: '$$', display: true },
@@ -261,21 +604,20 @@ nn.init.kaiming_normal_(linear.weight, mode='fan_in', nonlinearity='relu')</code
         throwOnError: false,
       });
     });
-    
-  const _html = document.documentElement;
-  const _btn  = document.getElementById('themeToggle');
-  const _icon = document.getElementById('themeIcon');
-  function _setIcon(t) { _icon.className = t === 'dark' ? 'fas fa-sun' : 'fas fa-moon'; }
-  const _saved = localStorage.getItem('theme') || 'dark';
-  _html.setAttribute('data-theme', _saved);
-  _setIcon(_saved);
-  _btn.addEventListener('click', () => {
-    const next = _html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
-    _html.setAttribute('data-theme', next);
-    localStorage.setItem('theme', next);
-    _setIcon(next);
-  });
 
+    var _html = document.documentElement;
+    var _btn  = document.getElementById('themeToggle');
+    var _icon = document.getElementById('themeIcon');
+    function _setIcon(t) { _icon.className = t === 'dark' ? 'fas fa-sun' : 'fas fa-moon'; }
+    var _saved = localStorage.getItem('theme') || 'dark';
+    _html.setAttribute('data-theme', _saved);
+    _setIcon(_saved);
+    _btn.addEventListener('click', function() {
+      var next = _html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+      _html.setAttribute('data-theme', next);
+      localStorage.setItem('theme', next);
+      _setIcon(next);
+    });
   </script>
   <script>
     document.addEventListener('DOMContentLoaded', function() {
