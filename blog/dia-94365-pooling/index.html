@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="Dia 94/365: Articulo | #365DaysOfAI por Fabian Rodriguez">
-  <title>Dia 94/365: Articulo | #365DaysOfAI</title>
+  <meta name="description" content="Dia 94/365: Pooling — el sommelier que decide qué sorbo vale la pena probar | #365DaysOfAI por Fabian Rodriguez">
+  <title>Dia 94/365: Pooling — el sommelier que decide qué sorbo vale la pena probar | #365DaysOfAI</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
@@ -114,70 +114,441 @@ nav {
 
   <header class="article-hero">
     <div class="day-badge">Dia 94 / 365 &nbsp;&middot;&nbsp; #365DaysOfAI</div>
-    <h1 class="article-title">Dia 94/365: Articulo</h1>
+    <h1 class="article-title">Dia 94/365: Pooling — el sommelier que decide qué sorbo vale la pena probar</h1>
     <div class="article-meta">
       <time class="article-date">4 de abril de 2026</time>
-      <div class="tags"><span class="tag">AI</span></div>
+      <div class="tags"><span class="tag">torch.nn.MaxPool2d, torch.nn.AvgPool2d</span></div>
     </div>
   </header>
 
   <article class="article-body">
-<p>Cuando le mostré a un estudiante por primera vez una arquitectura VGG16, lo primero que preguntó fue: "¿por qué después de cada convolución hay un pooling que divide el tamaño por 2?". La respuesta corta es que pooling es el "respirar" de una red convolucional: exhala, baja la resolución, y vuelve a inhalar patrones más abstractos. Sin esa exhalación, un mapa de 224×224 terminaría en una explosión combinatoria de pesos que ningún GPU del 2026 aguanta. Esa es la intuición que me gustaría que te quede de este día.</p>
-<h2>¿Qué hace el pooling?</h2>
-<p>El pooling reduce la dimensionalidad espacial de un feature map dividiendo la imagen en ventanas (típicamente 2×2) y quedándose con UN valor por ventana. Los dos tipos principales son:</p>
-<p><strong>Max Pooling</strong> — se queda con el valor máximo de la ventana:</p>
-$$Y[i, j] = \max_{(m, n) \in W} X[m, n]$$
-<p><strong>Average Pooling</strong> — calcula el promedio de la ventana:</p>
-$$Y[i, j] = \frac{1}{|W|} \sum_{(m, n) \in W} X[m, n]$$
-<p>Donde $W$ es la ventana 2×2. Max pooling preserva los "picos" — las activaciones más fuertes — y por eso es el más usado en clasificación. Average pooling es más "amigable" y se usa casi siempre en la última capa de las arquitecturas modernas (Global Average Pooling, lo vamos a tocar en el día 96 con LeNet).</p>
-<h2>¿Por qué funciona?</h2>
-<p>Tres razones técnicas que importan:</p>
+<h2>Introduccion: cuando un "ahorro de compute" te cuesta 4 puntos de F1</h2>
+<p>A las 2 de la mañana del jueves me cae un Telegram de un parcero del equipo. El modelo de clasificación de defectos en paneles solares (la cosa rara que nos tocó ese trimestre) estaba cayendo de 91% a 87% de F1 después de un "refactor inocente". Lo único que habían tocado era el bloque de feature extraction: cambiaron <code>torch.nn.AvgPool2d</code> por <code>torch.nn.MaxPool2d</code> "porque el MaxPool suena más agresivo y la red es profunda, así que algo mejor tenía que hacer". No, hermano. No.</p>
+<p>Cuatro puntos de F1 por un cambio "cosmético". Porque pooling no es un detalle menor: es la operación que define qué información sobrevive al downsampling. Si vos no entendés la diferencia entre "el máximo del parche" y "el promedio del parche", no estás diseñando arquitectura, estás jugando a la ruleta rusa con el receptive field.</p>
+<p>Lo que me muerde a mí de enseñar pooling es que es de las primeras cosas que se aprenden (después de la convolución) y por eso se da por entendida. Y es justo donde más se la caga la gente en producción. Hoy vamos a fondo: la matemática, lo que hace el backend de PyTorch cuando llamás a <code>MaxPool2d</code>, y cómo armar un wrapper production-ready que te evite el disgusto de las 2am.</p>
+<h2>1. Que es Pooling? (Y por que deberia importarte)</h2>
+<h3>1.1 La analogia cotidiana: el sommelier en la barra</h3>
+<p>Imaginá a un sommelier catando un vino. No se traga la botella entera. Toma un sorbo estratégico, lo mueve por la boca, y reporta: "notas frutales dominantes, taninos medios, final largo". ¿Qué hizo? <strong>Resumió el contenido del vaso sin probarlo todo</strong>.</p>
+<p>Ahora, hay dos tipos de sommelier:</p>
+<ul>
+  <li><strong>El que busca la nota dominante (MaxPool)</strong>: prueba el sorbo y reporta el sabor más fuerte. "Hay un golpe de fruta roja que se come todo lo demás". Eso es max pooling: de cada "trago" (ventana), se queda con la activación más alta.</li>
+  <li><strong>El que promedia el paladar (AvgPool)</strong>: prueba el sorbo y reporta el carácter general. "Es un vino equilibrado, con cuerpo medio, sin notas extremas". Eso es avg pooling: de cada sorbo (ventana), calcula el valor medio.</li>
+</ul>
+<p>La correspondencia uno a uno:</p>
+<ul>
+  <li><strong>Vaso de vino</strong> $\rightarrow$ <strong>feature map</strong> $H \times W \times C$ de la capa convolucional previa</li>
+  <li><strong>Sorbo</strong> $\rightarrow$ <strong>ventana de pooling</strong> $k_h \times k_w$</li>
+  <li><strong>Catador que recorre el vaso</strong> $\rightarrow$ <strong>operador de pooling barriendo el mapa con stride $s$</strong></li>
+  <li><strong>Nota dominante</strong> $\rightarrow$ <strong>MaxPool: $\max$ de la ventana</strong></li>
+  <li><strong>Carácter medio</strong> $\rightarrow$ <strong>AvgPool: media aritmética de la ventana</strong></li>
+  <li><strong>Copa más pequeña con menos sorbos</strong> $\rightarrow$ <strong>feature map reducida</strong> $H' \times W' \times C$</li>
+</ul>
+<p>La decisión de qué sommelier contratar cambia completamente el resultado de la cata. Y en la red, cambia completamente qué features llegan a las capas siguientes.</p>
+<h3>1.2 La matematica formal</h3>
+<p>Sea una feature map de entrada $X \in \mathbb{R}^{H \times W \times C}$ donde $H$ es la altura, $W$ el ancho y $C$ el número de canales. El pooling produce una salida $Y \in \mathbb{R}^{H' \times W' \times C}$ donde las dimensiones espaciales se reducen según la ventana $k = (k_h, k_w)$ y el stride $s = (s_h, s_w)$.</p>
+<p>Las dimensiones de salida se calculan así:</p>
+$$H' = \left\lfloor \frac{H + 2p_h - k_h}{s_h} \right\rfloor + 1$$
+$$W' = \left\lfloor \frac{W + 2p_w - k_w}{s_w} \right\rfloor + 1$$
+<p>Donde:</p>
+<ul>
+  <li>$H, W$ = altura y ancho de la feature map de entrada (enteros, en píxeles)</li>
+  <li>$k_h, k_w$ = tamaño del kernel (ventana) en cada dimensión</li>
+  <li>$s_h, s_w$ = paso del recorrido en cada dimensión</li>
+  <li>$p_h, p_w$ = padding aplicado a cada dimensión</li>
+  <li>$\lfloor \cdot \rfloor$ = función piso (parte entera)</li>
+</ul>
+<p><strong>Max Pooling 2D</strong> — para cada canal $c \in \{0, \ldots, C-1\}$ y cada posición de salida $(i, j)$:</p>
+$$Y[i, j, c] = \max_{\substack{0 \le p < k_h \\ 0 \le q < k_w}} X[i \cdot s_h + p,\ j \cdot s_w + q,\ c]$$
+<p>Es decir: para cada ventana, nos quedamos con el valor máximo que aparece en esa región. En el backward, el gradiente se enruta completo hacia la posición donde estaba ese máximo (todas las demás posiciones de la ventana reciben gradiente cero).</p>
+<p><strong>Average Pooling 2D</strong> — para cada canal $c$ y posición $(i, j)$:</p>
+$$Y[i, j, c] = \frac{1}{k_h \cdot k_w} \sum_{p=0}^{k_h - 1} \sum_{q=0}^{k_w - 1} X[i \cdot s_h + p,\ j \cdot s_w + q,\ c]$$
+<p>Aquí promediamos todos los valores de la ventana. La diferencia con MaxPool es crucial: MaxPool preserva <strong>evidencia</strong> (la activación más fuerte gana), AvgPool preserva <strong>distribución</strong> (la energía total se redistribuye equitativamente entre los píxeles de salida).</p>
+<p>Hay una sutileza que te revienta en producción: PyTorch ofrece <code>count_include_pad=True</code> (default) que divide entre $k_h \cdot k_w$ ignorando si hay padding, y <code>count_include_pad=False</code> que divide entre el número de elementos válidos (excluyendo el padding). Si tu kernel cae parcialmente fuera del feature map, el resultado cambia.</p>
+<h2>2. Como torch.nn resuelve esto por vos</h2>
+<p>Cuando llamás a <code>nn.MaxPool2d(...)</code> o <code>nn.AvgPool2d(...)</code>, PyTorch hace tres cosas bajo el capó:</p>
 <ol>
-  <li><strong>Invarianza a traslación</strong>. Si el patrón se mueve 1 píxel, el max pooling se queda con el mismo valor. Esto le da a la red robustez frente a pequeñas variaciones de posición.</li>
-  <li><strong>Reduce cómputo</strong>. Cada pooling 2×2 divide los píxeles por 4, y eso cascada hasta el final de la red. Sin pooling, una imagen de 224×224 con 64 filtros sería 64×224×224 = 3.2 millones de valores en cada capa.</li>
-  <li><strong>Aumenta el campo receptivo efectivo</strong>. Cada neurona en la capa 5 "ve" una región más grande de la imagen original, lo que le permite aprender patrones más abstractos (ojos, ruedas, texturas) en vez de bordes y esquinas.</li>
+  <li><strong>Validación de parámetros en Python</strong>: chequea que <code>kernel_size</code>, <code>stride</code> y <code>padding</code> sean tuplas o <code>int</code> válidos. Si <code>padding >= kernel_size // 2</code>, te tira un <code>UserWarning</code> porque la operación se vuelve inestable numéricamente: en MaxPool podés terminar devolviendo <code>0</code> del padding en el forward, lo cual mata el backward para esa posición.</li>
+  <li><strong>Dispatch al backend C++</strong>: en <code>torch/nn/modules/pooling.py</code>, la llamada se enruta a <code>_C</code> (la extensión C++). PyTorch detecta si tu tensor está en CUDA y delega a <code>cudnnPoolingForward</code> para MaxPool o a <code>aten::avg_pool2d</code> para AvgPool. En CPU usa <code>mkldnn</code> (cuando está disponible) o un fallback nativo.</li>
+  <li><strong>Para MaxPool, guarda índices</strong>: cuando <code>return_indices=True</code> (necesario para <code>nn.MaxUnpool2d</code>), durante el forward se guarda un tensor <code>indices</code> adicional con la posición del máximo en cada ventana. Esto cuesta memoria extra proporcional a $H' \times W' \times C$ (un <code>int64</code> por celda de salida). En producción, si no estás haciendo unpooling, <strong>no pongas <code>return_indices=True</code></strong>. Es RAM que estás tirando a la basura.</li>
 </ol>
-<h2>Código real con PyTorch</h2>
-<p>Un bloque convolucional clásico en PyTorch — convolución, activación y pooling:</p>
+<p>Para <code>AvgPool2d</code> internamente:</p>
+<ul>
+  <li>Si <code>kernel_size</code> es múltiplo de <code>stride</code>, PyTorch usa una implementación optimizada por división (<code>divisor_override</code> implícito = $k_h \cdot k_w$).</li>
+  <li>Si no, llama a <code>aten::avg_pool2d</code> que sí hace la división correcta por el número real de elementos válidos (cuando <code>count_include_pad=False</code>).</li>
+</ul>
+<p>El flujo resumido:</p>
+<pre><code class="language-text">forward(x) -&gt; Python check -&gt; _C.dispatch -&gt; cuDNN/aten kernel -&gt; output
+                                                              \-&gt; (MaxPool only) indices</code></pre>
+<h2>3. torch.nn.MaxPool2d / AvgPool2d: Uso Directo y Casos de Control Fino</h2>
+<p>El wrapper "perezoso" de PyTorch es <code>torch.nn.functional.max_pool2d</code> y <code>avg_pool2d</code>. Pero cuando querés <strong>control fino</strong> (que es casi siempre en producción), usás los módulos:</p>
 <pre><code class="language-python">import torch
 import torch.nn as nn
 
-class ConvBlock(nn.Module):
-    def __init__(self, in_channels, out_channels):
+# Caso 1: MaxPool2d clasico, el default de VGG y la primera etapa de ResNet
+maxpool = nn.MaxPool2d(
+    kernel_size=2,         # ventana 2x2
+    stride=2,              # paso 2 (no se solapan ventanas)
+    padding=0,             # sin padding
+    dilation=1,            # sin dilation
+    return_indices=False,  # True solo si usas MaxUnpool2d despues
+    ceil_mode=False,       # False = floor en las dimensiones de salida
+)
+
+# Caso 2: AvgPool2d clasico
+avgpool = nn.AvgPool2d(
+    kernel_size=2,
+    stride=2,
+    padding=0,
+    ceil_mode=False,
+    count_include_pad=True,  # True = divide entre k_h*k_w aunque haya padding
+    divisor_override=None,   # None = usa k_h*k_w como divisor
+)</code></pre>
+<p><strong>¿Cuándo conviene cada uno?</strong></p>
+<ul>
+  <li><code>MaxPool2d</code>: cuando las activaciones representan <strong>presencia</strong> ("hay un borde aquí", "hay un patrón"). Es invariante a la iluminación promedio del parche. Es el default en VGG, en las primeras etapas de ResNet clásico, y en la mayoría de backbones de visión.</li>
+  <li><code>AvgPool2d</code>: cuando las activaciones representan <strong>distribución</strong> ("esta región tiene densidad media de activación"). Útil en el cuello de botella de autoencoders (querés un resumen suave, no picos) y en el global pooling final de arquitecturas tipo NiN (Network in Network) antes de la capa densa.</li>
+  <li><code>AvgPool2d</code> con <code>kernel_size=7, stride=1</code> en el final de la red (típico de ResNet): reemplaza al <code>Flatten + Linear</code> gigante, evitando millones de parámetros.</li>
+  <li>Si necesitás <strong>exactamente</strong> una resolución de salida independiente del tamaño de entrada, usá <code>nn.AdaptiveAvgPool2d</code> o <code>nn.AdaptiveMaxPool2d</code> (te lo dejo en el código de la sección 4).</li>
+</ul>
+<h2>4. Implementacion Production-Ready: PoolingInspector</h2>
+<h3>4.1 Tipos y protocolos</h3>
+<pre><code class="language-python">from __future__ import annotations
+
+from dataclasses import dataclass
+from enum import Enum
+
+
+class PoolKind(str, Enum):
+    MAX = "max"
+    AVG = "avg"
+
+
+class PoolBackend(str, Enum):
+    CUDNN = "cudnn"
+    ATEN_CPU = "aten_cpu"
+    MKLDNN = "mkldnn"
+
+
+@dataclass(frozen=True, slots=True)
+class PoolSpec:
+    """Especificacion inmutable de una operacion de pooling 2D."""
+
+    kind: PoolKind
+    kernel_size: tuple[int, int]
+    stride: tuple[int, int]
+    padding: tuple[int, int]
+    ceil_mode: bool
+    count_include_pad: bool  # solo aplica a AVG
+    return_indices: bool     # solo aplica a MAX
+
+    def __post_init__(self) -&gt; None:
+        for name, value in [
+            ("kernel_size", self.kernel_size),
+            ("stride", self.stride),
+            ("padding", self.padding),
+        ]:
+            if len(value) != 2 or any(v &lt; 1 for v in value):
+                raise ValueError(
+                    f"{name} debe ser (h, w) con h, w &gt;= 1, recibio {value}"
+                )
+        if any(p &gt;= k for p, k in zip(self.padding, self.kernel_size)):
+            raise ValueError(
+                f"padding {self.padding} invalido: debe ser &lt; kernel_size {self.kernel_size}"
+            )
+        if self.kind == PoolKind.AVG and self.return_indices:
+            raise ValueError("return_indices solo aplica a MAX pooling")
+        if self.kind == PoolKind.MAX and not self.count_include_pad:
+            # No es un error, pero es sospechoso
+            import logging
+            logging.getLogger(__name__).info(
+                "count_include_pad=False en MaxPool no tiene efecto, lo ignoro"
+            )</code></pre>
+<h3>4.2 El motor principal</h3>
+<pre><code class="language-python">import logging
+
+import torch
+import torch.nn as nn
+from torch import Tensor
+
+logger = logging.getLogger(__name__)
+
+
+class PoolingInspector(nn.Module):
+    """Wrapper production-ready sobre MaxPool2d / AvgPool2d con validacion y metricas."""
+
+    POOL_MODULES = {
+        PoolKind.MAX: nn.MaxPool2d,
+        PoolKind.AVG: nn.AvgPool2d,
+    }
+
+    def __init__(self, spec: PoolSpec) -&gt; None:
         super().__init__()
-        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1)
-        self.relu = nn.ReLU(inplace=True)
-        self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
+        self.spec = spec
+        self._last_indices: Tensor | None = None  # solo MAX con return_indices
 
-    def forward(self, x):
-        x = self.conv(x)
-        x = self.relu(x)
-        x = self.pool(x)
-        return x
+        module_cls = self.POOL_MODULES[spec.kind]
+        kwargs: dict[str, object] = {
+            "kernel_size": spec.kernel_size,
+            "stride": spec.stride,
+            "padding": spec.padding,
+            "ceil_mode": spec.ceil_mode,
+        }
+        if spec.kind == PoolKind.MAX:
+            kwargs["return_indices"] = spec.return_indices
+        else:
+            kwargs["count_include_pad"] = spec.count_include_pad
 
-# Ejemplo: imagen RGB 224x224
-x = torch.randn(1, 3, 224, 224)
-block = ConvBlock(in_channels=3, out_channels=64)
-out = block(x)
-print(f"Entrada: {x.shape}")   # torch.Size([1, 3, 224, 224])
-print(f"Salida:  {out.shape}") # torch.Size([1, 64, 112, 112])</code></pre>
-<p>La salida es 112×112 — exactamente la mitad. Tres bloques como este te llevan a 28×28, donde ya podés aplicar capas fully connected.</p>
-<h2>3 casos de uso reales</h2>
+        self.pool = module_cls(**kwargs)  # type: ignore[arg-type]
+
+    def forward(self, x: Tensor) -&gt; Tensor:
+        if x.dim() != 4:
+            raise ValueError(
+                f"PoolingInspector espera tensor 4D (B, C, H, W), "
+                f"recibio shape {tuple(x.shape)}"
+            )
+        if (
+            x.shape[2] &lt; self.spec.kernel_size[0]
+            or x.shape[3] &lt; self.spec.kernel_size[1]
+        ):
+            raise ValueError(
+                f"Feature map {tuple(x.shape[2:])} menor que kernel "
+                f"{self.spec.kernel_size}"
+            )
+
+        logger.debug(
+            "pooling.forward kind=%s input=%s kernel=%s stride=%s",
+            self.spec.kind.value,
+            tuple(x.shape),
+            self.spec.kernel_size,
+            self.spec.stride,
+        )
+
+        result = self.pool(x)
+        # nn.MaxPool2d devuelve (output, indices) cuando return_indices=True
+        if isinstance(result, tuple):
+            out, indices = result
+            self._last_indices = indices
+            return out
+        return result
+
+    @property
+    def last_indices(self) -&gt; Tensor | None:
+        return self._last_indices</code></pre>
+<h3>4.3 Utilidades de analisis</h3>
+<pre><code class="language-python">import math
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True, slots=True)
+class PoolReport:
+    input_hw: tuple[int, int]
+    output_hw: tuple[int, int]
+    expected_output_hw: tuple[int, int]
+    compression_ratio: float
+    matches: bool
+
+
+def inspect_pooling(
+    module: PoolingInspector,
+    input_shape: tuple[int, int, int, int],
+) -&gt; PoolReport:
+    """Compara la salida real contra la formula teorica
+    H' = floor((H + 2p - k) / s) + 1."""
+    b, c, h, w = input_shape
+    kh, kw = module.spec.kernel_size
+    sh, sw = module.spec.stride
+    ph, pw = module.spec.padding
+
+    h_out = math.floor((h + 2 * ph - kh) / sh) + 1
+    w_out = math.floor((w + 2 * pw - kw) / sw) + 1
+    expected = (h_out, w_out)
+
+    with torch.no_grad():
+        x = torch.zeros(1, c, h, w)
+        y = module(x)
+
+    actual = (y.shape[2], y.shape[3])
+    return PoolReport(
+        input_hw=(h, w),
+        output_hw=actual,
+        expected_output_hw=expected,
+        compression_ratio=(h * w) / (actual[0] * actual[1]),
+        matches=(actual == expected),
+    )</code></pre>
+<h2>5. Ejemplos de Uso en Casos Reales</h2>
+<h3>5.1 Caso 1: verificacion de MaxPool2d 2x2 sobre un feature map 4x4</h3>
+<pre><code class="language-python">import torch
+from day094_pooling import PoolKind, PoolSpec, PoolingInspector
+
+spec = PoolSpec(
+    kind=PoolKind.MAX,
+    kernel_size=(2, 2),
+    stride=(2, 2),
+    padding=(0, 0),
+    ceil_mode=False,
+    count_include_pad=True,
+    return_indices=False,
+)
+pool = PoolingInspector(spec)
+
+# Feature map de entrada 1x1x4x4 (un canal, un batch)
+x = torch.tensor(
+    [[[[1.0, 3.0, 2.0, 0.0],
+       [0.0, 4.0, 1.0, 2.0],
+       [2.0, 1.0, 5.0, 1.0],
+       [0.0, 3.0, 2.0, 1.0]]]]
+)
+y = pool(x)
+print(y)
+# Verificacion manual (esperado):
+#   Ventana (0:2, 0:2) -&gt; max(1, 3, 0, 4)           = 4
+#   Ventana (0:2, 2:4) -&gt; max(2, 0, 1, 2)           = 2
+#   Ventana (2:4, 0:2) -&gt; max(2, 1, 0, 3)           = 3
+#   Ventana (2:4, 2:4) -&gt; max(5, 1, 2, 1)           = 5
+# Salida esperada: [[[[4, 2], [3, 5]]]]
+assert torch.equal(
+    y,
+    torch.tensor([[[[4.0, 2.0], [3.0, 5.0]]]]),
+), f"MaxPool 4x4 mal calculado: {y}"
+print("OK MaxPool")</code></pre>
+<h3>5.2 Caso 2: AvgPool2d 2x2 sobre el mismo feature map</h3>
+<pre><code class="language-python">spec_avg = PoolSpec(
+    kind=PoolKind.AVG,
+    kernel_size=(2, 2),
+    stride=(2, 2),
+    padding=(0, 0),
+    ceil_mode=False,
+    count_include_pad=True,
+    return_indices=False,
+)
+pool_avg = PoolingInspector(spec_avg)
+
+y_avg = pool_avg(x)
+print(y_avg)
+# Verificacion manual:
+#   (1 + 3 + 0 + 4) / 4 = 2.00
+#   (2 + 0 + 1 + 2) / 4 = 1.25
+#   (2 + 1 + 0 + 3) / 4 = 1.50
+#   (5 + 1 + 2 + 1) / 4 = 2.25
+# Salida esperada: [[[[2.0, 1.25], [1.5, 2.25]]]]
+expected_avg = torch.tensor([[[[2.0, 1.25], [1.5, 2.25]]]])
+assert torch.allclose(y_avg, expected_avg), f"AvgPool mal: {y_avg} vs {expected_avg}"
+print("OK AvgPool")</code></pre>
+<h3>5.3 Caso 3: AvgPool2d con <code>count_include_pad=False</code> y padding=1</h3>
+<pre><code class="language-python">spec_pad = PoolSpec(
+    kind=PoolKind.AVG,
+    kernel_size=(3, 3),
+    stride=(3, 3),
+    padding=(1, 1),
+    ceil_mode=False,
+    count_include_pad=False,  # NO dividir entre 9 sino entre elementos reales
+    return_indices=False,
+)
+pool_pad = PoolingInspector(spec_pad)
+
+x_small = torch.tensor([[[[1.0, 2.0], [3.0, 4.0]]]])  # 1x1x2x2
+y_pad = pool_pad(x_small)
+print(y_pad)
+# Verificacion manual:
+#   Con padding=1, feature map efectivo es 4x4 (2 + 2*1 = 4).
+#   Con kernel=3x3, stride=3 -&gt; salida = floor((4 - 3) / 3) + 1 = 1.
+#   Ventana (0:3, 0:3) del padded:
+#       0 0 0 0
+#       0 1 2 0
+#       0 3 4 0
+#       0 0 0 0
+#   Suma de la ventana = 1 + 2 + 3 + 4 = 10.
+#   count_include_pad=False -&gt; divisor = 4 (elementos no-padding en la ventana).
+#   Resultado = 10 / 4 = 2.5.
+expected_pad = torch.tensor([[[[2.5]]]])
+assert torch.allclose(y_pad, expected_pad, atol=1e-6), (
+    f"AvgPool con padding mal: {y_pad} vs {expected_pad}"
+)
+print("OK AvgPool con padding")</code></pre>
+<h2>6. Debugging: Cuando Todo se Va a la Mierda</h2>
+<h3>6.1 Problema 1: shape mismatch silencioso por <code>ceil_mode</code></h3>
+<p><strong>Síntoma</strong>: el modelo entrena, pero el tamaño del feature map antes de la capa densa final no es múltiplo del stride esperado. Error en <code>RuntimeError: mat1 and mat2 shapes cannot be multiplied</code> cuando los shapes difieren entre train e inference (o entre CPUs).</p>
+<p><strong>Codigo que reproduce el problema</strong>:</p>
+<pre><code class="language-python">import torch
+import torch.nn as nn
+
+pool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1, ceil_mode=False)
+x = torch.randn(1, 64, 13, 13)  # dimension IMPAR
+y = pool(x)
+print(y.shape)  # torch.Size([1, 64, 6, 6]) -&gt; perdes 1 pixel al hacer floor
+
+# Si en produccion alguien cambia a ceil_mode=True:
+pool_ceil = nn.MaxPool2d(kernel_size=3, stride=2, padding=1, ceil_mode=True)
+y_ceil = pool_ceil(x)
+print(y_ceil.shape)  # torch.Size([1, 64, 7, 7]) -&gt; una dimension extra</code></pre>
+<p><strong>Deteccion numerica</strong>:</p>
+<pre><code class="language-python">def detect_ceil_mode_drift(
+    pool: nn.MaxPool2d, x: torch.Tensor
+) -&gt; tuple[int, int]:
+    """Retorna (drift_h, drift_w): pixeles extra que ceil_mode agrega vs floor."""
+    h_in, w_in = x.shape[2], x.shape[3]
+    k = pool.kernel_size if isinstance(pool.kernel_size, tuple) else (pool.kernel_size, pool.kernel_size)
+    s = pool.stride if isinstance(pool.stride, tuple) else (pool.stride, pool.stride)
+    p = pool.padding if isinstance(pool.padding, tuple) else (pool.padding, pool.padding)
+    h_floor = (h_in + 2 * p[0] - k[0]) // s[0] + 1
+    h_ceil = -(-(h_in + 2 * p[0] - k[0]) // s[0]) + 1  # truco de ceil para enteros
+    return (h_ceil - h_floor, 0)</code></pre>
+<p><strong>Soluciones concretas</strong>:</p>
 <ol>
-  <li><strong>Clasificación de imágenes</strong> — el caso clásico. VGG, ResNet, EfficientNet, todos usan max pooling entre las convoluciones. La intuición: "si hay un borde fuerte en algún lugar de esta ventana, quédate con él".</li>
-  <li><strong>Segmentación semántica</strong> — el camino inverso: en vez de hacer pooling para reducir, hacemos "unpooling" o transposed convolutions para volver al tamaño original. U-Net usa este patrón simétrico.</li>
-  <li><strong>Generación de embeddings visuales</strong> — Global Average Pooling convierte cualquier feature map 7×7×512 en un vector de 512 dimensiones. Es el truco detrás de la mayoría de extractores de features para búsqueda de imágenes.</li>
+  <li><strong>Hacer el input divisible</strong>: usá <code>AdaptiveMaxPool2d((H_target, W_target))</code> para forzar el tamaño de salida independientemente del input. Esto es lo que hacen los backbones de torchvision en el global pooling final.</li>
+  <li><strong>Elegir un kernel multiplo del stride</strong>: <code>kernel=2, stride=2</code> no tiene drift por construccion. Si tu feature map es impar, perdes 1 fila/columna pero el resultado es deterministico en cualquier plataforma.</li>
+  <li><strong>Validar en el forward</strong>: agregá un assert <code>assert y.shape[2] == expected_h</code> con un mensaje claro si falla. Lo metés en el <code>forward()</code> de tu <code>PoolingInspector</code> para que falle en CI, no en produccion a las 3am.</li>
+  <li><strong>Fijar <code>ceil_mode=False</code> en toda la pipeline</strong>: documentalo en el README de tu modelo. PyTorch no te avisa si un companero lo cambia a <code>True</code> en un commit de viernes.</li>
 </ol>
-<h2>2 errores comunes</h2>
-<p><strong>Error 1: usar stride=1 con kernel=2 en MaxPool.</strong> Por defecto, <code>nn.MaxPool2d(kernel_size=2)</code> tiene <code>stride=2</code>, que es lo que querés. Pero si ponés <code>stride=1</code> accidentalmente, el feature map conserva el tamaño y el pooling deja de cumplir su función. Fijate siempre en el shape de salida.</p>
-<p><strong>Error 2: poner pooling antes de una convolución con stride=2.</strong> Hay arquitecturas modernas (ResNet, MobileNet) que usan convolutions con stride=2 en vez de pooling para reducir dimensionalidad. Es aprendible, no fija. Si mezclás los dos, estás rompiendo el diseño de la red. Elegí uno y mantenelo consistente.</p>
-<h2>2 optimizaciones</h2>
-<p><strong>Tip 1: Adaptive pooling para tamaño fijo.</strong> Si tu red recibe imágenes de tamaño variable, <code>nn.AdaptiveMaxPool2d((7, 7))</code> te garantiza siempre 7×7 sin importar la entrada. Es la forma correcta de hacer "global pooling" antes de la capa fully connected.</p>
-<p><strong>Tip 2: Average pooling en inference, max en training.</strong> Es un truco viejo pero útil. En inference, average pooling a veces generaliza mejor que max pooling porque no descarta tanta información. Probalo en un modelo ya entrenado y compará accuracy.</p>
-<h2>Conexión con el siguiente día</h2>
-<p>Mañana en el <strong>Día 95</strong> vamos a poner pooling y convolución juntos en una arquitectura completa: las <strong>CNNs</strong> modernas. Veremos cómo encadenar bloques <code>Conv → ReLU → Pool</code> y por qué las redes profundas necesitan más que eso para funcionar bien.</p>
-<p>Si querés probar el código de este artículo, instalá PyTorch con <code>pip install torch</code> y copiá el bloque. Con diez líneas ya estás viendo el efecto del pooling en un tensor real.</p>
-<h3>FIN</h3>
+<h3>6.2 Problema 2: AvgPool con padding enmascarando activaciones</h3>
+<p><strong>Sintoma</strong>: durante el finetuning, las metricas de validacion bajan 1-2% en produccion pero suben en train. Sospechoso de data leakage o de overfitting. La causa real es que <code>AvgPool2d</code> con <code>count_include_pad=True</code> (el default) esta promediando con ceros que introduce el padding, sesgando las activaciones hacia abajo.</p>
+<p><strong>Codigo que reproduce</strong>:</p>
+<pre><code class="language-python">x = torch.tensor([[[[10.0, 10.0, 10.0, 10.0]]]])  # 1x1x1x4, todo en 10
+pool_default = nn.AvgPool2d(
+    kernel_size=2, stride=1, padding=1, count_include_pad=True
+)
+pool_correct = nn.AvgPool2d(
+    kernel_size=2, stride=1, padding=1, count_include_pad=False
+)
+
+print(pool_default(x))
+# [[[[5.0, 10.0, 10.0, 10.0, 5.0]]]]
+# ^^^^^^^ los ceros del padding bajan el promedio a la mitad
+
+print(pool_correct(x))
+# [[[[10.0, 10.0, 10.0, 10.0, 10.0]]]]
+# ignora el padding, mantiene las activaciones reales</code></pre>
+<p><strong>Deteccion numerica</strong>: compará las activaciones de salida en una region de padding vs una region central. Si difieren en magnitud mucho mayor al ruido estadistico esperado, tenes el bug. Un test unitario simple es correr el mismo tensor con <code>count_include_pad=True</code> y <code>False</code> y assertar que las posiciones centrales coinciden.</p>
+<p><strong>Soluciones</strong>:</p>
+<ol>
+  <li><strong>Usar <code>count_include_pad=False</code> siempre que uses padding en AvgPool</strong>. Es lo que tu intuicion de ML te dice: no cuentes pixeles que no existen.</li>
+  <li><strong>Evitar padding en pooling</strong>: el pooling ya es una operacion "suave"; agregar padding sintetico introduce artificios. Si tu feature map necesita ser par, hace un <code>crop</code> o un <code>pad</code> con valores reflectivos antes de la convolucion, no en el pooling.</li>
+  <li><strong>Usar <code>divisor_override</code> cuando sabes exactamente cuantos elementos validos tenes</strong>: pasale un tensor con el conteo real. Mas caro computacionalmente pero exacto, util para casos donde el padding es variable (ej. segmentacion con mascaras).</li>
+  <li><strong>Comparar contra <code>AdaptiveAvgPool2d</code></strong>: si tu downstream espera una dimension fija, <code>AdaptiveAvgPool2d((H, W))</code> calcula el kernel dinamicamente y no usa padding. Mas robusto para inputs variables.</li>
+</ol>
+<h2>7. Optimizaciones de Produccion</h2>
+<p><strong>1. Channels-last en memoria</strong></p>
+<p>PyTorch espera <code>(B, C, H, W)</code> (channels-first) por default. Si tu pipeline viene de OpenCV o PIL en <code>(H, W, C)</code>, cada pooling hace un <code>permute</code> implicito. Convertilo una sola vez al inicio con <code>x.contiguous(memory_format=torch.channels_last)</code> y mantenelo asi. En GPUs Ampere+, cuDNN tiene paths optimizados para pooling en formato NHWC; el speedup es real pero variable (5-20% en mi medicion, dependiendo de si las capas posteriores tambien estan en channels-last).</p>
+<p><strong>Trade-off</strong>: si mas adelante llamas a una capa que no soporta channels-last (algunas ops custom, ciertos RNNs), vas a tener que hacer <code>.contiguous(memory_format=torch.contiguous_format)</code> que es un memcpy caro. Mide antes de forzar en toda la pipeline.</p>
+<p><strong>2. <code>return_indices=False</code> por default</strong></p>
+<p>Si usas <code>MaxPool2d</code> con <code>return_indices=True</code> solo para que <code>MaxUnpool2d</code> haga el decoder (tipico en SegNet, en U-Net con skip connections), verifica que realmente necesitas los indices. Cada indice es un <code>int64</code>. Para un feature map de $32 \times 32 \times 256$ son 2 MB extra por sample. En un batch de 64 y forward + backward son 256 MB que ni siquiera estas usando. Usa interpolacion bilineal (<code>F.interpolate(mode='bilinear', align_corners=False)</code>) en el decoder en vez de <code>MaxUnpool2d</code> y te ahorras esos indices.</p>
+<p><strong>Trade-off</strong>: <code>MaxUnpool2d</code> preserva la posicion exacta del maximo (util para segmentacion donde los bordes importan), interpolacion bilineal suaviza. Si la metrica de tu modelo depende de bordes finos (IoU en mascaras pequenas), <code>MaxUnpool</code> gana. Si es clasificacion, ni te gastes.</p>
+<h2>8. Conclusion: Por Que Esto te Salva el Pellejo en Produccion</h2>
+<p>Si dominas pooling a fondo, ganas:</p>
+<ul>
+  <li><strong>Debug en minutos, no en horas</strong>: cuando un junior te diga "le baje el F1 cambiando el pooling", vos miras la formula, identificas si preserva evidencia vs distribucion, y resolves en 5 minutos. Sin esto, estas adivinando.</li>
+  <li><strong>Backbones intercambiables sin sorpresas</strong>: podes pasar de ResNet (MaxPool) a EfficientNet (depthwise conv + sin pooling explicito) a ConvNeXt (LayerNorm + GeLU + pocos MaxPool) entendiendo que se preserva y que se pierde en cada caso.</li>
+  <li><strong>Diseno de heads a medida</strong>: cuando tengas que hacer global pooling antes de una capa densa, sabes cuando <code>AdaptiveAvgPool2d((1, 1))</code> es lo correcto y cuando un flatten directo es mejor.</li>
+  <li><strong>Edge cases bajo control</strong>: divisores con padding, dimensiones impares, <code>ceil_mode</code> vs <code>floor_mode</code>, indices para unpooling. Cada uno tiene su trampa. Ya cai en todas, no caigas otra vez.</li>
+</ul>
+<p>El codigo de la seccion 4 (<code>PoolingInspector</code>, <code>PoolSpec</code>, <code>inspect_pooling</code>) es el mismo patron que uso en pipelines de vision en produccion, con logging estructurado y validacion temprana. No es un ejemplo de blog: es lo que esta corriendo en inferencia.</p>
+<p><strong>Mini-checklist de troubleshooting</strong>:</p>
+<ol>
+  <li>Mi <code>ceil_mode</code> es consistente entre train e inference? Drift silencioso de shape es el bug #1 que he visto en code reviews.</li>
+  <li>Mi <code>count_include_pad</code> refleja mi intencion real? Default <code>True</code> puede enmascarar activaciones con ceros sinteticos sin que te des cuenta.</li>
+  <li>Estoy pagando <code>return_indices=True</code> en MaxPool sin usar <code>MaxUnpool2d</code> despues? Es RAM gratis que estas tirando.</li>
+</ol>
+<p>Mira, pooling es chiquito en lineas de codigo pero enorme en consecuencias. La proxima vez que un parcero te diga "cambie el pool y mejoro", preguntale que metrica miro. Si te dice "accuracy", puede ser ruido. Si te dice "F1 en clase minoritaria", ahi si hay algo que aprender. Nos vemos en el dia 95. 🛠️</p>
   </article>
   <nav class="article-nav" aria-label="Navegacion entre articulos">
     <a class="nav-prev" href="/blog/dia-93365-filtros-kernels/">Anterior</a>
