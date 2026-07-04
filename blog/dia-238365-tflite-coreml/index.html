@@ -3,9 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="AI Agents Deep Dive - Autonomous Agents, Multi-Agent Systems y el futuro de la IA autónoma | #365DaysOfAI por Fabian Rodriguez">
-  <title>AI Agents Deep Dive | #365DaysOfAI</title>
-  
+  <meta name="description" content="Dia 238/365: TFLite / CoreML — De la empanada artesanal al empaque industrial | #365DaysOfAI por Fabian Rodriguez">
+  <title>Dia 238/365: TFLite / CoreML — De la empanada artesanal al empaque industrial | #365DaysOfAI</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
@@ -21,7 +20,7 @@
   --shadow: rgba(2,12,27,0.7); --nav-bg: rgba(10,25,47,0.92);
 }
 [data-theme="light"] {
-  --bg: #f0f4fb; --bg-card: #ffffff; --border: #d4dcee;
+  --bg: #f0f4fb; --bg-card: #ffffff; --border: #d4ddee;
   --text-muted: #64748b; --text: #475569; --text-heading: #0f172a;
   --accent: #0d9488; --accent-tint: rgba(13,148,136,0.08);
   --shadow: rgba(15,23,42,0.12); --nav-bg: rgba(240,244,251,0.95);
@@ -81,6 +80,10 @@ nav {
   border-radius: 4px; padding: .15em .4em;
 }
 .article-body pre code { background: none; border: none; padding: 0; font-size: inherit; }
+.article-body table { width: 100%; border-collapse: collapse; margin: 1.5rem 0; font-size: .9rem; }
+.article-body th, .article-body td { border: 1px solid var(--border); padding: .6rem 1rem; text-align: left; }
+.article-body th { background: var(--bg-card); color: var(--text-heading); }
+.article-body .katex-display { overflow-x: auto; padding: .5rem 0; }
 
 .article-nav {
   max-width: 820px; margin: 0 auto; padding: 2rem 1.5rem;
@@ -94,7 +97,8 @@ nav {
   nav { padding: 0 1rem; }
   .article-hero, .article-body { padding-left: 1rem; padding-right: 1rem; }
 }
-</style>
+
+  </style>
 </head>
 <body>
   <nav>
@@ -110,383 +114,578 @@ nav {
 
   <header class="article-hero">
     <div class="day-badge">Dia 238 / 365 &nbsp;&middot;&nbsp; #365DaysOfAI</div>
-    <h1 class="article-title">AI Agents Deep Dive — Autonomous Agents, Multi-Agent Systems y el futuro de la IA autónoma</h1>
+    <h1 class="article-title">Dia 238/365: TFLite / CoreML — De la empanada artesanal al empaque industrial</h1>
     <div class="article-meta">
       <time class="article-date">26 de agosto de 2026</time>
-      <div class="tags"><span class="tag">ai-agents</span><span class="tag">autonomous-agents</span><span class="tag">multi-agent</span><span class="tag">langchain</span><span class="tag">autogen</span></div>
+      <div class="tags"><span class="tag">coremltools</span></div>
     </div>
   </header>
 
   <article class="article-body">
-<h2>El futuro de la IA autónoma</h2>
-<p>Hagale pues, parcero. Hoy es el Día 238 y nos metemos de lleno en el mundo de los AI Agents — sistemas que no solo responden preguntas, sino que toman acciones, usan herramientas, recuerdan contexto y colaboran entre sí. Esto es lo que viene después de los LLMs simples, y hay que entenderlo bien.</p>
-<p>Mientras en Colombia hemos aprendido a trabajar en equipo para sacarle provecho a los recursos limitados, los AI Agents hacen lo mismo pero a nivel de software — múltiples componentes cooperando, dividiendo tareas, corrigiendo errores en tiempo real. Es fascinante y hay que saber cómo construirlos bien.</p>
-<hr>
-<h2>¿Qué es un AI Agent?</h2>
-<p>Un AI Agent es un sistema que percibe su entorno, toma decisiones y ejecuta acciones para lograr objetivos específicos. A diferencia de un LLM estático que solo responde prompts, un agent tiene:</p>
+<h2>Introduccion: Cuando el "modelo en produccion" significa "modelo en el celular del usuario"</h2>
+<p>Tienes tu modelo de PyTorch corriendo bonito en una A100. Hiciste tu fine-tune, tu validation accuracy es 0.94 y todo funciona. Entonces el PM te dice: "necesitamos esto dentro de la app, offline, en iPhone, con menos de 80 MB de binario y latencia menor a 30 ms por inferencia".</p>
+<p>Ahi es donde se te olvida la sonrisa.</p>
+<p>Pasar de GPU server-side a mobile on-device no es "correr el mismo modelo en otro lado". Es una transformacion completa del pipeline: cambian los tipos de datos (fp32 → int8 o int4), cambia el backend de ejecucion (CUDA → Apple Neural Engine), cambia el contrato de despliegue (modelo entrenado en casa → binario empaquetado y firmado por Apple) y cambian los requisitos de validacion (accuracy en dataset → accuracy en hardware real con datos reales).</p>
+<p>Ahi entra <code>coremltools</code>: la caja de herramientas oficial de Apple para tomar tu modelo entrenado y entregarlo como un <code>.mlmodel</code> (o <code>.mlpackage</code> desde iOS 15+) que el sistema operativo sabe ejecutar nativamente sobre la Neural Engine, el GPU de Apple o la CPU. Su equivalente en el ecosistema Google/Android es <strong>TFLite</strong> (<code>tf.lite.TFLiteConverter</code> + <code>tflite-runtime</code>), que cumple el mismo rol pero aterriza en CPU/GPU/DSP de Android. Ambos resuelven el mismo problema fundamental; el camino de Apple tiene una ventaja concreta: cuando el modelo compila a Neural Engine, la eficiencia energetica es brutal y la latencia es consistente.</p>
+<p>Este articulo se enfoca en <code>coremltools</code> porque ese es el stack que te pidio el PM, y porque la conversion Core ML tiene varias trampas que no son obvias hasta que te quemaste.</p>
+<h2>1. Que es Core ML (y por que deberia importarte)</h2>
+<h3>1.1 La analogia cotidiana</h3>
+<p>Imagina a la abuela haciendo empanadas en su cocina: cada una la amasa a mano, le da forma con los dedos, la cierra con un repulgue perfecto y la fria en aceite caliente con un timer interno que aprendio en 40 anos. Cada empanada es ligeramente distinta — algunas quedan mas crocantes, otras mas jugosas — pero todas tienen "el sabor de la abuela".</p>
+<p>Eso es tu modelo en fp32 sobre GPU: artesanal, preciso, costoso, no escala.</p>
+<p>Ahora imagina que el negocio explota y tienes que pasar de 50 empanadas por dia a 50.000. La abuela no da abasto. Entonces contratas una fabrica: estandarizas la receta (el modelo se serializa), compras una maquina repulgadora (el conversor a Core ML), pre-porcionas la masa y el relleno (cuantizacion), ajustas el tiempo de fritura para cada lote (calibracion) y empacas cada empanada en un empaque individual con codigo de barras (el <code>.mlpackage</code>).</p>
+<p>La empanada de fabrica no es identica a la de la abuela. <strong>Pierde algo de sabor en el camino</strong> (accuracy drop tipico del 1-3% en cuantizacion int8), pero la produces a escala, en cualquier punto de distribucion, con consistencia industrial.</p>
+<p><code>coremltools</code> es esa maquina repulgadora: toma la "receta artesanal" (tu modelo entrenado) y la prepara para produccion en serie sobre Apple Silicon.</p>
+<h3>1.2 La matematica formal</h3>
+<p>La operacion matematica central de la conversion mobile es la <strong>cuantizacion lineal</strong> de pesos y activaciones. Sin esto no hay Core ML "production-grade" que valga.</p>
+<p><strong>Cuantizacion afin per-tensor simetrica</strong> mapea valores reales $r \in [r_{\min}, r_{\max}]$ a enteros $q \in [q_{\min}, q_{\max}]$ (tipicamente $[-128, 127]$ para int8 o $[-127, 127]$ excluyendo $-128$ para simetria perfecta):</p>
+$$s = \frac{r_{\max} - r_{\min}}{q_{\max} - q_{\min}}, \quad z = q_{\min} - \text{round}\!\left(\frac{r_{\min}}{s}\right)$$
+<p>donde $s$ es la <strong>escala</strong> (factor de compresion, numero en coma flotante) y $z$ es el <strong>cero-point</strong> (desplazamiento entero). La conversion round-trip queda:</p>
+$$q = \text{round}\!\left(\frac{r}{s}\right) + z$$
+$$r \approx s(q - z)$$
+<p>Explicado simbolo por simbolo:</p>
 <ul>
-<li><strong>Percepción</strong>: Puede leer archivos, hacer queries a APIs, consultar bases de datos</li>
-<li><strong>Planificación</strong>: Descompone tareas complejas en pasos</li>
-<li><strong>Acción</strong>: Ejecuta código, llama APIs, manipula archivos</li>
-<li><strong>Memoria</strong>: Mantiene estado y contexto entre interacciones</li>
-<li><strong>Herramientas</strong>: Funciones que puede invocar para extender sus capacidades</li>
+  <li>$r$: el peso real original en fp32, por ejemplo $0.0034$.</li>
+  <li>$s$: la escala, magnitud del "paso" entre valores cuantizados consecutivos. Si comprimes pesos en $[-0.5, 0.5]$ a int8, $s \approx 0.0039$.</li>
+  <li>$z$: el cero-point. En cuantizacion <strong>simetrica</strong>, $z = 0$ y los pesos se centran en cero. En <strong>asimetrica</strong>, $z \neq 0$ y se aprovecha mejor el rango cuando la distribucion no es centrada.</li>
+  <li>$q$: el entero resultante, por ejemplo $-12$.</li>
+  <li>$\text{round}(\cdot)$: redondeo al entero mas cercano (banker's rounding en la mayoria de frameworks).</li>
 </ul>
-<p>Formalmente, podemos definir el ciclo de un agent como:</p>
-<p>$$\text{Agent} = f(\text{Perceive}, \text{Plan}, \text{Act}, \text{Memory})$$</p>
-<p>Donde cada ciclo refinamiento el estado interno basándose en feedback del ambiente.</p>
-<hr>
-<h2>Autonomous Agents: AutoGPT, BabyAGI y similares</h2>
-<p>Los autonomous agents fueron los primeros en demostrar que un LLM podía autocontinuar una tarea compleja sin intervención humana constante. La idea central: el agent se da a sí mismo instrucciones, las ejecuta, evalúa los resultados, y decide el siguiente paso.</p>
-<h3>AutoGPT</h3>
-<p>AutoGPT usa GPT-4 con capacidad de chaining de prompts para lograr objetivos de múltiples pasos. Le das un objetivo de alto nivel y él自行 decompose y ejecuta. La arquitectura básica:</p>
-<pre><code class="language-python"># Ciclo autónomo simplificado
-class AutonomousAgent:
-    def __init__(self, model, tools):
-        self.model = model
-        self.tools = tools
-        self.memory = Memory()
-
-    def run(self, goal, max_iterations=10):
-        plan = self.model.generate_plan(goal)
-        
-        for i in range(max_iterations):
-            # Seleccionar siguiente acción
-            action = self.model.select_action(plan, self.memory)
-            
-            if not action:
-                break  # Goal achieved
-                
-            # Ejecutar acción
-            result = self.execute_action(action)
-            
-            # Guardar en memoria
-            self.memory.add(action, result)
-            
-            # Reevaluar plan
-            plan = self.model.replan(plan, result, self.memory)
-            
-        return self.memory.get_results()</code></pre>
-<h3>BabyAGI</h3>
-<p>BabyAGI usa un enfoque más estructurado con tres componentes: un execution agent, un prioritization agent, y una lista de tareas. El loop es más claro:</p>
-<ol>
-<li>Extrae la primera tarea de la cola</li>
-<li>El execution agent completa la tarea</li>
-<li>El prioritization agent reordena la cola basándose en resultados</li>
-<li>Repite hasta que la cola esté vacía</li>
-</ol>
-<hr>
-<h2>Multi-Agent Systems</h2>
-<p>Un solo agent tiene limitaciones — puede fallar, puede no tener todas las herramientas, puede sesgarse. Los sistemas multi-agent abordan esto haciendo que múltiples agents especializados colaboren.</p>
-<h3>Arquitecturas de Colaboración</h3>
+<p><strong>Cuantizacion por canal (per-channel)</strong> aplica una escala $s_c$ y cero-point $z_c$ distintos a cada canal de salida del kernel de convolucion, preservando accuracy pero aumentando ligeramente el tamano del modelo:</p>
+$$W_{q}^{(c)} = \text{round}\!\left(\frac{W^{(c)}}{s_c}\right) + z_c$$
+<p>Esto es lo que usa <code>coremltools</code> por defecto en cuantizacion moderna (post-iOS 16). El modelo cuido el <strong>error de cuantizacion cuadratico medio</strong>:</p>
+$$\mathcal{E}_Q = \mathbb{E}_{r \sim \mathcal{D}}\!\left[(r - s(\text{round}(r/s) + z))^2\right]$$
+<p>donde $\mathcal{D}$ es la distribucion empirica de pesos del modelo. Minimizar $\mathcal{E}_Q$ eligiendo bien $[r_{\min}, r_{\max}]$ es el objetivo de la <strong>calibracion</strong>: pasar un dataset representativo por el modelo, observar el rango real de activaciones capa por capa, y ajustar los parametros $s, z$.</p>
+<p>Cuando $s$ y $z$ estan bien elegidos, el <strong>error relativo medio</strong> suele quedar por debajo del 1% en pesos y entre 1-3% en activaciones, suficiente para que el accuracy del modelo cuantizado baje menos de 2 puntos porcentuales respecto al original.</p>
+<h2>2. Como <code>coremltools</code> resuelve esto por vos</h2>
+<p><code>coremltools</code> opera como una cadena de transformaciones. El flujo conceptual es:</p>
+<pre><code class="language-text">PyTorch / TF / ONNX  --&gt;  ONNX intermedio  --&gt;  MIL (Model Intermediate Language)
+                                                       |
+                                              Optimization Passes
+                                                       |
+                                              Core ML Spec (protobuf)
+                                                       |
+                                              .mlmodel / .mlpackage</code></pre>
+<p><strong>MIL</strong> es el IR (Intermediate Representation) de Apple: una representacion simbolica en forma de grafo de operaciones (<code>conv2d</code>, <code>linear</code>, <code>add</code>, <code>mul</code>, etc.) con tipos estrictos. Cuando conviertes un modelo, <code>coremltools</code> lo baja primero a MIL, luego aplica pases de optimizacion (fusion de operaciones, eliminacion de dead code, layout NCHW → NHWC para Apple accelerators) y finalmente escribe el <code>.mlpackage</code>, que es un bundle con:</p>
 <ul>
-<li><strong>Hierárquica</strong>: Un agent supervisor delega a agents especializados. El supervisor coordina, los others ejecutan.</li>
-<li><strong>Peer-to-Peer</strong>: Agents igual a igual que se comunican directamente. Más flexible pero requiere gestión de conflictos.</li>
-<li><strong>Debate/Consenso</strong>: Múltiples agents debaten un problema y llegan a consenso. Bueno para decisiones críticas.</li>
+  <li><code>Manifest.json</code>: metadata, version Core ML, descripcion de inputs/outputs.</li>
+  <li><code>Weights/weights.bin</code>: pesos en binario (posiblemente cuantizados).</li>
+  <li><code>MIL/text/program.proto</code>: el grafo MIL serializado.</li>
+  <li><code>Metadata.json</code>: autor, licencia, etiquetas.</li>
 </ul>
-<pre><code class="language-python"># Sistema multi-agent simple
-class MultiAgentSystem:
-    def __init__(self):
-        self.agents = {
-            'researcher': Agent(model, tools=[search, read]),
-            'coder': Agent(model, tools=[write, execute, test]),
-            'reviewer': Agent(model, tools=[analyze, critique])
-        }
-        self.shared_memory = SharedMemory()
+<p>La ejecucion final corre sobre uno de tres backends que Apple decide en tiempo de ejecucion segun disponibilidad:</p>
+<table>
+<thead>
+<tr>
+  <th>Backend</th>
+  <th>Dispositivo</th>
+  <th>Caso de uso</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td>Neural Engine (ANE)</td>
+  <td>A11 en adelante</td>
+  <td>Inferencia eficiente, baja potencia</td>
+</tr>
+<tr>
+  <td>Metal GPU</td>
+  <td>Todos con GPU Apple</td>
+  <td>Alto paralelismo, modelos grandes</td>
+</tr>
+<tr>
+  <td>CPU (BNNS)</td>
+  <td>Universal</td>
+  <td>Fallback, modelos no compilables a ANE</td>
+</tr>
+</tbody>
+</table>
+<p>El truco de <code>coremltools</code> es que, cuando haces <code>coremltools.convert()</code>, ademas de serializar el modelo, emite hints para que el <strong>compilador de Core ML</strong> mapee operaciones a ANE. No todas las capas son compatibles; por ejemplo, <code>LayerNorm</code> custom puede no bajar bien, y <code>coremltools</code> reporta esto inspeccionando el <code>spec</code> resultante.</p>
+<h2>3. <code>coremltools</code>: Uso Directo y Casos de Control Fino</h2>
+<p>El caso directo: vienes de PyTorch, exportas a TorchScript y conviertes.</p>
+<pre><code class="language-python">import coremltools as ct
+import torch
+from torchvision.models import mobilenet_v2
 
-    def solve(self, task):
-        # Agent investigador recoje información
-        context = self.agents['researcher'].execute(task)
-        self.shared_memory.add('context', context)
-        
-        # Agent coder implementa
-        solution = self.agents['coder'].execute(task, context)
-        self.shared_memory.add('solution', solution)
-        
-        # Agent reviewer evalúa
-        feedback = self.agents['reviewer'].evaluate(solution)
-        
-        # Iterar hasta que el reviewer esté satisfecho
-        while feedback.needs_revision:
-            solution = self.agents['coder'].revise(solution, feedback)
-            feedback = self.agents['reviewer'].evaluate(solution)
-        
-        return solution</code></pre>
-<hr>
-<h2>Frameworks para Construir Agents</h2>
-<h3>LangChain Agents</h3>
-<p>LangChain tiene un sistema de agents muy flexible. Usa el concepto de "agent" + "tool" + "toolkit". Los agents disponibles incluyen:</p>
-<ul>
-<li><strong>ReAct</strong>: Combina reasoning y action. Piensa antes de actuar.</li>
-<li><strong>Conversational</strong>: Para chatbots con memoria.</li>
-<li><strong>Plan-and-Execute</strong>: Planifica primero, ejecuta después.</li>
-</ul>
-<pre><code class="language-python">from langchain.agents import AgentExecutor, create_react_agent
-from langchain.tools import Tool
-from langchain import hub
+# 1. Carga tu modelo entrenado
+model = mobilenet_v2(weights="IMAGENET1K_V1")
+model.eval()
 
-# Definir tools
-tools = [
-    Tool(
-        name="search",
-        func=search_api.run,
-        description="Busca información en la web"
-    ),
-    Tool(
-        name="calculator", 
-        func=calc.run,
-        description="Calcula expresiones matemáticas"
-    )
-]
+# 2. Trace con un ejemplo (obligatorio)
+example = torch.rand(1, 3, 224, 224)
+traced = torch.jit.trace(model, example)
 
-# Crear agent ReAct
-prompt = hub.pull("hwchase17/react")
-agent = create_react_agent(llm, tools, prompt)
-
-# Ejecutar
-agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
-result = agent_executor.invoke({"input": "¿Cuál es la población de Bogotá?"})</code></pre>
-<h3>AutoGen (Microsoft)</h3>
-<p>AutoGen permite crear conversaciones entre múltiples agents que pueden colaborar para resolver tareas. Es especialmente fuerte para código.</p>
-<pre><code class="language-python">from autogen import ConversableAgent, Agent
-
-# Agent asistente de código
-coder = ConversableAgent(
-    name="coder",
-    system_message="Eres un programador expert. Escribe código limpio y eficiente.",
-    llm_config={"model": "gpt-4", "api_type": "openai"}
-)
-
-# Agent revisor
-reviewer = ConversableAgent(
-    name="reviewer",
-    system_message="Eres un code reviewer. Evalúa el código por correctness y style.",
-    llm_config={"model": "gpt-4", "api_type": "openai"}
-)
-
-# iniciar chat
-chat_result = reviewer.initiate_chat(
-    coder,
-    message="Escribe una función en Python que implemente binary search.",
-    max_turns=2
-)</code></pre>
-<hr>
-<h2>Implementando Tool Use</h2>
-<p>El tool use es lo que separa a un LLM común de un agent. La clave está en definir bien las tools y el prompting para que el model sepa cuándo y cómo usarlas.</p>
-<pre><code class="language-python">from typing import Callable
-
-class Tool:
-    def __init__(self, name: str, description: str, func: Callable):
-        self.name = name
-        self.description = description
-        self.func = func
-    
-    def execute(self, **kwargs):
-        return self.func(**kwargs)
-
-# Definir tools
-tools = [
-    Tool(
-        name="web_search",
-        description="Busca en la web. Input: query string. Output: resultados.",
-        func=lambda q: search(q)
-    ),
-    Tool(
-        name="read_file",
-        description="Lee contenido de un archivo. Input: path. Output: contenido.",
-        func=lambda p: open(p).read()
-    ),
-    Tool(
-        name="write_file", 
-        description="Escribe a archivo. Input: path, content. Output: success.",
-        func=lambda p, c: (open(p, 'w').write(c), " written")[1]
-    ),
-    Tool(
-        name="run_python",
-        description="Ejecuta código Python. Input: code string. Output: resultado.",
-        func=lambda c: exec(c)
-    )
-]
-
-# Prompt engineering para tool calling
-TOOL_PROMPT = """Tienes acceso a las siguientes tools:
-{tool_descriptions}
-
-Responde en formato:
-Action: tool_name
-Action Input: {{"param": "value"}}
-"""
-
-# Parsear respuesta del model
-def parse_tool_call(response):
-    # Extraer tool name e inputs del response
-    # ...
-    pass</code></pre>
-<hr>
-<h2>Errores Comunes y Cómo Evitarlos</h2>
-<h3>Error 1: No implementar manejo de errores y recuperación en agents</h3>
-<p><strong>El problema</strong>: Un agent sin manejo de errores se cuelga o produce resultados garbage cuando algo falla. Una llamada a una API puede timeout, un archivo puede no existir, una herramienta puede romper. Si el agent no maneja esto, todo se rompe.</p>
-<p><strong>La solución</strong>: Implementa retry logic, fallback behaviors, y error classification. El agent debe poder distinguir entre errores recuperables y no recuperables.</p>
-<pre><code class="language-python">import time
-from enum import Enum
-
-class ErrorType(Enum):
-    TRANSIENT = "transient"      # Retry puede resolver
-    PERMANENT = "permanent"      # No tiene sentido retry
-    UNKNOWN = "unknown"
-
-class ToolExecutor:
-    def __init__(self, tools, max_retries=3):
-        self.tools = tools
-        self.max_retries = max_retries
-
-    def execute_with_retry(self, tool_name, params, context):
-        tool = self.get_tool(tool_name)
-        
-        for attempt in range(self.max_retries):
-            try:
-                result = tool.execute(**params)
-                return {"success": True, "result": result}
-            
-            except TransientError as e:
-                # Retry con backoff exponencial
-                wait = 2 ** attempt
-                time.sleep(wait)
-                continue
-                
-            except PermanentError as e:
-                # No retry — registrar y fallback
-                return {"success": False, "error": str(e), "fallback": True}
-            
-            except Exception as e:
-                # Error desconocido — classify primero
-                error_type = self.classify_error(e)
-                if error_type == ErrorType.TRANSIENT:
-                    continue
-                return {"success": False, "error": str(e)}
-        
-        # Agotó retries
-        return {"success": False, "error": "Max retries exceeded"}</code></pre>
-<h3>Error 2: Agents sin memory management causando context overflow</h3>
-<p><strong>El problema</strong>: Los agents acumulan memoria con cada interacción. Sin una estrategia de gestión, el contexto crece hasta overflow. Los modelos tienen context window finito — un agent que no gestiona su memoria eventualmente empieza a degradar o falla.</p>
-<p><strong>La solución</strong>: Implementa sliding window para memoria reciente, summarization para memoria antigua, y priorización de información relevante.</p>
-<pre><code class="language-python">from collections import deque
-import tiktoken
-
-class MemoryManager:
-    def __init__(self, model="gpt-4", max_tokens=6000):
-        self.encoding = tiktoken.encoding_for_model(model)
-        self.max_tokens = max_tokens
-        self.short_term = deque(maxlen=50)   # Memoria reciente
-        self.long_term = []                   # Memoria comprimida
-
-    def add(self, role, content):
-        self.short_term.append({"role": role, "content": content})
-        self._check_overflow()
-
-    def _check_overflow(self):
-        total = self.count_tokens()
-        if total > self.max_tokens:
-            self._summarize_oldest()
-
-    def _summarize_oldest(self):
-        # Sacar los mensajes más antiguos
-        to_summarize = list(self.short_term)[:10]
-        self.short_term = deque(list(self.short_term)[10:])
-        
-        # Resumir con modelo
-        summary = self._create_summary(to_summarize)
-        self.long_term.append(summary)
-
-    def _create_summary(self, messages):
-        prompt = f"Resume esta conversación en 3 puntos clave:\n{messages}"
-        summary = llm.predict(prompt)
-        return {"type": "summary", "content": summary}
-
-    def get_context(self):
-        summaries = "\n".join(m["content"] for m in self.long_term)
-        recent = "\n".join(f"{m['role']}: {m['content']}" for m in self.short_term)
-        return f"Contexto previo:\n{sumaries}\n\nReciente:\n{recent}"
-
-    def count_tokens(self):
-        all_text = " ".join(
-            m["content"] for m in list(self.long_term) + list(self.short_term)
+# 3. Convierte a Core ML
+mlmodel = ct.convert(
+    traced,
+    inputs=[
+        ct.ImageType(
+            name="input_image",
+            shape=(1, 3, 224, 224),
+            bias=[-1.0, -1.0, -1.0],   # normalizacion RGB
+            scale=1 / 127.5,
+            color_layout="RGB",
         )
-        return len(self.encoding.encode(all_text))</code></pre>
-<h3>Error 3: No testear el comportamiento de agents a fondo</h3>
-<p><strong>El problema</strong>: Los agents son probabilísticos — pueden comportarse de formas inesperadas, especialmente con inputs no anticipados. Un agent que funciona perfectamente con 100 tests puede fallar estrepitosamente con un input outlier. Y pueden entrar en loops infinitos, tomar acciones destructivas, o generar outputs inconsistentes.</p>
-<p><strong>La solución</strong>: Testeo exhaustivo con fuzzing, límites de iterations, guardrails, y evaluación continua. Usa testing frameworks específicos para agents.</p>
-<pre><code class="language-python">import pytest
-from hypothesis import given, strategies as st
+    ],
+    outputs=[ct.ImageType(name="classProbs")],
+    convert_to="mlprogram",          # obligatorio para ANE moderno
+    compute_units=ct.ComputeUnit.ALL,
+)
 
-class TestAgentBehavior:
-    def test_no_infinite_loops(self):
-        """Verifica que el agent no exceda max iterations."""
-        agent = AutonomousAgent(max_iterations=10)
-        result = agent.run("Tarea imposible: loop eterno")
-        
-        assert result.iterations <= 10
-        assert result.completed  # O timeout explícito
+mlmodel.save("MobileNetV2.mlpackage")</code></pre>
+<p>Para modelos con <strong>grafos dinamicos</strong> (transformers, RNNs), necesitas <code>mlprogram</code> y declarar inputs con <code>ct.TensorType</code>:</p>
+<pre><code class="language-python">import numpy as np
 
-    @given(task=st.text(min_size=1, max_size=10000))
-    def test_always_terminates(self, task):
-        """Con cualquier input, el agent debe terminar."""
-        agent = AutonomousAgent(max_iterations=50)
-        result = agent.run(task)
-        
-        assert result.iterations < 50
-        assert result.final_state is not None
+mlmodel = ct.convert(
+    traced,
+    inputs=[
+        ct.TensorType(
+            name="input_ids",
+            shape=(1, 512),           # batch, seq_len
+            dtype=np.int32,
+        ),
+        ct.TensorType(
+            name="attention_mask",
+            shape=(1, 512),
+            dtype=np.int32,
+        ),
+    ],
+    convert_to="mlprogram",
+    compute_units=ct.ComputeUnit.CPU_AND_NE,
+)</code></pre>
+<p>Si vienes de TensorFlow en lugar de PyTorch, <code>coremltools</code> tiene un convertidor directo desde <code>tf.keras</code> o desde SavedModel. <strong>Ojo</strong>: TF usa layout NHWC por defecto (channels last), PyTorch usa NCHW. El ImageType se encarga de la conversion automaticamente si declaras <code>bias</code> y <code>scale</code>, pero para <code>TensorType</code> tienes que asegurarte de que el modelo de origen ya emite el layout correcto.</p>
+<pre><code class="language-python">import tensorflow as tf
 
-    def test_destructive_actions_require_confirmation(self):
-        """Acciones destructivas deben ser explíccitamente confirmadas."""
-        agent = AutonomousAgent()
-        
-        # El agent nunca debe borrar sin confirmación
-        result = agent.run("Delete all files")
-        
-        assert "confirmation" in result.actions or \
-               "aborted" in result.final_state.lower()
+keras_model = tf.keras.applications.MobileNetV2(weights="imagenet")
 
-    def test_memory_efficiency(self):
-        """No exceder límites de memoria."""
-        agent = AutonomousAgent()
-        
-        # 1000 operaciones de memoria
-        for i in range(1000):
-            agent.memory.add(f"task_{i}", f"data_{i}")
-        
-        # Verificar que se hace management
-        assert agent.memory.count_tokens() < agent.memory.max_tokens * 1.1
+mlmodel = ct.convert(
+    keras_model,
+    inputs=[ct.ImageType(shape=(1, 224, 224, 3))],   # NHWC para TF
+    convert_to="mlprogram",
+)</code></pre>
+<h2>4. Implementacion Production-Ready: el <code>MobileModelConverter</code></h2>
+<h3>4.1 Tipos y protocolo</h3>
+<pre><code class="language-python">from dataclasses import dataclass
+from enum import Enum
+from pathlib import Path
+from typing import Iterable
 
-    def test_tool_failure_graceful(self):
-        """Fallo de tool no rompe el agent."""
-        agent = AutonomousAgent(tools=[failing_tool, working_tool])
-        result = agent.run("Task that needs failing tool")
-        
-        # Debe fallback o retry, no crash
-        assert result.final_state is not None
-        assert "error" not in result.final_state.lower() or result.has_recovery</code></pre>
-<hr>
-<h2>Resumen y reflexión</h2>
-<p>Los AI Agents representan un salto en cómo interactuamos con inteligencia artificial — de asistentes pasivos que responden prompts a sistemas activos que planifican, ejecutan, y colaboran. Herramientas como LangChain Agents y AutoGen hacen la construcción más accesible, pero la complejidad emerge rápido cuando empiezas a pensar en manejo de errores, memoria, y testing.</p>
-<p>Lo más importante que hemos visto hoy: los errors importan más en agents que en software tradicional porque el comportamiento es probabilístico. Un agent sin retry logic, sin memory management, y sin testing riguroso va a fallar de formas espectaculares e impredecibles. La robustez no es opcional — es arquitectural.</p>
-<p>En Colombia tenemos esa cosa de echar pa'lante sin miedo — pero con inteligencia. Los agents son igual: hay que dejar que operen autonomy, pero con los controles necesarios para que cuando algo salga mal — y va a salir — el sistema sepa qué hacer. Eso es ingeniería seria.</p>
-<p><em>Eso es todo por hoy, parcero. Nos vemos en el Día 239.</em></p>
+import numpy as np
+
+
+class Backend(Enum):
+    NEURAL_ENGINE = "neuralengine"
+    GPU = "gpu"
+    CPU = "cpu"
+    ALL = "all"
+
+
+class QuantizationScheme(Enum):
+    NONE = "none"
+    LINEAR_INT8 = "linear_int8"
+    LINEAR_INT4 = "linear_int4"
+    PALETTIZATION = "palettization"
+
+
+@dataclass(frozen=True)
+class ConversionConfig:
+    input_name: str
+    input_shape: tuple[int, ...]
+    input_dtype: np.dtype
+    output_name: str
+    quantization: QuantizationScheme
+    backend: Backend
+    target_ios_version: int = 16
+    mil_program: bool = True
+
+
+@dataclass
+class CalibrationResult:
+    per_channel_scales: dict[str, np.ndarray]
+    per_channel_zero_points: dict[str, np.ndarray]
+    relative_error: float
+    passed: bool
+
+
+@dataclass
+class ConversionResult:
+    package_path: Path
+    size_mb: float
+    compute_units_used: list[str]
+    calibration: CalibrationResult
+    validation_passed: bool</code></pre>
+<h3>4.2 El motor principal</h3>
+<pre><code class="language-python">import coremltools as ct
+
+
+class MobileModelConverter:
+    """Convierte modelos entrenados a Core ML con cuantizacion y validacion."""
+
+    ACCURACY_TOLERANCE = 0.02  # maximo 2% de error relativo
+
+    def __init__(self, config: ConversionConfig):
+        self.config = config
+        self._calibration_data: list[np.ndarray] | None = None
+
+    def attach_calibration_data(
+        self, samples: Iterable[np.ndarray]
+    ) -&gt; "MobileModelConverter":
+        """Inyecta muestras representativas para calibrar la cuantizacion."""
+        self._calibration_data = [s for s in samples]
+        return self
+
+    def convert(self, source_model, source_framework: str) -&gt; ConversionResult:
+        if (
+            self.config.quantization != QuantizationScheme.NONE
+            and self._calibration_data is None
+        ):
+            raise ValueError(
+                "Cuantizacion requiere calibration data. "
+                "Llama attach_calibration_data() antes."
+            )
+
+        traced = self._trace(source_model, source_framework)
+        mlmodel = ct.convert(
+            traced,
+            inputs=[
+                ct.TensorType(
+                    name=self.config.input_name,
+                    shape=self.config.input_shape,
+                    dtype=self.config.input_dtype,
+                )
+            ],
+            outputs=[ct.TensorType(name=self.config.output_name)],
+            convert_to="mlprogram" if self.config.mil_program else "neuralnetwork",
+            compute_units=self._map_backend(self.config.backend),
+            minimum_deployment_target=self._ios_target_for_ct(),
+        )
+
+        if self.config.quantization == QuantizationScheme.LINEAR_INT8:
+            mlmodel = self._apply_int8(mlmodel)
+
+        package_path = Path(self.config.input_name + ".mlpackage")
+        mlmodel.save(str(package_path))
+
+        return self._build_result(mlmodel, package_path, traced, source_model)
+
+    def _trace(self, model, framework: str):
+        if framework == "pytorch":
+            import torch
+            model.eval()
+            example = torch.randn(*self.config.input_shape)
+            return torch.jit.trace(model, example)
+        if framework == "tensorflow":
+            return model   # Keras ya es un grafo
+        raise ValueError(f"Framework no soportado: {framework}")
+
+    def _apply_int8(self, mlmodel):
+        from coremltools.optimize.coreml import (
+            linear_quantize_weights,
+            OptimizationConfig,
+            OpLinearQuantizerConfig,
+        )
+
+        config = OptimizationConfig(
+            global_config=OpLinearQuantizerConfig(
+                mode="linear_symmetric",
+                weight_threshold=512,
+            )
+        )
+        return linear_quantize_weights(mlmodel, config=config)
+
+    def _build_result(self, mlmodel, path, traced, source):
+        size_mb = sum(f.stat().st_size for f in path.rglob("*")) / (1024 * 1024)
+        validation = self._validate(mlmodel, traced, source)
+        return ConversionResult(
+            package_path=path,
+            size_mb=round(size_mb, 2),
+            compute_units_used=self._detect_compute_units(mlmodel),
+            calibration=validation["calibration"],
+            validation_passed=validation["passed"],
+        )
+
+    def _validate(self, mlmodel, traced, source) -&gt; dict:
+        if self._calibration_data is None:
+            return {
+                "calibration": CalibrationResult({}, {}, 0.0, True),
+                "passed": True,
+            }
+
+        errors: list[float] = []
+        for sample in self._calibration_data[:32]:
+            source_pred = self._predict_source(source, sample)
+            core_pred = mlmodel.predict({self.config.input_name: sample})
+            core_out = core_pred[self.config.output_name]
+            rel = float(
+                np.abs(source_pred - core_out).mean()
+                / (np.abs(source_pred).mean() + 1e-8)
+            )
+            errors.append(rel)
+
+        mean_err = float(np.mean(errors))
+        passed = mean_err &lt; self.ACCURACY_TOLERANCE
+        return {
+            "calibration": CalibrationResult(
+                per_channel_scales={},
+                per_channel_zero_points={},
+                relative_error=mean_err,
+                passed=passed,
+            ),
+            "passed": passed,
+        }
+
+    def _predict_source(self, source, sample: np.ndarray) -&gt; np.ndarray:
+        try:
+            import torch
+            with torch.no_grad():
+                t = torch.from_numpy(sample.astype(np.float32))
+                return source(t).numpy()
+        except ImportError:
+            return source.predict(sample[None]).numpy()
+
+    def _map_backend(self, b: Backend) -&gt; "ct.ComputeUnit":
+        return {
+            Backend.NEURAL_ENGINE: ct.ComputeUnit.CPU_AND_NE,
+            Backend.GPU: ct.ComputeUnit.CPU_AND_GPU,
+            Backend.CPU: ct.ComputeUnit.CPU_ONLY,
+            Backend.ALL: ct.ComputeUnit.ALL,
+        }[b]
+
+    def _ios_target_for_ct(self):
+        return getattr(
+            ct.target,
+            f"iOS{self.config.target_ios_version}",
+            ct.target.iOS16,
+        )
+
+    def _detect_compute_units(self, mlmodel) -&gt; list[str]:
+        spec = mlmodel.get_spec()
+        if not spec.HasField("mlProgram"):
+            return ["cpu"]
+        try:
+            prog = spec.mlProgram
+            main_ops = list(prog.functions["main"].operations)
+            units = {op.WhichOneof("deployment_target") or "neuralengine"
+                     for op in main_ops}
+            return sorted(units)
+        except Exception:
+            return ["unknown"]</code></pre>
+<h3>4.3 Utilidades de analisis y verificacion</h3>
+<pre><code class="language-python">def report_model_summary(mlmodel_path: Path, source_size_mb: float) -&gt; dict:
+    """Compara tamano original vs Core ML y reporta el ahorro."""
+    if mlmodel_path.exists():
+        size_mb = sum(
+            f.stat().st_size for f in mlmodel_path.rglob("*")
+        ) / (1024 * 1024)
+    else:
+        size_mb = source_size_mb
+
+    return {
+        "original_mb": round(source_size_mb, 2),
+        "core_ml_mb": round(size_mb, 2),
+        "compression_ratio": round(source_size_mb / max(size_mb, 1e-6), 2),
+        "saved_mb": round(source_size_mb - size_mb, 2),
+    }</code></pre>
+<h2>5. Ejemplos de Uso en Casos Reales</h2>
+<h3>Caso 1: Image classifier on-device (vision)</h3>
+<pre><code class="language-python">from torchvision.models import resnet18
+import numpy as np
+
+model = resnet18(weights="IMAGENET1K_V1")
+model.eval()
+
+config = ConversionConfig(
+    input_name="image",
+    input_shape=(1, 3, 224, 224),
+    input_dtype=np.float32,
+    output_name="logits",
+    quantization=QuantizationScheme.LINEAR_INT8,
+    backend=Backend.ALL,
+)
+
+# 32 imagenes de calibration (en prod, del train set, NO random)
+calib = [np.random.randn(1, 3, 224, 224).astype(np.float32) for _ in range(32)]
+
+converter = MobileModelConverter(config).attach_calibration_data(calib)
+result = converter.convert(model, source_framework="pytorch")
+
+# Verificacion numerica manual:
+# - Salida del modelo original (fp32, GPU): shape (1, 1000)
+# - Salida del modelo Core ML (int8, ANE): shape (1, 1000)
+# - Esperado: argmax identico en &gt;95% de muestras, logits difieren ~2%
+assert result.calibration.relative_error &lt; 0.02, "Drop de accuracy excesivo"
+print(f"Paquete: {result.package_path}, tamano: {result.size_mb} MB")</code></pre>
+<h3>Caso 2: Text classifier (NLP con dynamic shape)</h3>
+<pre><code class="language-python">from transformers import AutoModelForSequenceClassification
+
+text_model = AutoModelForSequenceClassification.from_pretrained(
+    "distilbert-base-uncased"
+)
+text_model.eval()
+
+config = ConversionConfig(
+    input_name="input_ids",
+    input_shape=(1, 128),       # batch=1, seq_len=128
+    input_dtype=np.int32,
+    output_name="logits",
+    quantization=QuantizationScheme.LINEAR_INT8,
+    backend=Backend.NEURAL_ENGINE,
+)
+
+# Para NLP, la calibration usa embeddings reales
+calib = [
+    np.random.randint(0, 30000, (1, 128)).astype(np.int32) for _ in range(64)
+]
+
+result = (
+    MobileModelConverter(config)
+    .attach_calibration_data(calib)
+    .convert(text_model, source_framework="pytorch")
+)</code></pre>
+<p><strong>Verificacion numerica</strong>: en inferencia real, el tokenizer corre en CPU, el <code>.mlpackage</code> corre en ANE y la latencia total esperada es < 15 ms para secuencia de 128 tokens en iPhone 14 Pro. Mide siempre con <code>os_signpost</code> en Xcode sobre dispositivo fisico.</p>
+<h3>Caso 3: Audio keyword spotting</h3>
+<pre><code class="language-python">config = ConversionConfig(
+    input_name="mel_spectrogram",
+    input_shape=(1, 64, 100),   # 1 canal, 64 mels, 100 frames
+    input_dtype=np.float32,
+    output_name="keyword_logits",
+    quantization=QuantizationScheme.LINEAR_INT8,
+    backend=Backend.NEURAL_ENGINE,
+    target_ios_version=17,
+)</code></pre>
+<h2>6. Debugging: Cuando Todo se Va a la Mierda</h2>
+<h3>Problema 1: "Conversion failed: op not supported"</h3>
+<p>Tu modelo tiene una operacion custom que MIL no reconoce. Deteccion:</p>
+<pre><code class="language-python">import coremltools as ct
+
+try:
+    mlmodel = ct.convert(traced, inputs=[...])
+except Exception as e:
+    # El mensaje contiene el nombre del op problematico
+    print(f"Op no soportada: {e}")</code></pre>
+<p>Soluciones reales:</p>
+<ol>
+  <li>Identifica el op problematico con <code>ct.convert(traced, inputs=[...], debug=True)</code> que emite un reporte detallado.</li>
+  <li>Reescribelo en terminos de ops nativas (muchas veces un <code>LayerNorm</code> custom se puede sustituir por una secuencia <code>batch_norm + reshape + mul + add</code> que Core ML entiende).</li>
+  <li>Si no hay forma de evitarlo, implementalo como <strong>custom layer en Swift</strong>:</li>
+</ol>
+<pre><code class="language-swift">import CoreML
+
+@objc(YourCustomOp) class YourCustomOp: NSObject, MLCustomLayer {
+    func setWeightData(_ weights: [Data]) throws { /* ... */ }
+    func outputShapes(forInputShapes inputShapes: [[NSNumber]]) throws -&gt; [[NSNumber]] {
+        return [inputShapes[0]]
+    }
+    func evaluate(inputs: [MLMultiArray], outputs: [MLMultiArray]) throws {
+        // tu implementacion aqui
+    }
+}</code></pre>
+<p>Registralo en el <code>mlmodel</code> con <code>spec.customLayerNames</code>.</p>
+<h3>Problema 2: Accuracy drop post-cuantizacion mayor a 5%</h3>
+<p>Sintoma: tu <code>relative_error</code> de calibracion sale en 0.08 cuando esperabas <0.02. Causas probables:</p>
+<pre><code class="language-python"># 1. Calibration data no es representativa.
+#    Usaste random data en vez de datos reales.
+#    Solucion: usa minimo 64 muestras del train set, idealmente 256+.
+
+# 2. Activaciones tienen outliers extremos.
+#    Solucion: aplica clamp antes de cuantizar, o usa "linear" mode con
+#    rangos por canal. En coremltools: OpLinearQuantizerConfig(mode="linear").
+
+# 3. Modelo muy sensible (ej. clasificador con logits en [-100, 100]).
+#    Solucion: aplica log-softmax + normalizacion previa, o sube a
+#    LINEAR_INT4 solo en capas donde el error es bajo.
+
+# Verificacion numerica: corre 100 muestras, calcula top-1 accuracy
+# del modelo fp32 vs cuantizado. Si difiere &gt;3%, NO publiques.</code></pre>
+<h3>Problema 3: El modelo NO corre en Neural Engine</h3>
+<p>Sintoma: el <code>.mlpackage</code> ejecuta pero la latencia indica que esta en CPU. Deteccion:</p>
+<pre><code class="language-python">mlmodel = ct.models.MLModel("modelo.mlpackage")
+spec = mlmodel.get_spec()
+
+# Inspecciona el MIL program
+if not spec.HasField("mlProgram"):
+    print("WARNING: formato legacy 'neuralNetwork', NO usa ANE")
+
+prog = spec.mlProgram
+print(f"Functions: {list(prog.functions.keys())}")
+
+# Cada op debe tener un deployment_target valido
+for op in prog.functions["main"].operations:
+    target = op.WhichOneof("deployment_target") or "neuralengine"
+    if target != "neuralengine":
+        print(f"Op {op.WhichOneof('operation')} corre en {target}")</code></pre>
+<p>Soluciones:</p>
+<ol>
+  <li>Forzar <code>compute_units=ct.ComputeUnit.CPU_AND_NE</code> en la conversion.</li>
+  <li>Evitar ops que <strong>bloquean ANE</strong>: dynamic control flow, ragged tensors, <code>scatter</code> con indices variables, <code>tf.unique</code>.</li>
+  <li>Usar <code>convert_to="mlprogram"</code> (no <code>neuralnetwork</code>), porque <code>neuralnetwork</code> es el formato legacy que NO usa ANE en Apple Silicon moderno.</li>
+</ol>
+<h2>7. Optimizaciones de Produccion</h2>
+<h3>Tecnica 1: Palettizacion (weight clustering)</h3>
+<p>En vez de cuantizar cada peso individualmente, <strong>palettizacion</strong> agrupa pesos en $k$ clusters (tipicamente $k=16, 32, 64$) y guarda solo el indice al cluster center:</p>
+$$W \approx C[I]$$
+<p>donde $C \in \mathbb{R}^{k}$ son los centroides e $I \in \{0, \ldots, k-1\}^{N}$ son los indices. Esto comprime modelos fp32 ~4x (32 bits → 8 bits de indice, mas tabla pequena) con drop de accuracy <1% cuando $k \geq 16$.</p>
+<pre><code class="language-python">from coremltools.optimize.coreml import (
+    palettize_weights,
+    OptimizationConfig,
+    OpPalettizerConfig,
+)
+
+config = OptimizationConfig(
+    global_config=OpPalettizerConfig(
+        nbits=4,                     # indices de 4 bits -&gt; 16 clusters
+        granularity="per_tensor",
+    )
+)
+mlmodel_palettized = palettize_weights(mlmodel, config=config)</code></pre>
+<p><strong>Trade-off</strong>: la palettizacion tarda mas en compilar (k-means sobre los pesos de cada capa) y el accuracy drop es mayor en modelos pequenos o en capas cercanas a la salida. En modelos grandes (ResNet50+, BERT) suele ser casi gratis.</p>
+<h3>Tecnica 2: Pruning estructurado</h3>
+<p>Eliminas canales enteros de las capas convolucionales. Esto <strong>si</strong> baja a ANE porque reduce dimensiones reales. <code>coremltools</code> no hace pruning automatico todavia, pero puedes combinarlo con pruning de PyTorch antes de exportar:</p>
+<pre><code class="language-python">import torch.nn.utils.prune as prune
+
+for module in model.modules():
+    if isinstance(module, torch.nn.Conv2d):
+        prune.l1_unstructured(module, name="weight", amount=0.3)</code></pre>
+<p>El accuracy cae pero la latencia y el tamano bajan mas que con cuantizacion sola. <strong>No hay fiesta</strong>: pruning agresivo (>50%) destruye accuracy sin posibilidad de recuperacion sin retraining; ir mas alla del 20-30% sin re-fine-tuning es tirar el modelo a la basura.</p>
+<h2>8. Conclusion: Por Que Esto te Salva el Pellejo en Produccion</h2>
+<p>Resumen rapido para llevar al deployment:</p>
+<ul>
+  <li><strong>Convierte con <code>coremltools.convert</code></strong>, no a mano. El MIL hace optimizaciones que no quieres reinventar.</li>
+  <li><strong>Cuantiza con <code>linear_quantize_weights</code></strong> cuando apuntas a iPhone con Neural Engine. Sin esto, tu modelo no usa ANE.</li>
+  <li><strong>Valida SIEMPRE con datos reales</strong>. Random data en calibration = cuantizacion basura.</li>
+  <li><strong>Empaqueta como <code>.mlpackage</code></strong> (iOS 15+), no <code>.mlmodel</code> legacy.</li>
+  <li><strong>Mide latency en dispositivo fisico</strong>, no en simulador. El simulador corre en x86 y reporta numeros que no sirven.</li>
+</ul>
+<p>Mini-snippet para medir latencia real en Xcode:</p>
+<pre><code class="language-swift">import os.signpost
+
+let log = OSLog(subsystem: "com.app.ml", category: "inference")
+os_signpost(.begin, log: log, name: "predict")
+let out = try model.prediction(from: input)
+os_signpost(.end, log: log, name: "predict")</code></pre>
+<p>Mini-checklist antes de mandar a produccion:</p>
+<ol>
+  <li><code>convert_to="mlprogram"</code> (no <code>neuralnetwork</code> legacy).</li>
+  <li><code>compute_units=ct.ComputeUnit.ALL</code> o <code>CPU_AND_NE</code> explicito.</li>
+  <li>Calibration con >= 64 muestras reales, no random.</li>
+  <li><code>relative_error < 0.02</code> o <code>top-1 accuracy drop < 2%</code>.</li>
+  <li>Latencia medida con <code>os_signpost</code> sobre dispositivo fisico.</li>
+  <li>Tamano del paquete < limite de la app (tipicamente < 100 MB para modelos mobile).</li>
+</ol>
+<p>De una, con eso tienes tu modelo corriendo nativo en iPhone sin reescribir nada en Swift. Parce, pilas con esto: la conversion mobile es donde muere el 80% de los proyectos ML "de investigacion" que nunca llegan a usuario real. No seas parte de la estadistica. 📦</p>
   </article>
+  <nav class="article-nav" aria-label="Navegacion entre articulos">
+    <a class="nav-prev" href="/blog/dia-237365-edge-ai/">Anterior</a>
+    <a href="/blog/">Todos los articulos</a>
+    <a class="nav-next" href="/blog/dia-239365-federated-learning/" data-date="2026-08-27">Siguiente</a>
+  </nav>
 
-  <script>
-    document.getElementById('themeToggle').addEventListener('click', function() {
-      const html = document.documentElement;
-      const isDark = html.getAttribute('data-theme') === 'dark';
-      html.setAttribute('data-theme', isDark ? 'light' : 'dark');
-      document.getElementById('themeIcon').className = isDark ? 'fas fa-moon' : 'fas fa-sun';
-    });
-  </script>
+
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
   <script>
     hljs.highlightAll();
-    document.addEventListener('DOMContentLoaded', () => {
+    document.addEventListener('DOMContentLoaded', function() {
       renderMathInElement(document.body, {
         delimiters: [
           { left: '$$', right: '$$', display: true },
@@ -497,21 +696,20 @@ class TestAgentBehavior:
         throwOnError: false,
       });
     });
-    
-  const _html = document.documentElement;
-  const _btn  = document.getElementById('themeToggle');
-  const _icon = document.getElementById('themeIcon');
-  function _setIcon(t) { _icon.className = t === 'dark' ? 'fas fa-sun' : 'fas fa-moon'; }
-  const _saved = localStorage.getItem('theme') || 'dark';
-  _html.setAttribute('data-theme', _saved);
-  _setIcon(_saved);
-  _btn.addEventListener('click', () => {
-    const next = _html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
-    _html.setAttribute('data-theme', next);
-    localStorage.setItem('theme', next);
-    _setIcon(next);
-  });
 
+    var _html = document.documentElement;
+    var _btn  = document.getElementById('themeToggle');
+    var _icon = document.getElementById('themeIcon');
+    function _setIcon(t) { _icon.className = t === 'dark' ? 'fas fa-sun' : 'fas fa-moon'; }
+    var _saved = localStorage.getItem('theme') || 'dark';
+    _html.setAttribute('data-theme', _saved);
+    _setIcon(_saved);
+    _btn.addEventListener('click', function() {
+      var next = _html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+      _html.setAttribute('data-theme', next);
+      localStorage.setItem('theme', next);
+      _setIcon(next);
+    });
   </script>
   <script>
     document.addEventListener('DOMContentLoaded', function() {
