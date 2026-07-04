@@ -3,9 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="ML Ethics in Practice — Casos Reales de Sesgo en ML (COMPAS, Amazon, Cambridge) y Cómo Evitarlos | #365DaysOfAI por Fabian Rodriguez">
-  <title>ML Ethics in Practice — Casos Reales y Lessons Learned | #365DaysOfAI</title>
-  
+  <meta name="description" content="Dia 229/365: Drift — La brujula rota del modelo que navega sin recalibrar | #365DaysOfAI por Fabian Rodriguez">
+  <title>Dia 229/365: Drift — La brujula rota del modelo que navega sin recalibrar | #365DaysOfAI</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
@@ -21,7 +20,7 @@
   --shadow: rgba(2,12,27,0.7); --nav-bg: rgba(10,25,47,0.92);
 }
 [data-theme="light"] {
-  --bg: #f0f4fb; --bg-card: #ffffff; --border: #d4dcee;
+  --bg: #f0f4fb; --bg-card: #ffffff; --border: #d4ddee;
   --text-muted: #64748b; --text: #475569; --text-heading: #0f172a;
   --accent: #0d9488; --accent-tint: rgba(13,148,136,0.08);
   --shadow: rgba(15,23,42,0.12); --nav-bg: rgba(240,244,251,0.95);
@@ -81,6 +80,10 @@ nav {
   border-radius: 4px; padding: .15em .4em;
 }
 .article-body pre code { background: none; border: none; padding: 0; font-size: inherit; }
+.article-body table { width: 100%; border-collapse: collapse; margin: 1.5rem 0; font-size: .9rem; }
+.article-body th, .article-body td { border: 1px solid var(--border); padding: .6rem 1rem; text-align: left; }
+.article-body th { background: var(--bg-card); color: var(--text-heading); }
+.article-body .katex-display { overflow-x: auto; padding: .5rem 0; }
 
 .article-nav {
   max-width: 820px; margin: 0 auto; padding: 2rem 1.5rem;
@@ -94,7 +97,8 @@ nav {
   nav { padding: 0 1rem; }
   .article-hero, .article-body { padding-left: 1rem; padding-right: 1rem; }
 }
-</style>
+
+  </style>
 </head>
 <body>
   <nav>
@@ -109,220 +113,427 @@ nav {
   </nav>
 
   <header class="article-hero">
-    <div class="day-badge">Dia 229 / 365 &nbsp;·&nbsp; #365DaysOfAI</div>
-    <h1 class="article-title">ML Ethics in Practice — Casos Reales y Lessons Learned</h1>
+    <div class="day-badge">Dia 229 / 365 &nbsp;&middot;&nbsp; #365DaysOfAI</div>
+    <h1 class="article-title">Dia 229/365: Drift — La brujula rota del modelo que navega sin recalibrar</h1>
     <div class="article-meta">
       <time class="article-date">17 de agosto de 2026</time>
-      <div class="tags"><span class="tag">ethics</span><span class="tag">bias</span><span class="tag">fairness</span><span class="tag">AI-audit</span></div>
+      <div class="tags"><span class="tag">alibi-detect</span></div>
     </div>
   </header>
 
   <article class="article-body">
-<h2>ML Ethics in Practice — Casos Reales y Lessons Learned</h2>
+<h2>Introduccion: La brujula que se desajusta en altamar</h2>
+<p>Llevo seis anos viendo el mismo escenario en diferentes equipos y siempre con la misma cara de sorpresa: el modelo llevaba meses en produccion con metricas verdes en el dashboard, AUC estable, latencia bien, todo tranquilo. Un lunes el negocio reporta que las conversiones cayeron 18% y el equipo de datos se entera tres dias despues. Nadie monitoreo distribucion. Nadie detecto drift. El modelo estaba predicciondo con una representacion del mundo que ya no correspondia con la realidad.</p>
+<p>Eso es drift, y la ironia es que es uno de los problemas mas viejos del ML supervisado (Schlimmer & Granger, 1986) y aun asi sigue tumbando produccion como si fuera nuevo. No es un bug: es una propiedad emergente de los sistemas que aprenden de datos que ellos mismos no controlan. El mundo cambia, las poblaciones cambian, los fraudes mutan, las crisis macroeconomicas redistribuyen la masa de clientes, las modas culturales modifican el lenguaje. Tu modelo congelo una foto. La realidad sigue siendo una pelicula.</p>
+<p>Mira, el problema no es teorico. Un estudio de Google sobre modelos en produccion encontro que la mayoria de los modelos desplegados se degradan silenciosamente sin que las metricas offline tradicionales lo reporten, porque los labels llegan tarde o directamente no llegan (Breck et al., "Data Validation for Machine Learning", 2016). Drift es la causa numero uno. Y lo peor: cuando lo descubres manualmente ya van semanas de dano.</p>
+<p>Este articulo es para que no te pase. Vamos a formalizar el problema, a usar <code>alibi_detect</code> como bisturi, y a construir un monitor production-ready que puedas desplegar manana.</p>
+<h2>1. Que es Drift? (Y por que deberia importarte)</h2>
+<h3>1.1 La analogia cotidiana</h3>
+<p>Imagina un capitan de un barco mercante que zarpa de puerto con una brujula recien calibrada. Las primeras singladuras la brujula apunta al norte con desviaciones menores a un grado. Despues de seis semanas en altamar, la brujula acumula una desviacion sistematica de quince grados por el desgaste mecanico del instrumento, los cambios de temperatura y la humedad. El capitan, confiado, traza la derrota directo hacia el puerto de destino. Lo que llega es una playa a 200 kilometros del objetivo.</p>
+<p>El fenomeno se llama <em>compass error</em> en navegacion y los capitanes serios lo corrigen diariamente con observacion astronomica, marcas de radar y batimetria. No asumen que la brujula sigue sirviendo solo porque ayer sirviera. Esa misma actitud necesitas con tus modelos: no asumir que porque entrenaste con datos de enero la distribucion de julio se parece. Tu brujula se desajusta sola, y no avisa.</p>
+<p><code>alibi-detect</code> es la observacion astronomica: te da herramientas estadisticas para recalibrar la nocion de "este modelo sigue sirviendo" sin esperar a que el negocio se queje.</p>
+<h3>1.2 La matematica formal</h3>
+<p>Sea $<code>X \in \mathbb{R}^d</code>$ el vector de features, $<code>Y</code>$ la variable objetivo, y $<code>P_t(X, Y)</code>$ la distribucion conjunta en el tiempo $<code>t</code>$. Cuando entrenaste tu modelo capturaste una fotografia en $<code>t = 0</code>$, asi que tu hipotesis aprendio bajo $<code>P_0(X, Y)</code>$. Drift existe cuando:</p>
+$$`P_t(X, Y) \neq P_0(X, Y)`$$
+<p>Pero esta igualdad esconde tres fenomenos distinguibles. Por el teorema de Bayes:</p>
+$$`P(X, Y) = P(Y \mid X) \, P(X) = P(X \mid Y) \, P(Y)`$$
+<p>De aqui se desprenden tres tipos de drift que conviene separar porque las mitigaciones son distintas:</p>
+<p><strong>Data drift (covariate shift)</strong>: cambia solo la marginal de los features.</p>
+<p>$$<code>P_t(X) \neq P_0(X), \quad \text{con } P_t(Y \mid X) = P_0(Y \mid X)</code>$</p>
+<p><strong>Concept drift</strong>: cambia la relacion funcional entre features y target.</p>
+<p>$$<code>P_t(Y \mid X) \neq P_0(Y \mid X)</code>$</p>
+<p><strong>Label drift (prior shift)</strong>: cambia la marginal del target.</p>
+<p>$$<code>P_t(Y) \neq P_0(Y), \quad \text{con } P_t(X \mid Y) = P_0(X \mid Y)</code>$</p>
+<p>En la practica estos tipos se mezclan, y aqui es donde un test estadistico te salva. Para features numericos univariados, alibi-detect implementa el test de Kolmogorov-Smirnov, cuyo estadistico es:</p>
+$$`D_{n,m} = \sup_{x} \left| F_{1,n}(x) - F_{2,m}(x) \right|`$$
+<p>donde $<code>F_{1,n}</code>$ es la CDF empirica de la muestra de referencia de tamano $<code>n</code>$ y $<code>F_{2,m}</code>$ la de la muestra bajo test de tamano $<code>m</code>$. El supremo es sobre todo el dominio de $<code>x</code>$. Bajo la hipotesis nula $<code>P_1 = P_2</code>$:</p>
+$$`\sqrt{\frac{nm}{n+m}} \, D_{n,m} \xrightarrow{d} K`$$
+<p>donde $<code>K</code>$ es la distribucion limite de Kolmogorov. Con eso calculas un p-value. Si p-value $< \alpha$ (tipicamente $<code>\alpha = 0.05</code>$), rechazas la hipotesis nula y declaras drift en esa feature.</p>
+<p>Para datos multivariados donde la distribucion puede torcerse en combinaciones de features que univariadamente se ven estables, alibi-detect ofrece Maximum Mean Discrepancy (MMD), un test basado en kernels. El cuadrado del MMD entre dos distribuciones $<code>p</code>$ y $<code>q</code>$ en un espacio de Hilbert con kernel $<code>k</code>$ es:</p>
+$$`\text{MMD}^2[\mathcal{F}, p, q] = \lVert \mu_p - \mu_q \rVert_{\mathcal{H}}^2 = \mathbb{E}_{p}[k(X, X')] + \mathbb{E}_{q}[k(Y, Y')] - 2\mathbb{E}_{p,q}[k(X, Y)]`$$
+<p>Su estimador insesgado sobre muestras $<code>x_1, \ldots, x_n \sim p</code>$ y $<code>y_1, \ldots, y_m \sim q</code>$ es:</p>
+<p>$$<code>\widehat{\text{MMD}}^2_u = \frac{1}{n(n-1)} \sum_{i \neq j} k(x_i, x_j) + \frac{1}{m(m-1)} \sum_{i \neq j} k(y_i, y_j) - \frac{2}{nm} \sum_{i,j} k(x_i, y_j)</code>$</p>
+<p>Para variables categoricas, alibi-detect usa Chi-cuadrado:</p>
+<p>$$<code>\chi^2 = \sum_{i=1}^{k} \frac{(O_i - E_i)^2}{E_i}</code>$</p>
+<p>donde $<code>O_i</code>$ es el conteo observado en el bin $<code>i</code>$ y $<code>E_i</code>$ el esperado bajo la distribucion de referencia. Bajo $<code>H_0</code>$ este estadistico sigue una $<code>\chi^2_{k-1}</code>$.</p>
+<p>El p-value nunca se calcula analiticamente (salvo casos simples): se obtiene por permutation test. Tomas el estadistico observado, barajas las etiquetas muestra/ref $<code>B</code>$ veces (tipicamente $<code>B = 1000</code>$), recalculas el estadistico cada vez, y:</p>
+<p>$$<code>p = \frac{\#\{\text{estadisticos permutados} \geq \text{observado}\}}{B + 1}</code>$</p>
+<h2>2. Como alibi-detect resuelve esto por vos</h2>
+<p><code>alibi_detect</code> es una libreria de SeldonIO que envuelve estos tests con una API uniforme. La interfaz comun es:</p>
+<pre><code class="language-python">detector = SomeDriftDetector(x_ref, **kwargs)
+preds = detector.predict(x_test, return_p_val=True, return_distance=True)</code></pre>
+<p>El retorno es siempre un dict con <code>is_drift</code> (bool), <code>p_val</code> (float), <code>threshold</code> (float) y <code>distance</code> (float, el estadistico crudo). Esto te permite escribir un solo consumer para todos los detectores.</p>
+<p>Los detectores disponibles se organizan en cuatro familias:</p>
+<table>
+<thead>
+<tr>
+  <th>Familia</th>
+  <th>Detectores</th>
+  <th>Uso tipico</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td>Univariado numerico</td>
+  <td><code>KSDrift</code>, <code>CVMDrift</code></td>
+  <td>Features continuas por separado</td>
+</tr>
+<tr>
+  <td>Univariado categorico</td>
+  <td><code>ChiSquareDrift</code>, <code>FETDrift</code></td>
+  <td>Features discretas por separado</td>
+</tr>
+<tr>
+  <td>Multivariado</td>
+  <td><code>MMDDrift</code>, <code>LearnedKernelDrift</code>, <code>LSDDDrift</code>, <code>DeepKernelDrift</code></td>
+  <td>Embeddings, features correlacionadas</td>
+</tr>
+<tr>
+  <td>Compuesto</td>
+  <td><code>TabularDrift</code>, <code>ClassifierDrift</code>, <code>SpotTheDiffDrift</code></td>
+  <td>Tablas mixtas, imagen, texto</td>
+</tr>
+</tbody>
+</table>
+<p>La decision de diseno mas importante de la libreria es separar el detector (logica estadistica) del <code>DriftConfig</code> (donde guardas p-valores, umbrales, referencias serializadas). Esto permite versionar tu drift-checkpoint junto con el modelo, igual que un scaler.</p>
+<pre><code class="language-mermaid">flowchart LR
+    A[x_ref&lt;br/&gt;entrenamiento] --&gt; B[Detector.fit]
+    B --&gt; C[Detector serializado&lt;br/&gt;artifacto]
+    C --&gt; D[Inference]
+    E[x_test&lt;br/&gt;batch streaming] --&gt; D
+    D --&gt; F[is_drift, p_val, distance]
+    F --&gt; G{Alerta}
+    G --&gt;|drift| H[Retraining trigger]
+    G --&gt;|no drift| I[Continuar]</code></pre>
+<p>El permutation test interno es la pieza que la mayoria de equipos se saltaria si tuvieran que implementarlo a mano. alibi-detect lo paraleliza y lo cachea, asi que pagarlo una vez en <code>fit</code> y nada mas en <code>predict</code>.</p>
+<h2>3. alibi-detect: Uso Directo y Casos de Control Fino</h2>
+<p>El caso mas simple es drift univariado sobre una feature numerica:</p>
+<pre><code class="language-python">from alibi_detect.cd import KSDrift
+import numpy as np
 
-<p>Hagale pues, parcero. Aquí en Bogotá cuando algo sale mal, todos tienen la culpa menos el que hizo el disparate. En ML pasa lo mismo: los casos de sesgo son tan graves que hasta ProPublica hizo su propia investigación. Café en mano, hoy aprendemos de los errores ajenos para no repetir los mismos.</p>
+rng = np.random.default_rng(42)
+x_ref = rng.normal(loc=0.0, scale=1.0, size=(1000, 1))
+x_test = rng.normal(loc=0.5, scale=1.2, size=(500, 1))  # drift intencional
 
-<hr>
+cd = KSDrift(x_ref, p_val=0.05)
+preds = cd.predict(x_test, return_p_val=True, return_distance=True)
+assert preds["data"]["is_drift"], "deberia detectar drift"
+print(f"D={preds['data']['distance']:.4f}, p={preds['data']['p_val']:.6f}")</code></pre>
+<p>Para control fino, <code>KSDrift</code> permite alternar entre <code>two-sided</code>, <code>less</code> y <code>greater</code>, cambiar el <code>correction</code> (bonferroni, fdr) y precomputar los percentiles de la distribucion nula con <code>n_permutations</code>. Esto ultimo es la palanca principal cuando necesitas p-valores estables en streaming.</p>
+<p>Para features categoricas:</p>
+<pre><code class="language-python">from alibi_detect.cd import ChiSquareDrift
 
-<h2>🎯 Por Qué Importan las Éticas en ML</h2>
+x_ref_cat = rng.choice(["A", "B", "C"], size=(1000, 1), p=[0.5, 0.3, 0.2])
+x_test_cat = rng.choice(["A", "B", "C"], size=(500, 1), p=[0.2, 0.4, 0.4])
+cd_cat = ChiSquareDrift(x_ref_cat, p_val=0.05)
+preds_cat = cd_cat.predict(x_test_cat, return_p_val=True, return_distance=True)</code></pre>
+<p>Para el caso multivariado serio, donde los features se mueven juntos:</p>
+<pre><code class="language-python">from alibi_detect.cd import MMDDrift
 
-<p>Un modelo de ML no es neutral. Aprende de datos creados por humanos, con decisiones humanas, en contextos humanos. Si esas decisiones tienen sesgos, el modelo los amplifica. El problema no es la tecnología — es que automatizamos preferencias sin preguntarnos Whose voice is being amplified?</p>
+x_ref_multi = rng.multivariate_normal(np.zeros(5), np.eye(5), size=500)
+shift = np.array([0.3, -0.2, 0.0, 0.0, 0.4])
+x_test_multi = rng.multivariate_normal(shift, np.eye(5), size=300)
 
-<p>La matemática detrás del sesgo es sutil pero profunda. Si $\hat{Y}$ es nuestra predicción, el sesgo puede expresarse como:</p>
+cd_mmd = MMDDrift(x_ref_multi, p_val=0.05, kernel="rbf", n_permutations=200)
+preds_mmd = cd_mmd.predict(x_test_multi, return_p_val=True, return_distance=True)</code></pre>
+<p>El detalle clave: el estimador insesgado del MMD cuadrado es costoso ($<code>O(n^2 + m^2)</code>$ por evaluacion) pero <code>alibi_detect</code> lo vectoriza en numpy. Con $<code>n = 5000</code>$ y <code>n_permutations=1000</code>, esperar ~2 segundos en una maquina moderna. Para reducir costo en streaming, usa <code>LSDDDrift</code> (Least Squares Density Difference), que escala sub-cuadraticamente.</p>
+<h2>4. Implementacion Production-Ready: DriftMonitor</h2>
+<p>Aqui dejo el monitor que uso en produccion: tipado estricto, async-ready, serializable y desacoplado del backend de alertas.</p>
+<h3>4.1 Tipos y protocolos</h3>
+<pre><code class="language-python">from __future__ import annotations
 
-<p>$$\mathbb{E}[\hat{Y} | G=1] - \mathbb{E}[\hat{Y} | G=0] \neq 0$$</p>
+import logging
+import time
+from dataclasses import dataclass, field
+from enum import Enum
+from pathlib import Path
+from typing import Any, Protocol, Sequence
 
-<p>donde $G$ representa el grupo protegido. Un modelo "fair" busca que esta diferencia sea cercana a cero — pero hay muchas formas de definir "fairness", y matemáticamente son incompatibles entre sí (el Teorema de Impossibilidad de Kleinberg).</p>
+import numpy as np
+import numpy.typing as npt
 
-<hr>
+logger = logging.getLogger(__name__)
 
-<h2>📐 Casos Reales de Sesgo</h2>
+FloatArray = npt.NDArray[np.float64]
 
-<h3>1. COMPAS — La Justica No Es Neutral</h3>
 
-<p>COMPAS (Correctional Offender Management Profiling for Alternative Sanctions) era usado en cortes de EE.UU. para predecir riesgo de reincidencia. ProPublica descubrió que el modelo tenía tasas distintas de falsos positivos para personas afrodescendientes vs blancas:</p>
+class DriftKind(str, Enum):
+    NUMERICAL = "numerical"
+    CATEGORICAL = "categorical"
+    MIXED = "mixed"
 
+
+@dataclass(frozen=True, slots=True)
+class DriftVerdict:
+    is_drift: bool
+    p_value: float
+    threshold: float
+    statistic: float
+    feature_drift: dict[str, bool] = field(default_factory=dict)
+    detector_name: str = ""
+    n_samples_ref: int = 0
+    n_samples_test: int = 0
+    elapsed_ms: float = 0.0
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+class AlertSink(Protocol):
+    def send(self, verdict: DriftVerdict, context: dict[str, Any]) -&gt; None: ...
+
+
+class DriftBackend(Protocol):
+    name: str
+    def predict(self, x_test: FloatArray) -&gt; dict[str, Any]: ...</code></pre>
+<p>El <code>AlertSink</code> te permite enchufar Slack, PagerDuty o tu sistema interno sin tocar el monitor. El <code>DriftBackend</code> es lo que alibi-detect te da, pero tipado para que tu static checker no se queje.</p>
+<h3>4.2 El motor principal</h3>
+<pre><code class="language-python">from alibi_detect.cd import KSDrift, ChiSquareDrift, TabularDrift
+
+
+class DriftMonitor:
+    def __init__(
+        self,
+        backend: DriftBackend,
+        alert_sink: AlertSink,
+        *,
+        feature_names: Sequence[str],
+        feature_kinds: Sequence[DriftKind],
+        drift_threshold: float = 0.05,
+        min_test_samples: int = 100,
+    ) -&gt; None:
+        if len(feature_names) != len(feature_kinds):
+            raise ValueError("feature_names y feature_kinds deben tener la misma longitud")
+        self._backend = backend
+        self._alerts = alert_sink
+        self._feature_names = list(feature_names)
+        self._feature_kinds = list(feature_kinds)
+        self._threshold = drift_threshold
+        self._min_test = min_test_samples
+
+    def check(self, x_test: FloatArray, *, context: dict[str, Any] | None = None) -&gt; DriftVerdict:
+        if x_test.shape[0] &lt; self._min_test:
+            logger.warning(
+                "test sample muy pequeno (%d &lt; %d); saltando chequeo",
+                x_test.shape[0],
+                self._min_test,
+            )
+            return DriftVerdict(
+                is_drift=False,
+                p_value=1.0,
+                threshold=self._threshold,
+                statistic=0.0,
+                detector_name=self._backend.name,
+            )
+
+        started = time.perf_counter()
+        raw = self._backend.predict(x_test)
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+
+        data = raw["data"]
+        verdict = DriftVerdict(
+            is_drift=bool(data["is_drift"]),
+            p_value=float(data["p_val"]),
+            threshold=float(data["threshold"]),
+            statistic=float(data["distance"]),
+            detector_name=self._backend.name,
+            elapsed_ms=elapsed_ms,
+        )
+        if verdict.is_drift:
+            self._alerts.send(verdict, context or {})
+        return verdict</code></pre>
+<p><code>min_test_samples</code> es la red de seguridad que te salva de drift spurio cuando llega un batch vacio. Esos detalles parecen triviales hasta que un domingo a las 3am te cae una alerta porque alguien reinicio el consumer y mando un batch de tres registros.</p>
+<h3>4.3 Utilidades de analisis y verificacion</h3>
+<pre><code class="language-python">from alibi_detect.cd import TabularDrift
+
+
+class TabularDriftBackend:
+    """Wrapper production-ready sobre TabularDrift para tablas mixtas."""
+
+    name = "tabular_drift"
+
+    def __init__(
+        self,
+        x_ref: FloatArray,
+        *,
+        categorical_features: Sequence[int],
+        p_val: float = 0.05,
+        n_permutations: int = 1000,
+    ) -&gt; None:
+        self._detector = TabularDrift(
+            x_ref,
+            p_val=p_val,
+            categorical_features=list(categorical_features),
+            n_permutations=n_permutations,
+        )
+
+    def predict(self, x_test: FloatArray) -&gt; dict[str, Any]:
+        out = self._detector.predict(x_test, return_p_val=True, return_distance=True)
+        return {"data": out["data"]}
+
+
+def build_tabular_monitor(
+    x_ref: FloatArray,
+    feature_names: Sequence[str],
+    categorical_indices: Sequence[int],
+    *,
+    alert_sink: AlertSink,
+    artifact_path: Path,
+) -&gt; DriftMonitor:
+    from alibi_detect.utils.saving import save_detector
+
+    backend = TabularDriftBackend(
+        x_ref,
+        categorical_features=categorical_indices,
+        n_permutations=1000,
+    )
+    monitor = DriftMonitor(
+        backend=backend,  # type: ignore[arg-type]
+        alert_sink=alert_sink,
+        feature_names=feature_names,
+        feature_kinds=[
+            DriftKind.CATEGORICAL if i in categorical_indices else DriftKind.NUMERICAL
+            for i in range(len(feature_names))
+        ],
+    )
+    save_detector(backend._detector, str(artifact_path))
+    logger.info("detector persistido en %s", artifact_path)
+    return monitor</code></pre>
+<p>La serializacion del detector via <code>save_detector</code> te permite desplegar el binario junto al modelo y hacer rollback atomico si la nueva politica de drift falla.</p>
+<h2>5. Ejemplos de Uso en Casos Reales</h2>
+<h3>Caso 1 — Scoring crediticio en una fintech colombiana</h3>
+<p>Una fintech tiene un modelo XGBoost entrenado en 2024 con features como <code>edad</code>, <code>ingreso_mensual</code>, <code>antiguedad_laboral</code>, <code>score_buro_externo</code>, <code>num_productos_activos</code>. A mitad de 2025 entra una crisis macro y la composicion demografica de los solicitantes se corre hacia empleados informales.</p>
+<pre><code class="language-python">import pandas as pd
+from sklearn.model_selection import train_test_split
+
+df = pd.read_parquet("applications.parquet")
+features = ["edad", "ingreso_mensual", "antiguedad_laboral",
+            "score_buro_externo", "num_productos_activos"]
+X = df[features].to_numpy()
+
+x_ref, x_pool = train_test_split(X, test_size=0.7, stratify=df["default"], random_state=42)
+x_calibration, _ = train_test_split(x_pool, test_size=0.99, random_state=43)
+
+class LoggingAlertSink:
+    def send(self, verdict: DriftVerdict, context: dict[str, Any]) -&gt; None:
+        logger.error(
+            "DRIFT detectado en batch=%s p=%.4f stat=%.4f",
+            context.get("batch_id", "?"),
+            verdict.p_value,
+            verdict.statistic,
+        )
+
+monitor = build_tabular_monitor(
+    x_ref=x_calibration,
+    feature_names=features,
+    categorical_indices=[],  # todas numericas
+    alert_sink=LoggingAlertSink(),
+    artifact_path=Path("/models/xgb_v3/drift"),
+)
+
+verdict = monitor.check(x_pool[:500])
+# Si la macro cambio, verdict.is_drift == True con p &lt; 0.001
+# Verificacion numerica: D KS por feature vive en [0, 1], &gt; 0.1 ya es alto senal</code></pre>
+<h3>Caso 2 — Deteccion de fraude transaccional</h3>
+<p>Los patrones de fraude mutan rapido. Un detector MMD multivariado sobre los features pre-procesados captura derivas que el KS por feature no ve.</p>
+<pre><code class="language-python">from alibi_detect.cd import MMDDrift
+
+x_ref_fraud = df_train_fraude[features_preproc].to_numpy()
+x_test_fraud = df_stream_fraude[features_preproc].to_numpy()
+
+mmd = MMDDrift(
+    x_ref_fraud,
+    backend="pytorch" if torch.cuda.is_available() else "sklearn",
+    p_val=0.01,  # mas estricto porque hay class imbalance
+    kernel="rbf",
+    n_permutations=500,
+)
+preds = mmd.predict(x_test_fraud[:1000], return_p_val=True, return_distance=True)
+# Con shift real, MMD^2_hat ~ 0.05, p &lt; 0.001
+# Sin shift, MMD^2_hat ~ 1e-4, p ~ 0.4</code></pre>
+<h3>Caso 3 — Recomendador textual con embeddings</h3>
+<p>Si tu modelo de recomendaciones opera sobre embeddings de descripcion de producto (512d), KS por feature es inutil: tienes 512 dimensiones. <code>LSDDDrift</code> (Least Squares Density Difference) escala sub-cuadraticamente.</p>
+<pre><code class="language-python">from alibi_detect.cd import LSDDDrift
+
+embeddings_ref = np.load("embeddings_jan.npy")  # (50000, 512)
+embeddings_now = np.load("embeddings_jul.npy")  # (50000, 512)
+
+lsdd = LSDDDrift(embeddings_ref, p_val=0.01, n_permutations=300)
+preds = lsdd.predict(embeddings_now[:5000], return_p_val=True, return_distance=True)
+# Si el catalogo pivoteo a otra vertical, drift dispara rapido</code></pre>
+<h2>6. Debugging: Cuando Todo se Va a la Mierda</h2>
+<h3>Problema 1 — "Drift dispara el dia 1 sin motivo"</h3>
+<p>Causa tipica: el <code>x_ref</code> que le pasaste al detector no es representativo de la poblacion real, o el batch de inferencia es de un segmento muy estrecho (por ejemplo, solo usuarios premium). El test no miente: las distribuciones son distintas, pero el problema es de muestreo, no de drift genuino.</p>
+<pre><code class="language-python"># Reproduccion minima
+x_ref_biased = rng.normal(0, 1, (500, 1))
+x_test_unbiased = rng.uniform(-3, 3, (500, 1))
+cd = KSDrift(x_ref_biased, p_val=0.05)
+print(cd.predict(x_test_unbiased)["data"]["is_drift"])  # True, pero no es drift real</code></pre>
+<p><strong>Soluciones</strong>: (a) usa un <code>x_ref</code> mas grande y muestreado estratificado por los segmentos relevantes, (b) define un periodo de calibracion de al menos dos semanas para capturar estacionalidad, (c) separa drift global de drift por segmento con <code>ClassifierDrift</code> y predicciones del propio modelo.</p>
+<h3>Problema 2 — "Drift nunca dispara aunque el modelo se degrada"</h3>
+<p>Suele pasar con detectores configurados con <code>p_val=0.05</code> y <code>n_permutations=100</code> sobre <code>n_test=50000</code>. Con muestras grandes, cualquier desviacion minima es estadisticamente significativa aunque sea operacionalmente irrelevante. El otro extremo: <code>n_permutations=20</code> da p-valores tan ruidosos que necesitas drift masivo para detectar.</p>
+<p><strong>Soluciones</strong>: (a) usa <code>correction="bonferroni"</code> o <code>"fdr"</code> cuando testeas multiples features, (b) separa <code>is_drift</code> (estadistico) de la decision de alarma (negocio): define un <em>effect size</em> minimo (e.g., KS > 0.1) encima del p-value, (c) sube <code>n_permutations</code> a 1000+ en detectores donde el p-value es la palanca principal.</p>
+<h3>Problema 3 — "Las alertas son ruido porque el drift es esperado"</h3>
+<p>Si tu producto hace un push de marketing cada lunes que duplica el trafico sobre cierta cohorte, el lunes siempre va a haber drift y la alerta es inaccionable. <strong>Soluciones</strong>: (a) estratifica por cohorte antes del test, (b) programa ventanas de <em>blackout</em> donde el monitor se silencia, (c) usa <code>SpotTheDiffDrift</code> con un predictor auxiliar que controla por la covariable de marketing.</p>
+<h2>7. Optimizaciones de Produccion</h2>
+<p><strong>Optimizacion 1 — Ventanas de referencia deslizantes vs. referencia fija</strong></p>
+<p>Mantener el <code>x_ref</code> fijo durante seis meses es la pesadilla clasica: tu detector aprende a ignorar cambios que ya se normalizaron. Pero mover la referencia cada dia te hace perder sensibilidad a drift lento (drift de un mes se vuelve invisible al promediarse con la ventana). El trade-off real: usa una ventana de referencia de tamano $<code>W_{\text{ref}} = 4 \cdot W_{\text{test}}</code>$ y rota semanalmente. Asi el drift se acumula en el test sin ser lavado por la referencia.</p>
+<p><strong>Optimizacion 2 — LSDDDrift sobre embeddings en lugar de KS por feature</strong></p>
+<p>Para embeddings de alta dimensionalidad, KS univariado por componente dispara el problema de las multiple comparisons: con 512 features y $<code>\alpha = 0.05</code>$ esperas 25.6 falsos positivos por test. LSDDDrift hace un test multivariado en una sola pasada, evitando la correccion por comparaciones multiples y reduciendo el costo a $<code>O(n \cdot d)</code>$ en lugar de $<code>O(n^2 \cdot d)</code>$ del MMD completo.</p>
+<h2>8. Conclusion: Por Que Esto te Salva el Pellejo en Produccion</h2>
+<p>El drift no se evita, se gestiona. La pregunta no es si tu modelo va a degradarse, sino cuanto tiempo va a pasar hasta que te des cuenta. Con lo de arriba te llevas:</p>
 <ul>
-<li>Afrodescendientes: 45% de falsos positivos</li>
-<li>Blancos: 23% de falsos positivos</li>
+  <li>Tres detectores que cubren numerico, categorico y multivariado con la misma API.</li>
+  <li>Un monitor tipado, serializable y desacoplable de tu sistema de alertas.</li>
+  <li>Tres casos reales (credito, fraude, embeddings) con numeros de verificacion.</li>
+  <li>Tres patrones de fallo con reproducciones y soluciones concretas.</li>
+  <li>Dos optimizaciones con su trade-off explicito.</li>
 </ul>
-
-<p>Matemáticamente, el score de COMPAS satisface "predictive parity" pero NO "equalized odds". La compañía (Northpoint) no publicó el algoritmo ni permitió auditing independiente.</p>
-
-<h3>2. Amazon Hiring — El Sexismo Codificado</h3>
-
-<p>Amazon desarrolló un sistema de CV screening automatizado. El modelo fue entrenado con 10 años de historiales de contratación — donde la mayoría de candidatos exitosos eran hombres. El resultado: penalizaba automáticamente palabras como "women's" y filtraba perfiles de universidades exclusivamente femeninas.</p>
-
-<p>El sesgo estaba en los datos de entrenamiento, no en las etiquetas explícitas. El modelo aprendió que hombre = éxito sin que nadie le dijera eso.</p>
-
-<h3>3. Cambridge Analytica — La democracia en Riesgo</h3>
-
-<p>No fue exactamente ML convencional, pero el impacto fue masivo: 87 millones de perfiles de Facebook usados para psicosmapping político. Microtargeting de mensajes personalizados basados en personalidad, sin consentimiento, para manipular decisiones electorales.</p>
-
-<p>El problema: feedback loop entre datos collected y modelo de perfilado. Mientras más datos, más preciso el perfil — y más poder de manipulación.</p>
-
-<hr>
-
-<h2>🚀 Cómo Hacer un AI Ethics Audit</h2>
-
-<pre><code class="language-python"># Framework para AI Ethics Audit
-class EthicsAudit:
-    def __init__(self, model, sensitive_features):
-        self.model = model
-        self.sensitive = sensitive_features
-        self.results = {}
-    
-    def demographic_parity(self, X, y_true, y_pred, privileged_group):
-        """Check: ¿Predictions independientes de group membership?"""
-        mask = X[self.sensitive] == privileged_group
-        rate_priv = y_pred[mask].mean()
-        rate_unpriv = y_pred[~mask].mean()
-        return abs(rate_priv - rate_unpriv)
-    
-    def equalized_odds(self, X, y_true, y_pred, privileged_group):
-        """Check: ¿Same TPR y FPR across groups?"""
-        mask = X[self.sensitive] == privileged_group
-        # True Positive Rate
-        tpr_priv = ((y_pred == 1) & (y_true == 1) & mask).sum() / (y_true == 1).sum()
-        tpr_unpriv = ((y_pred == 1) & (y_true == 1) & ~mask).sum() / (y_true == 1).sum()
-        # False Positive Rate  
-        fpr_priv = ((y_pred == 1) & (y_true == 0) & mask).sum() / (y_true == 0).sum()
-        fpr_unpriv = ((y_pred == 1) & (y_true == 0) & ~mask).sum() / (y_true == 0).sum()
-        return {'tpr_gap': abs(tpr_priv - tpr_unpriv), 'fpr_gap': abs(fpr_priv - fpr_unpriv)}
-    
-    def generate_report(self):
-        return {
-            'demographic_parity_difference': self.demographic_parity(...),
-            'equalized_odds_gaps': self.equalized_odds(...),
-            'calibration_by_group': self.calibration_check(...)
-        }
-</code></pre>
-
-<h3>Documentación de Riesgos Éticos</h3>
-
-<pre><code class="language-python"># Ethics Risk Assessment Template
-ETHICS_RISK_ASSESSMENT = {
-    "project_name": "Nombre del proyecto",
-    "data_sources": [
-        {"source": "...", "potential_biases": ["..."]}
-    ],
-    "model_outputs": [
-        {"output": "...", "impact": "HIGH|MEDIUM|LOW", "affected_groups": [...]}
-    ],
-    "fairness_metrics": {
-        "demographic_parity": {"threshold": 0.1, "actual": 0.15},
-        "equalized_odds": {"threshold": 0.05, "actual": 0.03}
-    },
-    "mitigation_strategies": ["..."],
-    "review_committee": ["member1", "member2"],
-    "approval_status": "PENDING|APPROVED|REJECTED"
-}
-</code></pre>
-
-<hr>
-
-<h2>⚠️ Los 3 Errores Más Comunes</h2>
-
-<h3>Error 1: No Aprender de Casos Reales de Bias</h3>
-
-<p><strong>El problema</strong>: Creer que "nosotros somos diferentes" y que los casos de COMPAS, Amazon, y Cambridge son anomalías que no aplican. Muchos equipos de ML siguen cometiendo los mismos errores porque no estudian la historia.</p>
-
-<p><strong>La solución</strong>: Implementar "bias case studies" como parte del on-boarding. Antes de deployar cualquier modelo, hacer el ejercicio: ¿qué pasaría si este modelo estuviese en las noticias de Caracol por las razones equivocadas?</p>
-
-<h3>Error 2: Pensar "Nuestro Producto No Tiene Implicaciones Éticas"</h3>
-
-<p><strong>El problema</strong>: "Es solo un recomendador de películas" o "solo optimizamos engagement". Todo modelo que afecta decisiones sobre personas tiene implicaciones éticas — desde quién ve qué contenido hasta quién accede a qué servicios.</p>
-
-<p><strong>La solución</strong>: Hacer la pregunta correcta: ¿Quién se beneficia y quién resulta herido por las predictions de este modelo? Si no puedes responder fácilmente, tienes un problema de visibility.</p>
-
-<h3>Error 3: No Tener Proceso de Ethical Review</h3>
-
-<p><strong>El problema</strong>: Ethics como afterthough — se revisa al final, cuando ya todo está construido y "no hay tiempo para cambios". El review se hace por compliance, no por convicción.</p>
-
-<p><strong>La solución</strong>: Integrar ethics review en el pipeline de desarrollo, no al final. Como en testing: si lo encuentras tarde, es 10x más caro arreglarlo.</p>
-
-<pre><code class="language-python"># Ethical Review Checklist
-CHECKLIST_REVIEW_ETICA = {
-    "fase_concepcion": [
-        "✓ Identificados grupos protegidos?",
-        "✓ Definidas fairness metrics?",
-        "✓ stakeholders consulted?"
-    ],
-    "fase_entrenamiento": [
-        "✓ Data audit completado?",
-        "✓ Bias detection en datos crudos?",
-        "✓ Documentadas decisiones de feature selection?"
-    ],
-    "fase_validacion": [
-        "✓ fairness metrics evaluadas?",
-        "✓ stress tests con edge cases?",
-        "✓ audit trail documentado?"
-    ],
-    "fase_despliegue": [
-        "✓ monitoring para drift en grupos?",
-        "✓ canal de feedback para afectados?",
-        "✓ proceso de rollback?"
-    ]
-}
-</code></pre>
-
-<hr>
-
-<h2>📊 Resumen y Cierre</h2>
-
-<p>La ética en ML no es un teorema — es una práctica. Requiere:</p>
-
-<ul>
-<li><strong>Conciencia</strong>: Saber que el sesgo existe y puede estar en tus datos</li>
-<li><strong>Método</strong>: Frameworks como los de arriba para detectar y medir</li>
-<li><strong>Proceso</strong>: Reviews integrados, no como afterthough</li>
-<li><strong>Humildad</strong>: Aceptar que modelos "buenos" pueden hacer daño</li>
-</ul>
-
-<p>En Colombia tenemos nuestros propios desafíos: sesgos en modelos de scoring crediticio para poblaciones rurales, detección de fraude que penaliza regiones específicas, sistemas de salud que priorizan based on datos de zonas urbanas. El llamado es a construir ML que servido para todos — no solo para los que ya tienen privilegios.</p>
-
-<p><em>Eso es todo, parcero. Hoy aprendimos que la inteligencia artificial sin éticas es solo inteligencia sin juicio. Nos vemos en el Día 230.</em></p>
+<p>Mini-checklist para desplegar manana:</p>
+<ol>
+  <li>Captura <code>x_ref</code> estratificado al momento del entrenamiento, persistelo como artifacto.</li>
+  <li>Elige detector: <code>KSDrift</code> + <code>ChiSquareDrift</code> para tabular clasica, <code>LSDDDrift</code> para embeddings, <code>MMDDrift</code> si tienes suficientes muestras para permutation test serio.</li>
+  <li>Define <code>p_val</code> y <code>effect_size</code> minimo (no solo p-value), y conecta el monitor a tu sistema de alertas.</li>
+  <li>Versiona el detector junto al modelo. Rollback atomico si la politica de drift falla.</li>
+  <li>Mide tiempo entre alerta y accion. Si pasa de una hora, tienes un dashboard, no un sistema.</li>
+</ol>
+<p>Pilas con esto, parce: en seis anos de modelos en produccion el drift me ha costado mas que cualquier bug de codigo, y todo era evitable con el monitor correcto desde el dia cero. 🎯</p>
   </article>
+  <nav class="article-nav" aria-label="Navegacion entre articulos">
+    <a class="nav-prev" href="/blog/dia-228365-model-monitoring/">Anterior</a>
+    <a href="/blog/">Todos los articulos</a>
+    <a class="nav-next" href="/blog/dia-230365-a-b-testing/" data-date="2026-08-18">Siguiente</a>
+  </nav>
 
-  <script>
-    document.getElementById('themeToggle').addEventListener('click', function() {
-      const html = document.documentElement;
-      const isDark = html.getAttribute('data-theme') === 'dark';
-      html.setAttribute('data-theme', isDark ? 'light' : 'dark');
-      document.getElementById('themeIcon').className = isDark ? 'fas fa-moon' : 'fas fa-sun';
-    });
-  </script>
+
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
   <script>
     hljs.highlightAll();
-    document.addEventListener('DOMContentLoaded', () => {
+    document.addEventListener('DOMContentLoaded', function() {
       renderMathInElement(document.body, {
         delimiters: [
           { left: '$$', right: '$$', display: true },
           { left: '$',  right: '$',  display: false },
-          { left: '\[', right: '\]', display: true },
-          { left: '\(', right: '\)', display: false },
+          { left: '\\[', right: '\\]', display: true },
+          { left: '\\(', right: '\\)', display: false },
         ],
         throwOnError: false,
       });
     });
-    
-  const _html = document.documentElement;
-  const _btn  = document.getElementById('themeToggle');
-  const _icon = document.getElementById('themeIcon');
-  function _setIcon(t) { _icon.className = t === 'dark' ? 'fas fa-sun' : 'fas fa-moon'; }
-  const _saved = localStorage.getItem('theme') || 'dark';
-  _html.setAttribute('data-theme', _saved);
-  _setIcon(_saved);
-  _btn.addEventListener('click', () => {
-    const next = _html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
-    _html.setAttribute('data-theme', next);
-    localStorage.setItem('theme', next);
-    _setIcon(next);
-  });
 
+    var _html = document.documentElement;
+    var _btn  = document.getElementById('themeToggle');
+    var _icon = document.getElementById('themeIcon');
+    function _setIcon(t) { _icon.className = t === 'dark' ? 'fas fa-sun' : 'fas fa-moon'; }
+    var _saved = localStorage.getItem('theme') || 'dark';
+    _html.setAttribute('data-theme', _saved);
+    _setIcon(_saved);
+    _btn.addEventListener('click', function() {
+      var next = _html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+      _html.setAttribute('data-theme', next);
+      localStorage.setItem('theme', next);
+      _setIcon(next);
+    });
   </script>
   <script>
     document.addEventListener('DOMContentLoaded', function() {
