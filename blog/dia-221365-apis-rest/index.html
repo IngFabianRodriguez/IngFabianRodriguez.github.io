@@ -3,9 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="Causal Inference en ML — causal vs correlational thinking, causal graphs, do-calculus, cómo causal inference mejora modelos | #365DaysOfAI por Fabian Rodriguez">
-  <title>Causal Inference en ML — El Pensamiento Que El 90% Evita | #365DaysOfAI</title>
-  
+  <meta name="description" content="Dia 221/365: APIs REST con FastAPI — La torre de control que tu modelo llevaba años necesitando | #365DaysOfAI por Fabian Rodriguez">
+  <title>Dia 221/365: APIs REST con FastAPI — La torre de control que tu modelo llevaba años necesitando | #365DaysOfAI</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
@@ -21,7 +20,7 @@
   --shadow: rgba(2,12,27,0.7); --nav-bg: rgba(10,25,47,0.92);
 }
 [data-theme="light"] {
-  --bg: #f0f4fb; --bg-card: #ffffff; --border: #d4dcee;
+  --bg: #f0f4fb; --bg-card: #ffffff; --border: #d4ddee;
   --text-muted: #64748b; --text: #475569; --text-heading: #0f172a;
   --accent: #0d9488; --accent-tint: rgba(13,148,136,0.08);
   --shadow: rgba(15,23,42,0.12); --nav-bg: rgba(240,244,251,0.95);
@@ -81,6 +80,10 @@ nav {
   border-radius: 4px; padding: .15em .4em;
 }
 .article-body pre code { background: none; border: none; padding: 0; font-size: inherit; }
+.article-body table { width: 100%; border-collapse: collapse; margin: 1.5rem 0; font-size: .9rem; }
+.article-body th, .article-body td { border: 1px solid var(--border); padding: .6rem 1rem; text-align: left; }
+.article-body th { background: var(--bg-card); color: var(--text-heading); }
+.article-body .katex-display { overflow-x: auto; padding: .5rem 0; }
 
 .article-nav {
   max-width: 820px; margin: 0 auto; padding: 2rem 1.5rem;
@@ -94,7 +97,8 @@ nav {
   nav { padding: 0 1rem; }
   .article-hero, .article-body { padding-left: 1rem; padding-right: 1rem; }
 }
-</style>
+
+  </style>
 </head>
 <body>
   <nav>
@@ -109,346 +113,702 @@ nav {
   </nav>
 
   <header class="article-hero">
-    <div class="day-badge">Dia 221 / 365 &nbsp;·&nbsp; #365DaysOfAI</div>
-    <h1 class="article-title">Causal Inference en ML — El Pensamiento Que El 90% Evita Y Paga Con Conclusiones Equivocadas</h1>
+    <div class="day-badge">Dia 221 / 365 &nbsp;&middot;&nbsp; #365DaysOfAI</div>
+    <h1 class="article-title">Dia 221/365: APIs REST con FastAPI — La torre de control que tu modelo llevaba años necesitando</h1>
     <div class="article-meta">
-      <time class="article-date">09 de agosto de 2026</time>
-      <div class="tags"><span class="tag">causal-inference</span><span class="tag">causality</span><span class="tag">dowhy</span><span class="tag">statistics</span></div>
+      <time class="article-date">9 de agosto de 2026</time>
+      <div class="tags"><span class="tag">fastapi, uvicorn</span></div>
     </div>
   </header>
 
   <article class="article-body">
-<h2>Correlación vs Causalidad — El Error Que Cuesta Millones</h2>
+<h2>Introduccion: La mentira del "es solo JSON"</h2>
+<p>Hay una frase que he escuchado en cuatro empresas distintas, casi con las mismas palabras: <em>"parce, monte el endpoint y ya, ¿qué tan dificil es serializar un dict?"</em>. Esa frase es el preludio de un incidente a las 3 a. m. Tres ejemplos sin nombres, pero con la cicatriz:</p>
+<p>Primero: equipo de riesgo crediticio en fintech, XGBoost afinado tres meses, AUC 0.91. Lo desplegaron detrás de un endpoint FastAPI con <code>model.predict()</code> sincrono y body JSON de tamano variable. Funciono en staging con 50 RPS. El dia uno en produccion, un cliente corporativo mando un payload de 1.4 MB con un campo <code>historical_transactions</code> de 8 000 elementos sin comprimir. El event loop se bloqueo 1.8 segundos, p99 salto de 80 ms a 4 100 ms y el CEO llamo.</p>
+<p>Segundo: equipo de vision con un detector YOLO. Mismo FastAPI, mismo error conceptual: preprocesamiento dentro del handler. La convolucion bloqueaba el loop. Una sola imagen grande colapsaba la cola entera.</p>
+<p>Tercero, el mas bonito: una API REST que parecia REST pero no lo era. Devolvia <code>200 OK</code> con <code>error: "validation failed"</code> dentro del body. La libreria cliente no chequeaba <code>status_code</code>, solo leia el JSON. Bugs silenciosos durante seis meses. Eso no es REST, es HTTP vestido de domingo.</p>
+<p>Lo que une los tres: pensaron que la capa de transporte era "gratis". No lo es. Cada byte que entra, cada byte que sale, cada milisegundo que el event loop pasa bloqueado, es dinero real en SLA y credibilidad tecnica. Este articulo es sobre la matematica que sustenta una API REST production-grade y como FastAPI + Uvicorn la implementan (casi) sin que tengas que pensarlo, pero solo si entiendes que estan haciendo por debajo.</p>
+<h2>1. Que es una API REST? (Y por que deberia importarte)</h2>
+<h3>1.1 La analogia cotidiana: la torre de control de El Dorado</h3>
+<p>Piensa en la torre de control del aeropuerto El Dorado. Torre REST y aeropuerto operado comparten la misma estructura. El controlador (servidor) no pilota los aviones (no ejecuta la logica de negocio de cada vuelo), coordina y delega. Cada avion (request) lleva plan de vuelo firmado (headers), lista de pasajeros y carga (body) y destino especifico (path: <code>/flights/AA1234</code>). El controlador no recuerda el vuelo de ayer para autorizar el de hoy: cada operacion se evalua con la informacion que trae el avion en ese instante. Eso es <code>stateless</code>.</p>
+<p>La pista tiene capacidad finita (concurrencia del event loop). Si llegan demasiados aviones a la vez, el controlador pone algunos en patron de espera sobre la pista auxiliar (cola interna, backpressure) o los desvia a otro aeropuerto (<code>502</code>/<code>503</code> desde el load balancer upstream). La torre no asume que el avion de las 14:00 hablo con el de las 14:05. No guarda estado entre operaciones, pero si mantiene libro de registro permanente (logs) y transmisiones radiales bien tipificadas (HTTP status codes).</p>
+<p>Cuando un avion aterriza, recibe acuse formal: pista ocupada, timestamp de touchdown, numero de puerta asignado (response con headers + status 200/201). Si algo sale mal, no aterrizo: recibio "go around" (<code>4xx</code> para errores del cliente, <code>5xx</code> para errores del servidor). Lo critico: el acuse es <strong>normalizado</strong>. No importa si el avion es de Avianca, LATAM o jet privado. El formato de la respuesta es predecible. Eso es la <strong>Uniform Interface</strong>, la constraint mas abusada y la mas importante.</p>
+<h3>1.2 La matematica que Fielding escondio en su tesis</h3>
+<p>Roy Fielding fundo REST en el 2000. Lo que el 90% de los articulos repiten son los nombres de las seis constraints. Lo que nadie desglosa es que propiedad operativa garantiza cada una. Vamos alla:</p>
+$$S_{t+1} = f(R_t)$$
+<p><strong>Stateless</strong>: el estado del sistema al recibir el request $R_t$ depende solo de $R_t$, no de $R_{t-1}$ ni de variables internas del servidor. Por eso cualquier worker puede procesar cualquier request sin coordinarse con los demas. En terminos de capacidad se traduce directo a la Ley de Little:</p>
+$$L = \lambda \cdot W$$
+<p>donde $L$ es el numero promedio de requests en el sistema, $\lambda$ la tasa de llegada (RPS) y $W$ el tiempo promedio de residencia (latencia end-to-end). Si tu $W$ sube por un <code>await asyncio.sleep(2)</code> mal puesto, $L$ sube linealmente. Si $L$ supera la concurrencia maxima del event loop, empiezas a rechazar. Esa es la matematica del colapso.</p>
+<p><strong>Cacheable</strong>: las respuestas deben declarar si son cacheables (<code>Cache-Control</code>, <code>ETag</code>). Si <code>GET /models/v3</code> cambia cada 60 s, declararlo cacheable reduce $\lambda$ efectiva al servidor segun el hit ratio $h$:</p>
+$$\lambda_{\text{server}} = \lambda_{\text{client}} \cdot (1 - h)$$
+<p>Con $h = 0.7$, tu servidor solo ve el 30% del trafico. Eso es dinero, no poesia.</p>
+<p><strong>Uniform Interface</strong>: el recurso se identifica por URI, la representacion es separada de la identidad (un mismo recurso puede devolverse como JSON o XML), y los mensajes son autodescriptivos. Que tu API use <code>POST</code> para todo y devuelva <code>200 OK</code> con <code>error</code> adentro no es REST. Es HTTP decorativo.</p>
+$$\text{Idempotencia: } f(x) = f(f(x))$$
+<p><strong>Safety e idempotencia por metodo</strong>: <code>GET</code> es safe (ejecutarlo N veces produce el mismo estado observable); <code>PUT</code>/<code>DELETE</code> son idempotentes (producen el mismo estado final ejecutados una o N veces). Esto es lo que permite que un cliente reintente sin causar duplicados. Si tu <code>POST /charge-card</code> no es idempotente, una caida de red te puede cobrar dos veces. He visto el chargeback.</p>
+<p><strong>Layered System</strong>: el cliente no debe distinguir si habla con el servidor real o un proxy. Se rompe cuando firmas responses con secretos que el CDN no deberia ver, o cuando metes logica de negocio en nginx.</p>
+<h2>2. Como FastAPI + Uvicorn resuelven esto por vos</h2>
+<p>La torre (Uvicorn) maneja el patron de trafico global. El sistema de aterrizaje automatico (Starlette, sobre el que se monta FastAPI) ejecuta el protocolo por avion. Los controladores de vuelo especificos (tus handlers, tu Pydantic) deciden si ese avion tiene permiso para aterrizar.</p>
+<pre><code class="language-text">Internet (TCP)
+   |
+   v
+[ uvicorn: socket server + event loop (uvloop) ]
+   |
+   v
+[ httptools: parser HTTP/1.1 byte-by-byte ]
+   |
+   v
+[ ASGI scope dict por request ]
+   |
+   v
+[ Starlette: router -&gt; endpoint -&gt; response ]
+   |
+   v
+[ Tu handler + Pydantic validation + tu modelo ]</code></pre>
+<p><strong>Uvicorn</strong> recibe bytes del socket TCP, los pasa por <strong>httptools</strong> (parser en C, 2-3x mas rapido que <code>http.server</code> de stdlib) y por cada request construye un dict <code>scope</code> que es la especificacion <strong>ASGI</strong>. El scope contiene <code>type</code>, <code>method</code>, <code>path</code>, <code>headers</code>, <code>query_string</code> y <code>state</code>. Tu app FastAPI hereda de Starlette, implementacion canonica de ASGI.</p>
+<p>El <code>event loop</code> por defecto usa <code>asyncio</code> puro. Uvicorn puede reemplazarlo por <strong>uvloop</strong>, un binding a <code>libuv</code> (mismo motor de Node.js). En operaciones I/O la diferencia es tipicamente 2x a 4x. En CPU-bound no se siente porque hay un solo thread.</p>
+<p><strong>Starlette</strong> convierte el scope en una request, ejecuta el middleware chain, hace routing y entrega la request a tu handler. FastAPI anade encima: validacion con Pydantic, OpenAPI auto, dependency injection y response models.</p>
+<p><strong>Pydantic v2</strong> reescribio el nucleo en Rust (<code>pydantic-core</code>). Validacion que en v1 tomaba ~120 us por objeto, en v2 toma ~10 us. A 10 000 transacciones por minuto y ~20 campos cada una, ahorras 1.2 segundos de CPU por minuto solo validando.</p>
+<h2>3. FastAPI: Uso directo y casos de control fino</h2>
+<p>Cuando la app es critica no uses decoradores sueltos. App factory + lifespan (reemplazo moderno de <code>@app.on_event("startup")</code> deprecado en Starlette 0.21+):</p>
+<pre><code class="language-python"># app/app_factory.py
+from __future__ import annotations
 
-<p>Hagale pues, parcero. Aquí en Medellín, cuando alguien dice "después del aguacero siempre sale el sol", está haciendo inferencia causal sin saberlo. Pero en machine learning, el 90% de los practitioners confunde correlación con causalidad y termina tomando decisiones basadas en espejismos estadísticos. Hoy desarmamos ese problema.</p>
+import logging
+import os
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
-<p>Todo empieza con una distinción fundamental. Dos variables correlacionadas no necesariamente tienen relación de causa-efecto.</p>
+from fastapi import FastAPI
+from prometheus_client import make_asgi_app
 
-<pre><code class="language-python"># Ejemplo clásico: correlación no implica causalidad
+from app.inference import FraudInferenceEngine
+from app.metrics import MetricsMiddleware
+from app.routes import predictions, batch
+
+log = logging.getLogger("fraud.api")
+
+
+def create_app(model_path: str, *, workers: int = 1) -&gt; FastAPI:
+    engine = FraudInferenceEngine(model_path=model_path)
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -&gt; AsyncIterator[None]:
+        await engine.warmup()
+        log.info("engine ready: %s", engine.version)
+        try:
+            yield
+        finally:
+            await engine.drain(timeout_s=10.0)
+            log.info("engine drained, exiting cleanly")
+
+    app = FastAPI(
+        title="fraud-inference",
+        version="2.4.1",
+        lifespan=lifespan,
+        docs_url="/docs" if os.getenv("ENV") != "prod" else None,
+        openapi_url=None if os.getenv("ENV") == "prod" else "/openapi.json",
+    )
+
+    app.state.engine = engine
+    app.state.workers = workers
+
+    # /metrics separado del flujo principal de negocio
+    app.mount("/metrics", make_asgi_app())
+    # Middleware: orden importa. Metricas ANTES de auth.
+    app.add_middleware(MetricsMiddleware, threshold_ms=100.0)
+
+    app.include_router(predictions.router, prefix="/v2")
+    app.include_router(batch.router, prefix="/v2")
+    return app</code></pre>
+<pre><code class="language-python"># main.py
+import os
+import uvicorn
+
+if __name__ == "__main__":
+    uvicorn.run(
+        "app.main:app",
+        host="0.0.0.0",
+        port=int(os.getenv("PORT", "8080")),
+        workers=int(os.getenv("WEB_CONCURRENCY", "1")),
+        loop="uvloop",
+        http="httptools",
+        access_log=False,
+        log_config=None,
+        timeout_keep_alive=30,
+        timeout_graceful_shutdown=30,
+    )</code></pre>
+<h2>4. Implementacion Production-Ready: FraudInferenceService</h2>
+<p>Servicio real de scoring de fraude. Pensado para 500 RPS con p99 de 80 ms sobre CPU-only.</p>
+<h3>4.1 Tipos y protocolos</h3>
+<pre><code class="language-python"># app/schemas.py
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from enum import Enum
+from typing import Annotated, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+
+class MerchantCategory(str, Enum):
+    RETAIL = "retail"
+    TRAVEL = "travel"
+    GAMING = "gaming"
+    DIGITAL_GOODS = "digital_goods"
+
+
+class FeatureVector(BaseModel):
+    """Validado en el borde. frozen=True previene mutaciones accidentales."""
+    model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
+
+    transaction_id: Annotated[str, Field(min_length=8, max_length=64,
+                                        pattern=r"^[A-Z0-9_-]+$")]
+    amount_cents: Annotated[int, Field(ge=0, le=10**11)]
+    merchant_category: MerchantCategory
+    device_trust_score: Annotated[float, Field(ge=0.0, le=1.0)]
+    hour_of_day: Annotated[int, Field(ge=0, le=23)]
+    historical_avg_amount_cents: Annotated[int, Field(ge=0)]
+
+    @field_validator("amount_cents")
+    @classmethod
+    def sane_amount(cls, v: int) -&gt; int:
+        if v &gt; 5_000_000_000:
+            raise ValueError("amount_cents exceeds 50M COP units hard cap")
+        return v
+
+    @field_validator("device_trust_score")
+    @classmethod
+    def not_nan(cls, v: float) -&gt; float:
+        if v != v:  # NaN != NaN, unico test confiable
+            raise ValueError("device_trust_score must not be NaN")
+        return v
+
+
+class FraudDecision(str, Enum):
+    APPROVE = "approve"
+    REVIEW = "review"
+    DECLINE = "decline"
+
+
+class FraudPrediction(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    transaction_id: str
+    risk_score: Annotated[float, Field(ge=0.0, le=1.0)]
+    decision: FraudDecision
+    model_version: str
+    scored_at: datetime
+    latency_ms: Annotated[float, Field(ge=0.0)]
+    feature_importance: dict[str, float]
+
+    @field_validator("scored_at")
+    @classmethod
+    def utc_only(cls, v: datetime) -&gt; datetime:
+        if v.tzinfo is None or v.utcoffset() != timezone.utc.utcoffset(v):
+            raise ValueError("scored_at must be UTC-aware")
+        return v
+
+
+class HealthStatus(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["healthy", "degraded", "down"]
+    model_version: str
+    model_loaded_at: datetime
+    queue_depth: Annotated[int, Field(ge=0)]
+    p99_latency_ms: Annotated[float, Field(ge=0.0)]
+    last_drain_at: datetime | None</code></pre>
+<p><code>extra="forbid"</code> evita inyeccion de campos no documentados. <code>frozen=True</code> evita que un middleware intermedio mute el request. <code>pattern=r"^[A-Z0-9_-]+$"</code> evita basura en logs downstream. Defensa en profundidad sin ser overkill.</p>
+<h3>4.2 El motor principal</h3>
+<pre><code class="language-python"># app/inference.py
+from __future__ import annotations
+
+import asyncio
+import logging
+import time
+from collections import deque
+from datetime import datetime, timezone
+from pathlib import Path
+
 import numpy as np
-import pandas as pd
+import onnxruntime as ort
 
-np.random.seed(42)
-n = 1000
+from app.schemas import FeatureVector, FraudPrediction, FraudDecision, MerchantCategory
 
-# Confounder: ambos causados por una tercera variable
-confounder = np.random.normal(0, 1, n)
+log = logging.getLogger("fraud.engine")
 
-# X y Y parecen correlacionadas, pero no hay relación causal directa
-X = confounder + np.random.normal(0, 0.5, n)
-Y = confounder + np.random.normal(0, 0.5, n)
 
-df = pd.DataFrame({'X': X, 'Y': Y})
-print(f"Correlación X-Y: {df['X'].corr(df['Y']):.3f}")
-# Sale ~0.7, pero X no causa Y</code></pre>
+class ServiceShuttingDown(Exception):
+    """El cliente debe reintentar en otro nodo."""
 
-<p>La correlación entre ventas de helado y crímenes en Bogotá no significa que el helado cause crímenes. Ambas suben porque en verano hace calor. El confounder es la temperatura.</p>
 
-<h3>El Costo Real</h3>
+class FraudInferenceEngine:
+    """Encapsula carga lazy del modelo, cola con backpressure,
+    p99 con sliding window y drain en shutdown."""
 
-<p>En producción, este error se manifiesta cuando:</p>
+    def __init__(self, model_path: str | Path, *,
+                 max_inflight: int = 64, window_size: int = 1024) -&gt; None:
+        self._model_path = Path(model_path)
+        self._session: ort.InferenceSession | None = None
+        self._sem = asyncio.Semaphore(max_inflight)
+        self._latencies: deque[float] = deque(maxlen=window_size)
+        self._in_flight = 0
+        self._draining = False
+        self._model_loaded_at: datetime | None = None
+
+    async def warmup(self) -&gt; None:
+        loop = asyncio.get_running_loop()
+        self._session = await loop.run_in_executor(None, self._load_session)
+        # 5 iteraciones dummy: ONNX pre-compila kernels.
+        for _ in range(5):
+            await self._predict_raw(np.zeros((1, 6), dtype=np.float32))
+        self._model_loaded_at = datetime.now(timezone.utc)
+
+    def _load_session(self) -&gt; ort.InferenceSession:
+        sess = ort.InferenceSession(self._model_path.as_posix(),
+                                    providers=["CPUExecutionProvider"])
+        return sess
+
+    async def drain(self, *, timeout_s: float) -&gt; None:
+        self._draining = True
+        deadline = time.monotonic() + timeout_s
+        while self._in_flight &gt; 0 and time.monotonic() &lt; deadline:
+            await asyncio.sleep(0.05)
+        log.info("drain complete, %d still in flight", self._in_flight)
+
+    async def score(self, fv: FeatureVector) -&gt; FraudPrediction:
+        if self._draining:
+            raise ServiceShuttingDown("engine draining, retry elsewhere")
+        async with self._sem:
+            self._in_flight += 1
+            try:
+                t0 = time.perf_counter()
+                arr = self._to_array(fv)
+                risk, top_feats = await self._predict_raw(arr)
+                dt_ms = (time.perf_counter() - t0) * 1000.0
+                self._latencies.append(dt_ms)
+                return FraudPrediction(
+                    transaction_id=fv.transaction_id,
+                    risk_score=float(risk),
+                    decision=_to_decision(float(risk)),
+                    model_version=self.version,
+                    scored_at=datetime.now(timezone.utc),
+                    latency_ms=dt_ms,
+                    feature_importance=top_feats,
+                )
+            finally:
+                self._in_flight -= 1
+
+    def _to_array(self, fv: FeatureVector) -&gt; np.ndarray:
+        return np.array([[
+            fv.amount_cents / 100.0,
+            fv.device_trust_score,
+            fv.hour_of_day / 23.0,
+            float(fv.merchant_category == MerchantCategory.GAMING),
+            float(fv.merchant_category == MerchantCategory.TRAVEL),
+            float(fv.merchant_category == MerchantCategory.DIGITAL_GOODS),
+        ]], dtype=np.float32)
+
+    async def _predict_raw(self, arr: np.ndarray) -&gt; tuple[float, dict[str, float]]:
+        assert self._session is not None
+        loop = asyncio.get_running_loop()
+        # onnxruntime NO libera el GIL: run_in_executor es obligatorio.
+        outs, exps = await loop.run_in_executor(
+            None, self._session.run,
+            ["risk_score", "top_features"], {"features": arr},
+        )
+        return float(outs[0][0]), dict(exps)
+
+    @property
+    def version(self) -&gt; str:
+        return "fraud-xgb-v3.4.1-onnx"
+
+    @property
+    def p99_latency_ms(self) -&gt; float:
+        if not self._latencies:
+            return 0.0
+        s = sorted(self._latencies)
+        return s[int(0.99 * (len(s) - 1))]
+
+    @property
+    def queue_depth(self) -&gt; int:
+        return self._in_flight
+
+
+def _to_decision(risk: float) -&gt; FraudDecision:
+    # Umbrales calibrados contra la curva ROC del ultimo mes.
+    # NO hardcodear: vendran de config remota.
+    if risk &lt; 0.20:
+        return FraudDecision.APPROVE
+    if risk &lt; 0.65:
+        return FraudDecision.REVIEW
+    return FraudDecision.DECLINE</code></pre>
+<p>Decisiones deliberadas:</p>
 <ul>
-<li>Una fintech rechaza crédito a personas "parecidas" a morosos, sin entender qué variable realmente causa el incumplimiento</li>
-<li>Un modelo de recomendaciones sugiere que "comprar paraguas causa lluvia" porque ve correlación en los datos de compra</li>
-<li>Un hospital cambia un tratamiento basándose en qué pacientes "se parecen" a otros que murieron, sin ajustar por severidad</li>
+  <li><strong><code>asyncio.Semaphore</code> para backpressure</strong>: en lugar de rechazar a ciegas cuando llega la request 65, el semaforo encola hasta <code>max_inflight=64</code> y rechaza en el handler si la cola esta saturada. Esto es el equivalente a "go around" del avion.</li>
+  <li><strong><code>deque(maxlen=window_size)</code> para p99</strong>: O(1) por insercion, O(N log N) por sort al consultar. Para 1 024 muestras son microsegundos.</li>
+  <li><strong><code>run_in_executor</code> para ONNX</strong>: <code>onnxruntime</code> no libera GIL en CPU. Mover inferencia a thread pool evita bloquear el event loop.</li>
 </ul>
+<h3>4.3 Utilidades de analisis y verificacion</h3>
+<pre><code class="language-python"># app/load_test.py
+"""Stress test client. NO es parte del API, vive aparte."""
+from __future__ import annotations
 
-<hr>
-<h2>Causal Graphs — Mapas Que Previenen Conclusiones Falsas</h2>
+import asyncio
+import statistics
+import time
 
-<p>Un causal graph (DAG - Directed Acyclic Graph) explicita las relaciones de causa-efecto entre variables. Esto cambia todo.</p>
+import httpx
 
-<pre><code class="language-python"># Causal Graph con DoWhy
-import dowhy
-from dowhy import CausalModel
+from app.schemas import FeatureVector, MerchantCategory
 
-# Definimos el grafo causal
-model = CausalModel(
-    data=df,
-    treatment='X',
-    outcome='Y',
-    common_causes=['confounder']  # El nodo que causa ambos
-)
 
-# Verificamos el grafo identificado
-model.view_model()</code></pre>
+def make_sample(i: int) -&gt; FeatureVector:
+    cats = list(MerchantCategory)
+    return FeatureVector(
+        transaction_id=f"TXN-{i:08d}",
+        amount_cents=(i * 137) % 1_000_000,
+        merchant_category=cats[i % len(cats)],
+        device_trust_score=0.5 + 0.5 * (i % 100) / 100,
+        hour_of_day=i % 24,
+        historical_avg_amount_cents=10_000,
+    )
 
-<p>Un buen causal graph incluye:</p>
+
+async def load_test(base_url: str = "http://localhost:8080",
+                    *, n: int = 5000, concurrency: int = 50) -&gt; None:
+    samples = [make_sample(i).model_dump() for i in range(n)]
+    async with httpx.AsyncClient(base_url=base_url,
+                                 timeout=httpx.Timeout(30.0)) as client:
+        sem = asyncio.Semaphore(concurrency)
+
+        async def one(i: int) -&gt; float:
+            async with sem:
+                t0 = time.perf_counter()
+                r = await client.post("/v2/predict", json=samples[i])
+                r.raise_for_status()
+                return (time.perf_counter() - t0) * 1000.0
+
+        t_global = time.perf_counter()
+        results = await asyncio.gather(*(one(i) for i in range(n)))
+        elapsed = time.perf_counter() - t_global
+
+    p50 = statistics.median(results)
+    p99 = sorted(results)[int(0.99 * len(results)) - 1]
+    rps = n / elapsed
+    print(f"n={n} concurrency={concurrency} elapsed={elapsed:.2f}s "
+          f"rps={rps:.1f} p50={p50:.1f}ms p99={p99:.1f}ms")
+
+
+if __name__ == "__main__":
+    asyncio.run(load_test())</code></pre>
+<p>Si lo corres contra <code>uvicorn app.main:app --workers 4</code> en 8 cores deberias ver p50 ~12 ms y p99 ~50 ms para 5 000 requests. Si no, mira la seccion de debugging.</p>
+<h2>5. Ejemplos de uso en casos reales</h2>
+<p><strong>Caso 1: scoring en linea (happy path).</strong></p>
+<pre><code class="language-bash">curl -X POST http://localhost:8080/v2/predict \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: TXN-12345678' \
+  -d '{
+    "transaction_id": "TXN-12345678",
+    "amount_cents": 250000,
+    "merchant_category": "retail",
+    "device_trust_score": 0.87,
+    "hour_of_day": 14,
+    "historical_avg_amount_cents": 180000
+  }'</code></pre>
+<pre><code class="language-json">{
+  "transaction_id": "TXN-12345678",
+  "risk_score": 0.0823,
+  "decision": "approve",
+  "model_version": "fraud-xgb-v3.4.1-onnx",
+  "scored_at": "2026-07-03T18:42:11.482190+00:00",
+  "latency_ms": 11.4,
+  "feature_importance": {
+    "device_trust_score": -0.41,
+    "amount_cents": 0.18,
+    "merchant_category_retail": -0.05
+  }
+}</code></pre>
+<p><strong>Verificacion numerica</strong>: con <code>device_trust_score=0.87</code> y <code>amount_cents=250_000 COP</code> (~USD 65 al TRM actual), un modelo bien calibrado devuelve <code>risk_score</code> < 0.20. SHAP muestra que <code>device_trust_score</code> es la feature dominante empujando hacia abajo. Si te sale alto con estos inputs, el modelo esta descalibrado, no es problema de la API.</p>
+<p><strong>Caso 2: shadow traffic para validar v4 contra v3.4.1.</strong></p>
+<pre><code class="language-python"># app/routes/predictions.py
+from __future__ import annotations
+
+import asyncio
+import logging
+
+from fastapi import APIRouter, Request, Response
+
+from app.inference import FraudInferenceEngine
+from app.schemas import FeatureVector
+
+log = logging.getLogger("fraud.routes")
+router = APIRouter(tags=["predictions"])
+
+
+@router.post("/predict")
+async def predict(payload: FeatureVector, request: Request) -&gt; Response:
+    engine: FraudInferenceEngine = request.app.state.engine
+    primary = await engine.score(payload)
+
+    v4_engine = getattr(request.app.state, "v4_engine", None)
+    if v4_engine is not None:
+        asyncio.create_task(_shadow_score(payload, primary, v4_engine))
+
+    body = primary.model_dump_json()
+    return Response(content=body, media_type="application/json",
+                    headers={"X-Model-Version": primary.model_version})
+
+
+async def _shadow_score(payload: FeatureVector, primary,
+                        v4_engine: FraudInferenceEngine) -&gt; None:
+    try:
+        shadow = await v4_engine.score(payload)
+        if abs(shadow.risk_score - primary.risk_score) &gt; 0.30:
+            log.warning("shadow_divergence id=%s v3=%.3f v4=%.3f",
+                        payload.transaction_id,
+                        primary.risk_score, shadow.risk_score)
+    except Exception:
+        # Shadow NUNCA debe afectar al primary.
+        log.exception("shadow_failed id=%s", payload.transaction_id)</code></pre>
+<p><strong>Canary release para modelos</strong>: el cliente nunca sabe que existe v4, pero tu mides divergencia. Cuando el 0.1% de transacciones diverge mas de 0.30 en <code>risk_score</code>, haces el switch.</p>
+<p><strong>Caso 3: batch scoring asincrono (jobs corporativos > 10k txs).</strong></p>
+<pre><code class="language-python"># app/routes/batch.py
+from __future__ import annotations
+
+import asyncio
+from uuid import uuid4
+
+from fastapi import APIRouter, BackgroundTasks, HTTPException, status
+
+from app.inference import FraudInferenceEngine
+from app.schemas import FeatureVector, FraudPrediction
+
+router = APIRouter(prefix="/batch", tags=["batch"])
+_JOBS: dict[str, dict] = {}  # en prod: Redis o Postgres
+
+
+@router.post("/score", status_code=status.HTTP_202_ACCEPTED)
+async def submit_batch(payload: list[FeatureVector],
+                       background: BackgroundTasks) -&gt; dict:
+    if len(payload) &gt; 50_000:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="batch &gt; 50k transactions must be uploaded to S3",
+        )
+    job_id = str(uuid4())
+    _JOBS[job_id] = {"status": "pending", "received": len(payload),
+                     "processed": 0, "results": []}
+    background.add_task(_run_batch, job_id, payload)
+    return {"job_id": job_id, "status_url": f"/v2/batch/{job_id}"}
+
+
+@router.get("/{job_id}")
+async def get_job(job_id: str) -&gt; dict:
+    job = _JOBS.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    return {"status": job["status"], "processed": job["processed"],
+            "total": job["received"]}
+
+
+async def _run_batch(job_id: str, payload: list[FeatureVector]) -&gt; None:
+    engine: FraudInferenceEngine = _JOBS[job_id].get("_engine")  # wired en lifespan
+    results: list[FraudPrediction] = []
+    for i, fv in enumerate(payload):
+        results.append(await engine.score(fv))
+        _JOBS[job_id]["processed"] = i + 1
+    _JOBS[job_id].update({"status": "done", "results": results})</code></pre>
+<p>Devolvemos <code>202 Accepted</code> con <code>job_id</code> y URL de polling. <strong>Esa es la semantica REST correcta</strong>: el servidor no termino, pero reconoce la recepcion. El cliente hace GET periodico a <code>/v2/batch/{job_id}</code>.</p>
+<h2>6. Debugging: Cuando todo se va a la mierda</h2>
+<h3>Problema 1: el event loop se bloquea con payloads grandes</h3>
+<p>Sintoma: p99 salta de 80 ms a segundos, todas las requests concurrentes sufren. <strong>Deteccion numerica</strong> con un middleware de observabilidad:</p>
+<pre><code class="language-python"># app/metrics.py
+from __future__ import annotations
+
+import logging
+import time
+from collections import defaultdict
+
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.types import ASGIApp
+
+log = logging.getLogger("fraud.metrics")
+
+
+class MetricsMiddleware(BaseHTTPMiddleware):
+    """Detecta handlers que bloquean el event loop &gt;= threshold ms."""
+
+    def __init__(self, app: ASGIApp, *, threshold_ms: float = 100.0) -&gt; None:
+        super().__init__(app)
+        self.threshold_ms = threshold_ms
+        self._suspects: dict[str, list[float]] = defaultdict(list)
+
+    async def dispatch(self, request: Request, call_next):
+        t0 = time.perf_counter()
+        response = await call_next(request)
+        elapsed_ms = (time.perf_counter() - t0) * 1000.0
+        path = request.url.path
+        if elapsed_ms &gt; self.threshold_ms and path not in ("/health", "/metrics"):
+            self._suspects[path].append(elapsed_ms)
+            recent = self._suspects[path][-20:]
+            if len(self._suspects[path]) &gt;= 5:
+                avg = sum(recent) / len(recent)
+                log.warning("slow handler: %s avg=%.1fms last=%.1fms",
+                            path, avg, elapsed_ms)
+        return response</code></pre>
+<p>Si vez "slow handler", el culpable es codigo dentro del handler que no es <code>await</code>-able. Las tres soluciones:</p>
+<pre><code class="language-python"># MAL: handler sync tocando CPU pesada =&gt; bloquea el loop
+@router.post("/predict")
+def predict(payload: FeatureVector):  # sync, NO async
+    df = pd.DataFrame([payload.model_dump()])
+    return model.predict(df)
+
+# BIEN Opcion A: handler async + run_in_executor
+@router.post("/predict")
+async def predict(payload: FeatureVector):
+    loop = asyncio.get_running_loop()
+    df = await loop.run_in_executor(None, pd.DataFrame, [payload.model_dump()])
+    return await loop.run_in_executor(None, model.predict, df)
+
+# BIEN Opcion B: handler sync declarado, FastAPI lo envia al default_executor
+@router.post("/predict")
+def predict(payload: FeatureVector):
+    return model.predict(pd.DataFrame([payload.model_dump()])).tolist()
+
+# BIEN Opcion C: el handler es I/O puro, todo async
+@router.post("/predict")
+async def predict(payload: FeatureVector):
+    async with httpx.AsyncClient() as client:
+        r = await client.post(downstream_url, json=payload.model_dump())
+    return r.json()</code></pre>
+<p><strong>Regla</strong>: si tocas CPU pesada (pandas, numpy, onnx) y declaras <code>async def</code>, <strong>debes</strong> usar <code>run_in_executor</code> adentro. Si no tocas CPU, declara <code>async def</code> y usa solo awaits.</p>
+<h3>Problema 2: memory leak en async generator mal cerrado</h3>
+<pre><code class="language-python"># MAL: si el cliente aborta, el generator no se cierra.
+@router.get("/stream")
+async def stream():
+    async def gen():
+        async with aiofiles.open("big.log", "rb") as f:
+            async for line in f:
+                yield line
+    return StreamingResponse(gen())
+# 1000 cortes de conexion = 1000 FDs abiertos = OSError: Too many open files.
+
+# BIEN: generator factorizado. Starlette lo cierra en cancel scope.
+@router.get("/stream")
+async def stream():
+    return StreamingResponse(_read_lines("big.log"), media_type="text/plain")
+
+async def _read_lines(path: str):
+    async with aiofiles.open(path, "rb") as f:
+        async for line in f:
+            yield line</code></pre>
+<h3>Problema 3: timeouts downstream sin propagar</h3>
+<pre><code class="language-python"># MAL: cuelga indefinidamente.
+async with httpx.AsyncClient() as client:
+    r = await client.post(downstream)
+
+# BIEN: timeout por fase.
+timeout = httpx.Timeout(connect=1.0, read=5.0, write=5.0, pool=1.0)
+async with httpx.AsyncClient(timeout=timeout) as client:
+    r = await client.post(downstream)</code></pre>
+<h2>7. Optimizaciones de produccion</h2>
+<h3>Opt 1: orjson en lugar de json estandar</h3>
+<p><code>orjson</code> es 2-5x mas rapido serializando Python objects a JSON y soporta <code>Enum</code>, <code>datetime</code>, <code>dataclass</code> nativamente.</p>
+<pre><code class="language-python"># app/orjson_patch.py
+from __future__ import annotations
+
+import orjson
+
+from fastapi.responses import JSONResponse as _JSONResponse
+
+
+class ORJSONResponse(_JSONResponse):
+    def render(self, content) -&gt; bytes:
+        return orjson.dumps(content, option=orjson.OPT_NON_STR_KEYS)
+
+
+# Uso:
+@router.get("/health", response_class=ORJSONResponse)
+async def health():
+    return {"status": "healthy"}</code></pre>
+<p><strong>Trade-off</strong>: ganais latencia, perdes el <code>json.dumps</code> configurable de stdlib (por ejemplo, <code>allow_nan=False</code> ya es default en orjson, que tira error en vez de generar <code>NaN</code> JSON invalido: esto es bueno). En APIs de lectura intensivas es casi obligatorio.</p>
+<h3>Opt 2: response model exclusion para payloads pesados</h3>
+<pre><code class="language-python">class FullPrediction(BaseModel):
+    transaction_id: str
+    risk_score: float
+    decision: FraudDecision
+    model_version: str
+    scored_at: datetime
+    latency_ms: float
+    feature_importance: dict[str, float]
+    audit_id: str                  # interno, NO exponer
+    raw_logits: list[float]        # 1.4 KB de float64, NO exponer
+
+
+@router.get("/predict/{txn_id}", response_model=FullPrediction,
+            response_model_exclude={"audit_id", "raw_logits"})
+async def get_prediction(txn_id: str):
+    ...</code></pre>
+<p>Si no excluis, envias 1.5 KB extra por respuesta. A 500 RPS son 750 KB/s desperdiciados. A 5 000 RPS son 7.5 MB/s que se van por el cable.</p>
+<h2>8. Conclusion: por que esto te salva el pellejo en produccion</h2>
+<p>Tu modelo no vale nada si la API que lo expone colapsa bajo carga o devuelve semantica incorrecta. La torre de El Dorado no se improvisa, y tu endpoint REST tampoco. Repaso final en cinco bullets:</p>
 <ul>
-<li><strong>Nodos</strong>: variables del sistema</li>
-<li><strong>Aristas</strong>: relaciones causales directas</li>
-<li><strong>Confounders</strong>: nodos que causan múltiples variables de interés</li>
-<li><strong>Colliders</strong>: nodos causados por múltiples fuentes (pattern que hay que evitar)</li>
+  <li><strong>Stateless real</strong>: si guardas sesion en memoria del worker, pierdes escalado horizontal. Sacalo a Redis o JWT.</li>
+  <li><strong>OpenAPI generado pero cerrado en prod</strong>: <code>/docs</code> y <code>/openapi.json</code> son superficie de ataque. Configuralos con variable de entorno.</li>
+  <li><strong><code>asyncio.Semaphore</code> + <code>run_in_executor</code></strong>: la combinacion correcta para backpressure sin bloquear el event loop.</li>
+  <li><strong><code>uvloop</code> + <code>httptools</code> + <code>orjson</code></strong>: triple activacion en <code>uvicorn.run(...)</code> para ~3x throughput medible en benchmarks sinteticos.</li>
+  <li><strong>Validacion en el borde con <code>extra="forbid"</code> y <code>frozen=True</code></strong>: la entrada es la unica superficie que controlas fuerte. Se paranoico.</li>
 </ul>
+<pre><code class="language-python"># Final checklist ejecutable:
+# 1. smoke
+curl -fsS http://localhost:8080/health | jq .
+# 2. carga sintetica
+python -m app.load_test --n 5000 --concurrency 50
+# 3. chaos: kill a un worker y verificar que los demas drenan
+kill -SIGTERM $(pgrep -f "uvicorn app.main:app" | head -1)
+# 4. metrica operativa clave
+curl -fsS http://localhost:8080/metrics | grep p99_latency</code></pre>
+<p>No hay fiesta con la API del modelo. Es el contrato entre tu matematica y el mundo real. Si esta mal, todo lo que hiciste durante semanas de entrenamiento es invisible. Pilas con esos dos detalles concretos: <code>asyncio.Semaphore</code> para backpressure y <code>run_in_executor</code> para CPU. Valen mas que cualquier libreria de "AI serving" del mercado. 🛬</p>
+  </article>
+  <nav class="article-nav" aria-label="Navegacion entre articulos">
+    <a class="nav-prev" href="/blog/dia-220365-model-registry/">Anterior</a>
+    <a href="/blog/">Todos los articulos</a>
+    <a class="nav-next" href="/blog/dia-222365-grpc/" data-date="2026-08-10">Siguiente</a>
+  </nav>
 
-<h3>Identificación de Confounders</h3>
 
-<pre><code class="language-python"># Backdoor criterion: qué variables controlar para eliminar confusión
-# Un conjunto Z bloquea todos los backdoor paths de X → Y si:
-# 1. Z bloquea todo path que no sea de intervención directa
-# 2. No contiene ningún collider
-
-identified_estimand = model.identify_effect(proceed_when_unidentifiable=True)
-print(identified_estimand)</code></pre>
-
-<hr>
-<h2>Do-Calculus — La Matemática de Intervenir</h2>
-
-<p>Judea Pearl introdujo el operador <code>do(X=x)</code> para modelar intervenciones. No es lo mismo "observar que alguien compra paraguas" que "obligar a alguien a comprar paraguas".</p>
-
-<h3>Las Tres Reglas del Do-Calculus</h3>
-
-<pre><code class="language-python"># Regla 1 - Insertar/deletar observaciones:
-# P(Y | do(X), Z) = P(Y | do(X)) si Z es independiente de Y dado X
-
-# Regla 2 - Intervención e observación:
-# P(Y | do(X), do(Z)) = P(Y | do(X), Z) bajo ciertas condiciones
-
-# Regla 3 - Insertar/deletar intervenciones:
-# P(Y | do(X), do(Z)) = P(Y | do(X)) si X y Z son independientes</code></pre>
-
-<p>La intervención <code>do(X=1)</code> significa: "fuerza el tratamiento X a valor 1, sin importar qué hubiera pasado". Esto elimina el sesgo de confusión porque cortas todas las flechas que entran a X.</p>
-
-<h3>Efecto Causal Promedio (ATE)</h3>
-
-<pre><code class="language-python"># El Average Treatment Effect (ATE) es lo que queremos estimar:
-# ATE = E[Y | do(X=1)] - E[Y | do(X=0)]
-
-# Con el framework de DoWhy
-estimate = model.estimate_effect(
-    identified_estimand,
-    method_name="backdoor.linear_regression"
-)
-
-print(f"ATE estimado: {estimate.value:.3f}")
-print(f"Efecto causal real: ~0.0 (porque no hay causalidad real)")</code></pre>
-
-<hr>
-<h2>Cómo Causal Inference Mejora Modelos de ML</h2>
-
-<h3>1. Feature Engineering Causal</h3>
-
-<pre><code class="language-python"># No todas las features son igualmente útiles
-# Features correlacionadas pero no causales pueden ser peligrosas
-
-# Feature causal: modificar esta variable cambia Y
-# Feature espuria: correlacionada pero no causal
-
-# Ejemplo: en predicción de default, "score de crédito" es causal
-# "Dirección IP del usuario" puede ser correlacionada pero no causal</code></pre>
-
-<h3>2. Detección de Spurious Correlations</h3>
-
-<pre><code class="language-python"># Test de causalidad antes de confiar en una feature
-from scipy import stats
-
-def test_causal_direction(X, Y, Z):
-    """
-    Test simple: si Z causa X e Y, entonces:
-    - X y Y son independientes condicionando en Z
-    """
-    # Partial correlation: correlación X-Y controlada por Z
-    from sklearn.linear_model import LinearRegression
-    
-    # Residuales de X predicho por Z
-    res_x = X - LinearRegression().fit(Z.reshape(-1,1), X).predict(Z.reshape(-1,1))
-    # Residuales de Y predicho por Z
-    res_y = Y - LinearRegression().fit(Z.reshape(-1,1), Y).predict(Z.reshape(-1,1))
-    
-    # Correlación de residuales
-    return stats.pearsonr(res_x, res_y)</code></pre>
-
-<h3>3. Causal Inference para A/B Testing</h3>
-
-<pre><code class="language-python"># A/B test clásico vs Causal A/B test
-# A/B test clásico asume que los grupos son intercambiables
-# Causal inference incorpora el grafo causal
-
-import dowhy.datasets
-
-# Dataset con efecto causal conocido
-data = dowhy.datasets.linear_dataset(
-    beta=10,
-    num_common_causes=5,
-    num_instruments=2,
-    num_samples=10000,
-    treatment_is_binary=True
-)
-
-df = data["df"]
-
-# Modelar el A/B test como experimento causal
-model = CausalModel(
-    data=df,
-    treatment=data["treatment_name"][0],
-    outcome=data["outcome_name"][0],
-    common_causes=data["common_causes_names"],
-    instruments=data["instrument_names"]
-)
-
-# Estimar el efecto real (CACE - Complier Average Causal Effect)
-estimate = model.estimate_effect(
-    identified_estimand,
-    method_name="iv.bootstrap",
-    confidence_intervals=True
-)
-
-print(f"Efecto causal del tratamiento: {estimate.value:.3f}")
-print(f"Intervalo de confianza: {estimate.get_confidence_intervals()}")</code></pre>
-
-<hr>
-<h2>Instrumental Variables — Cuando No Puedes Intervenir</h2>
-
-<p>¿Qué pasa cuando no puedes hacer un experimento controlado? Las variables instrumentales (IV) son tu herramienta.</p>
-
-<pre><code class="language-python"># Condiciones de un buen instrumento Z para X → Y:
-# 1. Z correlaciona con X (relevancia)
-# 2. Z no correlaciona directamente con Y (exclusión)
-# 3. Z no tiene confounder con Y (independencia)
-
-# Ejemplo clásico: efecto de educación en ingresos
-# No podemos randomizar educación, pero podemos usar:
-# - Cuarto de nacimiento (instrumento)
-# - Cambio en leyes de escolaridad obligatoria
-
-from sklearn.linear_model import LinearRegression
-
-def two_stage_least_squares(X, Y, Z):
-    """
-    IV estimation via 2SLS
-    """
-    # Primera etapa: predecir X con Z
-    X_pred = LinearRegression().fit(Z, X).predict(Z)
-    
-    # Segunda etapa: estimar efecto de X_pred en Y
-    beta_iv = LinearRegression().fit(X_pred.reshape(-1,1), Y).coef_[0]
-    
-    return beta_iv
-
-# En nuestro dataset de ejemplo con instrumentos
-Z = df[data["instrument_names"]].values
-X = df[data["treatment_name"][0]].values
-Y = df[data["outcome_name"][0]].values
-
-effect = two_stage_least_squares(X, Y, Z)
-print(f"Efecto causal estimado via IV: {effect:.3f}")</code></pre>
-
-<hr>
-<h2>Los 3 Errores Que El 90% Commete</h2>
-
-<h3>Error 1: Confundir Correlación con Causalidad</h3>
-
-<p><strong>El problema</strong>: Ver que "usuarios que compran X también compran Y" y concluir que "X causa Y". Esto lleva a intervenciones fallidas.</p>
-
-<pre><code class="language-python"># NO HACER ESTO:
-# if correlation(user_bought_X, user_bought_Y) > 0.8:
-#     recommend_Y_when_X_bought()  # Puede no funcionar!
-
-# El problema: ambos pueden ser causados por un third factor</code></pre>
-
-<p><strong>La solución</strong>: Construir un causal graph explícito. Usar domain knowledge para identificar confounders antes de actuar. Siempre pregúntate: "¿qué podría causar ambas cosas?"</p>
-
-<h3>Error 2: No Controlar Por Confounders</h3>
-
-<p><strong>El problema</strong>: En un A/B test, si no controlas por confounders, el efecto estimado está sesgado.</p>
-
-<pre><code class="language-python"># NO HACER ESTO:
-# naive_effect = mean(Y|A=1) - mean(Y|A=0)
-# ¡Esto puede ser completamente errado!
-
-# HACER ESTO:
-# Ajustar por confounders usando regression o stratification
-from sklearn.linear_model import LogisticRegression
-
-# Ajustar por confounders
-X_confounders = df[confounders].values
-treatment = df['treatment'].values
-
-# Estimar efecto con ajuste
-model = LogisticRegression()
-model.fit(X_confounders, treatment)
-
-# O usar matching, IPW, o doubly robust estimators</code></pre>
-
-<p><strong>La solución</strong>: Incluir todos los confounders conocidos en el análisis. Usar técnicas como matching, inverse probability weighting (IPW), o doubly-robust estimation.</p>
-
-<h3>Error 3: A/B Test Sin Considerar Causal Inference</h3>
-
-<p><strong>El problema</strong>: Lanzar un A/B test, ver lift positivo, y escalar sin preguntarse si el efecto es real o espurio.</p>
-
-<pre><code class="language-python"># NO HACER ESTO:
-# if ab_test.pvalue < 0.05:
-#     ship_it()  # ¡Puedo estar errado!
-
-# El problema: múltiples testing, novelty effects,
-# selección de métricas, etc.</code></pre>
-
-<p><strong>La solución</strong>: Complementar el A/B test con análisis causal. Preguntar:</p>
-<ul>
-<li>¿El efecto persiste en diferentes segmentos?</li>
-<li>¿Hay effect heterogeneity (el efecto varía por grupo)?</li>
-<li>¿El mecanismo de acción valida la hipótesis causal?</li>
-<li>¿Hay placebo tests que confirmen la validez?</li>
-</ul>
-
-<hr>
-<h2>Resumen y Cierre</h2>
-
-<p>Hagale pues, parcero. Causal inference no es un tema académico — es la diferencia entre modelos que realmente entienden el mundo y modelos que ven fantasmas en los datos.</p>
-
-<p><strong>Lo que debes recordar</strong>:</p>
-<ul>
-<li>Correlación ≠ Causalidad. Siempre pregúntate qué causa qué.</li>
-<li>Causal graphs hacen explícito tu conocimiento causal — y exponen lo que no sabes.</li>
-<li>Do-calculus te permite estimar efectos causales incluso sin experimentos.</li>
-<li>Instrumental variables son tu opción cuando no puedes intervenir.</li>
-<li>En A/B testing, siempre ajusta por confounders.</li>
-</ul>
-
-<p>En下次 vez que tu modelo diga que "X causa Y", pregúntate: ¿realmente lo hace? ¿O hay un confounder escondido? En Medellín decimos "el que no pregunta, se equivoca". En ML, el que no hace causal inference, paga con conclusiones equivocadas.</p>
-
-<p>Nos vemos en el Día 222. Stay curious, parcero.</p>
-</article>
-
-  <script>
-    document.getElementById('themeToggle').addEventListener('click', function() {
-      const html = document.documentElement;
-      const isDark = html.getAttribute('data-theme') === 'dark';
-      html.setAttribute('data-theme', isDark ? 'light' : 'dark');
-      document.getElementById('themeIcon').className = isDark ? 'fas fa-moon' : 'fas fa-sun';
-    });
-  </script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
   <script>
     hljs.highlightAll();
-    document.addEventListener('DOMContentLoaded', () => {
+    document.addEventListener('DOMContentLoaded', function() {
       renderMathInElement(document.body, {
         delimiters: [
           { left: '$$', right: '$$', display: true },
           { left: '$',  right: '$',  display: false },
-          { left: '\[', right: '\]', display: true },
-          { left: '\(', right: '\)', display: false },
+          { left: '\\[', right: '\\]', display: true },
+          { left: '\\(', right: '\\)', display: false },
         ],
         throwOnError: false,
       });
     });
-    
-  const _html = document.documentElement;
-  const _btn  = document.getElementById('themeToggle');
-  const _icon = document.getElementById('themeIcon');
-  function _setIcon(t) { _icon.className = t === 'dark' ? 'fas fa-sun' : 'fas fa-moon'; }
-  const _saved = localStorage.getItem('theme') || 'dark';
-  _html.setAttribute('data-theme', _saved);
-  _setIcon(_saved);
-  _btn.addEventListener('click', () => {
-    const next = _html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
-    _html.setAttribute('data-theme', next);
-    localStorage.setItem('theme', next);
-    _setIcon(next);
-  });
 
+    var _html = document.documentElement;
+    var _btn  = document.getElementById('themeToggle');
+    var _icon = document.getElementById('themeIcon');
+    function _setIcon(t) { _icon.className = t === 'dark' ? 'fas fa-sun' : 'fas fa-moon'; }
+    var _saved = localStorage.getItem('theme') || 'dark';
+    _html.setAttribute('data-theme', _saved);
+    _setIcon(_saved);
+    _btn.addEventListener('click', function() {
+      var next = _html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+      _html.setAttribute('data-theme', next);
+      localStorage.setItem('theme', next);
+      _setIcon(next);
+    });
   </script>
   <script>
     document.addEventListener('DOMContentLoaded', function() {
