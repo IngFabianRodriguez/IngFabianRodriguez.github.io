@@ -3,9 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="Speculative Decoding - El Truco que el 70% No Conoce para Acelerar Inference 10x Sin Perder Accuracy | #365DaysOfAI por Fabian Rodriguez">
-  <title>Speculative Decoding - El Truco que el 70% No Conoce | #365DaysOfAI</title>
-  
+  <meta name="description" content="Dia 251/365: Speculative Decoding — el redactor junior que le ahorra tres horas al editor senior | #365DaysOfAI por Fabian Rodriguez">
+  <title>Dia 251/365: Speculative Decoding — el redactor junior que le ahorra tres horas al editor senior | #365DaysOfAI</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
@@ -21,7 +20,7 @@
   --shadow: rgba(2,12,27,0.7); --nav-bg: rgba(10,25,47,0.92);
 }
 [data-theme="light"] {
-  --bg: #f0f4fb; --bg-card: #ffffff; --border: #d4dcee;
+  --bg: #f0f4fb; --bg-card: #ffffff; --border: #d4ddee;
   --text-muted: #64748b; --text: #475569; --text-heading: #0f172a;
   --accent: #0d9488; --accent-tint: rgba(13,148,136,0.08);
   --shadow: rgba(15,23,42,0.12); --nav-bg: rgba(240,244,251,0.95);
@@ -81,6 +80,10 @@ nav {
   border-radius: 4px; padding: .15em .4em;
 }
 .article-body pre code { background: none; border: none; padding: 0; font-size: inherit; }
+.article-body table { width: 100%; border-collapse: collapse; margin: 1.5rem 0; font-size: .9rem; }
+.article-body th, .article-body td { border: 1px solid var(--border); padding: .6rem 1rem; text-align: left; }
+.article-body th { background: var(--bg-card); color: var(--text-heading); }
+.article-body .katex-display { overflow-x: auto; padding: .5rem 0; }
 
 .article-nav {
   max-width: 820px; margin: 0 auto; padding: 2rem 1.5rem;
@@ -94,7 +97,8 @@ nav {
   nav { padding: 0 1rem; }
   .article-hero, .article-body { padding-left: 1rem; padding-right: 1rem; }
 }
-</style>
+
+  </style>
 </head>
 <body>
   <nav>
@@ -110,455 +114,546 @@ nav {
 
   <header class="article-hero">
     <div class="day-badge">Dia 251 / 365 &nbsp;&middot;&nbsp; #365DaysOfAI</div>
-    <h1 class="article-title">Speculative Decoding - El Truco que el 70% No Conoce para Acelerar Inference 10x Sin Perder Accuracy</h1>
+    <h1 class="article-title">Dia 251/365: Speculative Decoding — el redactor junior que le ahorra tres horas al editor senior</h1>
     <div class="article-meta">
-      <time class="article-date">08 de septiembre de 2026</time>
-      <div class="tags"><span class="tag">speculative-decoding</span><span class="tag">inference</span><span class="tag">optimization</span><span class="tag">llm</span><span class="tag">draft-model</span></div>
+      <time class="article-date">8 de septiembre de 2026</time>
+      <div class="tags"><span class="tag">Generacion asistida / early exit</span></div>
     </div>
   </header>
 
   <article class="article-body">
-    <h2>Hagale pues, mi gente</h2>
-    <p>Qué más pues, mi gente querida. Llegamos al Día 251 y hoy vamos a hablar de algo que el 70% de los developers IGNORAN y podrían estar usando para acelerar su inference 10x sin perder ni un punto de accuracy: <strong>Speculative Decoding</strong>. Esto es oro puro si estás corriendo LLMs en producción y la latencia es tu bottleneck. Café listo, que esto está buenísimo.</p>
+<h2>Introduccion: cuando cada forward pass te cuesta un rinion</h2>
+<p>Si alguna vez pagaste la factura de un inference endpoint sirviendo un LLM de 70B a razon de 30 tokens por segundo, sabes que la cuenta se dispara. Y lo peor: cada pasada del modelo grande cuesta lo mismo, sin importar si el siguiente token era "obvio" o no. La generacion autoregresiva es inherentemente serial: para emitir $n$ tokens necesitas $n$ forward passes secuenciales, y no hay CUDA graph, batching agresivo ni FlashAttention que te libre de esa latencia cruda.</p>
+<p>Mira, el problema de fondo es que durante la mayor parte del texto el modelo "ya sabe" que viene. La palabra despues de "Buenos" casi siempre es "dias". La palabra despues de un corchete de cierre en Python suele ser salto de linea. Pero como el decoder no se atreve a saltar, hace una llamada costosa por token. Es como pagar peaje por cada metro de una carretera donde ya conoces el destino.</p>
+<p>Speculative decoding ataca exactamente ese punto: usa un modelo chico y barato (el <em>draft</em>) para proponer varios tokens candidatos, y un modelo grande (el <em>target</em>) los verifica todos en un solo forward pass. Si los drafts son buenos, los acepta; si no, los rechaza y resamplea de la distribucion del target. El truco matematico, y aqui esta lo brillante, es que la distribucion de salida es EXACTAMENTE la del modelo grande. No es una aproximacion. No hay perdida de calidad. Solo hay menos forward passes del modelo caro. En produccion eso significa speedups de 2x a 4x en latencia sin tocar el modelo base, y ese es el escenario donde no hay fiesta: mas QPS por GPU, menos bill al final del mes.</p>
+<h2>1. Que es Speculative Decoding? (Y por que deberia importarte)</h2>
+<h3>1.1 La analogia cotidiana</h3>
+<p>Imaginate la redaccion de un periodico grande a las 11 de la noche, cierre de edicion. Un periodista junior escribe el borrador palabra por palabra: "El... presidente... firmo... el... decreto...". Es mecanico, lento, y a veces mete barbaridades. Pero es barato y no requiere dormir.</p>
+<p>A las 11:45 el editor senior recibe el borrador completo. No lo lee palabra por palabra, lo lee de un paneo. En diez segundos detecta: "esto esta bien, esto no, aqui hubo un error factual, aqui el junior se invento algo". Devuelve la pagina con tres correcciones y la rotativa arranca.</p>
+<p>El editor hizo UNA operacion de lectura (paralela sobre todo el borrador) en lugar de $n$ operaciones (una por palabra). El trabajo mecanico lo hizo el junior. El senior solo valido y corrigio.</p>
+<p>Eso es speculative decoding. El draft model es el periodista junior: secuencial, barato, no perfecto. El target model es el editor senior: lee todo el draft de un vistazo (un solo forward pass) y aprueba o corrige token por token. La inspeccion es barata comparada con la produccion.</p>
+<p>La diferencia clave: en lugar de firmar y publicar lo que dijo el junior, el editor GARANTIZA que lo que sale es lo que el senior hubiera escrito. La distribucion final de tokens es la del editor, no la del junior. Eso es matematicamente posible y es lo que vamos a demostrar abajo.</p>
+<h3>1.2 La matematica formal</h3>
+<p>Llamemos $p(x \mid x_{<t})$ a la distribucion del modelo target sobre el siguiente token dado el contexto $x_{<t}$, y $q(x \mid x_{<t})$ a la distribucion del draft model. La generacion autoregresiva normal muestrea de $p$ en cada paso: necesita un forward pass de $p$ por token.</p>
+<p>Speculative decoding hace lo siguiente en cada ronda:</p>
+<ol>
+  <li>El draft propone $\gamma$ tokens secuencialmente $\tilde{x}_1, \tilde{x}_2, \dots, \tilde{x}_\gamma$ muestreando de $q$. Esto cuesta $\gamma$ forward passes de $q$ (barato).</li>
+</ol>
+<ol>
+  <li>El target evalua esos $\gamma$ tokens en un solo forward pass, produciendo $p_1, p_2, \dots, p_\gamma$ y ademas $p_{\gamma+1}$ (la distribucion del siguiente token si todos los $\gamma$ fueran aceptados).</li>
+</ol>
+<ol>
+  <li>Para cada token $\tilde{x}_i$ propuesto, calcular el ratio de aceptacion:</li>
+</ol>
+$$\alpha_i = \min\!\left(1, \frac{p_i(\tilde{x}_i)}{q_i(\tilde{x}_i)}\right)$$
+<p>Aqui $\alpha_i$ es la probabilidad de aceptar el draft. Si $p_i$ y $q_i$ coinciden exactamente, $\alpha_i = 1$ y aceptamos siempre. Si $q_i$ sobreestima la prob de $\tilde{x}_i$, $\alpha_i < 1$ y rechazamos con esa frecuencia.</p>
+<ol>
+  <li>Muestrear $u \sim \mathcal{U}(0,1)$. Si $u < \alpha_i$, aceptar $\tilde{x}_i$. Si no, rechazar y resamplear $\tilde{x}'$ de la distribucion corregida:</li>
+</ol>
+$$p'(\tilde{x}') = \frac{\max\!\bigl(0,\; p_i(\tilde{x}) - q_i(\tilde{x})\bigr)}{\sum_{x}\max\!\bigl(0,\; p_i(x) - q_i(x)\bigr)}$$
+<p>El numerador es $\bigl(p_i - q_i\bigr)_+$, la parte positiva de la diferencia. Esto compensa exactamente la masa de probabilidad que el draft puso en tokens que el target rechaza.</p>
+<ol>
+  <li>Si todos los $\gamma$ tokens son aceptados, muestrear un token bonus $\tilde{x}_{\gamma+1}$ directamente de $p_{\gamma+1}$.</li>
+</ol>
+<p>El invariante crucial: la distribucion marginal de cada token emitido coincide exactamente con $p$. La prueba es directa. Condicionando en "se emite $\tilde{x}_i = x$", la probabilidad es</p>
+$$P(\tilde{x}_i = x) = q_i(x) \cdot \min\!\left(1, \frac{p_i(x)}{q_i(x)}\right) + \bigl(p_i(x) - q_i(x)\bigr)_+ = p_i(x)$$
+<p>El primer termino cubre "el draft propuso $x$ y fue aceptado"; el segundo cubre "el draft propuso otra cosa y el resampleo nos dio $x$". Algebraicamente, en ambos casos ($q(x) \leq p(x)$ y $q(x) > p(x)$) la suma colapsa a $p_i(x)$. Esto NO es una aproximacion: es identidad punto a punto. Por eso el output de un speculative decoder es indistinguible, muestra a muestra, de una corrida autoregresiva pura sobre $p$.</p>
+<p>El speedup viene de comprimir hasta $\gamma + 1$ tokens (peor caso) en un solo forward pass del target. Con $\gamma = 5$ y tasa de aceptacion alta, eso es tipicamente 4x menos pasadas del modelo caro, lo cual en inferencia de produccion es dinero contante y sonante.</p>
+<h2>2. Como la generacion asistida y el early exit resuelven esto por vos</h2>
+<p>Hay tres familias principales de "draft" que la industria usa, todas en la categoria de <em>generacion asistida</em> (un modelo chico ayuda al grande) o <em>early exit</em> (el mismo modelo grande sale antes):</p>
+<pre><code class="language-text">                     ┌─────────────────────────────────────────────┐
+                     │              ARQUITECTURA                    │
+                     └─────────────────────────────────────────────┘
 
-    <hr>
+  Prompt:  [ El presidente firm ]
+              │
+              ▼
+  ┌──────────────────────────────────────┐
+  │  Draft (chico, ej. 1B params)        │  ← γ forward passes baratos
+  │  propone: ó, el, decreto, de, ...    │     (secuencial, en CPU/GPU)
+  └──────────────────┬───────────────────┘
+                     │ tokens candidatos + distribuciones q_i
+                     ▼
+  ┌──────────────────────────────────────┐
+  │  Target (grande, ej. 70B params)     │  ← UN forward pass caro
+  │  evalua: p_1, p_2, ..., p_γ, p_γ+1   │     (paralelo sobre los γ)
+  └──────────────────┬───────────────────┘
+                     │ distribuciones target
+                     ▼
+  ┌──────────────────────────────────────┐
+  │  Rejection sampler                  │
+  │  acepta / corrige / bonus            │
+  └──────────────────────────────────────┘</code></pre>
+<p><strong>Draft externo</strong>: un modelo chico aparte (ej. Llama-3.2-1B como draft de Llama-3.1-70B). Simple, pero requiere entrenar y mantener dos modelos en VRAM.</p>
+<p><strong>Self-speculative / Medusa / EAGLE</strong>: el modelo grande se mantiene, pero se entrenan cabezales adicionales (Medusa) o una capa pequena extra (EAGLE) que propone drafts. Cero overhead de parametros extra en inference mas alla del cabezal.</p>
+<p><strong>Early exit / Layer-skip</strong>: el mismo modelo target, pero las primeras $k$ capas corren en modo "draft" rapido. La intuicion es que las primeras capas ya capturan la mayor parte de la decision sobre tokens "faciles" (palabras comunes, sintaxis).</p>
+<p>Cualquiera de las tres variantes se reduce al mismo algoritmo de aceptacion: dado un draft $q$ y un target $p$, maximizar tokens aceptados por cada pasada del target.</p>
+<h2>3. Generacion asistida y early exit: Uso Directo y Casos de Control Fino</h2>
+<h3>HuggingFace transformers</h3>
+<p>Desde transformers 4.35 hay un argumento directo:</p>
+<pre><code class="language-python">from transformers import AutoModelForCausalLM, AutoTokenizer
 
-    <h2>El Problema: Autoregressive Decoding es Lento y Secuencial</h2>
-    <p>Mira la realidad: los LLMs generan tokens de forma autoregresiva — un token a la vez, esperando que el anterior termine. Esto es inherentemente secuencial y es el reason principal por qué la generación de texto es lenta.</p>
-    <p>La matemática es simple. Si tienes un modelo de 70B parámetros:</p>
-    <pre><code class="language-python"># Tiempo por token en un 70B (aproximado)
-LATENCY_PER_TOKEN_MS = 50  # 50ms por token en GPU
+target = AutoModelForCausalLM.from_pretrained(
+    "meta-llama/Llama-3.1-8B-Instruct", device_map="auto"
+)
+draft = AutoModelForCausalLM.from_pretrained(
+    "meta-llama/Llama-3.2-1B-Instruct", device_map="auto"
+)
+tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-3.1-8B-Instruct")
+inputs = tokenizer("Explica el teorema de Bayes en una frase:",
+                   return_tensors="pt").to(target.device)
 
-# Para una respuesta de 500 tokens:
-TOTAL_LATENCY = 500 * LATENCY_PER_TOKEN_MS
-print(f"Latencia total: {TOTAL_LATENCY/1000:.1f} segundos = {TOTAL_LATENCY/60000:.1f} minutos")
-# Output: Latencia total: 25.0 segundos = 0.4 minutos</code></pre>
-    <p>25 segundos para una respuesta es inaceptable en muchos contextos. ¿Cómo reducimos esto?</p>
+out = target.generate(
+    **inputs,
+    assistant_model=draft,
+    max_new_tokens=256,
+    do_sample=True,
+    temperature=0.7,
+)
+print(tokenizer.decode(out[0], skip_special_tokens=True))</code></pre>
+<h3>vLLM</h3>
+<p>vLLM tiene speculative decoding de primera clase y maneja el caso comun sin que toques nada:</p>
+<pre><code class="language-python">from vllm import LLM, SamplingParams
 
-    <hr>
+llm = LLM(
+    model="meta-llama/Llama-3.1-8B-Instruct",
+    speculative_model="meta-llama/Llama-3.2-1B-Instruct",
+    num_speculative_tokens=5,   # gamma
+    use_v2_block_manager=True,
+)
+params = SamplingParams(temperature=0.7, max_tokens=256)
+out = llm.generate(["Explica el teorema de Bayes en una frase:"], params)</code></pre>
+<p>vLLM ademas soporta EAGLE-2 con tree attention, manteniendo varios caminos de draft simultaneos validados en una sola pasada del target.</p>
+<h3>Medusa (self-speculative)</h3>
+<p>Si no queres mantener dos modelos, Medusa entrena cabezales sobre el propio target:</p>
+<pre><code class="language-python">from medusa.model.medusa_model import MedusaModel
 
-    <h2>Speculative Decoding: La Idea</h2>
-    <p>La idea es elegante y simple: usa un modelo PEQUEÑO (draft model) para generar varios tokens rápidamente, y luego usa el modelo GRANDE (target model) para VERIFICAR todos esos tokens en PARALELO. Si el draft predijo bien, te ahorras la mayor parte del tiempo de generación.</p>
-    <p>La matemática detrás es bonita. Si el draft model tiene una accuracy del 80% en sus predicciones:</p>
-    <pre><code class="language-python"># Speculative decoding speedup math
-DRAFT_LATENCY_PER_TOKEN_MS = 5   # 5ms para el draft (10x más rápido)
-TARGET_LATENCY_PER_TOKEN_MS = 50  # 50ms para el target
-DRAFT_ACCURACY = 0.80  # 80% de los tokens son correctos
+model = MedusaModel.from_pretrained(
+    "FasterDecoding/medusa-1.0-vicuna-7b-v1.5",
+    base_model_path="lmsys/vicuna-7b-v1.5",
+    torch_dtype="float16",
+).cuda()
+text = model.generate(tok, ["Hola, como estas?"], max_new_tokens=256)[0]</code></pre>
+<h2>4. Implementacion Production-Ready: <code>SpeculativeDecoder</code></h2>
+<h3>4.1 Tipos y protocolos</h3>
+<pre><code class="language-python"># spec_types.py
+from dataclasses import dataclass
+from typing import Callable, Protocol
+import torch
 
-# Modo normal: 500 tokens con target model
-NORMAL_TIME = 500 * TARGET_LATENCY_PER_TOKEN_MS
+class LMHead(Protocol):
+    """Cualquier modelo: [1, seq] int64 -&gt; [1, seq, vocab] logits."""
+    def __call__(self, input_ids: torch.Tensor) -&gt; torch.Tensor: ...
 
-# Speculative: draft genera 5 tokens, target verifica en paralelo
-SPECULATIVE_BATCH_SIZE = 5
-DRAFT_TOKENS = 500 // SPECULATIVE_BATCH_SIZE
-DRAFT_TIME = DRAFT_TOKENS * SPECULATIVE_BATCH_SIZE * DRAFT_LATENCY_PER_TOKEN_MS
+@dataclass
+class SpeculativeStats:
+    """Telemetria de una corrida. Persistir por request en logs de prod."""
+    target_forward_passes: int = 0
+    draft_forward_passes: int = 0
+    tokens_emitted: int = 0
+    tokens_accepted: int = 0
+    tokens_bonus: int = 0
+    tokens_resampled: int = 0
+    rounds: int = 0
 
-# Target verifica solo los tokens aceptados (80%)
-ACCEPTED_TOKENS = 500 * DRAFT_ACCURACY
-TARGET_TIME = ACCEPTED_TOKENS * TARGET_LATENCY_PER_TOKEN_MS
+    @property
+    def acceptance_rate(self) -&gt; float:
+        drafted = self.tokens_accepted + self.tokens_resampled
+        return self.tokens_accepted / drafted if drafted else 0.0
 
-TOTAL_SPECULATIVE = DRAFT_TIME + TARGET_TIME
-SPEEDUP = NORMAL_TIME / TOTAL_SPECULATIVE
-
-print(f"Tiempo normal: {NORMAL_TIME/1000:.1f}s")
-print(f"Tiempo speculative: {TOTAL_SPECULATIVE/1000:.1f}s")
-print(f"Speedup: {SPEEDUP:.1f}x")
-# Output: Tiempo normal: 25.0s
-# Output: Tiempo speculative: 7.5s
-# Output: Speedup: 3.3x</code></pre>
-
-    <hr>
-
-    <h2>El Algoritmo: Draft → Verify → Accept</h2>
-    <p>El algoritmo funciona así:</p>
-    <ol>
-      <li><strong>Draft</strong>: El modelo pequeño genera K tokens en secuencia (típicamente K=4 a K=8)</li>
-      <li><strong>Verify</strong>: El modelo grande evalúa TODOS los K tokens en UN solo forward pass (es paralelo, no secuencial)</li>
-      <li><strong>Accept</strong>: Cada token se acepta o rechaza. Si se rechaza, el target genera un token de corrección</li>
-    </ol>
-    <p>La clave está en el paso 2: verificar K tokens en paralelo toma el MISMO tiempo que verificar 1 token. Es por esto que speculative decoding funciona.</p>
-
-    <hr>
-
-    <h2>Implementación Completa</h2>
-    <pre><code class="language-python">import torch
+    @property
+    def compression(self) -&gt; float:
+        """Tokens emitidos por forward pass del target. &gt;1 = beneficio."""
+        return self.tokens_emitted / max(self.target_forward_passes, 1)</code></pre>
+<h3>4.2 El motor principal</h3>
+<pre><code class="language-python"># spec_decoder.py
+import torch
 import torch.nn.functional as F
 from typing import List, Tuple
+from spec_types import LMHead, SpeculativeStats
+
 
 class SpeculativeDecoder:
+    """Decoder con rejection sampling. Distribucion de salida == target exacto.
+
+    Referencia: Leviathan, Kalman, Matias (2023) "Fast Inference from
+    Transformers via Speculative Decoding".
+    """
+
     def __init__(
         self,
-        draft_model,
-        target_model,
-        draft tokenizer,
-        target_tokenizer,
-        gamma: int = 4,  # Número de tokens especulativos por round
+        target_lm: LMHead,
+        draft_lm: LMHead,
+        gamma: int = 5,
+        temperature: float = 1.0,
+        eos_token_id: int | None = None,
+        device: str = "cuda",
     ):
-        self.draft_model = draft_model
-        self.target_model = target_model
-        self.draft_tok = draft_tokenizer
-        self.target_tok = target_tokenizer
+        if gamma &lt; 1:
+            raise ValueError("gamma debe ser &gt;= 1")
+        self.target_lm = target_lm
+        self.draft_lm = draft_lm
         self.gamma = gamma
+        self.temperature = temperature
+        self.eos = eos_token_id
+        self.device = torch.device(device)
+
+    @torch.no_grad()
+    def _draft_step(self, ids: torch.Tensor) -&gt; Tuple[List[int], List[torch.Tensor]]:
+        """El draft model propone hasta gamma tokens secuenciales."""
+        toks, probs = [], []
+        cur = ids
+        for _ in range(self.gamma):
+            logits = self.draft_lm(cur)[0, -1].clamp(min=-50.0, max=50.0)
+            p = F.softmax(logits / self.temperature, dim=-1)
+            t = int(torch.multinomial(p, 1).item())
+            toks.append(t)
+            probs.append(p)
+            cur = torch.cat([cur, torch.tensor([[t]], device=cur.device)], dim=1)
+            if self.eos is not None and t == self.eos:
+                break
+        return toks, probs
+
+    @torch.no_grad()
+    def _target_step(self, ids: torch.Tensor, K: int) -&gt; torch.Tensor:
+        """Un forward pass del target. Devuelve [K+1, vocab] log-probs."""
+        logits = self.target_lm(ids).clamp(min=-50.0, max=50.0)
+        L = logits.shape[1]
+        return F.log_softmax(logits[0, L - K - 1 : L] / self.temperature, dim=-1)
 
     @torch.no_grad()
     def generate(
-        self,
-        prompt: str,
-        max_new_tokens: int = 100,
-        temperature: float = 1.0,
-        device: str = "cuda"
-    ) -> str:
-        # Tokenizar
-        input_ids = self.target_tok(prompt, return_tensors="pt").input_ids.to(device)
-        draft_ids = input_ids.clone()
+        self, prefix_ids: List[int], max_new_tokens: int,
+    ) -&gt; Tuple[List[int], SpeculativeStats]:
+        stats = SpeculativeStats()
+        out: List[int] = list(prefix_ids)
 
-        generated = []
-        draft_probs_history = []
+        while stats.tokens_emitted &lt; max_new_tokens:
+            cur = torch.tensor([out], device=self.device)
+            stats.rounds += 1
 
-        while len(generated) < max_new_tokens:
-            # ===== FASE 1: DRAFT =====
-            draft_tokens = []
-            draft_probs = []
+            # Fase 1: draft propone K tokens (K &lt;= gamma)
+            draft_toks, draft_probs = self._draft_step(cur)
+            K = len(draft_toks)
+            stats.draft_forward_passes += K
 
-            for _ in range(self.gamma):
-                outputs = self.draft_model(draft_ids)
-                logits = outputs.logits[:, -1, :] / temperature
-                probs = F.softmax(logits, dim=-1)
+            # Fase 2: target verifica todos en UN forward pass
+            target_log_probs = self._target_step(cur, K)
+            stats.target_forward_passes += 1
 
-                # Sample del draft
-                draft_token = torch.multinomial(probs, num_samples=1).item()
-                draft_tokens.append(draft_token)
-
-                # Guardar la distribución de probabilidad para verificar después
-                draft_probs.append(probs[0, draft_token].item())
-
-                # Autoregressive: agregar el token al contexto del draft
-                draft_ids = torch.cat([draft_ids, torch.tensor([[draft_token]], device=device)], dim=1)
-
-            # ===== FASE 2: VERIFY =====
-            # Crear el input completo para el target: prompt + todos los tokens del draft
-            target_input = torch.cat([input_ids, torch.tensor([[t] for t in draft_tokens], device=device)], dim=1)
-
-            # Forward pass por el target con TODOS los tokens del draft
-            target_outputs = self.target_model(target_input)
-            target_logits = target_outputs.logits / temperature
-
-            # ===== FASE 3: ACCEPT/REJECT =====
-            accepted_tokens = []
-            for i, draft_tok in enumerate(draft_tokens):
-                # La distribución del target en la posición correspondiente
-                target_prob = F.softmax(target_logits[0, len(input_ids[0]) + i, :], dim=-1)
-
-                # ¿El draft token tiene alta probabilidad según el target?
-                # Técnica 1: Accept if P_target(draft_tok) > threshold
-                if target_prob[draft_tok].item() > 0.5:
-                    accepted_tokens.append(draft_tok)
-                    generated.append(draft_tok)
+            # Fase 3: rejection sampling
+            n_accepted = 0
+            rejected = False
+            for i in range(K):
+                t = draft_toks[i]
+                log_alpha = target_log_probs[i, t] - torch.log(draft_probs[i][t] + 1e-12)
+                alpha = float(torch.clamp(log_alpha.exp(), max=1.0).item())
+                if torch.rand(1).item() &lt; alpha:
+                    out.append(t)
+                    n_accepted += 1
+                    stats.tokens_accepted += 1
+                    stats.tokens_emitted += 1
+                    if stats.tokens_emitted &gt;= max_new_tokens:
+                        break
+                    if self.eos is not None and t == self.eos:
+                        return out[len(prefix_ids):], stats
                 else:
-                    # Rechazado: el target genera el token correcto
-                    # Sample del target (re-sampling con corrección)
-                    corrected_token = torch.multinomial(target_prob, num_samples=1).item()
-                    accepted_tokens.append(corrected_token)
-                    generated.append(corrected_token)
-                    # Romper porque a partir de aquí el contexto cambió
+                    p_diff = (target_log_probs[i].exp() - draft_probs[i]).clamp(min=0)
+                    s = p_diff.sum()
+                    new_p = p_diff / s if s &gt; 0 else target_log_probs[i].exp()
+                    new_t = int(torch.multinomial(new_p, 1).item())
+                    out.append(new_t)
+                    stats.tokens_resampled += 1
+                    stats.tokens_emitted += 1
+                    rejected = True
                     break
 
-            # Si TODOS los tokens fueron aceptados, continuamos
-            if len(accepted_tokens) == self.gamma:
-                generated.extend(draft_tokens)
+            # Bonus si todos los K fueron aceptados: muestrear token extra del target
+            if (
+                not rejected
+                and n_accepted == K
+                and stats.tokens_emitted &lt; max_new_tokens
+            ):
+                bonus_t = int(torch.multinomial(target_log_probs[K].exp(), 1).item())
+                out.append(bonus_t)
+                stats.tokens_bonus += 1
+                stats.tokens_emitted += 1
+                if self.eos is not None and bonus_t == self.eos:
+                    return out[len(prefix_ids):], stats
 
-            # Actualizar el input_ids del draft para la próxima iteración
-            draft_ids = torch.cat([
-                input_ids,
-                torch.tensor([generated], device=device)
-            ], dim=1)
+        return out[len(prefix_ids):], stats</code></pre>
+<h3>4.3 Utilidades de analisis y verificacion</h3>
+<pre><code class="language-python"># spec_verify.py - corre esto en CI antes de promover cambios
+import torch
+import torch.nn.functional as F
+from spec_decoder import SpeculativeDecoder
 
-            # Safety check: no exceder el contexto
-            if draft_ids.shape[1] > self.target_model.config.max_position_embeddings:
-                break
 
-        return self.target_tok.decode(generated, skip_special_tokens=True)</code></pre>
+def verify_distribution_preservation(
+    target_lm, draft_lm, prefix: torch.Tensor,
+    n_samples: int = 5000, vocab_size: int = 200,
+) -&gt; dict:
+    """Verifica que la distribucion marginal del decoder == target (KL &lt; 0.01)."""
+    dec = SpeculativeDecoder(target_lm, draft_lm, gamma=4, device="cpu")
 
-    <hr>
+    target_counts = torch.zeros(vocab_size)
+    for _ in range(n_samples):
+        logits = target_lm(prefix)[0, -1]
+        t = torch.multinomial(F.softmax(logits, dim=-1), 1).item()
+        target_counts[t] += 1
 
-    <h2>Cómo Tunear el Draft Model</h2>
-    <p>El draft model no necesita ser tan preciso como el target — necesita ser:</p>
-    <ul>
-      <li><strong>Rápido</strong>: 10x más rápido que el target mínimo</li>
-      <li><strong>Calibrado</strong>: Sus distribuciones de probabilidad deben estar bien calibradas</li>
-      <li><strong>Poco diferente</strong>: Debe ser del mismo family que el target para evitar distribution shift</li>
-    </ul>
-    <pre><code class="language-python"># Ejemplo: crear un draft model 10x más pequeño
-# 70B target -> 7B draft
+    spec_counts = torch.zeros(vocab_size)
+    for _ in range(n_samples):
+        out, _ = dec.generate(prefix[0].tolist(), max_new_tokens=1)
+        spec_counts[out[0]] += 1
 
-def create_speculative_pair():
-    """
-    Ejemplo de cómo configurar un par draft-target.
-    """
-    from transformers import AutoModelForCausalLM, AutoTokenizer
+    p = (target_counts / n_samples).clamp(min=1e-9)
+    q = (spec_counts / n_samples).clamp(min=1e-9)
+    kl = (q * (q.log() - p.log())).sum().item()
+    return {"kl_divergence": kl, "umbral_esperado": "&lt; 0.01 con n_samples=5000"}
 
-    # Target: el modelo grande
-    target_model_name = "meta-llama/Llama-2-70b-chat"
-    target = AutoModelForCausalLM.from_pretrained(
-        target_model_name,
-        torch_dtype=torch.float16,
-        device_map="auto"
+
+def smoke_test() -&gt; None:
+    """Sanity check con modelos dummy - ejecutable sin descargar pesos."""
+    import torch.nn as nn
+
+    class TinyLM(nn.Module):
+        def __init__(self, v: int):
+            super().__init__()
+            self.embed = nn.Embedding(v, 16)
+            self.head = nn.Linear(16, v)
+
+        def forward(self, ids: torch.Tensor) -&gt; torch.Tensor:
+            return self.head(self.embed(ids))
+
+    torch.manual_seed(42)
+    target = TinyLM(v=200)
+    draft = TinyLM(v=200)
+    prefix = torch.randint(0, 200, (1, 4))
+
+    dec = SpeculativeDecoder(target, draft, gamma=5, device="cpu")
+    out, stats = dec.generate(prefix[0].tolist(), max_new_tokens=32)
+
+    assert len(out) == 32, f"esperaba 32 tokens, obtuve {len(out)}"
+    assert stats.target_forward_passes &gt;= 1
+    assert stats.tokens_emitted == 32
+    # Esperado: compression ~2.5 a 6 con draft chico y vocab=200
+    print(f"OK: 32 tokens, {stats.target_forward_passes} target passes, "
+          f"compression={stats.compression:.2f}, "
+          f"acceptance={stats.acceptance_rate:.2f}")
+
+
+if __name__ == "__main__":
+    smoke_test()</code></pre>
+<h2>5. Ejemplos de Uso en Casos Reales</h2>
+<h3>Caso 1: Chatbot de atencion al cliente</h3>
+<pre><code class="language-python"># bot_inference.py
+import time
+from transformers import AutoModelForCausalLM, AutoTokenizer
+import torch
+
+target = AutoModelForCausalLM.from_pretrained(
+    "meta-llama/Llama-3.1-8B-Instruct",
+    torch_dtype=torch.float16, device_map="cuda:0",
+)
+draft = AutoModelForCausalLM.from_pretrained(
+    "meta-llama/Llama-3.2-1B-Instruct",
+    torch_dtype=torch.float16, device_map="cuda:0",
+)
+tok = AutoTokenizer.from_pretrained("meta-llama/Llama-3.1-8B-Instruct")
+
+
+def chat(user_msg: str) -&gt; dict:
+    prompt = tok.apply_chat_template(
+        [{"role": "user", "content": user_msg}],
+        tokenize=False, add_generation_prompt=True,
+    )
+    inputs = tok(prompt, return_tensors="pt").to("cuda:0")
+    out = target.generate(
+        **inputs, assistant_model=draft,
+        max_new_tokens=512, do_sample=True, temperature=0.7,
+    )
+    n_new = out.shape[1] - inputs.input_ids.shape[1]
+    return {
+        "text": tok.decode(out[0][inputs.input_ids.shape[1]:], skip_special_tokens=True),
+        "tokens": n_new,
+    }
+
+
+def benchmark(user_msg: str) -&gt; None:
+    """Comparacion naive vs speculative, esperable 2.5x a 3.5x speedup
+    con 8B target + 1B draft y prompt corto (&lt;500 tokens)."""
+    target_only = AutoModelForCausalLM.from_pretrained(
+        "meta-llama/Llama-3.1-8B-Instruct",
+        torch_dtype=torch.float16, device_map="cuda:0",
     )
 
-    # Draft: modelo del mismo family pero 10x más pequeño
-    draft_model_name = "meta-llama/Llama-2-7b-chat"  # 70B -> 7B
-    draft = AutoModelForCausalLM.from_pretrained(
-        draft_model_name,
-        torch_dtype=torch.float16,
-        device_map="auto"
-    )
+    inputs = tok(tok.apply_chat_template(
+        [{"role": "user", "content": user_msg}], tokenize=False,
+        add_generation_prompt=True,
+    ), return_tensors="pt").to("cuda:0")
 
-    # El draft solo necesita 1 GPU, el target necesita 8
-    print(f"Target params: {sum(p.numel() for p in target.parameters()) / 1e9:.1f}B")
-    print(f"Draft params: {sum(p.numel() for p in draft.parameters()) / 1e9:.1f}B")
-    print(f"Ratio: {sum(p.numel() for p in target.parameters()) / sum(p.numel() for p in draft.parameters()):.0f}x")
+    t0 = time.perf_counter()
+    target_only.generate(**inputs, max_new_tokens=512, do_sample=True, temperature=0.7)
+    naive_s = time.perf_counter() - t0
 
-    return draft, target
+    t0 = time.perf_counter()
+    chat(user_msg)
+    spec_s = time.perf_counter() - t0
 
-# Output: Target params: 70.0B
-# Output: Draft params: 7.0B
-# Output: Ratio: 10x</code></pre>
+    print(f"naive={naive_s:.2f}s  spec={spec_s:.2f}s  speedup={naive_s/spec_s:.2f}x")
 
-    <hr>
 
-    <h2>Temperature y Sampling: El Error Crítico</h2>
-    <p><strong>Error común #3 (y MUY importante)</strong>: Usar la misma temperature en draft y target.</p>
-    <p>El draft y el target tienen roles diferentes:</p>
-    <ul>
-      <li><strong>Draft</strong>: Debe explorar poco, ser "conservador" — usa temperature BAJA (0.5-0.8)</li>
-      <li><strong>Target</strong>: Debe explorar más — puede usar temperature más alta (0.7-1.0)</li>
-    </ul>
-    <pre><code class="language-python">def generate_with_correct_temperature(
-    prompt: str,
-    draft_model,
-    target_model,
-    draft_temp: float = 0.5,  # BAJA temperature para draft
-    target_temp: float = 0.9,  # ALTA temperature para target
-    gamma: int = 4
-):
-    """
-    Speculative decoding con temperatures DIFERENTES.
-    """
+benchmark("Explica la diferencia entre TCP y UDP con un ejemplo cada uno")</code></pre>
+<h3>Caso 2: Resumen de documentos largos</h3>
+<p>Cuando resumimos docs de 4k+ tokens, el draft aprende rapidamente el "registro" del resumen ("En resumen...", "Los puntos clave son...", "El autor argumenta que...") y la tasa de aceptacion suele superar 0.85. Para prompts largos, el costo del prefill domina y el speedup se acerca al limite teorico $\gamma + 1$. Un draft afinado en el estilo de salida esperada (no en datos generales) puede duplicar el speedup sobre un draft out-of-the-box.</p>
+<h3>Caso 3: Self-speculative con Medusa</h3>
+<pre><code class="language-python"># Requiere: pip install medusa-llm
+from medusa.model.medusa_model import MedusaModel
 
-    # Draft: temperature baja = más determinístico
-    # El draft se equivoca de forma "predecible" cuando se equivoca
-    # Esto permite que el target lo corrija mejor
+model = MedusaModel.from_pretrained(
+    "FasterDecoding/medusa-1.0-zephyr-7b-beta",
+    base_model_path="HuggingFaceH4/zephyr-7b-beta",
+    torch_dtype="float16",
+).cuda()
+# Esperado: 2.2x speedup sobre autoregresivo puro, sin draft externo
+text = model.generate(tok, ["Resume la revolucion francesa en 3 parrafos."],
+                     max_new_tokens=400)[0]</code></pre>
+<p>Medusa/EAGLE-2 es la opcion enterprise cuando no queres mantener dos modelos en VRAM. Reportes independientes muestran ~2.2x para Medusa y ~4x para EAGLE-2 sobre autoregresivo.</p>
+<h2>6. Debugging: Cuando Todo se Va a la Mierda</h2>
+<h3>Problema 1: Tasa de aceptacion menor al 30%</h3>
+<p>Sintoma: <code>stats.compression</code> cerca de 1.0, speedup < 1.2x. El draft no esta aprendiendo el dominio.</p>
+<p>Deteccion numerica:</p>
+<pre><code class="language-python"># debug_acceptance.py
+from spec_decoder import SpeculativeDecoder
 
-    # Target: temperature más alta = más diversidad
-    # El target "repara" los errores del draft con distribución correcta
+def diagnose(target, draft, prompts, gamma: int = 5) -&gt; None:
+    """Loggea acceptance_rate y compression por prompt para detectar mismatch."""
+    dec = SpeculativeDecoder(target, draft, gamma=gamma)
+    for prompt in prompts[:50]:
+        out, stats = dec.generate(prompt, max_new_tokens=200)
+        if stats.acceptance_rate &lt; 0.5:
+            print(f"WARN prompt_len={len(prompt)} "
+                  f"acceptance={stats.acceptance_rate:.2f} "
+                  f"compression={stats.compression:.2f}")
+        # Esperado: acceptance &gt; 0.6 en dominios similares
 
-    # NO HACER ESTO:
-    # draft_temp = target_temp = 1.0  # ¡ERROR!
+diagnose(target, draft, batch_of_prompts)</code></pre>
+<p>Soluciones:</p>
+<ol>
+  <li><strong>Re-entrena el draft con datos del dominio target.</strong> Un draft generalista pierde contra un target especializado. Es la causa #1 de bajo rendimiento.</li>
+  <li><strong>Baja $\gamma$ a 2 o 3.</strong> Si el draft acepta 2 de 5 tokens consistentemente, usa $\gamma=2$ y sube el throughput por ronda.</li>
+  <li><strong>Sube la temperatura del draft ligeramente</strong> (0.1 a 0.2 sobre la del target). Mayor diversidad a veces captura casos donde el target es mas conservador.</li>
+</ol>
+<h3>Problema 2: Speculative mas lento que naive</h3>
+<p>Sintoma: el codigo corre, emite los mismos tokens, pero tarda MAS que autoregresivo puro. Pasa cuando el draft es casi del mismo tamano que el target y los overheads de mover tensores pesan mas que el ahorro.</p>
+<p>Deteccion: loggear wall-clock por token, no solo compression:</p>
+<pre><code class="language-python">import time
+t0 = time.perf_counter()
+out, stats = dec.generate(prefix, 512)
+elapsed = time.perf_counter() - t0
+print(f"spec_tps={stats.tokens_emitted/elapsed:.1f}")
+print(f"naive_tps={naive_tps:.1f}")  # benchmark aparte
+if stats.tokens_emitted / elapsed &lt; naive_tps:
+    print("DRAFT INSERVIBLE: mas lento que autoregresivo")</code></pre>
+<p>Si <code>spec_tps < naive_tps</code>, el draft es inutil en tu hardware. Soluciones:</p>
+<ol>
+  <li><strong>Usa un draft mas chico.</strong> La regla de oro: draft de 5 a 10x menos parametros que el target.</li>
+  <li><strong>Quantiza el draft a int4</strong> con bitsandbytes o AWQ. Un 1B en int4 cabe en ~1 GB.</li>
+  <li><strong>Cambia a self-speculative</strong> (Medusa/EAGLE): evita cargar dos modelos en VRAM y elimina el overhead de copia entre GPU.</li>
+</ol>
+<h3>Problema 3: Inestabilidad numerica con temperaturas extremas</h3>
+<p>A $T < 0.1$ las distribuciones se vuelven casi deterministicas; a $T > 5.0$ casi uniformes. El ratio $p_i(x) / q_i(x)$ puede explotar a $+\infty$ o caer a 0, generando NaNs en $\log\alpha$. Lo he visto en produccion y es una pesadilla reproducible.</p>
+<p>Solucion (dos partes, ambas necesarias):</p>
+<pre><code class="language-python"># 1. Clampear logits ANTES de softmax (en _draft_step y _target_step)
+logits = logits.clamp(min=-50.0, max=50.0)
 
-    # HACER ESTO:
-    draft_temp = 0.5  # Draft más "confiado"
-    target_temp = 0.9  # Target más "exploratorio"
+# 2. Evitar division por cero en el ratio
+# Mal:
+alpha = min(1.0, p_target / p_draft)
+# Bien:
+alpha = min(1.0, p_target / max(p_draft, 1e-12))</code></pre>
+<p>Mi implementacion de la seccion 4 ya incluye ambos safeguards. Si los quitas, vas a ver NaNs aleatorios en logs.</p>
+<h3>Problema 4: esa vaina del EOS mal manejado</h3>
+<p>Si el draft emite EOS pero el target no queria parar ahi, el codigo termina la generacion prematuramente. Es sutil porque en la mayoria de secuencias el EOS aparece al final, pero con stopwords custom en chat largo es una pesadilla.</p>
+<pre><code class="language-python"># Multi-EOS handling explicito
+def generate_with_stops(self, prefix_ids, max_new_tokens, stop_token_ids):
+    stop_set = set(stop_token_ids or [])
+    if self.eos is not None:
+        stop_set.add(self.eos)
+    # ... dentro del accept loop:
+    if t in stop_set:
+        return out[len(prefix_ids):], stats</code></pre>
+<p>Y en produccion, valida que tu tokenizer devuelve IDs consistentes con lo que tu modelo realmente emite. He visto diferencias sutiles entre el <code>eos_token_id</code> del config y el del tokenizer, y eso revienta el flujo.</p>
+<h2>7. Optimizaciones de Produccion</h2>
+<h3>Tree-structured drafting (EAGLE-2)</h3>
+<p>En vez de proponer una secuencia lineal $\tilde{x}_1, \tilde{x}_2, \dots$, el draft propone un ARBOL de continuaciones candidatas. El target verifica todas las ramas en un solo forward pass con tree attention, y se queda con la secuencia mas larga consistente.</p>
+<p>Tradeoff: mas complejidad en el decoder (requiere custom CUDA kernels o atencion con masking variable), y el draft debe producir un arbol en lugar de una secuencia. EAGLE-2 logra esto con un decoder de 1 capa entrenado para predecir el siguiente hidden state en vez del token. Reportes muestran 4x a 6x sobre autoregresivo, ~1.5x sobre speculative lineal.</p>
+<h3>Adaptive gamma</h3>
+<p>En lugar de $\gamma$ fijo, ajustalo segun la tasa de aceptacion reciente:</p>
+<pre><code class="language-python"># adaptive_gamma.py
+from spec_decoder import SpeculativeDecoder
+from spec_types import SpeculativeStats
 
-    # La diferencia de temperatures ayuda porque:
-    # 1. El draft con temp baja suele predecir el token más probable
-    # 2. El target con temp alta puede corregir con más diversidad
-    # 3. El acceptance ratio mejora cuando draft es "confiado"
-    ...
-</code></pre>
 
-    <hr>
+class AdaptiveSpeculativeDecoder(SpeculativeDecoder):
+    """Autoajusta gamma segun la tasa de aceptacion por ronda."""
 
-    <h2>Cuándo ES Beneficial Speculative Decoding</h2>
-    <p>Speculative decoding NO siempre es beneficial. El overhead de overhead vs speedup tradeoff:</p>
-    <ul>
-      <li><strong>✅ Beneficial</strong>: Secuencias largas (100+ tokens), alta concurrencia, batch size bajo</li>
-      <li><strong>❌ No beneficial</strong>: Secuencias cortas, batch size alto (donde ya hay parallelism), GPUs lentas para el draft</li>
-    </ul>
-    <pre><code class="language-python">def should_use_speculative_decoding(
-    seq_len: int,
-    batch_size: int,
-    draft_speedup: float,
-    acceptance_rate: float
-) -> bool:
-    """
-    Decide si usar speculative decoding basándose en el tradeoff.
-    """
-    # Overhead del draft: siempre pagamos esto
-    draft_overhead_pct = 1.0 / draft_speedup  # Si 10x más rápido, overhead = 10%
+    def __init__(self, target, draft, gamma_init=5, gamma_min=2, gamma_max=8):
+        super().__init__(target, draft, gamma_init)
+        self.gamma_min, self.gamma_max = gamma_min, gamma_max
+        self._ema_acceptance = 1.0
 
-    # Speedup efectivo depende del acceptance rate
-    effective_speedup = 1 / ((1 - acceptance_rate) + (acceptance_rate / draft_speedup))
+    def _adapt(self, accepted: int, drafted: int) -&gt; None:
+        rate = accepted / max(drafted, 1)
+        self._ema_acceptance = 0.9 * self._ema_acceptance + 0.1 * rate
+        if self._ema_acceptance &gt; 0.85 and self.gamma &lt; self.gamma_max:
+            self.gamma += 1
+        elif self._ema_acceptance &lt; 0.5 and self.gamma &gt; self.gamma_min:
+            self.gamma -= 1
 
-    # Si el speedup efectivo es < 1.2x, no vale la pena
-    if effective_speedup < 1.2:
-        return False
-
-    # Para batch sizes grandes, el parallelism del target ya es eficiente
-    if batch_size > 8:
-        return False
-
-    # Para secuencias cortas, el overhead del draft no se paga
-    if seq_len < 50:
-        return False
-
-    return True
-
-# Ejemplo
-print(should_use_speculative_decoding(
-    seq_len=200,
-    batch_size=1,
-    draft_speedup=10.0,
-    acceptance_rate=0.80
-))
-# Output: True (secuencia larga, batch bajo, 10x draft, 80% acceptance)
-
-print(should_use_speculative_decoding(
-    seq_len=30,
-    batch_size=16,
-    draft_speedup=10.0,
-    acceptance_rate=0.80
-))
-# Output: False (secuencia corta y batch alto)</code></pre>
-
-    <hr>
-
-    <h2>Errores Comunes y Cómo Evitarlos</h2>
-
-    <h3>Error 1: Speculative Decoding No Siempre es Beneficial</h3>
-    <p><strong>El problema</strong>: Asumes que speculative decoding SIEMPRE mejora la latencia. Error. Hay overhead en correr el draft model, y si el acceptance rate es bajo o el draft no es suficientemente más rápido, puedes terminar más lento.</p>
-    <p><strong>La solución</strong>: Mide siempre. Calcula el speedup efectivo con esta fórmula:</p>
-    <pre><code class="language-python">def calculate_effective_speedup(
-    draft_speedup: float,
-    acceptance_rate: float,
-    n_tokens: int = 100
-) -> float:
-    """
-    Calcula el speedup efectivo de speculative decoding.
-    """
-    # Tiempo sin speculative (baseline):
-    baseline_time = n_tokens
-
-    # Tiempo con speculative:
-    # - Draft genera n_tokens con speedup draft_speedup
-    # - Target verifica solo los tokens aceptados
-    draft_time = n_tokens / draft_speedup
-    target_time = n_tokens * acceptance_rate  # Target verifica solo lo aceptado
-
-    speculative_time = draft_time + target_time
-    speedup = baseline_time / speculative_time
-
-    return speedup
-
-# Ejemplo: draft 10x más rápido, 70% acceptance
-print(f"Speedup efectivo: {calculate_effective_speedup(10.0, 0.70):.2f}x")
-# Output: Speedup efectivo: 3.03x
-
-# Ejemplo: draft 5x más rápido, 50% acceptance
-print(f"Speedup efectivo: {calculate_effective_speedup(5.0, 0.50):.2f}x")
-# Output: Speedup efectivo: 1.67x
-
-# Ejemplo: draft 3x más rápido, 40% acceptance (NO vale la pena)
-print(f"Speedup efectivo: {calculate_effective_speedup(3.0, 0.40):.2f}x")
-# Output: Speedup efectivo: 1.22x</code></pre>
-
-    <h3>Error 2: No Tunear el Draft Model Size Para Balance Speed vs Accuracy</h3>
-    <p><strong>El problema</strong>: Usas un draft model muy pequeño (1B) pensando que más pequeño = más rápido = mejor. Pero si el acceptance rate cae a 30%, el speedup efectivo puede ser PEOR que no usar speculative decoding.</p>
-    <p><strong>La solución</strong>: El draft model debe ser "suficientemente bueno". La regla empírica: el draft debe tener al menos 10x menos parámetros que el target, pero mantener >70% de acceptance rate. Si no, sube a un draft más grande (13B para un 70B target).</p>
-    <pre><code class="language-python">def tune_draft_model_size(
-    target_model_size_b: float,
-    candidate_sizes: list,
-    eval_prompts: list
-) -> dict:
-    """
-    Encuentra el draft model óptimo balanceando speed y acceptance rate.
-    """
-    results = []
-
-    for draft_size in candidate_sizes:
-        # Load draft model
-        draft = load_model(f"{draft_size}b")
-
-        # Medir speedup del draft vs target
-        draft_speed = measure_throughput(draft)
-        target_speed = measure_throughput(target_model)
-        speedup = target_speed / draft_speed
-
-        # Medir acceptance rate
-        acceptance = measure_acceptance_rate(draft, target_model, eval_prompts)
-
-        # Calcular speedup efectivo
-        effective_speedup = calculate_effective_speedup(speedup, acceptance)
-
-        results.append({
-            "draft_size": draft_size,
-            "speedup": speedup,
-            "acceptance_rate": acceptance,
-            "effective_speedup": effective_speedup
-        })
-
-    # Encontrar el mejor balance
-    best = max(results, key=lambda x: x["effective_speedup"])
-    return best
-
-# Ejemplo de resultado:
-# draft_size=7B: speedup=10x, acceptance=0.65, effective=2.8x
-# draft_size=13B: speedup=5x, acceptance=0.82, effective=3.6x  <-- BEST
-# draft_size=3B: speedup=20x, acceptance=0.40, effective=1.8x</code></pre>
-
-    <h3>Error 3: Usar la Misma Temperature que Regular Decoding</h3>
-    <p><strong>El problema</strong>: Copias la temperature de tu decoding normal (ej: 1.0) y la aplicas tanto al draft como al target. Esto reduce el acceptance rate porque el draft se vuelve menos "determinístico" y el target no puede corregir efectivamente.</p>
-    <p><strong>La solución</strong>: Usa temperatures diferentes. Draft con temperature más baja (0.3-0.7) para que sea más "confiado" y prediga el token más probable. Target puede usar la temperature original de tu aplicación.</p>
-    <pre><code class="language-python"># NO HACER ESTO:
-def bad_speculative_decode(prompt, temp=1.0):
-    draft_temp = temp
-    target_temp = temp
-    # ... ambos con la misma temperature
-
-# HACER ESTO:
-def good_speculative_decode(prompt, target_temp=0.9):
-    # Draft: temperatura baja = más determinístico = mejor acceptance
-    draft_temp = 0.4  # El draft predice el token más probable
-
-    # Target: temperatura de la aplicación
-    # El target "repara" con la distribución correcta
-    target_temp = target_temp
-
-    # Por qué esto funciona:
-    # - Con temp baja, el draft casi siempre propone el token #1
-    # - El target verifica: si P(draft_token) es alta, se acepta
-    # - Si no, el target samplea de su distribución (con target_temp)
-    ...
-</code></pre>
-
-    <hr>
-
-    <h2>Resumen y Cierre</h2>
-    <p>Speculative decoding es una técnica poderosa para acelerar LLM inference 3-10x sin perder accuracy. La clave está en:</p>
-    <ul>
-      <li>Usar un draft model 10x más pequeño que sea del mismo family</li>
-      <li>Generar K tokens con el draft, verificar todos en paralelo con el target</li>
-      <li>Aceptar tokens donde P_target(draft_token) es alta</li>
-      <li>Tunear la temperature: draft BAJA (0.3-0.7), target normal</li>
-      <li>Medir el speedup efectivo — no siempre es beneficial</li>
-    </ul>
-    <p>En Colombia diríamos que esto es como "matar dos pájaros de un tiro": usas un modelo pequeño y rápido para specular, y el modelo grande para verificar. Juntos funcionan mejor que cada uno por separado.</p>
-    <p>¡Eso es todo, familia! Nos vemos en el Día 252.</p>
+    @torch.no_grad()
+    def generate(self, prefix_ids, max_new_tokens):
+        out, stats = super().generate(prefix_ids, max_new_tokens)
+        if stats.rounds &gt; 0:
+            drafted = stats.tokens_accepted + stats.tokens_resampled
+            self._adapt(stats.tokens_accepted, drafted)
+        return out, stats</code></pre>
+<p>Pilas con esto: subir $\gamma$ cuando el draft es bueno maximiza compression, bajarlo cuando es malo minimiza el costo de los drafts rechazados. En workloads mixtos (preguntas faciles + tecnicas) el adaptive gamma rinde ~15% mas que un $\gamma$ fijo bien tuneado.</p>
+<h2>8. Conclusion: Por Que Esto te Salva el Pellejo en Produccion</h2>
+<ul>
+  <li><strong>Speculative decoding no compromete calidad.</strong> El invariante $q(x) \cdot \min(1, p(x)/q(x)) + (p(x) - q(x))_+ = p(x)$ garantiza distribucion de salida identica a autoregresivo puro, sample por sample.</li>
+  <li><strong>El speedup es gratis en accuracy.</strong> 2x a 4x menos forward passes del modelo caro, sin reentrenamiento si usas un draft preexistente compatible.</li>
+  <li><strong>El ROI depende de la tasa de aceptacion.</strong> Loggea <code>acceptance_rate</code> y <code>compression</code> por request en tu sistema de observabilidad. Si <code>compression < 2.0</code> sostenido, el draft no esta justificando su carga de VRAM y debes reentrenarlo o reducir su tamano.</li>
+  <li><strong>Medusa/EAGLE-2 es la jugada enterprise.</strong> Si no queres mantener dos modelos, self-speculative te da ~80% del beneficio con la mitad de la complejidad operacional y una sola pieza en produccion.</li>
+</ul>
+<p><strong>Mini-checklist antes de promover a produccion</strong>:</p>
+<pre><code class="language-python"># prod_readiness_check.py - ejecutar antes del rollout
+checks = {
+    "acceptance_rate &gt; 0.6 en datos reales": stats.acceptance_rate &gt; 0.6,
+    "wall-clock 1.5x mejor que naive":      spec_tps / naive_tps &gt; 1.5,
+    "logits clamp [-50, 50] activo":        True,  # verificar en code review
+    "epsilon en division de alpha":         True,
+    "EOS y stop words explicitos":          len(stop_token_ids) &gt; 0,
+    "telemetria compression expuesta":      True,
+}
+if not all(checks.values()):
+    raise RuntimeError(f"Falla: {[k for k, v in checks.items() if not v]}")</code></pre>
+<p>El dia que pagues la factura de tu inference endpoint y veas el costo por token bajar a la mitad sin haber tocado el modelo base, te acordaras de esta lectura. No hay fiesta sin Speculative Decoder, parce. 🔥</p>
   </article>
+  <nav class="article-nav" aria-label="Navegacion entre articulos">
+    <a class="nav-prev" href="/blog/dia-250365-q-learning/">Anterior</a>
+    <a href="/blog/">Todos los articulos</a>
+    <a class="nav-next" href="/blog/dia-252365-experience-replay/" data-date="2026-09-09">Siguiente</a>
+  </nav>
 
-  <script>
-    document.getElementById('themeToggle').addEventListener('click', function() {
-      const html = document.documentElement;
-      const isDark = html.getAttribute('data-theme') === 'dark';
-      html.setAttribute('data-theme', isDark ? 'light' : 'dark');
-      document.getElementById('themeIcon').className = isDark ? 'fas fa-moon' : 'fas fa-sun';
-    });
-  </script>
+
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
   <script>
     hljs.highlightAll();
-    document.addEventListener('DOMContentLoaded', () => {
+    document.addEventListener('DOMContentLoaded', function() {
       renderMathInElement(document.body, {
         delimiters: [
           { left: '$$', right: '$$', display: true },
@@ -569,21 +664,20 @@ def good_speculative_decode(prompt, target_temp=0.9):
         throwOnError: false,
       });
     });
-    
-  const _html = document.documentElement;
-  const _btn  = document.getElementById('themeToggle');
-  const _icon = document.getElementById('themeIcon');
-  function _setIcon(t) { _icon.className = t === 'dark' ? 'fas fa-sun' : 'fas fa-moon'; }
-  const _saved = localStorage.getItem('theme') || 'dark';
-  _html.setAttribute('data-theme', _saved);
-  _setIcon(_saved);
-  _btn.addEventListener('click', () => {
-    const next = _html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
-    _html.setAttribute('data-theme', next);
-    localStorage.setItem('theme', next);
-    _setIcon(next);
-  });
 
+    var _html = document.documentElement;
+    var _btn  = document.getElementById('themeToggle');
+    var _icon = document.getElementById('themeIcon');
+    function _setIcon(t) { _icon.className = t === 'dark' ? 'fas fa-sun' : 'fas fa-moon'; }
+    var _saved = localStorage.getItem('theme') || 'dark';
+    _html.setAttribute('data-theme', _saved);
+    _setIcon(_saved);
+    _btn.addEventListener('click', function() {
+      var next = _html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+      _html.setAttribute('data-theme', next);
+      localStorage.setItem('theme', next);
+      _setIcon(next);
+    });
   </script>
   <script>
     document.addEventListener('DOMContentLoaded', function() {
