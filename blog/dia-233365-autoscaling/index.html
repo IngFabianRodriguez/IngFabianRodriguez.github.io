@@ -3,9 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="The Future of ML — Lo Que El 90% Predice Y El 10% Construye | #365DaysOfAI por Fabian Rodriguez">
-  <title>The Future of ML — Lo Que El 90% Predice Y El 10% Construye | #365DaysOfAI</title>
-  
+  <meta name="description" content="Día 233/365: Autoscaling — Cómo dejar de adivinar réplicas y dejar que KEDA escale por eventos reales | #365DaysOfAI por Fabian Rodriguez">
+  <title>Día 233/365: Autoscaling — Cómo dejar de adivinar réplicas y dejar que KEDA escale por eventos reales | #365DaysOfAI</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
@@ -21,7 +20,7 @@
   --shadow: rgba(2,12,27,0.7); --nav-bg: rgba(10,25,47,0.92);
 }
 [data-theme="light"] {
-  --bg: #f0f4fb; --bg-card: #ffffff; --border: #d4dcee;
+  --bg: #f0f4fb; --bg-card: #ffffff; --border: #d4ddee;
   --text-muted: #64748b; --text: #475569; --text-heading: #0f172a;
   --accent: #0d9488; --accent-tint: rgba(13,148,136,0.08);
   --shadow: rgba(15,23,42,0.12); --nav-bg: rgba(240,244,251,0.95);
@@ -81,6 +80,10 @@ nav {
   border-radius: 4px; padding: .15em .4em;
 }
 .article-body pre code { background: none; border: none; padding: 0; font-size: inherit; }
+.article-body table { width: 100%; border-collapse: collapse; margin: 1.5rem 0; font-size: .9rem; }
+.article-body th, .article-body td { border: 1px solid var(--border); padding: .6rem 1rem; text-align: left; }
+.article-body th { background: var(--bg-card); color: var(--text-heading); }
+.article-body .katex-display { overflow-x: auto; padding: .5rem 0; }
 
 .article-nav {
   max-width: 820px; margin: 0 auto; padding: 2rem 1.5rem;
@@ -94,7 +97,8 @@ nav {
   nav { padding: 0 1rem; }
   .article-hero, .article-body { padding-left: 1rem; padding-right: 1rem; }
 }
-</style>
+
+  </style>
 </head>
 <body>
   <nav>
@@ -109,264 +113,553 @@ nav {
   </nav>
 
   <header class="article-hero">
-    <div class="day-badge">Dia 233 / 365 &nbsp;·&nbsp; #365DaysOfAI</div>
-    <h1 class="article-title">The Future of ML — Lo Que El 90% Predice Y El 10% Construye</h1>
+    <div class="day-badge">Dia 233 / 365 &nbsp;&middot;&nbsp; #365DaysOfAI</div>
+    <h1 class="article-title">Día 233/365: Autoscaling — Cómo dejar de adivinar réplicas y dejar que KEDA escale por eventos reales</h1>
     <div class="article-meta">
       <time class="article-date">21 de agosto de 2026</time>
-      <div class="tags"><span class="tag">future-of-ml</span><span class="tag">multimodal</span><span class="tag">agents</span><span class="tag">neuromorphic</span><span class="tag">trends</span></div>
+      <div class="tags"><span class="tag">AI</span></div>
     </div>
   </header>
 
   <article class="article-body">
-    <p>Hagale pues, parce. Día 233 de este proyecto #365DaysOfAI y hoy vamos pa'l futuro de Machine Learning. Mientras muchos predicen qué va a pasar, solo el 10% está construyendo lo que viene. Café en mano, aquí vamos.</p>
+<h2>Introducción: el dolor de pagar pods dormidos</h2>
+<p>Tienes un cluster con 30 réplicas de un consumer Kafka corriendo 24/7. De noche, cuando el tráfico cae a 5 eventos por minuto, esos 30 pods siguen ahí, quemando CPU reservada, RAM comprometida y dinero. La métrica <code>cpu.utilization</code> se ve perfecta porque no hay trabajo, y justo por eso el HPA clásico basado en CPU nunca los apaga. O peor: cuando llega el pico a las 8:00 AM con 50.000 mensajes en backlog, el HPA se entera con tres minutos de retraso porque tiene que esperar a que Prometheus raspe la métrica, promedie 5 minutos y entonces decida. Para cuando escala, el lag ya pasó de aceptable a desastre operacional.</p>
+<p>Eso me costó un postmortem en 2022. El equipo confió en <code>targetCPUUtilizationPercentage: 70</code> para un worker de procesamiento de imágenes médicas. La métrica estaba estable porque la CPU estaba mal dimensionada — el cuello de botella era I/O de disco. Cuando llegó el lunes con 40.000 estudios radiológicos encolados, el sistema tardó 22 minutos en escalar de 4 a 32 pods, y otros 8 minutos en que esos pods hicieran warm-up de caches. La SLA era de 15 minutos. Perdimos el contrato.</p>
+<p>KEDA ataca ese problema de raíz: en vez de mirar CPU, mira el evento (lag en Kafka, profundidad de cola en RabbitMQ, mensajes en SQS, consultas pendientes en una base de datos) y escala por ahí. La matemática es directa y el modelo operacional cambia. Eso es lo que vamos a desarmar hoy, con código que puedes copiar a producción esta tarde.</p>
+<h2>1. ¿Qué es Autoscaling? (Y por qué debería importarte)</h2>
+<h3>1.1 La analogía cotidiana</h3>
+<p>Imagina el sistema de climatización (HVAC) de un centro comercial de cinco pisos. La planta de chillers tiene 8 compresores, pero no los enciendes todos a las 8 AM porque sí. Hay un controlador que lee <strong>temperatura real por zona</strong> (food court, cines, parking, anchor stores), <strong>ocupación medida por sensores infrarrojos</strong> y <strong>pronóstico del día</strong> según calendario. Cuando la zona de cines empieza a llenarse para la función de las 7 PM y el termostato de esa zona pasa de 23°C, enciende el compresor #6 aunque afuera haga 15°C. Cuando cierra el centro comercial a las 10 PM, apaga #7 y #8 pero deja #1 y #2 en stand-by para la apertura del día siguiente — no los apaga del todo, porque el costo de volver a encenderlos desde frío es mayor que dejarlos en idle.</p>
+<p>Eso es KEDA en Kubernetes: <strong>los chillers son tus pods, los compresores son los <code>ScaledObject</code>, los termostatos son los <code>scalers</code>, y la decisión de encender/apagar se toma leyendo la demanda real, no un promedio de CPU</strong>. El HPA clásico sería un controlador que solo lee la temperatura del ducto principal — útil, pero pierde toda la señal de qué zona necesita frío y cuándo.</p>
+<h3>1.2 La matemática formal</h3>
+<p>El algoritmo base de escalado en Kubernetes viene del <code>HorizontalPodAutoscaler</code> (HPA), y KEDA lo extiende sin romper la fórmula. La regla de decisión es:</p>
+$$R_{desired} = \left\lceil R_{current} \cdot \frac{M_{current}}{M_{target}} \right\rceil$$
+<p>Donde:</p>
+<ul>
+  <li>$R_{desired}$: número deseado de réplicas al final del ciclo de evaluación.</li>
+  <li>$R_{current}$: réplicas que están corriendo en este momento.</li>
+  <li>$M_{current}$: valor actual de la métrica observado por el scaler (por ejemplo, <code>kafka_consumergroup_lag</code>).</li>
+  <li>$M_{target}$: valor objetivo por réplica, configurado en el <code>ScaledObject</code> como <code>threshold</code> o <code>lagThreshold</code>.</li>
+  <li>$\left\lceil \cdot \right\rceil$: función techo (redondeo hacia arriba al entero más cercano). Se usa porque no puedes tener 3.7 pods.</li>
+</ul>
+<p>El HPA nativo opera con un ratio: si la métrica se duplicó, duplica réplicas. KEDA añade un cambio sutil pero crítico: permite que $M_{target}$ sea <strong>derivado de una fuente de eventos externa</strong> en vez de una métrica Prometheus. Para un consumer Kafka, la fórmula más usada es:</p>
+$$R_{desired} = \text{clamp}\left(R_{min}, R_{max}, \left\lceil \frac{L_{queue}}{T_{lagPerReplica}} \right\rceil\right)$$
+<p>Donde:</p>
+<ul>
+  <li>$L_{queue}$: lag total del consumer group (suma de mensajes sin procesar en todas las particiones).</li>
+  <li>$T_{lagPerReplica}$: lag objetivo por réplica, definido como <code>lagThreshold</code> en el YAML del trigger.</li>
+  <li>$\text{clamp}(a, b, x)$: restringe $x$ al rango cerrado $[a, b]$ para que el resultado respete <code>minReplicaCount</code> y <code>maxReplicaCount</code>.</li>
+</ul>
+<p>Para prevenir oscilación (encender 10 pods y apagarlos 30 segundos después), KEDA introduce periodos de gracia temporales:</p>
+$$R_{desired}(t) = \begin{cases} R_{desired}^{HPA}(t) & \text{si } t - t_{last\_change} > t_{cooldown} \\ R_{current} & \text{en otro caso} \end{cases}$$
+<p>Donde $t$ es el instante actual, $t_{last\_change}$ es el momento del último cambio de réplicas, y $t_{cooldown}$ es el <code>cooldownPeriod</code> configurado (default 30s para escalar a 0, 300s para escalar hacia arriba). Si todavía no ha pasado el cooldown desde el último cambio, KEDA mantiene $R_{current}$. Esto último es lo que evita el <strong>thrashing</strong>, ese baile de pods que aparecen y desaparecen porque la métrica oscila alrededor del umbral.</p>
+<h2>2. Cómo KEDA resuelve esto por vos</h2>
+<p>KEDA se compone de tres piezas:</p>
+<ol>
+  <li><strong>Operator</strong>: un Deployment que mira los <code>ScaledObject</code> y <code>TriggerAuthentication</code> en el cluster, evalúa la métrica y calcula réplicas.</li>
+  <li><strong>Metrics Server</strong>: registra las métricas externas (lag de Kafka, profundidad de SQS, queries PromQL) en el API estándar de <code>metrics.k8s.io</code> para que el HPA las pueda consumir.</li>
+  <li><strong>Admission Webhooks</strong>: validan los <code>ScaledObject</code> al crearlos, rechazando configuraciones inválidas antes de que lleguen al cluster.</li>
+</ol>
+<p>El flujo operacional es:</p>
+<pre><code class="language-text">[Scaler externo] → [KEDA Operator] → [Metrics Server] → [HPA Controller] → [Deployment]
+       ↑                                                                      ↓
+       └──────────────── [eventos reales: Kafka, SQS, Prometheus] ───────────┘</code></pre>
+<p>Lo crítico: KEDA <strong>crea un HPA por cada <code>ScaledObject</code></strong>. Tú defines la fuente de eventos; KEDA genera el HPA, lo conecta al metrics server y mantiene el ciclo. Cuando quieres <strong>escalar a cero</strong> (cosa que el HPA nativo no puede sin un metrics adapter externo), KEDA detecta que la métrica vale 0 y baja el <code>Deployment</code> a 0 réplicas, pero mantiene el <code>HPA</code> registrado para reactivar cuando llegue el primer evento. Cuando eso pasa, los nuevos pods aparecen en segundos, no en minutos.</p>
+<h2>3. KEDA: Uso Directo y Casos de Control Fino</h2>
+<p>Instalación canónica con Helm:</p>
+<pre><code class="language-bash">helm repo add kedacore https://kedacore.github.io/charts
+helm repo update
+helm install keda kedacore/keda \
+  --namespace keda \
+  --create-namespace \
+  --set prometheus.metricsServer.enabled=true</code></pre>
+<p>Eso despliega <code>keda-operator</code>, <code>keda-admission-webhooks</code>, <code>keda-metrics-apiserver</code> y expone métricas Prometheus. La verificación de salud:</p>
+<pre><code class="language-bash">kubectl get pods -n keda -l app.kubernetes.io/name=keda
+# NAME                                              READY   STATUS    RESTARTS
+# keda-operator-7d8f9c6b5-x2k4p                     1/1     Running   0
+# keda-admission-webhooks-5c9b7d8f-9k2m            1/1     Running   0
+# keda-metrics-apiserver-6f8d9c4b7-m3n8            1/1     Running   0</code></pre>
+<p>Un <code>ScaledObject</code> mínimo para un consumer de RabbitMQ:</p>
+<pre><code class="language-yaml">apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: orders-processor-scaler
+  namespace: production
+spec:
+  scaleTargetRef:
+    name: orders-processor
+  pollingInterval: 15
+  cooldownPeriod: 60
+  idleReplicaCount: 0
+  minReplicaCount: 2
+  maxReplicaCount: 50
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleDown:
+          stabilizationWindowSeconds: 300
+        scaleUp:
+          stabilizationWindowSeconds: 0
+          policies:
+          - type: Percent
+            value: 100
+            periodSeconds: 30
+  triggers:
+  - type: rabbitmq
+    metadata:
+      queueName: orders
+      mode: QueueLength
+      value: "50"
+      host: rabbitmq.prod.svc.cluster.local
+      protocol: amqp
+    authenticationRef:
+      name: rabbitmq-auth</code></pre>
+<p>El bloque <code>advanced.horizontalPodAutoscalerConfig.behavior</code> es lo que te separa de un HPA básico. Defines <strong>ventanas de estabilización</strong> (no bajar antes de 5 minutos aunque la métrica diga que sí) y <strong>políticas de subida agresiva</strong> (duplicar réplicas cada 30s si el lag crece). Esto es control fino y es donde la mayoría falla por no tocarlo — el HPA por defecto con <code>behavior: {}</code> es conservador hasta el punto de ser inútil bajo picos.</p>
+<h2>4. Implementación Production-Ready: Sistema de Procesamiento de Eventos</h2>
+<h3>4.1 Tipos y protocolos</h3>
+<p>KEDA soporta más de 60 scalers built-in. Los que vas a usar en 90% de los casos reales:</p>
+<table>
+<thead>
+<tr>
+  <th>Scaler</th>
+  <th>Fuente</th>
+  <th>Métrica principal</th>
+  <th>Caso típico</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td><code>kafka</code></td>
+  <td>Consumer group lag</td>
+  <td><code>lag</code></td>
+  <td>Procesamiento de eventos stream</td>
+</tr>
+<tr>
+  <td><code>rabbitmq</code></td>
+  <td>Profundidad de cola</td>
+  <td><code>queueLength</code> o <code>messageRate</code></td>
+  <td>Workers asíncronos</td>
+</tr>
+<tr>
+  <td><code>aws-sqs-queue</code></td>
+  <td>Mensajes visibles + en vuelo</td>
+  <td><code>ApproximateNumberOfMessages</code></td>
+  <td>Colas serverless</td>
+</tr>
+<tr>
+  <td><code>prometheus</code></td>
+  <td>Query PromQL arbitraria</td>
+  <td>cualquier <code>gauge</code> o <code>counter</code></td>
+  <td>Métricas custom de negocio</td>
+</tr>
+<tr>
+  <td><code>cron</code></td>
+  <td>Expresión cron</td>
+  <td>tiempo</td>
+  <td>Jobs batch programados</td>
+</tr>
+<tr>
+  <td><code>redis</code></td>
+  <td>Llaves o listas</td>
+  <td><code>listLength</code></td>
+  <td>Colas en Redis</td>
+</tr>
+<tr>
+  <td><code>cpu</code> / <code>memory</code></td>
+  <td>Métricas de pod</td>
+  <td>utilisation</td>
+  <td>Fallback a HPA clásico</td>
+</tr>
+</tbody>
+</table>
+<p>El protocolo de autenticación entre KEDA y la fuente se define en <code>TriggerAuthentication</code> (credenciales por namespace) o <code>ClusterTriggerAuthentication</code> (credenciales globales). Esto desacopla la configuración de la fuente de eventos de quién tiene permiso para leerla:</p>
+<pre><code class="language-yaml">apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: rabbitmq-auth
+  namespace: production
+spec:
+  secretTargetRef:
+  - parameter: host
+    name: rabbitmq-credentials
+    key: host
+  - parameter: username
+    name: rabbitmq-credentials
+    key: username
+  - parameter: password
+    name: rabbitmq-credentials
+    key: password</code></pre>
+<h3>4.2 El motor principal</h3>
+<p>Para un sistema multi-fuente (eventos Kafka + métricas Prometheus de profundidad de base de datos como fallback), defines varios <code>ScaledObject</code> independientes, uno por fuente. Ejemplo de un sistema que procesa órdenes de e-commerce:</p>
+<pre><code class="language-yaml"># ScaledObject 1: escalado por lag de Kafka
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: orders-consumer-kafka
+  namespace: production
+spec:
+  scaleTargetRef:
+    name: orders-consumer
+  pollingInterval: 10
+  cooldownPeriod: 90
+  idleReplicaCount: 0
+  minReplicaCount: 3
+  maxReplicaCount: 100
+  fallback:
+    failureThreshold: 5
+    replicas: 10
+  triggers:
+  - type: kafka
+    metadata:
+      bootstrapServers: kafka-0.kafka.prod.svc.cluster.local:9092
+      consumerGroup: orders-consumer-group
+      topic: orders-events
+      lagThreshold: "200"
+      offsetResetPolicy: latest
+    authenticationRef:
+      name: kafka-auth
+---
+# ScaledObject 2: escalado por profundidad de tabla de fallback
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: orders-consumer-db
+  namespace: production
+spec:
+  scaleTargetRef:
+    name: orders-consumer
+  pollingInterval: 30
+  cooldownPeriod: 120
+  minReplicaCount: 3
+  maxReplicaCount: 100
+  triggers:
+  - type: prometheus
+    metadata:
+      serverAddress: http://prometheus.monitoring.svc.cluster.local:9090
+      metricName: orders_pending_db_rows
+      threshold: "500"
+      query: |
+        sum(orders_pending_db_rows{namespace="production"})</code></pre>
+<p>El bloque <code>fallback</code> es crítico en producción: si Kafka está caído y el scaler no puede leer el lag, KEDA mantiene 10 réplicas (lo que tú definas) en vez de colapsar a 0 o quedarse en el último valor conocido. Eso evita el escenario de "Kafka se cayó por 10 minutos, KEDA bajó los workers a 0, y cuando Kafka volvió el sistema quedó ahogado porque no había quién procesara el backlog acumulado".</p>
+<h3>4.3 Utilidades de análisis y verificación</h3>
+<p>Script Python para validar la configuración antes de aplicar:</p>
+<pre><code class="language-python">import yaml
+import sys
+from pathlib import Path
 
-    <hr>
-    <h2>Los 3 Trends Que Están Redesenhando ML</h2>
 
-    <p>El campo de ML está evolucionando más rápido que nunca. Tres fuerzas convergentes están cambiando todo:</p>
+def validate_scaled_object(file_path: Path) -&gt; list[str]:
+    errors = []
+    doc = yaml.safe_load(file_path.read_text())
 
-    <h3>1. Modelos Multimodales: Cuando Las Fronteras Desaparecen</h3>
+    if doc.get("kind") != "ScaledObject":
+        return errors
 
-    <p>Los modelos que antes solo entendían texto ahora procesan imágenes, audio, video y código simultáneamente. GPT-4V, Gemini, Claude 3... todos apuntan a lo mismo: <strong>la inteligencia no debería estar encasillada en un solo modal</strong>.</p>
+    spec = doc["spec"]
 
-    <p>La matemática detrás es elegante:</p>
+    min_r = spec.get("minReplicaCount", 0)
+    max_r = spec.get("maxReplicaCount", 100)
+    idle_r = spec.get("idleReplicaCount", 0)
 
-    <p>Un modelo multimodal aprende una representación compartida en un espacio latente unificado:</p>
+    if min_r &gt; max_r:
+        errors.append(
+            f"minReplicaCount ({min_r}) &gt; maxReplicaCount ({max_r})"
+        )
 
-    <p><code>z = Encoder_Multimodal(x_texto, x_imagen, x_audio)</code></p>
+    if idle_r &gt; min_r:
+        errors.append(
+            f"idleReplicaCount ({idle_r}) &gt; minReplicaCount ({min_r}): "
+            f"el sistema no podra bajar de {min_r} cuando este idle"
+        )
 
-    <p>Donde el decoder puede generar cualquier combinación de modalities desde el mismo embedding <code>z</code>. Esto se llama <strong>Joint Embedding Space</strong> y es la base de CLIP, UnCLIP, y losfoundation models actuales.</p>
+    triggers = spec.get("triggers", [])
+    if not triggers:
+        errors.append("Sin triggers: ScaledObject no escalara nunca")
 
-    <h3>2. Autonomous Agents: De Chatbots a Sistemas Que Actúan</h3>
-
-    <p>El shift de 2024-2025: dejar de pedirle a LLM que solo responda, y empezar a pedirle que <strong>haga cosas</strong>. Agents que usan tools, ejecutan código, navegan la web, gestionan archivos.</p>
-
-    <p>La fórmula que está funcionando:</p>
-
-<pre><code class="language-python">import asyncio
-from typing import List, Dict
-
-class AutonomousAgent:
-    def __init__(self, llm, tools: List[callable], max_iterations=10):
-        self.llm = llm
-        self.tools = tools
-        self.max_iterations = max_iterations
-    
-    async def run(self, objective: str) -> str:
-        context = {"objective": objective, "steps": [], "results": []}
-        
-        for i in range(self.max_iterations):
-            # 1. El modelo decide siguiente acción
-            action = await self.llm.arun(
-                self.prompt_template.format(**context) +
-                "\n\n¿Qué acción tomar ahora?"
+    for i, trigger in enumerate(triggers):
+        metadata = trigger.get("metadata", {})
+        threshold = (
+            metadata.get("threshold")
+            or metadata.get("lagThreshold")
+            or metadata.get("value")
+        )
+        if threshold is None:
+            errors.append(
+                f"Trigger {i} ({trigger['type']}) sin threshold explicito"
             )
-            
-            # 2. Ejecutar tool si es needed
-            if action.tool:
-                result = await self.execute_tool(action.tool, action.params)
-                context["results"].append(result)
-            
-            # 3. Verificar si objetivo se cumplió
-            if self.is_complete(context):
-                break
-        
-        return context["final_response"]
-</code></pre>
-
-    <p>El secreto: <strong>ReAct (Reasoning + Acting)</strong>. Cada iteration combina reasoning sobre el estado actual con acciones concretas. El loop de sense → think → act → sense cierra el ciclo.</p>
-
-    <h3>3. Neuromorphic Computing: Hardware Que Piensa Como Cerebro</h3>
-
-    <p>La ley de Moore está tocando techo, pero inspirada en el cerebro, una nueva generación de chips está emergiendo. <strong>Neuromorphic computing</strong> usa spiking neural networks (SNNs) que procesan información como lo hace el cerebro: con spikes, no con floats continuos.</p>
-
-    <p>Beneficios prácticos:</p>
-    <ul>
-    <li><strong>Eficiencia energética 1000x mayor</strong> que GPUs para ciertas tareas</li>
-    <li><strong>Latencia ultra-baja</strong> para real-time processing</li>
-    <li><strong>Event-driven</strong>: solo procesa cuando hay cambios relevantes</li>
-    </ul>
-
-    <p>Empresas como Intel (Loihi), IBM (TrueNorth), y startups como GrAI Matter Labs están liderando. Para 2027 se espera que el mercado de chips neuromórficos alcance $5B+.</p>
-
-    <hr>
-    <h2>Cómo Prepararte Para El Futuro de ML</h2>
-
-    <p>Skills que van a ser necesarios vs. skills que van a ser obsolete en 5 años:</p>
-
-    <h3>Skills Future-Ready (invertir aquí)</h3>
-    <ul>
-    <li><strong>Agent frameworks</strong>: LangChain, AutoGPT, CrewAI, Cursor</li>
-    <li><strong>Multimodal pipelines</strong>: Combinar vision + language + audio</li>
-    <li><strong>ML Engineering</strong>: Deploy, monitoring, fine-tuning en producción</li>
-    <li><strong>Evaluation</strong>: Saber medir si tu modelo realmente funciona</li>
-    <li><strong>Domain knowledge</strong>: Entender el problema, no solo el modelo</li>
-    </ul>
-
-    <h3>Skills Que Serán Obsoletes (dejar de invertir)</h3>
-    <ul>
-    <li><strong>Solofine-tuning de transformers básicos</strong>: Ya no será diferenciador</li>
-    <li><strong>Conocimiento profundo de arquitecturas legacy</strong>: CNNs básicas, RNNs</li>
-    <li><strong>Feature engineering manual</strong>: Los modelos modernos aprenden features solos</li>
-    </ul>
-
-    <hr>
-    <h2>Cómo Experimentar Con Cutting-Edge Models</h2>
-
-    <p>No necesitas un cluster de 1000 GPUs para jugar con lo último. Aquí va el stack práctico:</p>
-
-<pre><code class="language-python"># Stack para experimentar con models modernos
-# 1. API Access - la manera más rápida
-
-import openai
-
-client = openai.OpenAI()
-
-# GPT-4o con vision
-response = client.chat.completions.create(
-    model="gpt-4o",
-    messages=[
-        {"role": "user", "content": [
-            {"type": "text", "text": "Describe esta imagen"},
-            {"type": "image_url", "image_url": {"url": "https://..."}}
-        ]}
-    ]
-)
-
-# 2. Local con Ollama - models sin pagar
-
-# Terminal: ollama run llama3:70b
-# Luego en Python:
-
-import ollama
-
-response = ollama.chat(
-    model='llama3:70b',
-    messages=[{"role": "user", "content": "Explain quantum computing"}]
-)
-
-# 3. HuggingFace para fine-tuning y experiments
-
-from transformers import AutoModel, AutoTokenizer
-
-model = AutoModel.from_pretrained("meta-llama/Llama-3-70B")
-tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-3-70B")
-</code></pre>
-
-    <h3>Recursos Para Stay Updated</h3>
-    <ul>
-    <li><strong>ArXivsanity</strong>: Papers recientes filtrados por calidad</li>
-    <li><strong>HuggingFace Daily Papers</strong>: Los papers más descargados</li>
-    <li><strong>Simon Willison</strong>: Blog prático sobre LLMs</li>
-    <li><strong>LMSYS Leaderboard</strong>: Benchmarks reales de modelos</li>
-    <li><strong>GitHub Trending</strong>: Proyectos que la comunidad está construyendo</li>
-    </ul>
-
-    <hr>
-    <h2>Los 3 Errores Más Comunes (Y Sus Soluciones)</h2>
-
-    <h3>Error 1: Focusing en Skills Que Serán Obsoletes en 5 Años</h3>
-
-    <p><strong>El problema</strong>: Inviertes meses aprendiendo a hacer fine-tuning de ResNet cuando el mismo resultado se logra con 3 líneas de código usando un foundation model pre-entrenado.</p>
-
-    <p><strong>La realidad</strong>: El campo se mueve hacia transfer learning masivo. Los modelos base son cada vez más capable. Si tu skill principal es "cómo entrenar redes desde cero", estás compitiendo contra hardware que lo hace mejor y más barato en la nube.</p>
-
-    <p><strong>La solución</strong>: Pregúntate siempre: <em>¿esto se puede lograr con un modelo pre-entrenado?</em> Si sí, enfócate en aprender a usar el modelo, no a entrenarlo. Invierte en skills de <strong>evaluation, deployment, y fine-tuning de alta calidad</strong> sobre modelos ya capable.</p>
-
-    <hr>
-    <h3>Error 2: No Experimentar Con Nuevos Models Temprano</h3>
-
-    <p><strong>El problema</strong>: Esperar a que "se estabilice la tecnología" antes de experimentar. Para cuando lo haces, ya llevas 2 años de desventaja.</p>
-
-    <p><strong>La realidad</strong>: La tecnología nunca se estabiliza. Cada 6 meses hay un shift paradigmático. Los que ganan son los que construyen intuitición temprano, no los que esperan.</p>
-
-    <p><strong>La solución</strong>: Establece un <strong>ritual semanal de experimentación</strong>:</p>
-
-<pre><code class="language-python"># Ritual semanal: 2 horas explorando lo nuevo
-
-WEEKLY_EXPERIMENTS = [
-    "Probar el modelo nuevo que salió esta semana",
-    "Leer 3 papers delArXiv que parecen relevantes", 
-    "Build something small con la nueva capability",
-    "Share el resultado en Twitter/blog"
-]
-
-def weekly_ml_ritual():
-    for experiment in WEEKLY_EXPERIMENTS:
+            continue
         try:
-            experiment.run()
-        except Exception as e:
-            log(f"Failed: {e}, skipping gracefully")
-</code></pre>
+            t_val = float(threshold)
+            if t_val &lt;= 0:
+                errors.append(f"Trigger {i}: threshold {t_val} &lt;= 0")
+        except (TypeError, ValueError):
+            errors.append(
+                f"Trigger {i}: threshold '{threshold}' no es numerico"
+            )
 
-    <hr>
-    <h3>Error 3: Ignoring Multimodal Trends</h3>
+    polling = spec.get("pollingInterval", 30)
+    cooldown = spec.get("cooldownPeriod", 300)
+    if cooldown &lt; polling * 2:
+        errors.append(
+            f"cooldownPeriod ({cooldown}s) &lt; 2 * pollingInterval ({polling}s): "
+            f"posible thrashing"
+        )
 
-    <p><strong>El problema</strong>: "Yo trabajo solo con texto, no necesito vision." Ese pensamiento es peligroso.</p>
+    fallback = spec.get("fallback")
+    if not fallback and spec.get("idleReplicaCount", 0) == 0:
+        errors.append(
+            "Sin fallback y con idleReplicaCount=0: si la fuente de eventos "
+            "cae, los workers iran a 0. Recomendado definir fallback."
+        )
 
-    <p><strong>La realidad</strong>: Las capabilities multimodales están融融ando todas las industrias. Un radiólogo que no usa vision + LLM va a ser reemplazado por uno que sí. Un analista financiero que no combina datos tabulares + texto + imágenes está en desventaja.</p>
+    return errors
 
-    <p><strong>La solución</strong>: Aunque solo trabajes con texto, spent time entendiendo cómo funciona multimodalidad. Construye al menos un proyecto que combine dos modalities diferentes. El future es <strong>cross-modal</strong>, no single-modal.</p>
 
-    <hr>
-    <h2>Resumen: Lo Que El 10% Construye</h2>
+if __name__ == "__main__":
+    target = Path(sys.argv[1])
+    issues = validate_scaled_object(target)
+    if issues:
+        print(f"FAIL {target.name}: {len(issues)} problemas")
+        for issue in issues:
+            print(f"  - {issue}")
+        sys.exit(1)
+    print(f"OK   {target.name}: configuracion valida")</code></pre>
+<p>Uso: <code>python validate_keda.py scaledobject.yaml</code>. Antes de aplicar a producción, ejecuto este script sobre el directorio de manifests. Detecta los errores que el admission webhook deja pasar pero que revientan a las 3 AM.</p>
+<h2>5. Ejemplos de Uso en Casos Reales</h2>
+<h3>Caso 1: Consumer Kafka para pipeline de pagos</h3>
+<p>El sistema recibe eventos de transacciones y debe procesarlos en menos de 30 segundos o dispara alertas de SLA. La métrica es el lag del consumer group:</p>
+<pre><code class="language-yaml">apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: payments-pipeline-scaler
+  namespace: payments
+spec:
+  scaleTargetRef:
+    name: payments-pipeline
+  pollingInterval: 5
+  cooldownPeriod: 30
+  idleReplicaCount: 0
+  minReplicaCount: 4
+  maxReplicaCount: 80
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleUp:
+          stabilizationWindowSeconds: 0
+          policies:
+          - type: Pods
+            value: 8
+            periodSeconds: 15
+        scaleDown:
+          stabilizationWindowSeconds: 600
+          policies:
+          - type: Percent
+            value: 20
+            periodSeconds: 60
+  triggers:
+  - type: kafka
+    metadata:
+      bootstrapServers: kafka-prod-1:9092,kafka-prod-2:9092,kafka-prod-3:9092
+      consumerGroup: payments-pipeline-cg
+      topic: transactions.approved
+      lagThreshold: "100"
+      activationLagThreshold: "20"
+    authenticationRef:
+      name: kafka-sasl-auth</code></pre>
+<p><strong>Verificación numérica manual</strong>: si <code>lagThreshold=100</code> y el lag medido es 4500 mensajes, entonces $R_{desired} = \left\lceil \frac{4500}{100} \right\rceil = 45$ réplicas. Con <code>minReplicaCount: 4</code> y <code>maxReplicaCount: 80</code>, el resultado se clampea a 45. Si el lag baja a 80, $R_{desired} = \left\lceil \frac{80}{100} \right\rceil = 1$, pero <code>minReplicaCount: 4</code> lo sube a 4. La <code>stabilizationWindowSeconds: 600</code> evita que baje inmediatamente: espera 10 minutos de lag bajo sostenido antes de recortar.</p>
+<h3>Caso 2: Reconciliación batch nocturna con cron</h3>
+<p>Un job que corre cada noche a las 2 AM para reconciliar transacciones con el banco. No quiero un Deployment permanente; quiero un <code>ScaledJob</code> que aparece a las 2 AM y desaparece cuando termina:</p>
+<pre><code class="language-yaml">apiVersion: keda.sh/v1alpha1
+kind: ScaledJob
+metadata:
+  name: nightly-reconciliation
+  namespace: finance
+spec:
+  jobTargetRef:
+    template:
+      spec:
+        containers:
+        - name: reconciler
+          image: registry.internal/finance/reconciler:v2.4.1
+          args:
+          - --batch-size=5000
+          - --source=postgres
+          - --target=bank-api
+          resources:
+            requests:
+              cpu: "2"
+              memory: "4Gi"
+            limits:
+              cpu: "4"
+              memory: "8Gi"
+        restartPolicy: Never
+        backoffLimit: 2
+  pollingInterval: 30
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 2
+  maxReplicaCount: 20
+  triggers:
+  - type: cron
+    metadata:
+      timezone: America/Bogota
+      start: 0 2 * * *
+      end: 0 5 * * *
+      desiredReplicas: "4"</code></pre>
+<p>Si el reconciliador tarda más de 3 horas y aún hay trabajo, <code>maxReplicaCount: 20</code> permite escalar horizontalmente dentro de la ventana. Después de las 05:00, KEDA mata los pods aunque no hayan terminado, por eso el job debe ser <strong>idempotente</strong> (re-ejecutable sin corromper estado).</p>
+<h3>Caso 3: Scaling por métrica Prometheus custom</h3>
+<p>Tienes un sistema que procesa documentos PDF, y la métrica que quieres usar es "documentos encolados en la base de datos", no CPU:</p>
+<pre><code class="language-yaml">apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: pdf-processor-scaler
+  namespace: documents
+spec:
+  scaleTargetRef:
+    name: pdf-processor
+  pollingInterval: 30
+  cooldownPeriod: 180
+  minReplicaCount: 2
+  maxReplicaCount: 40
+  triggers:
+  - type: prometheus
+    metadata:
+      serverAddress: http://prometheus.monitoring:9090
+      threshold: "50"
+      metricName: pdf_processing_queue_depth
+      query: |
+        sum(
+          pdf_queue_depth{namespace="documents", status="pending"}
+        )
+      activationThreshold: "10"
+    authenticationRef:
+      name: prometheus-basic-auth</code></pre>
+<p><strong>Verificación numérica</strong>: si la query devuelve 850 documentos pendientes y <code>threshold=50</code>, entonces $R_{desired} = \left\lceil \frac{850}{50} \right\rceil = 17$. Si <code>activationThreshold=10</code> y la query devuelve 5 (por debajo del umbral de activación), KEDA baja a <code>idleReplicaCount: 0</code> aunque <code>minReplicaCount: 2</code> esté definido. La activación tiene prioridad sobre el mínimo.</p>
+<h2>6. Debugging: Cuando Todo se Va a la Mierda</h2>
+<h3>Problema 1: Los pods no escalan hacia arriba</h3>
+<p><strong>Síntoma</strong>: el lag de Kafka llega a 10.000 mensajes y los pods se quedan en <code>minReplicaCount</code>. Revisa el HPA que KEDA creó automáticamente:</p>
+<pre><code class="language-bash">kubectl get hpa -n production
+# NAME                              REFERENCE                  TARGETS        MINPODS  MAXPODS  REPLICAS
+# keda-hpa-orders-consumer-kafka    Deployment/orders-consumer 8500/200 (avg) 3        100      3</code></pre>
+<p>El <code>TARGETS</code> muestra <code>8500/200</code>. El target es <code>lagThreshold: 200</code>, así que la fórmula debería dar $R = \left\lceil \frac{8500}{200} \right\rceil = 43$. Pero <code>REPLICAS</code> sigue en 3. Probablemente el <code>behavior.scaleUp</code> está forzando una rampa lenta o el HPA tiene <code>currentMetrics</code> desactualizado. Verifica:</p>
+<pre><code class="language-bash">kubectl describe hpa keda-hpa-orders-consumer-kafka -n production
+# Events:
+#   ... AbleToScale: False, reason: ReadyTimeout
+#   ... last read of metrics was 4m32s ago</code></pre>
+<p><strong>Causa raíz detectada</strong>: el metrics server de KEDA no está respondiendo. Revisa los logs:</p>
+<pre><code class="language-bash">kubectl logs -n keda -l app.kubernetes.io/name=keda -c keda-metrics-apiserver --tail=100
+# E0603 ... failed to scrape kafka: dial tcp 10.x.x.x:9092: i/o timeout</code></pre>
+<p><strong>Soluciones</strong>:</p>
+<ol>
+  <li>Verificar conectividad de red: <code>kubectl exec -n keda <pod> -- nc -zv kafka-prod-1 9092</code>.</li>
+  <li>Revisar <code>TriggerAuthentication</code>: las credenciales pueden haber expirado si usas SASL con rotación.</li>
+  <li>Validar que el <code>consumerGroup</code> exista en Kafka: <code>kafka-consumer-groups.sh --bootstrap-server ... --describe --group orders-consumer-group</code>.</li>
+  <li>Si el problema es de red, configurar <code>metadata.brokers</code> con la dirección interna del cluster y verificar <code>NetworkPolicies</code> que permiten tráfico del namespace <code>keda</code> al <code>kafka</code>.</li>
+</ol>
+<h3>Problema 2: Thrashing — los pods oscilan entre 4 y 12 cada minuto</h3>
+<p><strong>Síntoma</strong>: <code>kubectl get hpa -w</code> muestra el conteo de réplicas saltando:</p>
+<pre><code class="language-bash"># REPLICAS   4 -&gt; 12 -&gt; 4 -&gt; 11 -&gt; 5 -&gt; 13 -&gt; 4 ...</code></pre>
+<p><strong>Causa</strong>: el <code>lagThreshold</code> está mal calibrado. Si Kafka tiene picos naturales de $\pm 30\%$ cada minuto y tu umbral es muy bajo, KEDA sobre-reacciona. Supón <code>lagThreshold: 50</code>, lag real oscilando entre 180 y 240: $R_{desired}(\text{lag}=180) = \left\lceil \frac{180}{50} \right\rceil = 4$ y $R_{desired}(\text{lag}=240) = \left\lceil \frac{240}{50} \right\rceil = 5$. Con <code>stabilizationWindowSeconds: 0</code> y <code>cooldownPeriod: 30</code>, KEDA puede bajar de 5 a 4 en 30 segundos y subir otra vez a 5 cuando llega el siguiente pico. <strong>Verificación numérica</strong>: si el ciclo es cada 45s y <code>pollingInterval: 10</code>, vas a ver cambios cada 3-4 polls.</p>
+<p><strong>Soluciones</strong>:</p>
+<ol>
+  <li>Subir <code>stabilizationWindowSeconds</code> en <code>scaleDown</code> a 600 (10 min mínimo).</li>
+  <li>Usar histéresis vía dos <code>ScaledObject</code> con thresholds distintos sobre el mismo Deployment.</li>
+  <li>Suavizar la métrica en Prometheus primero con <code>avg_over_time(metric[2m])</code> antes de usarla como trigger.</li>
+</ol>
+<h3>Problema 3: <code>fallback</code> no funciona cuando Kafka se cae</h3>
+<p>Si configuraste <code>fallback.replicas: 10</code> pero al caer Kafka los pods bajan a 0, el problema es el orden de evaluación. KEDA evalúa el <code>fallback</code> solo después de <code>failureThreshold</code> polls consecutivos fallidos. Si <code>pollingInterval: 10</code> y <code>failureThreshold: 5</code>, tienes 50 segundos de ventana donde el scaler devuelve "último valor conocido" antes de activar el fallback. Configura:</p>
+<pre><code class="language-yaml">fallback:
+  failureThreshold: 3
+  replicas: 10</code></pre>
+<p>Y añade un monitor con PrometheusRule para alertar si el HPA reporta <code>Ready=False</code> por más de 1 minuto.</p>
+<h2>7. Optimizaciones de Produccion</h2>
+<h3>Optimización 1: <code>activationLagThreshold</code> para evitar cold starts innecesarios</h3>
+<p>Si tienes un consumer Kafka que tarda 45 segundos en arrancar (carga modelo ML en memoria, abre conexiones a Redis), no quieres que escale a 1 pod por un lag de 5 mensajes y luego vuelva a 0. La métrica <code>activationLagThreshold</code> define el umbral mínimo para que KEDA siquiera considere escalar desde 0:</p>
+<pre><code class="language-yaml">triggers:
+- type: kafka
+  metadata:
+    lagThreshold: "100"
+    activationLagThreshold: "500"</code></pre>
+<p><strong>Trade-off</strong>: subes el piso de latencia de respuesta. Si llega un pico pequeño de 300 mensajes con <code>activationLagThreshold: 500</code>, KEDA no escala y el lag crece hasta que pasa los 500 o baja el activation. Para sistemas con SLA duro, baja el activation a 50; para sistemas donde el costo de cold start supera el beneficio, súbelo a 1000.</p>
+<h3>Optimización 2: Separar agresividad de <code>scaleUp</code> vs <code>scaleDown</code></h3>
+<p>KEDA solo permite un <code>pollingInterval</code> por <code>ScaledObject</code>. Si necesitas polling rápido para subir pero conservador para bajar, usa <code>behavior</code> con políticas asimétricas:</p>
+<pre><code class="language-yaml">spec:
+  pollingInterval: 15
+  cooldownPeriod: 300
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleUp:
+          stabilizationWindowSeconds: 0
+          policies:
+          - type: Percent
+            value: 100
+            periodSeconds: 30
+        scaleDown:
+          stabilizationWindowSeconds: 600
+          policies:
+          - type: Pods
+            value: 1
+            periodSeconds: 120</code></pre>
+<p>El truco: <code>scaleUp</code> agresivo (100% cada 30s) más <code>scaleDown</code> conservador (1 pod cada 2 min). Eso da respuesta rápida al subir sin sacrificar estabilidad al bajar. Mide en staging con <code>kubectl get hpa -w</code> durante un día de tráfico real antes de promover a producción.</p>
+<h2>8. Conclusión: Por Qué Esto te Salva el Pellejo en Producción</h2>
+<ul>
+  <li><strong>Mide el evento, no el síntoma</strong>: lag de Kafka, profundidad de cola, mensajes en SQS. CPU es un proxy, no la verdad operacional.</li>
+  <li><strong>Configura <code>behavior</code> siempre</strong>: el HPA por defecto no sirve para producción. <code>stabilizationWindowSeconds</code> y <code>policies</code> son obligatorios, no opcionales. Pilas con esto.</li>
+  <li><strong>El <code>fallback</code> no es opcional</strong>: cualquier fuente de eventos puede caerse. Define un piso de réplicas para cuando la métrica sea inalcanzable.</li>
+  <li><strong>Valida antes de aplicar</strong>: el script de <code>validate_keda.py</code> detectó en mi último cluster 3 <code>ScaledObject</code> con <code>cooldownPeriod < 2 * pollingInterval</code>. Esos tres se convirtieron en thrashing en producción la semana siguiente.</li>
+  <li><strong>Idempotencia en <code>ScaledJob</code></strong>: si usas cron, el job debe sobrevivir a una interrupción a las 5 AM sin corromper estado.</li>
+</ul>
+<p>Mini-checklist antes de aplicar un <code>ScaledObject</code> a producción:</p>
+<pre><code class="language-bash"># 1. Validar YAML
+python validate_keda.py manifests/production/*.yaml
 
-    <p>Mañana en el Día 234 vamos a ver cómo ML está transformando industrias específicas — healthcare, finance, retail. Cases de uso reales que el 70% no sabía que existían.</p>
+# 2. Aplicar en staging y observar durante 24h con trafico real
+kubectl apply -f scaledobject.yaml -n staging
+kubectl get hpa -n staging -w
 
-    <p>Pero hoy, recuerda:</p>
+# 3. Verificar que el HPA generado tenga targets correctos
+kubectl describe hpa -n staging &lt;name&gt;
 
-    <ul>
-    <li><strong>Multimodal</strong> ya no es opcional — es el nuevo floor</li>
-    <li><strong>Agents</strong> están cambiando qué significa "usar" un LLM</li>
-    <li><strong>Neuromorphic</strong> hardware va a cambiar la economía de inference</li>
-    <li><strong>Invierte en skills future-ready</strong>, no en los que serán obsolete</li>
-    <li><strong>Experimenta temprano</strong>, no cuando "se estabilice"</li>
-    </ul>
-
-    <p>El futuro no se predice, se construye. Y el que esté construyendo hoy, va a liderar mañana.</p>
-
-    <p><em>Nos vemos en el Día 234. #365DaysOfAI</em></p>
+# 4. Confirmar que el fallback esta configurado
+kubectl get scaledobject -n staging -o jsonpath='{.items[*].spec.fallback}'</code></pre>
+<p>El controlador HVAC del centro comercial no se queda prendiendo compresores porque la temperatura promedio del ducto principal subió. Mide cada zona, decide por zona, y apaga cuando la zona no necesita frío. Eso es KEDA. De una, te ahorra el postmortem del lunes a las 7 AM.</p>
   </article>
+  <nav class="article-nav" aria-label="Navegacion entre articulos">
+    <a class="nav-prev" href="/blog/dia-232365-canary/">Anterior</a>
+    <a href="/blog/">Todos los articulos</a>
+    <a class="nav-next" href="/blog/dia-234365-costos-cloud/" data-date="2026-08-22">Siguiente</a>
+  </nav>
 
-  <script>
-    document.getElementById('themeToggle').addEventListener('click', function() {
-      const html = document.documentElement;
-      const isDark = html.getAttribute('data-theme') === 'dark';
-      html.setAttribute('data-theme', isDark ? 'light' : 'dark');
-      document.getElementById('themeIcon').className = isDark ? 'fas fa-moon' : 'fas fa-sun';
-    });
-  </script>
+
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
   <script>
     hljs.highlightAll();
-    document.addEventListener('DOMContentLoaded', () => {
+    document.addEventListener('DOMContentLoaded', function() {
       renderMathInElement(document.body, {
         delimiters: [
           { left: '$$', right: '$$', display: true },
           { left: '$',  right: '$',  display: false },
-          { left: '\[', right: '\]', display: true },
-          { left: '\(', right: '\)', display: false },
+          { left: '\\[', right: '\\]', display: true },
+          { left: '\\(', right: '\\)', display: false },
         ],
         throwOnError: false,
       });
     });
-    
-  const _html = document.documentElement;
-  const _btn  = document.getElementById('themeToggle');
-  const _icon = document.getElementById('themeIcon');
-  function _setIcon(t) { _icon.className = t === 'dark' ? 'fas fa-sun' : 'fas fa-moon'; }
-  const _saved = localStorage.getItem('theme') || 'dark';
-  _html.setAttribute('data-theme', _saved);
-  _setIcon(_saved);
-  _btn.addEventListener('click', () => {
-    const next = _html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
-    _html.setAttribute('data-theme', next);
-    localStorage.setItem('theme', next);
-    _setIcon(next);
-  });
 
+    var _html = document.documentElement;
+    var _btn  = document.getElementById('themeToggle');
+    var _icon = document.getElementById('themeIcon');
+    function _setIcon(t) { _icon.className = t === 'dark' ? 'fas fa-sun' : 'fas fa-moon'; }
+    var _saved = localStorage.getItem('theme') || 'dark';
+    _html.setAttribute('data-theme', _saved);
+    _setIcon(_saved);
+    _btn.addEventListener('click', function() {
+      var next = _html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+      _html.setAttribute('data-theme', next);
+      localStorage.setItem('theme', next);
+      _setIcon(next);
+    });
   </script>
   <script>
     document.addEventListener('DOMContentLoaded', function() {
