@@ -3,9 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="ROUGE Score - Evaluando Resumenes Automaticos | #365DaysOfAI por Fabian Rodriguez">
-  <title>ROUGE Score - Evaluando Resumenes Automaticos | #365DaysOfAI</title>
-  
+  <meta name="description" content="Dia 193/365: Stable Diffusion — Escultura estadistica dentro del ruido | #365DaysOfAI por Fabian Rodriguez">
+  <title>Dia 193/365: Stable Diffusion — Escultura estadistica dentro del ruido | #365DaysOfAI</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
@@ -21,7 +20,7 @@
   --shadow: rgba(2,12,27,0.7); --nav-bg: rgba(10,25,47,0.92);
 }
 [data-theme="light"] {
-  --bg: #f0f4fb; --bg-card: #ffffff; --border: #d4dcee;
+  --bg: #f0f4fb; --bg-card: #ffffff; --border: #d4ddee;
   --text-muted: #64748b; --text: #475569; --text-heading: #0f172a;
   --accent: #0d9488; --accent-tint: rgba(13,148,136,0.08);
   --shadow: rgba(15,23,42,0.12); --nav-bg: rgba(240,244,251,0.95);
@@ -81,6 +80,10 @@ nav {
   border-radius: 4px; padding: .15em .4em;
 }
 .article-body pre code { background: none; border: none; padding: 0; font-size: inherit; }
+.article-body table { width: 100%; border-collapse: collapse; margin: 1.5rem 0; font-size: .9rem; }
+.article-body th, .article-body td { border: 1px solid var(--border); padding: .6rem 1rem; text-align: left; }
+.article-body th { background: var(--bg-card); color: var(--text-heading); }
+.article-body .katex-display { overflow-x: auto; padding: .5rem 0; }
 
 .article-nav {
   max-width: 820px; margin: 0 auto; padding: 2rem 1.5rem;
@@ -94,7 +97,8 @@ nav {
   nav { padding: 0 1rem; }
   .article-hero, .article-body { padding-left: 1rem; padding-right: 1rem; }
 }
-</style>
+
+  </style>
 </head>
 <body>
   <nav>
@@ -109,306 +113,455 @@ nav {
   </nav>
 
   <header class="article-hero">
-    <div class="day-badge">Dia 193 / 365 &nbsp;·&nbsp; #365DaysOfAI</div>
-    <h1 class="article-title">ROUGE Score - Evaluando Resumenes Automaticos</h1>
+    <div class="day-badge">Dia 193 / 365 &nbsp;&middot;&nbsp; #365DaysOfAI</div>
+    <h1 class="article-title">Dia 193/365: Stable Diffusion — Escultura estadistica dentro del ruido</h1>
     <div class="article-meta">
       <time class="article-date">12 de julio de 2026</time>
-      <div class="tags"><span class="tag">rouge</span><span class="tag">evaluation</span><span class="tag">summarization</span><span class="tag">nlp</span></div>
+      <div class="tags"><span class="tag">diffusers.StableDiffusionPipeline</span></div>
     </div>
   </header>
 
   <article class="article-body">
-<p>Parcero, dia 193 y hoy vamos a hablar de ROUGE Score. Si alguna vez te has preguntado como funciona esta vaina internamente, o por que el 85% de implementaciones en produccion tienen errores sutiles que causan resultados inconsistentes, esta vaina te va a aclarar todo. De una.</p>
-
-<p>El problema es que la mayoria de tutoriales y cursos explican el concepto de forma superficial - memorizas la definicion, pasas el quiz, pero cuando te toca implementarlo en produccion con datos reales y edge cases, te das cuenta de que no entendias nada. El conocimiento superficial es peligroso en ML/AI porque los errores son silenciosos y costosos.</p>
-
-<hr>
-
-<h2>Por Que ROUGE Score Importa en Produccion</h2>
-
-<p>En produccion, ROUGE Score no es solo un concepto teorico - es una herramienta practica que determina:</p>
-
+<h2>Introduccion: Cuando tu GPU se queda sin VRAM a las 3 AM</h2>
+<p>Mira, te voy a contar una historia real. Un equipo de e-commerce que conozco metio Stable Diffusion para generar fotos de producto a escala. Sin entender la matematica, lo unico que medi fue "cuantas imagenes por minuto me saca". Semanas despues, en black friday, el endpoint se cayo cada 20 minutos con <code>CUDA Out of Memory</code>. Cuando los de plataforma me llamaron a las 3 AM, el problema no era la GPU ni el modelo: era que estaban generando a 1024x1024 con attention slicing apagado, scheduler DDIM con 100 pasos, y por si fuera poco, recargaban LoRAs nuevas en cada request.</p>
+<p>Stable Diffusion te muerde cuando lo usas como caja negra. No porque sea dificil — la API de <code>diffusers</code> es muy limpia — sino porque debajo de la API hay estadistica con derivada, y cada decision que tomas (guidance scale, scheduler, VAE tiling, precision) cambia el balance entre calidad, latencia y VRAM de forma no lineal. Si no entendes la matematica que conecta esos knobs, vas a estar adivinando en produccion. Y adivinar en produccion se paga.</p>
+<p>Hoy te voy a mostrar lo que deberias haber sabido antes de meter SD a un sistema con SLA. Sin hype, sin tutorial generico, con codigo que puedas copiar y pegar hoy mismo en un servicio real.</p>
+<h2>1. Que es Stable Diffusion? (Y por que deberia importarte)</h2>
+<h3>1.1 La analogia cotidiana: el escultor y el bloque de ruido</h3>
+<p>Imaginate un escultor que recibe un bloque de marmol completamente amorfo: un cubo gris sin forma, sin rostro, sin intencion visible. Lo que hace durante semanas no es "agregar" la escultura. Va quitando material. Cada golpe de cincel remueve un fragmento microscopico que sobra. Al final del dia, lo que emerge es una Venus que — y esto es lo clave — siempre estuvo latente dentro del bloque. El artista no la invento, la destapo.</p>
+<p>Stable Diffusion trabaja exactamente al reves del sentido comun. La intuicion naive dice "el modelo aprende a generar imagenes desde cero". Falso. Lo que aprende es a quitar ruido gaussiano paso a paso, y la imagen coherente siempre estuvo embebida estadisticamente en esa mancha inicial de pixeles aleatorios. Esa sola inversion de intuicion es la que te muerde cuando intentas debuggear, tunear guidance scale o entender por que dos semillas distintas del mismo prompt te dan resultados tan diferentes. Si no la internalizas, vas a seguir creyendo que el modelo "crea" — y ahi empiezan las decisiones arquitectonicas mal fundamentadas.</p>
+<h3>1.2 La matematica formal: el proceso de difusion hacia adelante y atras</h3>
+<p>Stable Diffusion no se entiende sin DDPM (Denoising Diffusion Probabilistic Models) de Ho et al. (NeurIPS 2020). Empecemos por el <strong>forward process</strong>, el que destruye la imagen agregando ruido en $T$ pasos:</p>
+$$q(\mathbf{x}_t | \mathbf{x}_{t-1}) = \mathcal{N}(\mathbf{x}_t; \sqrt{1-\beta_t}\,\mathbf{x}_{t-1},\,\beta_t\,\mathbf{I})$$
+<p>Donde cada simbolo significa:</p>
 <ul>
-<li><strong>Calidad de resultados</strong>: Una implementacion correcta puede mejorar accuracy 10-30%.</li>
-<li><strong>Eficiencia computacional</strong>: Ahorra GPU hours y costos de API.</li>
-<li><strong>Consistencia</strong>: Resultados reproducibles entre ejecuciones.</li>
-<li><strong>Debugging</strong>: Cuando algo falla, entender el interno hace el debugging 5x mas rapido.</li>
+  <li>$q(\mathbf{x}_t | \mathbf{x}_{t-1})$ es la distribucion condicional del paso ruidoso $\mathbf{x}_t$ dado el anterior $\mathbf{x}_{t-1}$</li>
+  <li>$\beta_t$ es la varianza de ruido en el paso $t$, siguiendo un schedule $\beta_1 < \beta_2 < \ldots < \beta_T$ (tipicamente lineal o coseno)</li>
+  <li>$\mathbf{I}$ es la matriz identidad: el ruido es isotropico (misma varianza en todas las direcciones)</li>
+  <li>$\sqrt{1-\beta_t}$ es la escala que preserva varianza marginal esperada tras la transicion</li>
 </ul>
+<p>El truco computacional brutal — y esto lo que vuelve DDPM entrenable — es que podes saltar directo a cualquier paso $t$ sin iterar los $t-1$ pasos anteriores:</p>
+$$\mathbf{x}_t = \sqrt{\bar{\alpha}_t}\,\mathbf{x}_0 + \sqrt{1-\bar{\alpha}_t}\,\boldsymbol{\epsilon}, \quad \boldsymbol{\epsilon} \sim \mathcal{N}(\mathbf{0},\mathbf{I})$$
+<p>Donde $\bar{\alpha}_t = \prod_{s=1}^{t}(1-\beta_s)$ es la varianza acumulada hasta el paso $t$. Esta reparametrizacion es la que hace eficiente el entrenamiento y la que te permite muestrear en 20-50 pasos en vez de los 1000 originales. Sin ella, DDPM seria inutilizable.</p>
+<p>El modelo aprende el proceso inverso $p_{\boldsymbol{\theta}}(\mathbf{x}_{t-1} | \mathbf{x}_t)$, que es una distribucion normal con media y covarianza predichas por una red neuronal (la UNet):</p>
+$$p_{\boldsymbol{\theta}}(\mathbf{x}_{t-1} | \mathbf{x}_t) = \mathcal{N}(\mathbf{x}_{t-1}; \boldsymbol{\mu}_{\boldsymbol{\theta}}(\mathbf{x}_t, t),\,\boldsymbol{\Sigma}_{\boldsymbol{\theta}}(\mathbf{x}_t, t))$$
+<p>La funcion de perdida colapsa magicamente a predecir el ruido $\boldsymbol{\epsilon}$ en vez de la media $\boldsymbol{\mu}$:</p>
+$$\mathcal{L} = \mathbb{E}_{t, \mathbf{x}_0, \boldsymbol{\epsilon}}\left[\|\boldsymbol{\epsilon} - \boldsymbol{\epsilon}_{\boldsymbol{\theta}}(\mathbf{x}_t, t)\|^2\right]$$
+<p>Donde $\boldsymbol{\epsilon}_{\boldsymbol{\theta}}(\mathbf{x}_t, t)$ es una UNet con parametros $\boldsymbol{\theta}$ que toma la imagen ruidosa y el timestep embebido como condicion, y devuelve una prediccion del ruido original.</p>
+<p>Lo que hace Stable Diffusion propiamente (Rombach et al., CVPR 2022, "High-Resolution Image Synthesis with Latent Diffusion Models") es mover todo esto al <strong>espacio latente</strong> de un VAE preentrenado. En vez de hacer difusion sobre pixeles $512 \times 512 \times 3$ (786,432 dimensiones), la hace sobre $64 \times 64 \times 4$ (16,384 dimensiones). Por eso corre en GPUs de 8GB y no necesita un cluster.</p>
+<p>Finalmente, el <strong>classifier-free guidance</strong> es la perilla que controla cuanto se "obedece" al prompt:</p>
+$$\tilde{\boldsymbol{\epsilon}} = \boldsymbol{\epsilon}_{\boldsymbol{\theta}}(\mathbf{z}_t, t, \mathbf{c}) + w \cdot \left(\boldsymbol{\epsilon}_{\boldsymbol{\theta}}(\mathbf{z}_t, t, \mathbf{c}) - \boldsymbol{\epsilon}_{\boldsymbol{\theta}}(\mathbf{z}_t, t, \emptyset)\right)$$
+<p>Donde $\mathbf{c}$ es el embedding textual del prompt, $\emptyset$ es el embedding "nulo" (prompt vacio), y $w$ es el guidance scale. Con $w=1$ no hay amplificacion; con $w=7.5$ (default de SD) el modelo amplifica 7.5x la diferencia entre "condicionado" y "no condicionado". Por eso a valores altos las imagenes son mas "limpias" pero menos diversas.</p>
+<h2>2. Como diffusers.StableDiffusionPipeline resuelve esto por vos</h2>
+<p>El pipeline de HuggingFace es una caja negra intencionalmente bien diseñada. Cuando llamas <code>pipe(prompt)</code>, esto pasa por debajo:</p>
+<pre><code class="language-text">+----------------+     +-----------------+     +-------------------+
+| CLIP Text      |     | Random Latents  |     | VAE Encoder       |
+| Tokenizer +    |     | z_T ~ N(0, I)   |     | (solo training,   |
+| Text Encoder   |     | shape 4x64x64   |     |  frozen en inf.)   |
++-------+--------+     +--------+--------+     +---------+---------+
+        |                       |                         |
+        v                       v                         |
++----------------+     +-----------------+               |
+| text_embed     |     | UNet eps_theta  |&lt;--------------+
+| shape 77x768   |     | (denoising)     |
++-------+--------+     +--------+--------+
+        |                       |
+        +----------+------------+
+                   v (Classifier-Free Guidance, se aplica dentro del loop)
+        +-----------------+
+        | Scheduler       |  (DDIM / Euler / DPM-Solver)
+        | x_{t-1} = ...   |
+        +--------+--------+
+                 v (loop T veces, tipicamente 25-50)
+        +-----------------+
+        | VAE Decoder     |
+        | image = D(z_0)  |
+        +-----------------+</code></pre>
+<p>Tres componentes entrenables-separables:</p>
+<ol>
+  <li><strong>VAE</strong> (encoder/decoder): reduce $512 \times 512 \times 3$ a $64 \times 64 \times 4$</li>
+  <li><strong>UNet</strong> (denoiser): predice ruido, condicionada por texto y timestep</li>
+  <li><strong>CLIP Text Encoder</strong>: convierte prompt en embeddings semanticos de dimension 768</li>
+</ol>
+<p>El scheduler (DDIM, Euler, DPM-Solver, etc.) <strong>no tiene parametros entrenables</strong> — es matematica pura que decide como dar el paso inverso. Esa separacion es lo que hace tan facil cambiar de sampler sin reentrenar nada.</p>
+<h2>3. diffusers.StableDiffusionPipeline: Uso Directo y Casos de Control Fino</h2>
+<pre><code class="language-python">import torch
+from diffusers import StableDiffusionPipeline, DPMSolverMultistepScheduler
 
-<p>La mayoria de engineers ignoran ROUGE Score hasta que les causa un bug dificil de debuggear en produccion. No seas ese engineer.</p>
+pipe = StableDiffusionPipeline.from_pretrained(
+    "runwayml/stable-diffusion-v1-5",
+    torch_dtype=torch.float16,
+    safety_checker=None,
+    requires_safety_checker=False,
+).to("cuda")
 
-<hr>
+# Swap scheduler para 20 pasos en vez de 50 manteniendo calidad
+pipe.scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config)
 
-<h2>La Matematica Detras</h2>
+# Habilitar optimizaciones de VRAM
+pipe.enable_xformers_memory_efficient_attention()
+pipe.enable_attention_slicing(1)
 
-<p>La intuicion detras de ROUGE Score se puede expresar matematicamente. ROUGE mide la superposicion de n-gramas entre la referencia y el resumen generado.</p>
+generator = torch.Generator("cuda").manual_seed(42)
+image = pipe(
+    prompt="a cyberpunk cat wearing neon goggles, ultra-detailed, 8k",
+    negative_prompt="blurry, low quality, distorted, watermark",
+    num_inference_steps=25,
+    guidance_scale=7.5,
+    height=512,
+    width=512,
+    generator=generator,
+).images[0]
 
-<p>Las metricas principales son:</p>
-
+image.save("cyberpunk_cat.png")</code></pre>
+<p>Tres perillas que controlas en produccion:</p>
 <ul>
-<li><strong>ROUGE-1</strong>: Superposicion de unigramas (palabras individuales)</li>
-<li><strong>ROUGE-2</strong>: Superposicion de bigramas (pares de palabras)</li>
-<li><strong>ROUGE-L</strong>: Subsecuencia comun mas larga</li>
-<li><strong>ROUGE-W</strong>: Ponderada por secuencias contiguas</li>
+  <li><code>guidance_scale</code> ($w$): peso del classifier-free guidance. Mas alto = mas adherencia al prompt pero menos diversidad. Rango util 5-12. Por encima de 15 se quema la imagen con artefactos de sobre-saturacion.</li>
+  <li><code>num_inference_steps</code>: tradeoff calidad/latencia. DPM-Solver da 25 pasos decentes, Euler 30, DDIM necesita 50 para calidad comparable.</li>
+  <li><code>negative_prompt</code>: condiciona lo que queres evitar. Gratis, casi siempre suma.</li>
 </ul>
-
-<p>La formula general de precision y recall para ROUGE-N:</p>
-
-<p>$$Precision_{ROUGE-N} = \frac{\sum_{gramas} min(count_{hipotesis}(grama), count_{referencia}(grama))}{\sum_{gramas} count_{hipotesis}(grama)}$$</p>
-
-<p>$$Recall_{ROUGE-N} = \frac{\sum_{gramas} min(count_{hipotesis}(grama), count_{referencia}(grama))}{\sum_{gramas} count_{referencia}(grama)}$$</p>
-
-<hr>
-
-<h2>Codigo Production-Grade</h2>
-
-<p>Implementacion completa con validacion, logging y tests:</p>
-
-<pre><code class="language-python">"""
-Implementacion production-ready de ROUGE Score.
-Incluye: logging, error handling, tipado, tests basicos.
-"""
-import logging
-from dataclasses import dataclass, field
-from typing import Optional, List, Dict, Any, Tuple
+<h2>4. Implementacion Production-Ready: SDImageService</h2>
+<h3>4.1 Tipos y protocolos</h3>
+<pre><code class="language-python"># sd_service/types.py
+from dataclasses import dataclass
 from enum import Enum
+from typing import Protocol
+
+
+class SamplerType(str, Enum):
+    EULER = "euler"
+    EULER_ANCESTRAL = "euler_a"
+    DPM_SOLVER = "dpm_solver"
+    DDIM = "ddim"
+
+
+@dataclass(frozen=True)
+class GenerationRequest:
+    prompt: str
+    negative_prompt: str = ""
+    width: int = 512
+    height: int = 512
+    num_steps: int = 25
+    guidance_scale: float = 7.5
+    seed: int | None = None
+    sampler: SamplerType = SamplerType.DPM_SOLVER
+    lora_path: str | None = None
+    lora_scale: float = 0.75
+
+
+@dataclass(frozen=True)
+class GenerationResult:
+    image_bytes: bytes
+    seed: int
+    inference_time_ms: float
+    vram_peak_mb: float
+
+
+class ImageGenerator(Protocol):
+    def generate(self, req: GenerationRequest) -&gt; GenerationResult: ...</code></pre>
+<h3>4.2 El motor principal</h3>
+<pre><code class="language-python"># sd_service/engine.py
+import io
+import time
+
+import torch
+from PIL import Image
+from diffusers import (
+    DDIMScheduler,
+    DPMSolverMultistepScheduler,
+    EulerAncestralDiscreteScheduler,
+    StableDiffusionPipeline,
+)
+
+from .types import GenerationRequest, GenerationResult, SamplerType
+
+
+SCHEDULER_MAP = {
+    SamplerType.EULER: EulerAncestralDiscreteScheduler,
+    SamplerType.EULER_ANCESTRAL: EulerAncestralDiscreteScheduler,
+    SamplerType.DPM_SOLVER: DPMSolverMultistepScheduler,
+    SamplerType.DDIM: DDIMScheduler,
+}
+
+
+class SDEngine:
+    def __init__(self, model_id: str, device: str = "cuda") -&gt; None:
+        self.device = device
+        self.pipe = StableDiffusionPipeline.from_pretrained(
+            model_id,
+            torch_dtype=torch.float16,
+            safety_checker=None,
+            requires_safety_checker=False,
+        ).to(device)
+        self.pipe.enable_xformers_memory_efficient_attention()
+        self._active_lora: str | None = None
+
+    def _set_sampler(self, sampler: SamplerType) -&gt; None:
+        scheduler_cls = SCHEDULER_MAP[sampler]
+        self.pipe.scheduler = scheduler_cls.from_config(
+            self.pipe.scheduler.config
+        )
+
+    def load_lora(self, lora_path: str, scale: float = 0.75) -&gt; None:
+        if self._active_lora == lora_path:
+            self.pipe.fuse_lora(lora_scale=scale)
+            return
+        if self._active_lora is not None:
+            self.pipe.unfuse_lora()
+            self.pipe.unload_lora_weights()
+        self.pipe.load_lora_weights(lora_path)
+        self.pipe.fuse_lora(lora_scale=scale)
+        self._active_lora = lora_path
+
+    @torch.inference_mode()
+    def generate(self, req: GenerationRequest) -&gt; GenerationResult:
+        torch.cuda.reset_peak_memory_stats(self.device)
+        self._set_sampler(req.sampler)
+
+        if req.lora_path:
+            self.load_lora(req.lora_path, req.lora_scale)
+
+        gen = (
+            torch.Generator(self.device).manual_seed(req.seed)
+            if req.seed is not None
+            else torch.Generator(self.device)
+        )
+
+        start = time.perf_counter()
+        result = self.pipe(
+            prompt=req.prompt,
+            negative_prompt=req.negative_prompt or None,
+            num_inference_steps=req.num_steps,
+            guidance_scale=req.guidance_scale,
+            width=req.width,
+            height=req.height,
+            generator=gen,
+        ).images[0]
+        elapsed_ms = (time.perf_counter() - start) * 1000.0
+
+        buf = io.BytesIO()
+        result.save(buf, format="PNG", optimize=True)
+        peak_mb = torch.cuda.max_memory_allocated(self.device) / (1024 ** 2)
+
+        return GenerationResult(
+            image_bytes=buf.getvalue(),
+            seed=req.seed or gen.initial_seed(),
+            inference_time_ms=elapsed_ms,
+            vram_peak_mb=peak_mb,
+        )</code></pre>
+<h3>4.3 Utilidades de analisis y verificacion</h3>
+<pre><code class="language-python"># sd_service/metrics.py
+import hashlib
+
 import numpy as np
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+from PIL import Image
 
 
-class ROUGEScoreConfig(Enum):
-    """Configuraciones predefinidas para diferentes casos de uso."""
-    DEFAULT = "default"
-    AGGRESSIVE = "aggressive"
-    CONSERVATIVE = "conservative"
-    PRECISION_CRITICAL = "precision_critical"
-
-
-@dataclass
-class HyperParameters:
-    """Hyperparameters para el modelo."""
-    learning_rate: float = 1e-3
-    rougescore_factor: float = 0.1
-    momentum: float = 0.9
-    epsilon: float = 1e-8
-    config_mode: ROUGEScoreConfig = ROUGEScoreConfig.DEFAULT
-
-
-class ROUGEScore:
-    """
-    Implementacion de ROUGE Score.
-    
-    Attributes:
-        params: Parametros del modelo
-        state: Estado interno para optimizacion
-    
-    Example:
-        >>> model = ROUGEScore()
-        >>> result = model.compute(input_data)
-    """
-    
-    def __init__(
-        self,
-        params: Optional[Dict[str, np.ndarray]] = None,
-        config: HyperParameters = None,
-    ):
-        self.params = params or {}
-        self.config = config or HyperParameters()
-        self.state = {}
-        self._initialized = False
-        logger.info(f"ROUGE Score inicializado con config: {self.config}")
-    
-    def _validate_inputs(
-        self,
-        x: np.ndarray,
-        expected_dims: int,
-    ) -> None:
-        """Valida inputs antes de computacion."""
-        if x.ndim != expected_dims:
-            raise ValueError(
-                f"Expected {expected_dims} dimensions, got {x.ndim}"
-            )
-        
-        if np.any(np.isnan(x)):
-            raise ValueError("Input contains NaN values")
-        
-        if np.any(np.isinf(x)):
-            raise ValueError("Input contains infinite values")
-    
-    def compute(
-        self,
-        x: np.ndarray,
-        mode: str = "forward",
-    ) -> np.ndarray:
-        """
-        Computa forward o backward pass.
-        
-        Args:
-            x: Input array
-            mode: 'forward' o 'backward'
-            
-        Returns:
-            Resultado de la computacion
-        """
-        self._validate_inputs(x, expected_dims=2)
-        
-        if mode == "forward":
-            return self._forward(x)
-        elif mode == "backward":
-            return self._backward(x)
-        else:
-            raise ValueError(f"Unknown mode: {mode}")
-    
-    def _forward(self, x: np.ndarray) -> np.ndarray:
-        """Forward pass implementation."""
-        if not self._initialized:
-            self._initialize_params(x.shape)
-        
-        # Normalize
-        normalized = self._normalize(x)
-        
-        # Apply transformation
-        output = np.dot(normalized, self.params["weight"]) + self.params["bias"]
-        
-        return output
-    
-    def _backward(self, gradient: np.ndarray) -> np.ndarray:
-        """Backward pass implementation."""
-        # Gradient through normalization
-        norm_grad = gradient * self.config.rougescore_factor
-        
-        return norm_grad
-    
-    def _normalize(self, x: np.ndarray) -> np.ndarray:
-        """Aplica normalizacion."""
-        mean = np.mean(x, axis=0, keepdims=True)
-        std = np.std(x, axis=0, keepdims=True) + self.config.epsilon
-        return (x - mean) / std
-    
-    def _initialize_params(self, input_shape: Tuple[int, ...]) -> None:
-        """Inicializa parametros si no existen."""
-        self.params["weight"] = np.random.randn(
-            input_shape[1], input_shape[1]
-        ) * np.sqrt(2.0 / input_shape[1])
-        
-        self.params["bias"] = np.zeros((1, input_shape[1]))
-        self._initialized = True
-        logger.info(f"Parametros inicializados con forma {input_shape}")
-    
-    def get_config(self) -> Dict[str, Any]:
-        """Retorna configuracion actual."""
-        return {
-            "config_mode": self.config.config_mode.value,
-            "learning_rate": self.config.learning_rate,
-            "initialized": self._initialized,
-            "param_shapes": {
-                k: v.shape for k, v in self.params.items()
-            },
-        }
-
-
-def create_rougescore_model(
-    mode: ROUGEScoreConfig = ROUGEScoreConfig.DEFAULT,
-) -> ROUGEScore:
-    """
-    Factory function para crear modelo con configuracion apropiada.
-    
-    Args:
-        mode: Modo de configuracion
-        
-    Returns:
-        Instancia configurada del modelo
-    """
-    configs = {
-        ROUGEScoreConfig.DEFAULT: HyperParameters(
-            learning_rate=1e-3,
-            rougescore_factor=0.1,
-        ),
-        ROUGEScoreConfig.AGGRESSIVE: HyperParameters(
-            learning_rate=1e-2,
-            rougescore_factor=0.2,
-        ),
-        ROUGEScoreConfig.CONSERVATIVE: HyperParameters(
-            learning_rate=1e-4,
-            rougescore_factor=0.05,
-        ),
+def image_diversity_check(images: list[Image.Image], threshold: float = 0.05) -&gt; dict:
+    """Detecta colpaso de modo: imagenes demasiado parecidas entre si."""
+    arrs = [
+        np.asarray(img.convert("RGB"), dtype=np.float32) / 255.0
+        for img in images
+    ]
+    pairwise: list[float] = []
+    for i in range(len(arrs)):
+        for j in range(i + 1, len(arrs)):
+            mse = float(np.mean((arrs[i] - arrs[j]) ** 2))
+            pairwise.append(mse)
+    mean_mse = float(np.mean(pairwise))
+    return {
+        "mean_pairwise_mse": mean_mse,
+        "is_collapsed": mean_mse &lt; threshold,
+        "samples": len(pairwise),
     }
-    
-    return ROUGEScore(config=configs[mode])
 
 
-# Tests basicos
-if __name__ == "__main__":
-    # Test initialization
-    model = create_rougescore_model()
-    print(f"Modelo creado: {model.get_config()}")
-    
-    # Test forward pass
-    x = np.random.randn(32, 128).astype(np.float32)
-    output = model.compute(x, mode="forward")
-    print(f"Forward pass shape: {output.shape}")
-    
-    # Test backward pass
-    grad = np.random.randn(32, 128).astype(np.float32)
-    grad_out = model.compute(grad, mode="backward")
-    print(f"Backward pass shape: {grad_out.shape}")</code></pre>
+def perceptual_hash(img: Image.Image, size: int = 16) -&gt; str:
+    """Hash perceptual rapido para cachear generaciones similares."""
+    gray = img.convert("L").resize((size, size), Image.Resampling.LANCZOS)
+    arr = np.asarray(gray, dtype=np.float32)
+    avg = float(arr.mean())
+    bits = (arr &gt; avg).flatten()
+    return hashlib.sha256(bits.tobytes()).hexdigest()[:16]</code></pre>
+<h2>5. Ejemplos de Uso en Casos Reales</h2>
+<p><strong>Caso 1: generacion batch con seeds deterministas para reproducibilidad</strong></p>
+<pre><code class="language-python"># Caso: cliente pide 4 variaciones de "logo de cafe vintage"
+from sd_service.engine import SDEngine
+from sd_service.types import GenerationRequest, SamplerType
 
-<hr>
+engine = SDEngine("runwayml/stable-diffusion-v1-5")
+base = GenerationRequest(
+    prompt="vintage coffee shop logo, emblem style, single color",
+    negative_prompt="modern, photographic, 3d, blurry",
+    num_steps=25,
+    guidance_scale=8.0,
+    sampler=SamplerType.DPM_SOLVER,
+    width=512,
+    height=512,
+)
 
-<h2>Errores Comunes</h2>
+results = []
+for i in range(4):
+    req = GenerationRequest(**{**base.__dict__, "seed": 1000 + i})
+    r = engine.generate(req)
+    results.append(r)
+    print(f"seed={r.seed} time={r.inference_time_ms:.1f}ms vram={r.vram_peak_mb:.0f}MB")
 
-<h3>Error 1: No validar inputs antes de procesar</h3>
+# Verificacion numerica esperada en RTX 3090 / A100:
+# time ~1500-2500ms, vram ~4500-5200MB para 512x512 + DPM-Solver 25 pasos
+# Si time &gt; 4000ms, hay cuello de botella en data transfer (CPU offload activo)
+# Si vram &gt; 6500MB en 8GB GPU, vas a reventar con batches largos</code></pre>
+<p><strong>Caso 2: integracion LoRA para estilo especifico de marca</strong></p>
+<pre><code class="language-python"># Caso: cliente subio 12 imagenes de referencia, entrenaste LoRA
+brand_req = GenerationRequest(
+    prompt="a coffee bag with our brand visual identity, product photography",
+    negative_prompt="generic, stock photo, watermark, distorted logo",
+    num_steps=30,
+    guidance_scale=7.0,
+    sampler=SamplerType.EULER_ANCESTRAL,
+    lora_path="./loras/brand_style_v3.safetensors",
+    lora_scale=0.85,
+    seed=42,
+)
+result = engine.generate(brand_req)
+with open("brand_coffee.png", "wb") as f:
+    f.write(result.image_bytes)
 
-<p><strong>El problema</strong>: Confiar ciegamente en que los inputs seran validos. En produccion, valores NaN aparecen por corrupcion de datos, errores de API, o bugs en preprocessing. Si no validas, el modelo puede propagar NaNs silenciosamente y retornar garbage por horas antes de que alguien se de cuenta.</p>
+# Verificacion: con lora_scale=0.85 esperas adherence al estilo ~85%
+# Si lora_scale &gt; 1.0, artefactos; si &lt; 0.5, casi no se nota el estilo</code></pre>
+<p><strong>Caso 3: detector de colpaso de modo en pipeline A/B de schedulers</strong></p>
+<pre><code class="language-python"># Caso: comparar diversidad entre DPM-Solver y DDIM con mismo prompt
+import io
+from sd_service.engine import SDEngine
+from sd_service.metrics import image_diversity_check
+from sd_service.types import GenerationRequest, SamplerType
 
-<p><strong>Solucion</strong>: Implementar validacion de inputs al inicio de cada paso de computacion. Verificar NaN, Inf, y tipos correctos. Fail fast es mejor que corrupcion silenciosa.</p>
 
-<h3>Error 2: Hardcodear hiperparametros en lugar de hacerlos configurables</h3>
+def ab_diversity(engine: SDEngine, prompt: str, seeds: list[int]) -&gt; dict:
+    images = []
+    for s in seeds:
+        r = engine.generate(GenerationRequest(
+            prompt=prompt,
+            seed=s,
+            sampler=SamplerType.DPM_SOLVER,
+            num_steps=25,
+        ))
+        images.append(Image.open(io.BytesIO(r.image_bytes)))
+    return image_diversity_check(images, threshold=0.05)
 
-<p><strong>El problema</strong>: Hiperparametros como learning rate son criticos para el rendimiento pero muchos developers los hardcodean. Cuando necesitas ajustar para diferentes datasets o hardware, terminas cambiando codigo en multiples lugares.</p>
 
-<p><strong>Solucion</strong>: Usar configuracion centralizada (dataclasses, configs, environment variables). Esto permite ajustes sin cambiar codigo y facilita la reproducibilidad de experimentos.</p>
+# Verificacion: DPM-Solver con 25 pasos suele dar mean_pairwise_mse ~0.10-0.18
+# DDIM con 25 pasos da ~0.05-0.10 (menos diverso, porque es determinista)
+# Si ambos &lt; 0.05, el prompt esta sobresaturando el espacio latente</code></pre>
+<h2>6. Debugging: Cuando Todo se Va a la Mierda</h2>
+<p><strong>Problema 1: CUDA Out of Memory con 512x512</strong></p>
+<pre><code class="language-python"># Reproduccion:
+engine.generate(GenerationRequest(prompt="...", width=1024, height=1024, num_steps=50))
+# RuntimeError: CUDA out of memory. Tried to allocate 1.50 GiB...</code></pre>
+<p><strong>Deteccion numerica</strong>: medi <code>torch.cuda.max_memory_allocated()</code>. Si supera el 90% del total de tu GPU, vas a reventar bajo carga concurrente. No esperes al primer OOM en prod.</p>
+<p><strong>Soluciones en orden de impacto</strong>:</p>
+<pre><code class="language-python"># 1. Sequential offload — mueve componentes a CPU cuando no se usan
+#    Sacrifica ~15-25% de latencia por ~40% menos VRAM pico
+engine.pipe.enable_sequential_cpu_offload()
 
-<h3>Error 3: No guardar estado para reproducibilidad</h3>
+# 2. Attention slicing — divide la atencion en chunks secuenciales
+#    Sacrifica ~10% de latencia por ~20% menos VRAM
+engine.pipe.enable_attention_slicing("max")
 
-<p><strong>El problema</strong>: Sin gestion de estado, no puedes reproducir resultados exactos. El mismo codigo con los mismos inputs puede dar resultados diferentes en diferentes ejecuciones debido a inicializacion aleatoria no controlada.</p>
+# 3. VAE tiling — para imagenes grandes decodea por tiles
+engine.pipe.enable_vae_tiling()
 
-<p><strong>Solucion</strong>: Guardar random seed, estado de inicializacion, e hiperparametros junto con el modelo. Incluir version tracking.</p>
+# 4. Reducir batch o resolucion como ultimo recurso
+#    Pero ojo: 1024x1024 con SD NO es lo mismo que upscale post-generacion</code></pre>
+<p><strong>Problema 2: imagenes con "cara derretida" o anatomia rota</strong></p>
+<pre><code class="language-python"># Causa tipica: guidance_scale muy bajo + negative prompt ausente
+broken_req = GenerationRequest(
+    prompt="portrait of a person",
+    guidance_scale=1.0,   # sin amplificacion, modelo "ignora" el prompt
+    negative_prompt="",
+)</code></pre>
+<p><strong>Deteccion</strong>: genera 10 imagenes con mismo seed comparando <code>guidance_scale=1.0</code> vs <code>7.5</code>. Calcula <code>image_diversity_check</code> sobre ambos grupos. Si la entropia perceptual (MSE pairwise) sube drasticamente con guidance alto, el problema era ese. Si no cambia, hay otra cosa (modelo corrupto, VAE mal cargado, scheduler mal configurado).</p>
+<p><strong>Solucion</strong>:</p>
+<pre><code class="language-python">fixed_req = GenerationRequest(
+    prompt="portrait of a person, sharp focus, natural lighting",
+    guidance_scale=7.5,
+    negative_prompt="deformed, blurry, extra fingers, bad anatomy, watermark, low quality",
+)
+# Verificacion: con guidance 7.5 + negative prompt solido
+# deberias ver ~95% de imagenes anatomicamente correctas
+# Si quedan &lt;80%, hay overfitting en el negative prompt (estas restringiendo demasiado)</code></pre>
+<h2>7. Optimizaciones de Produccion</h2>
+<p><strong>Trade-off 1: xformers vs atencion nativa de PyTorch 2.x (SDPA)</strong></p>
+<p>xformers da ~10-15% menos VRAM y 5-10% mas velocidad. Pero requiere build custom y a veces rompe con CUDA 12+. SDPA viene built-in en PyTorch 2.0+ con performance cercana.</p>
+<pre><code class="language-python"># Benchmark rapido para TU hardware especifico
+import time
+import torch
+from diffusers import StableDiffusionPipeline
 
-<hr>
+pipe = StableDiffusionPipeline.from_pretrained(
+    "runwayml/stable-diffusion-v1-5",
+    torch_dtype=torch.float16,
+    safety_checker=None,
+).to("cuda")
 
-<h2>Resumen y Cierre</h2>
+pipe.enable_attention_slicing(1)
+torch.cuda.empty_cache()
+gen = torch.Generator("cuda").manual_seed(42)
+start = time.perf_counter()
+_ = pipe("a cat sitting on a chair", num_inference_steps=25, generator=gen).images[0]
+baseline_ms = (time.perf_counter() - start) * 1000
+baseline_vram = torch.cuda.max_memory_allocated() / (1024 ** 2)
+torch.cuda.reset_peak_memory_stats()
 
+pipe.enable_xformers_memory_efficient_attention()
+torch.cuda.empty_cache()
+gen = torch.Generator("cuda").manual_seed(42)
+start = time.perf_counter()
+_ = pipe("a cat sitting on a chair", num_inference_steps=25, generator=gen).images[0]
+xformers_ms = (time.perf_counter() - start) * 1000
+xformers_vram = torch.cuda.max_memory_allocated() / (1024 ** 2)
+
+print(f"SDPA baseline:  {baseline_ms:.0f}ms, {baseline_vram:.0f}MB")
+print(f"xformers:       {xformers_ms:.0f}ms, {xformers_vram:.0f}MB")
+print(f"speedup: {(baseline_ms - xformers_ms) / baseline_ms * 100:.1f}%")
+print(f"vram saved: {baseline_vram - xformers_vram:.0f}MB")
+
+# Esperado: xformers ~5-10% mas rapido, ~10-15% menos VRAM que SDPA baseline
+# Si tu GPU es Ampere+ (RTX 30xx/40xx), xformers suele ganar claramente
+# Si es Turing (RTX 20xx), la diferencia es marginal</code></pre>
+<p><strong>Trade-off 2: torch.compile() en la UNet</strong></p>
+<p>PyTorch 2.x puede compilar la UNet con speedup del 20-40% despues de un warm-up de 1-2 generaciones. Pero ocupa mas VRAM inicialmente y falla con algunos LoRAs. Pilas con esto si tu cuello de botella es latencia y tenes VRAM de sobra.</p>
+<h2>8. Conclusion: Por Que Esto te Salva el Pellejo en Produccion</h2>
 <ul>
-<li><strong>ROUGE Score</strong> es fundamental para sistemas ML robustos en produccion.</li>
-<li><strong>Validacion de inputs</strong> previene corrupcion silenciosa de datos.</li>
-<li><strong>Configuracion centralizada</strong> permite tuning sin cambiar codigo.</li>
-<li><strong>Gestion de estado</strong> es critico para reproducibilidad.</li>
-<li><strong>Logging detallado</strong> facilita debugging cuando las cosas fallan.</li>
+  <li><strong>Separation of concerns</strong>: VAE / UNet / CLIP / Scheduler son intercambiables. Eso te permite experimentar sin reentrenar nada.</li>
+  <li><strong>Determinismo con seed</strong>: si necesitas reproducibilidad legal o de auditoria, siempre podes volver a una imagen exacta. Anotar <code>seed + guidance + steps</code> en logs es obligacion.</li>
+  <li><strong>Memory budget predecible</strong>: con <code>torch.cuda.max_memory_allocated()</code> sabes exactamente cuanto VRAM necesitas antes de comprar GPUs.</li>
+  <li><strong>Scheduler swap = cero costo</strong>: cambiar de DDIM a DPM-Solver es una linea, sin reentrenamiento, con speedups del 2-3x.</li>
+  <li><strong>LoRA fine-tuning barato</strong>: ~12 imagenes de referencia, 30 min en una A100, y tenes un estilo de marca inyectado.</li>
 </ul>
-
-<p>Hagale que ROUGE Score no es opcional en produccion - es necesario. Inviertan tiempo en implementar correctamente desde el principio. En ML, los errores tempranos se multiplican, parcero.</p>
-
-<p><em>Eso es todo. Dia 194 viene con mas.</em></p>
-
+<p><strong>Mini-checklist antes de llevar a prod</strong>:</p>
+<ul>
+  <li>[ ] Pinneaste <code>diffusers==X.Y.Z</code> y <code>transformers==X.Y.Z</code> (los breaking changes son reales entre minor versions)</li>
+  <li>[ ] <code>safety_checker</code> resuelto upstream, no en el engine de inferencia</li>
+  <li>[ ] Logging de <code>seed</code>, <code>guidance_scale</code>, <code>num_steps</code>, <code>sampler</code> por request</li>
+  <li>[ ] Metricas de <code>inference_time_ms</code> y <code>vram_peak_mb</code> exportadas a Prometheus</li>
+  <li>[ ] Detector de colpaso de modo corriendo en shadow mode la primera semana</li>
+</ul>
+<p>Si entendes que Stable Diffusion no "crea" sino que destapa una imagen latente quitando ruido, dejas de pelearte con el modelo y empezas a usarlo como la herramienta que es. Esa es la diferencia entre el junior que sube a produccion un endpoint que se cae cada viernes y el senior que entrega algo que no requiere heroics a las 3 AM. Esa vaina no es magia, es estadistica con derivada bien aplicada. 🔥</p>
   </article>
+  <nav class="article-nav" aria-label="Navegacion entre articulos">
+    <a class="nav-prev" href="/blog/dia-192365-forward-reverse-process/">Anterior</a>
+    <a href="/blog/">Todos los articulos</a>
+    <a class="nav-next" href="/blog/dia-194365-controlnet/" data-date="2026-07-13">Siguiente</a>
+  </nav>
 
-  <script>
-    document.getElementById('themeToggle').addEventListener('click', function() {
-      const html = document.documentElement;
-      const isDark = html.getAttribute('data-theme') === 'dark';
-      html.setAttribute('data-theme', isDark ? 'light' : 'dark');
-      document.getElementById('themeIcon').className = isDark ? 'fas fa-moon' : 'fas fa-sun';
-    });
-  </script>
+
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
   <script>
     hljs.highlightAll();
-    document.addEventListener('DOMContentLoaded', () => {
+    document.addEventListener('DOMContentLoaded', function() {
       renderMathInElement(document.body, {
         delimiters: [
           { left: '$$', right: '$$', display: true },
@@ -419,21 +572,20 @@ if __name__ == "__main__":
         throwOnError: false,
       });
     });
-    
-  const _html = document.documentElement;
-  const _btn  = document.getElementById('themeToggle');
-  const _icon = document.getElementById('themeIcon');
-  function _setIcon(t) { _icon.className = t === 'dark' ? 'fas fa-sun' : 'fas fa-moon'; }
-  const _saved = localStorage.getItem('theme') || 'dark';
-  _html.setAttribute('data-theme', _saved);
-  _setIcon(_saved);
-  _btn.addEventListener('click', () => {
-    const next = _html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
-    _html.setAttribute('data-theme', next);
-    localStorage.setItem('theme', next);
-    _setIcon(next);
-  });
 
+    var _html = document.documentElement;
+    var _btn  = document.getElementById('themeToggle');
+    var _icon = document.getElementById('themeIcon');
+    function _setIcon(t) { _icon.className = t === 'dark' ? 'fas fa-sun' : 'fas fa-moon'; }
+    var _saved = localStorage.getItem('theme') || 'dark';
+    _html.setAttribute('data-theme', _saved);
+    _setIcon(_saved);
+    _btn.addEventListener('click', function() {
+      var next = _html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+      _html.setAttribute('data-theme', next);
+      localStorage.setItem('theme', next);
+      _setIcon(next);
+    });
   </script>
   <script>
     document.addEventListener('DOMContentLoaded', function() {
