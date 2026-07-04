@@ -3,9 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="ML Pipelines con Prefect, Luigi y Dagster — Orquestando Tus Workflows de ML | #365DaysOfAI por Fabian Rodriguez">
-  <title>ML Pipelines con Prefect, Luigi y Dagster — Orquestando Tus Workflows de ML | #365DaysOfAI</title>
-  
+  <meta name="description" content="Dia 214/365: Feature Stores — la farmacia del barrio para tus features | #365DaysOfAI por Fabian Rodriguez">
+  <title>Dia 214/365: Feature Stores — la farmacia del barrio para tus features | #365DaysOfAI</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
@@ -21,7 +20,7 @@
   --shadow: rgba(2,12,27,0.7); --nav-bg: rgba(10,25,47,0.92);
 }
 [data-theme="light"] {
-  --bg: #f0f4fb; --bg-card: #ffffff; --border: #d4dcee;
+  --bg: #f0f4fb; --bg-card: #ffffff; --border: #d4ddee;
   --text-muted: #64748b; --text: #475569; --text-heading: #0f172a;
   --accent: #0d9488; --accent-tint: rgba(13,148,136,0.08);
   --shadow: rgba(15,23,42,0.12); --nav-bg: rgba(240,244,251,0.95);
@@ -81,6 +80,10 @@ nav {
   border-radius: 4px; padding: .15em .4em;
 }
 .article-body pre code { background: none; border: none; padding: 0; font-size: inherit; }
+.article-body table { width: 100%; border-collapse: collapse; margin: 1.5rem 0; font-size: .9rem; }
+.article-body th, .article-body td { border: 1px solid var(--border); padding: .6rem 1rem; text-align: left; }
+.article-body th { background: var(--bg-card); color: var(--text-heading); }
+.article-body .katex-display { overflow-x: auto; padding: .5rem 0; }
 
 .article-nav {
   max-width: 820px; margin: 0 auto; padding: 2rem 1.5rem;
@@ -94,7 +97,8 @@ nav {
   nav { padding: 0 1rem; }
   .article-hero, .article-body { padding-left: 1rem; padding-right: 1rem; }
 }
-</style>
+
+  </style>
 </head>
 <body>
   <nav>
@@ -109,453 +113,490 @@ nav {
   </nav>
 
   <header class="article-hero">
-    <div class="day-badge">Dia 214 / 365 &nbsp;·&nbsp; #365DaysOfAI</div>
-    <h1 class="article-title">ML Pipelines con Prefect, Luigi y Dagster — Orquestando Tus Workflows de ML</h1>
+    <div class="day-badge">Dia 214 / 365 &nbsp;&middot;&nbsp; #365DaysOfAI</div>
+    <h1 class="article-title">Dia 214/365: Feature Stores — la farmacia del barrio para tus features</h1>
     <div class="article-meta">
-      <time class="article-date">02 de agosto de 2026</time>
-      <div class="tags"><span class="tag">ml-pipelines</span><span class="tag">prefect</span><span class="tag">luigi</span><span class="tag">dagster</span><span class="tag">orchestration</span></div>
+      <time class="article-date">2 de agosto de 2026</time>
+      <div class="tags"><span class="tag">feast</span></div>
     </div>
   </header>
 
   <article class="article-body">
-    <h2>ML Pipelines — Orquestación de Workflows de ML</h2>
-    <p>Hagale pues, parcero. Día 214 y hoy hablamos de algo que el 80% de los proyectos de ML ignoran hasta que tienen 15 scripts de Python que dependen uno del otro y nadie sabe cuál ejecutar primero: <strong>ML pipelines</strong> y orquestación de workflows. Si usted está ejecutando su pipeline de ML con un script de bash que llama a otro script que llama a otro... necesitamos hablar. Café en mano, vamos pa'llá.</p>
+<h2>Introduccion: tres meses de drift silencioso</h2>
+<p>Te voy a contar la historia que me costó un fin de semana largo. Teníamos un modelo de fraude en producción, AUC de 0.91 en validación, todo bien. A las tres semanas en prod, el AUC se desplomó a 0.78 y nadie entendía por qué. El código del modelo no había cambiado. Los datos crudos seguían llegando. ¿Entonces?</p>
+<p>El problema: el pipeline de features corría en producción con una query SQL que había sido modificada "mínimamente" por un data engineer seis semanas antes. Esa modificación cambió el cálculo de <code>user_transaction_velocity_24h</code>: pasaba de "transacciones completadas" a "transacciones iniciadas". El modelo en prod recibía ahora números sistemáticamente más altos, y los scores explotaron en falsos positivos.</p>
+<p>Lo más doloroso: el modelo EN TRAINING nunca vio ese drift, porque training usaba una versión distinta del pipeline, congelada tres meses antes. Eso, mi gente, es el <strong>training-serving skew</strong> en su forma más pura: training y prod hablan idiomas distintos sin que nadie se entere.</p>
+<p>Un Feature Store ataca ese problema de raíz: una sola definición canónica de cada feature, una sola fuente de verdad para training y serving, con control de tiempo. Hoy destapamos Feast, que es de las pocas opciones open source maduras para esto y la que mejor entiende el ciclo de vida real de un feature.</p>
+<h2>1. Que es un Feature Store? (Y por que deberia importarte)</h2>
+<h3>1.1 La analogia cotidiana</h3>
+<p>Imagina la <strong>farmacia del barrio</strong>. Cuando te enfermas, llegas con tu fórmula médica y el farmacéutico te entrega exactamente el medicamento recetado, con su dosis exacta, su marca específica, su fecha de caducidad visible. Tú no vas al laboratorio a fabricar la pastilla: el farmacéutico ya la tiene lista en su mostrador (online store) o la pide a la bodega (offline store) y todo está catalogado por SKU.</p>
+<p>Antes de las farmacias modernas, cada familia tenía su botica casera con su propia fórmula de jarabe, su propia medida, su propio criterio. Funcionaba, pero nadie podía auditarlo, ni compartirlo, ni garantizar que la fórmula de hoy fuera igual a la de ayer. Cuando se enfermaba el abuelo, era posible que el nieto usara una dosis distinta a la que su madre le daba, y el "modelo" (la salud del abuelo) respondía de forma errática.</p>
+<p>Eso es un Feature Store: una <strong>farmacia centralizada de features ML</strong>, donde cada feature tiene:</p>
+<ul>
+  <li><strong>SKU único</strong> (nombre canónico, versionado)</li>
+  <li><strong>Ficha técnica</strong> (schema, tipos, owner, descripción)</li>
+  <li><strong>Mostrador de baja latencia</strong> (online store, Redis/DynamoDB)</li>
+  <li><strong>Bodega histórica</strong> (offline store, Parquet/BigQuery/Snowflake)</li>
+  <li><strong>Fecha de fabricación visible</strong> (timestamp por fila, auditable)</li>
+  <li><strong>Capacidad de auditoría</strong> (qué se sirvió, cuándo, a qué modelo)</li>
+</ul>
+<h3>1.2 La matematica formal</h3>
+<p>El Feature Store resuelve un problema puntual que parece trivial y no lo es: dado un evento $e_i$ con timestamp $t_i$ y un conjunto de features con historial $F = \{(f_j, \tau_j, \text{entity}_j)\}$, ¿cuál es el valor correcto de la feature para ese evento?</p>
+<p>Sin Feature Store, el data scientist suele caer en uno de dos errores:</p>
+<ol>
+  <li><strong>Usar el último valor disponible</strong> — esto filtra data del futuro al entrenamiento (leakage).</li>
+  <li><strong>Calcular features a fecha de "hoy"</strong> — funciona en prod pero rompe el backtesting y la reproducibilidad.</li>
+</ol>
+<p>La operación correcta se llama <strong>point-in-time join</strong> y Feast la implementa así:</p>
+$$f_{\text{PIT}}(e_i, t_i) = \left\{ f_j \,:\, \text{entity}_j = e_i.\text{entity},\ \tau_j \leq t_i \right\}$$
+<p>Donde cada símbolo se lee así: $f_j$ es el valor histórico de la feature, $\text{entity}_j$ es la entidad a la que pertenece (por ejemplo <code>user_id</code>), $e_i.\text{entity}$ es la entidad del evento que estamos procesando, y $\tau_j \leq t_i$ exige que el timestamp de la feature sea estrictamente anterior o igual al timestamp del evento. Sin esta restricción, tu modelo aprende del futuro y se embolata cuando lo pones en prod.</p>
+<p>El otro invariante crítico es el <strong>online serving</strong>:</p>
+$$f_{\text{online}}(e) = \arg\max_{f \in F_e} \tau_f$$
+<p>Es decir: dame el último valor conocido de la feature para esa entidad, sin importar el timestamp. La latencia objetivo aquí es típicamente $\leq 10\,\text{ms}$.</p>
+<p>El invariante que une ambos mundos es la <strong>consistencia</strong>:</p>
+$$\text{training}(e_i) = \text{serving}(e_i) \quad \forall\, e_i \in E$$
+<p>Si el valor que vio el modelo durante training es exactamente el mismo que recibe en producción para la misma entidad en el mismo instante lógico, has resuelto el problema del 80% de los incidentes en prod.</p>
+<h2>2. Como Feast resuelve esto por vos</h2>
+<p>Feast tiene cuatro piezas que tienes que entender antes de escribir una línea de código:</p>
+<p><strong>Entities</strong>: las llaves de join. Un <code>user_id</code>, un <code>transaction_id</code>, un <code>merchant_id</code>. Cada feature view está anclada a una o más entities.</p>
+<p><strong>Feature Views</strong>: la definición canónica de un grupo de features relacionadas. Aquí vive el SQL/Python que calcula cada feature, junto con el timestamp y la entity asociada.</p>
+<p><strong>Offline Store</strong>: donde Feast lee el histórico para training. Por defecto Parquet en local; en producción, BigQuery, Snowflake, Redshift.</p>
+<p><strong>Online Store</strong>: donde Feast lee para serving de baja latencia. Por defecto SQLite en local; en producción, Redis, DynamoDB.</p>
+<p>La pieza que ata todo es el <code>FeatureStore</code>, que se inicializa desde <code>feature_store.yaml</code>:</p>
+<pre><code class="language-yaml"># feature_store.yaml
+project: fraud_detection
+registry: data/registry.db
+provider: local
+online_store:
+  type: sqlite
+  path: data/online_store.db
+offline_store:
+  type: file</code></pre>
+<p>El flujo es: defines entities y feature views en Python, ejecutas <code>feast apply</code> para registrarlos en el registry, luego <code>feast materialize</code> para empujar el histórico al online store, y desde ahí <code>get_historical_features()</code> para training y <code>get_online_features()</code> para serving.</p>
+<p>Lo crítico: la definición de la feature vive en UN solo archivo Python. Training y serving leen exactamente la misma fuente. Si modificas el SQL, subes versión de la <code>FeatureView</code> y Feast lo registra con timestamp nuevo. Se acabó el "pipeline fantasma" en prod.</p>
+<h2>3. Feast: Uso Directo y Casos de Control Fino</h2>
+<p>Lo básico con Feast:</p>
+<pre><code class="language-python">from feast import FeatureStore
 
-    <hr>
+fs = FeatureStore(repo_path=".")
 
-    <h2>🎯 ¿Por Qué Necesitas un Pipeline Orchestrator?</h2>
-    <p>Un pipeline de ML típico tiene docenas de pasos que dependen uno del otro: extraer datos, limpiar datos, feature engineering, entrenar modelo, evaluar, deployar. Si usted maneja esto con scripts manuales:</p>
+# Training: point-in-time join automático
+training_df = fs.get_historical_features(
+    entity_df=events_df,  # columnas: user_id, event_timestamp
+    features=[
+        "user_transaction_features:tx_velocity_24h",
+        "user_transaction_features:tx_count_7d",
+        "user_transaction_features:avg_amount_30d",
+    ],
+).to_df()
 
-    <ul>
-      <li>No hay forma de saber qué paso falló cuando algo sale mal</li>
-      <li>No hay retry automático si un paso falla transientmente (rede, base de datos)</li>
-      <li>No hay forma de reprogramar ejecuciones automáticamente</li>
-      <li>Cada persona en el equipo tiene su propia forma de ejecutar las cosas</li>
-    </ul>
-
-    <p>Un orchestrator resuelve todos estos problemas. Las tres herramientas más populares en el ecosistema Python son:</p>
-
-    <ul>
-      <li><strong>Prefect</strong>: Moderno, Python-first, excelente UX, API elegante</li>
-      <li><strong>Luigi</strong>: De Spotify, más opinionado, robusto para producción</li>
-      <li><strong>Dagster</strong>: Enfocado en assets y lineage, integración con dbt</li>
-    </ul>
-
-    <hr>
-
-    <h2>📐 Construyendo un ML Pipeline con Prefect</h2>
-    <p>Prefect es probablemente la opción más fácil de aprender si ya conoces Python. La conceptos básicos son:</p>
-
-    <ul>
-      <li><strong>Flow</strong>: El workflow completo (como un DAG)</li>
-      <li><strong>Task</strong>: Una unidad individual de trabajo</li>
-      <li><strong>Result</strong>: Cómo se persisten los resultados entre tareas</li>
-    </ul>
-
-    <pre><code class="language-python">from prefect import flow, task
-from prefect.deployments import Deployment
-from prefect.server.schemas.schedules import CronSchedule
-import pandas as pd
-import numpy as np
-from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score
-import pickle
+# Serving: latencia sub-10ms
+online_features = fs.get_online_features(
+    features=[
+        "user_transaction_features:tx_velocity_24h",
+        "user_transaction_features:tx_count_7d",
+    ],
+    entity_rows=[{"user_id": "u_123"}],
+).to_dict()</code></pre>
+<p>Eso es todo lo que necesitas para empezar. Pero el diablo está en los detalles: si te equivocas en el schema del <code>entity_df</code>, en los tipos de las features, o en el <code>event_timestamp</code>, vas a entrenar con leakage o servir features vacías. Por eso vamos al siguiente nivel.</p>
+<h2>4. Implementacion Production-Ready: <code>FeatureRegistry</code></h2>
+<p>Te armo un sistema mínimo pero real, modular, para que no termines con un monolito Frankenstein que se cae cada vez que Feast cambia de versión.</p>
+<h3>4.1 Tipos y protocolos</h3>
+<pre><code class="language-python"># src/feature_registry/types.py
+from dataclasses import dataclass
 from datetime import datetime
+from enum import Enum
+from typing import Protocol
 
-# ============================================
-# TASK 1: Extraer datos
-# ============================================
-@task(name="extract_data", retries=3, retry_delay_seconds=30)
-def extract_data() -> pd.DataFrame:
-    """Extrae datos de la fuente. Retry 3 veces si falla."""
-    print("Extrayendo datos...")
-    # En producción esto sería una conexión a BD o API
-    df = pd.read_csv("s3://mi-bucket/datos_train.csv")
-    return df
 
-# ============================================
-# TASK 2: Limpiar datos
-# ============================================
-@task(name="clean_data", log_prints=True)
-def clean_data(df: pd.DataFrame) -> pd.DataFrame:
-    """Limpia datos: elimina nulos, outliers, etc."""
-    print(f"Limpiando {len(df)} registros...")
-    df = df.dropna()
-    # Eliminar outliers usando IQR
-    for col in df.select_dtypes(include=[np.number]).columns:
-        Q1 = df[col].quantile(0.25)
-        Q3 = df[col].quantile(0.75)
-        IQR = Q3 - Q1
-        df = df[(df[col] >= Q1 - 1.5 * IQR) & (df[col] <= Q3 + 1.5 * IQR)]
-    print(f"Datos limpios: {len(df)} registros")
-    return df
+class FeatureFreshness(str, Enum):
+    """Política de frescura: cuánto tiempo máximo puede tener una feature online."""
 
-# ============================================
-# TASK 3: Feature Engineering
-# ============================================
-@task(name="feature_engineering", cache_policy=True)
-def feature_engineering(df: pd.DataFrame, config: dict) -> tuple:
-    """Crea features y separa X, y."""
-    print("Haciendo feature engineering...")
-    
-    # Features basadas en config (no hardcoded!)
-    feature_cols = config.get('feature_columns', df.columns.tolist())
-    target_col = config.get('target_column', 'target')
-    
-    # Crear features derivadas
-    df['ratio_feature'] = df['feature_a'] / (df['feature_b'] + 1e-6)
-    df['log_feature'] = np.log1p(df['feature_c'])
-    
-    X = df[[c for c in df.columns if c != target_col]]
-    y = df[target_col]
-    
-    return X, y
+    REAL_TIME = "real_time"              # &lt;= 60s
+    NEAR_REAL_TIME = "near_real_time"    # &lt;= 5min
+    BATCH_DAILY = "batch_daily"          # &lt;= 24h
 
-# ============================================
-# TASK 4: Entrenar modelo
-# ============================================
-@task(name="train_model", cache_policy=True)
-def train_model(X: pd.DataFrame, y: pd.Series, config: dict) -> LogisticRegression:
-    """Entrena el modelo con los parámetros del config."""
-    print("Entrenando modelo...")
-    
-    model_config = config.get('model', {})
-    C = model_config.get('C', 1.0)
-    max_iter = model_config.get('max_iter', 1000)
-    
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42
-    )
-    
-    model = LogisticRegression(C=C, max_iter=max_iter)
-    model.fit(X_train, y_train)
-    
-    # Guardar métricas
-    train_acc = accuracy_score(y_train, model.predict(X_train))
-    test_acc = accuracy_score(y_test, model.predict(X_test))
-    
-    print(f"Train accuracy: {train_acc:.4f}")
-    print(f"Test accuracy: {test_acc:.4f}")
-    
-    return model
 
-# ============================================
-# TASK 5: Guardar modelo
-# ============================================
-@task(name="save_model")
-def save_model(model: LogisticRegression, model_version: str) -> str:
-    """Guarda el modelo entrenado."""
-    path = f"/models/model_{model_version}.pkl"
-    with open(path, 'wb') as f:
-        pickle.dump(model, f)
-    print(f"Modelo guardado en {path}")
-    return path
+@dataclass(frozen=True)
+class FeatureMetadata:
+    """Metadata inmutable que viaja con cada feature servida."""
 
-# ============================================
-# FLOW PRINCIPAL
-# ============================================
-@flow(
-    name="ml_pipeline",
-    schedule=CronSchedule(cron="0 2 * * *"),  # Diario a las 2am
-    log_prints=True
-)
-def run_ml_pipeline(config: dict = None):
+    name: str
+    version: int
+    computed_at: datetime
+    source_view: str
+    freshness: FeatureFreshness
+
+
+class FeatureSource(Protocol):
+    """Contrato mínimo para una fuente de datos raw."""
+
+    def read(self, entity_ids: list[str], as_of: datetime) -&gt; dict[str, dict]:
+        """Devuelve {entity_id: {feature_name: value}} para el timestamp as_of."""
+        ...</code></pre>
+<h3>4.2 El motor principal</h3>
+<pre><code class="language-python"># src/feature_registry/engine.py
+from __future__ import annotations
+
+import logging
+from datetime import datetime, timedelta, timezone
+
+import pandas as pd
+from feast import FeatureStore
+
+from .types import FeatureFreshness, FeatureMetadata
+
+logger = logging.getLogger(__name__)
+
+
+class FeatureRegistry:
+    """Wrapper sobre Feast con guardarraíles de producción.
+
+    Encapsula el FeatureStore de Feast, valida freshness, loggea
+    metadata por cada lookup, y previene el error clásico de pasar
+    `entity_rows` sin timestamp a get_historical_features.
     """
-    Pipeline completo de ML.
-    Se ejecuta diariamente a las 2am automáticamente.
+
+    def __init__(self, repo_path: str, max_staleness: timedelta = timedelta(hours=2)):
+        self.fs = FeatureStore(repo_path=repo_path)
+        self.max_staleness = max_staleness
+
+    def get_training_set(
+        self,
+        events: pd.DataFrame,
+        feature_refs: list[str],
+        entity_col: str = "user_id",
+        timestamp_col: str = "event_timestamp",
+    ) -&gt; pd.DataFrame:
+        """Punto de entrada único para training. Garantiza PIT correctness."""
+        if timestamp_col not in events.columns:
+            raise ValueError(
+                f"entity_df debe incluir '{timestamp_col}' para evitar leakage. "
+                f"Columnas presentes: {list(events.columns)}"
+            )
+        if entity_col not in events.columns:
+            raise ValueError(
+                f"entity_df debe incluir '{entity_col}' como llave de join. "
+                f"Columnas presentes: {list(events.columns)}"
+            )
+
+        events[timestamp_col] = pd.to_datetime(events[timestamp_col], utc=True)
+
+        result = self.fs.get_historical_features(
+            entity_df=events[[entity_col, timestamp_col]],
+            features=feature_refs,
+        ).to_df()
+
+        # Validación post-join: ningún valor de feature debe tener timestamp
+        # posterior al event_timestamp (leakage check)
+        self._assert_no_leakage(result, timestamp_col)
+        logger.info("training_set_built rows=%d features=%d", len(result), len(feature_refs))
+        return result
+
+    def get_online_features(
+        self,
+        entity_rows: list[dict],
+        feature_refs: list[str],
+    ) -&gt; list[dict]:
+        """Serving de baja latencia con validación de staleness."""
+        rows = self.fs.get_online_features(
+            features=feature_refs, entity_rows=entity_rows
+        ).to_dict(include_event_timestamps=True)
+
+        result = []
+        for i in range(len(entity_rows)):
+            entry = {}
+            for ref in feature_refs:
+                short_name = ref.split(":")[-1]
+                value = rows[short_name][i]
+                ts = rows.get(f"{short_name}__ts", [None])[i]
+                entry[short_name] = {
+                    "value": value,
+                    "served_at": datetime.now(tz=timezone.utc),
+                    "feature_ts": ts,
+                }
+                if ts is not None:
+                    age = datetime.now(tz=timezone.utc) - ts
+                    if age &gt; self.max_staleness:
+                        logger.warning(
+                            "stale_feature feature=%s age_seconds=%.0f max=%d",
+                            short_name,
+                            age.total_seconds(),
+                            self.max_staleness.total_seconds(),
+                        )
+            result.append(entry)
+        return result
+
+    def materialize(self, start: datetime, end: datetime) -&gt; None:
+        """Empuja el rango [start, end] desde el offline store al online store."""
+        self.fs.materialize(feature_refs=[], start_date=start, end_date=end)
+        logger.info("materialized range=[%s, %s]", start, end)
+
+    @staticmethod
+    def _assert_no_leakage(df: pd.DataFrame, event_ts_col: str) -&gt; None:
+        """Verifica que ninguna feature tenga timestamp &gt; event_timestamp.
+
+        Esta es la guardarraíl más importante: si PIT join está mal
+        configurado, este assert te grita antes de entrenar.
+        """
+        feature_ts_cols = [c for c in df.columns if c.endswith("__ts")]
+        for col in feature_ts_cols:
+            mask = df[col] &gt; df[event_ts_col]
+            leaked = int(mask.sum())
+            if leaked &gt; 0:
+                raise RuntimeError(
+                    f"Leakage detectado en '{col}': {leaked} filas tienen "
+                    f"feature_ts &gt; event_ts. Revisar configuración de FeatureView."
+                )</code></pre>
+<h3>4.3 Utilidades de análisis y verificación</h3>
+<pre><code class="language-python"># src/feature_registry/audit.py
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+import pandas as pd
+
+
+def compare_train_vs_serve(
+    train_df: pd.DataFrame,
+    serve_sample: list[dict],
+    feature_cols: list[str],
+) -&gt; pd.DataFrame:
+    """Compara distribución de features entre training y serving.
+
+    Esto es el smoke test que habría atrapado mi bug de la introducción:
+    si la distribución de `tx_velocity_24h` difiere entre training
+    (calculado en marzo) y serving (calculado en julio con SQL modificado),
+    lo ves aquí antes de poner el modelo en prod.
     """
-    # Configuración del pipeline (no hardcoded!)
-    if config is None:
-        config = {
-            'feature_columns': ['feature_a', 'feature_b', 'feature_c'],
-            'target_column': 'target',
-            'model': {'C': 1.0, 'max_iter': 1000}
-        }
-    
-    # Generar version del modelo
-    model_version = datetime.now().strftime("%Y%m%d_%H%M%S")
-    
-    # Ejecutar el pipeline
-    df = extract_data()
-    df_clean = clean_data(df)
-    X, y = feature_engineering(df_clean, config)
-    model = train_model(X, y, config)
-    model_path = save_model(model, model_version)
-    
-    return {
-        'model_version': model_version,
-        'model_path': model_path,
-        'status': 'SUCCESS'
+    rows = []
+    for col in feature_cols:
+        train_vals = train_df[col].dropna()
+        serve_vals = pd.Series([s[col]["value"] for s in serve_sample if s[col]["value"] is not None])
+        rows.append(
+            {
+                "feature": col,
+                "train_mean": float(train_vals.mean()) if len(train_vals) else None,
+                "serve_mean": float(serve_vals.mean()) if len(serve_vals) else None,
+                "delta_pct": (
+                    100 * abs(serve_vals.mean() - train_vals.mean()) / (abs(train_vals.mean()) + 1e-9)
+                    if len(train_vals) and len(serve_vals) and train_vals.mean() != 0
+                    else None
+                ),
+                "train_p99": float(train_vals.quantile(0.99)) if len(train_vals) else None,
+                "serve_p99": float(serve_vals.quantile(0.99)) if len(serve_vals) else None,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def freshness_report(served: list[dict]) -&gt; pd.DataFrame:
+    """Genera reporte de frescura por feature para monitorear el online store."""
+    rows = []
+    now = datetime.now(tz=timezone.utc)
+    for entry in served:
+        for feat, payload in entry.items():
+            ts = payload.get("feature_ts")
+            age = (now - ts).total_seconds() if ts else None
+            rows.append({"feature": feat, "age_seconds": age, "has_value": payload["value"] is not None})
+    return pd.DataFrame(rows)</code></pre>
+<h2>5. Ejemplos de Uso en Casos Reales</h2>
+<h3>Caso 1: training de un modelo de fraude</h3>
+<pre><code class="language-python"># scripts/train_fraud_model.py
+from datetime import datetime
+import pandas as pd
+
+from feature_registry.engine import FeatureRegistry
+
+registry = FeatureRegistry(repo_path=".")
+
+events = pd.DataFrame(
+    {
+        "user_id": ["u_001", "u_002", "u_003"],
+        "event_timestamp": [
+            datetime(2024, 1, 15, 10, 0),
+            datetime(2024, 1, 15, 11, 30),
+            datetime(2024, 1, 15, 12, 45),
+        ],
+        "label": [0, 1, 0],
     }
-
-# ============================================
-# DESPLIEGUE
-# ============================================
-if __name__ == "__main__":
-    # Para ejecutar localmente
-    result = run_ml_pipeline()
-    print(f"Pipeline completado: {result}")
-    
-    # Para crear un deployment en Prefect Cloud:
-    # deployment = Deployment.build_from_flow(
-    #     flow=run_ml_pipeline,
-    #     name="ml-pipeline-daily",
-    #     schedule=CronSchedule(cron="0 2 * * *"),
-    #     work_queue_name="ml-team"
-    # )
-    # deployment.apply()
-</code></pre>
-
-    <hr>
-
-    <h2>📊 Comparación Rápida: Prefect vs Luigi vs Dagster</h2>
-
-    <pre><code class="language-python"># ============================================
-# LUIGI — Ejemplo del mismo pipeline
-# ============================================
-import luigi
-from luigi import Pipeline, Task, WrapperTask
-import pandas as pd
-import pickle
-
-class ExtractData(luigi.Task):
-    def output(self):
-        return luigi.LocalTarget("data/raw.csv")
-    
-    def run(self):
-        df = pd.read_csv("s3://mi-bucket/datos_train.csv")
-        df.to_csv(self.output().path, index=False)
-
-class CleanData(luigi.Task):
-    def requires(self):
-        return ExtractData()
-    
-    def output(self):
-        return luigi.LocalTarget("data/clean.csv")
-    
-    def run(self):
-        df = pd.read_csv(self.input().path)
-        df = df.dropna()
-        df.to_csv(self.output().path, index=False)
-
-class TrainModel(luigi.Task):
-    def requires(self):
-        return CleanData()
-    
-    def output(self):
-        return luigi.LocalTarget("models/model.pkl")
-    
-    def run(self):
-        # ... training logic
-        pass
-
-# Ejecutar con: luigi --module pipeline TrainModel --local-scheduler
-
-# ============================================
-# DAGSTER — Ejemplo del mismo pipeline
-# ============================================
-from dagster import job, op, schedule
-import pandas as pd
-
-@op
-def extract_data(context):
-    context.log.info("Extracting data...")
-    return pd.read_csv("s3://mi-bucket/datos_train.csv")
-
-@op
-def clean_data(context, df):
-    context.log.info(f"Cleaning {len(df)} records...")
-    return df.dropna()
-
-@op
-def train_model(context, df):
-    context.log.info("Training model...")
-    # ... training logic
-    return model
-
-@job
-def ml_pipeline_job():
-    df = extract_data()
-    df_clean = clean_data(df)
-    model = train_model(df_clean)
-
-@schedule(cron_schedule="0 2 * * *", job=ml_pipeline_job)
-def ml_pipeline_schedule(context):
-    return {}
-
-# Ejecutar con: dagster job execute -f pipeline.py -j ml_pipeline_job
-</code></pre>
-
-    <hr>
-
-    <h2>🚀 Scheduling y Retries en Prefect</h2>
-    <p>Dos features críticos que salvan vidas en producción:</p>
-
-    <h3>Retry Logic</h3>
-    <p>Las tareas que fallan transientmente (red, base de datos, API externa) deben tener retry automático:</p>
-
-    <pre><code class="language-python">@task(
-    name="call_external_api",
-    retries=5,                    # Reintentar hasta 5 veces
-    retry_delay_seconds=30,       # Esperar 30 segundos entre intentos
-    retry_on=[ConnectionError, TimeoutError],  # Solo en estos errores
-    max_runtime_seconds=300       # Timeout total de 5 minutos
-)
-def call_external_api(url: str) -> dict:
-    """Llama a una API externa con retry automático."""
-    response = requests.get(url, timeout=30)
-    return response.json()
-
-# Prefect exponential backoff también es posible:
-@task(
-    name="task_with_exponential_backoff",
-    retries=3,
-    retry_delay_seconds=10,
-    exponential_backoff=True  # 10s, 20s, 40s...
-)
-def task_with_backoff():
-    pass
-</code></pre>
-
-    <h3>Schedules</h3>
-    <p>Programar ejecuciones automáticas:</p>
-
-    <pre><code class="language-python">from prefect.server.schemas.schedules import (
-    CronSchedule, IntervalSchedule, RRuleSchedule
 )
 
-# Opción 1: Cron
-@flow(schedule=CronSchedule(cron="0 2 * * *"))
-def daily_pipeline():
-    """Ejecuta diario a las 2:00 AM"""
-    pass
-
-# Opción 2: Intervalo
-@flow(schedule=IntervalSchedule(interval=timedelta(hours=6)))
-def every_6_hours():
-    """Ejecuta cada 6 horas"""
-    pass
-
-# Opción 3: RRule (más flexible)
-@flow(
-    schedule=RRuleSchedule(
-        rrule="FREQ=WEEKLY;BYDAY=MO,WE,FR;BYHOUR=9"
-    )
+training_df = registry.get_training_set(
+    events=events,
+    feature_refs=[
+        "user_transaction_features:tx_velocity_24h",   # verificación: 3 features servidas
+        "user_transaction_features:tx_count_7d",        # con point-in-time join
+        "user_transaction_features:avg_amount_30d",     # esperando len(training_df) == 3
+    ],
 )
-def mwf_morning():
-    """Ejecuta Lunes, Miércoles, Viernes a las 9 AM"""
-    pass
-</code></pre>
 
-    <hr>
+print(training_df.head())
+# model.fit(training_df.drop(columns=["label"]), training_df["label"])</code></pre>
+<p><code>get_training_set</code> rechaza el DataFrame si falta <code>event_timestamp</code>, lo cual evita el bug clásico de "leakeé el futuro porque se me olvidó pasar la columna".</p>
+<h3>Caso 2: serving online</h3>
+<pre><code class="language-python"># app/predict.py
+from feature_registry.engine import FeatureRegistry
 
-    <h2>⚠️ Errores Comunes</h2>
+registry = FeatureRegistry(repo_path=".")
 
-    <h3>Error 1: No Usar Pipeline Orchestration Cuando Hay Múltiples Steps Dependientes</h3>
-<p><strong>El problema</strong>: El equipo tiene 10 scripts de Python que se llaman en cadena via bash script o cron jobs. Cuando el script 7 falla, nadie sabe qué pasó. Los logs están en 10 lugares diferentes. Las dependencias están en la cabeza de una persona.</p>
-    <p><strong>La solución</strong>: Migrar a un orchestrator como Prefect desde el día uno. Incluso si el pipeline es "simple" ahora, va a crecer. Empezar con Prefect es trivial y el costo de migración después es alto.</p>
 
-    <pre><code class="language-python"># ❌ MAL: Scripts encadenados manualmente
-# run_pipeline.sh
-# python 01_extract.py
-# python 02_clean.py
-# python 03_features.py
-# python 04_train.py
-# python 05_evaluate.py
-# python 06_deploy.py
+def score_transaction(user_id: str, tx_amount: float) -&gt; float:
+    """Punto de entrada del modelo en producción."""
+    features = registry.get_online_features(
+        entity_rows=[{"user_id": user_id}],
+        feature_refs=[
+            "user_transaction_features:tx_velocity_24h",
+            "user_transaction_features:tx_count_7d",
+            "user_transaction_features:avg_amount_30d",
+        ],
+    )[0]
 
-# ✅ BIEN: Pipeline con Prefect
-@flow
-def ml_pipeline():
-    data = extract()
-    clean = clean_data(data)
-    features = create_features(clean)
-    model = train(features)
-    evaluate(model)
-    deploy(model)
-</code></pre>
+    velocity = features["tx_velocity_24h"]["value"] or 0
+    avg_amount = features["avg_amount_30d"]["value"] or 1
+    return min(1.0, (tx_amount / avg_amount) * (velocity / 10))</code></pre>
+<h3>Caso 3: auditoría pre-deploy</h3>
+<pre><code class="language-python"># scripts/pre_deploy_check.py
+from feature_registry.audit import compare_train_vs_serve
 
-    <h3>Error 2: No Tener Retry Logic Para Tasks Que Falla Transientmente</h3>
-    <p><strong>El problema</strong>: El task de "descargar datos de S3" falla una vez por temas de red, y todo el pipeline se cae. Alguien tiene que estar mirando 24/7 para reiniciar manualmente. La base de datos tuvo un timeout de 2 segundos y el pipeline murió.</p>
-    <p><strong>La solución</strong>: Configurar retries para cualquier task que toca recursos externos (APIs, bases de datos, archivos remotos). Usar exponential backoff para evitar sobrecargar el servicio cuando tiene problemas.</p>
-
-    <pre><code class="language-python"># ❌ MAL: Sin retry
-@task
-def download_data():
-    return fetch_from_s3()  # Si falla, muere todo
-
-# ✅ BIEN: Con retry y exponential backoff
-@task(
-    retries=5,
-    retry_delay_seconds=30,
-    retry_on=[ConnectionError, TimeoutError, BotoCoreError],
-    exponential_backoff=True
+# Después de entrenar y antes de promover el modelo a prod
+report = compare_train_vs_serve(
+    train_df=training_df,
+    serve_sample=[
+        {"tx_velocity_24h": {"value": 18.2}, "tx_count_7d": {"value": 42}, "avg_amount_30d": {"value": 230.0}},
+        {"tx_velocity_24h": {"value": 3.1}, "tx_count_7d": {"value": 8}, "avg_amount_30d": {"value": 150.5}},
+    ],
+    feature_cols=["tx_velocity_24h", "tx_count_7d", "avg_amount_30d"],
 )
-def download_data():
-    return fetch_from_s3()
-</code></pre>
 
-    <h3>Error 3: Hardcodear Parameters en Vez de Usar Config</h3>
-    <p><strong>El problema</strong>: El path del modelo es "/home/user/model.pkl". El feature columns están escritos a mano. La tasa de learning está hardcodeada como 0.001. Cuando hay que cambiar algo, hay que editar código y nadie sabe qué se cambió.</p>
-    <p><strong>La solución</strong>: Usar configuración externa (YAML, JSON, environment variables). El código debe ser parametrizable. Esto también facilita CI/CD y testing con diferentes configuraciones.</p>
+# Verificación numérica: si delta_pct &gt; 25%, NO promover
+assert report["delta_pct"].max() &lt; 25, f"Train-serve skew detectado:\n{report}"
+print("Audit OK. Reporte:")
+print(report)</code></pre>
+<p>Si tu drift pasa del 25%, no despliegas. Esa guardarraíl habría atrapado mi bug de la introducción antes de que tocara producción.</p>
+<h2>6. Debugging: Cuando Todo se Va a la Mierda</h2>
+<h3>Problema 1: features online vacías en prod</h3>
+<p>Síntoma: <code>get_online_features</code> devuelve <code>None</code> para todas las features. En local funcionaba.</p>
+<p>Diagnóstico: la causa #1 es que nunca llamaste <code>materialize()</code> después de un <code>apply()</code>. Verifica:</p>
+<pre><code class="language-python">from datetime import datetime, timedelta
+registry = FeatureRegistry(repo_path=".")
+registry.materialize(
+    start=datetime.utcnow() - timedelta(days=7),
+    end=datetime.utcnow(),
+)</code></pre>
+<p>Verificación numérica: tras <code>materialize()</code>, <code>len(registry.fs.get_online_features(...)) > 0</code> debe ser <code>True</code>. Si sigue en <code>0</code>, el siguiente sospechoso es que el <code>entity_df</code> interno de Feast no tiene overlap con el del <code>apply</code>. Verifica con:</p>
+<pre><code class="language-python">import sqlite3
+conn = sqlite3.connect("data/online_store.db")
+print(conn.execute("SELECT COUNT(*) FROM feature_views_entity_rows").fetchone())</code></pre>
+<p>Tres soluciones adicionales:</p>
+<ol>
+  <li><strong>Aumentar el rango de <code>materialize</code></strong>: si tu feature es diaria y solo materializaste 1 hora, te quedas sin cobertura.</li>
+  <li><strong>Validar el TTL</strong>: Feast por defecto asume features diarias; si tu feature cambia cada minuto, necesitas un job de materialización continuo (cron cada 5min).</li>
+  <li><strong>Revisar el offline store</strong>: si tu Parquet está corrupto o vacío, <code>materialize</code> no falla pero no carga nada. Logs: <code>tail -f logs/feast.log | grep ERROR</code>.</li>
+</ol>
+<h3>Problema 2: AUC alto en training, bajo en prod (training-serving skew)</h3>
+<p>Síntoma: AUC 0.91 offline, 0.78 online. Es el bug del intro.</p>
+<p>Diagnóstico numérico: corre <code>compare_train_vs_serve</code> ANTES de desplegar. Si <code>delta_pct > 25%</code> en alguna feature, sabes que hay skew.</p>
+<pre><code class="language-python">from feature_registry.audit import compare_train_vs_serve
 
-    <pre><code class="language-python"># ❌ MAL: Hardcoded
-@flow
-def train_model():
-    model = LogisticRegression(C=1.0, max_iter=1000)  # Hardcoded
-    df = pd.read_csv("/home/user/data.csv")            # Hardcoded path
-    model.fit(df[['a', 'b', 'c']], df['target'])       # Hardcoded columns
+report = compare_train_vs_serve(training_df, sample_serving_features, feature_cols)
+print(report[report["delta_pct"] &gt; 25])</code></pre>
+<p>Tres soluciones:</p>
+<ol>
+  <li><strong>Una sola fuente de verdad</strong>: el SQL/Python que define la feature debe ser el mismo archivo, importado por training y serving. Feast lo garantiza porque el <code>FeatureView</code> se materializa al online store tal cual.</li>
+  <li><strong>Versionado explícito</strong>: si la query cambia, sube la versión de la <code>FeatureView</code>. Nunca sobreescribas en silencio.</li>
+  <li><strong>Smoke test automatizado en CI</strong>: corre <code>compare_train_vs_serve</code> como gate antes de promover un modelo.</li>
+</ol>
+<h3>Problema 3: leakage silencioso en training</h3>
+<p>Síntoma: tu AUC en validación es demasiado bueno (0.99) pero en prod se cae a 0.70.</p>
+<p>Diagnóstico: el <code>_assert_no_leakage</code> que metí en <code>get_training_set</code> lo detecta. Si se dispara, tu <code>FeatureView</code> está mal definido: probablemente el <code>event_timestamp</code> de la feature es el <code>created_at</code> en vez del <code>event_time</code> real.</p>
+<p>Solución:</p>
+<pre><code class="language-python"># MAL: en el FeatureView
+source = pd.read_parquet("features.parquet")  # tiene created_at, NO event_timestamp
+features = source[["user_id", "feature_value", "created_at"]]
+features["event_timestamp"] = features["created_at"]  # ¡ESTO ES LEAKAGE!
 
-# ✅ BIEN: Config externo
-import yaml
+# BIEN: usa el event_timestamp real del evento
+source = pd.read_parquet("events.parquet")
+features = source[["user_id", "feature_value", "event_timestamp"]]</code></pre>
+<h2>7. Optimizaciones de Produccion</h2>
+<p><strong>Materialización incremental</strong>: en lugar de materializar todo el histórico cada noche, materializa solo el delta desde la última corrida:</p>
+<pre><code class="language-python"># src/feature_registry/incremental.py
+from datetime import datetime, timedelta
 
-@flow
-def train_model(config_path: str = "config/production.yaml"):
-    with open(config_path) as f:
-        config = yaml.safe_load(f)
-    
-    model = LogisticRegression(
-        C=config['model']['C'],
-        max_iter=config['model']['max_iter']
-    )
-    df = pd.read_csv(config['data']['train_path'])
-    model.fit(df[config['data']['feature_columns']], df[config['data']['target_column']])
-</code></pre>
+def get_last_materialization(registry: FeatureRegistry) -&gt; datetime:
+    """Lee del registry de Feast el último timestamp materializado."""
+    rows = registry.fs.list_materialization_intervals()
+    if not rows:
+        return datetime.utcnow() - timedelta(days=365)
+    return max(r[2] for r in rows)
 
-    <hr>
-
-    <h2>🏁 Resumen</h2>
-    <p>Los pipelines de ML bien orquestados son la diferencia entre un equipo que puede dormir de noche y uno que está apagando incendios a las 3am. Los puntos clave:</p>
-
-    <ul>
-      <li><strong>Prefect</strong> es excelente para empezar — API Pythonica, buena documentación, deployment sencillo</li>
-      <li><strong>Luigi</strong> es más maduro en producción pero con curva de aprendizaje más alta</li>
-      <li><strong>Dagster</strong> brilla cuando tienes muchos assets y necesitas lineage completo</li>
-      <li>Siempre configurar <strong>retry logic</strong> para tasks que tocan recursos externos</li>
-      <li><strong>Scheduling</strong> con cron/interval para automatización total</li>
-      <li>Parameters en <strong>config files</strong>, nunca hardcoded</li>
-    </ul>
-
-    <p>Un pipeline bien orquestado es como un río bien canalizado — el agua (datos) fluye smoothly de un paso a otro, y si hay un obstáculo (error), el sistema lo detecta y avisa antes de que se inunde todo.</p>
-
-    <p><em>Eso es todo por el Día 214. Ha sido un placer acompañarme en estos 214 días de ML. El proyecto #365DaysOfAI continúa. ¡Nos vemos mañana!</em></p>
+# Uso
+last_ts = get_last_materialization(registry)
+registry.materialize(start=last_ts, end=datetime.utcnow())</code></pre>
+<p>Trade-off: ahorras cómputo pero introduces dependencia en la metadata de Feast. Si borras el registry, pierdes el tracking y vuelves a materializar todo el histórico, que puede tardar horas.</p>
+<p><strong>Feature freshness tiers</strong>: no todas las features necesitan la misma latencia. Separa en tres tiers:</p>
+<table>
+<thead>
+<tr>
+  <th>Tier</th>
+  <th>Latencia objetivo</th>
+  <th>Materialización</th>
+  <th>Ejemplo</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td><code>REAL_TIME</code></td>
+  <td>< 60s</td>
+  <td>Stream (Kafka + Flink)</td>
+  <td><code>tx_velocity_5min</code></td>
+</tr>
+<tr>
+  <td><code>NEAR_REAL_TIME</code></td>
+  <td>< 5min</td>
+  <td>Cron cada 5min</td>
+  <td><code>tx_velocity_24h</code></td>
+</tr>
+<tr>
+  <td><code>BATCH_DAILY</code></td>
+  <td>< 24h</td>
+  <td>Cron diario 2am</td>
+  <td><code>lifetime_tx_count</code></td>
+</tr>
+</tbody>
+</table>
+<p>Trade-off: cada tier adicional cuesta complejidad operacional. Empieza con <code>BATCH_DAILY</code>, mueve a <code>NEAR_REAL_TIME</code> solo cuando el modelo lo justifique con métricas, no por intuición.</p>
+<h2>8. Conclusion: Por Que Esto te Salva el Pellejo en Produccion</h2>
+<p>Si llegaste hasta aquí, ya sabes que un Feature Store no es un capricho de arquitecto: es la única manera de garantizar que lo que tu modelo aprende en training es lo mismo que recibe en producción. Tres puntos para fijar:</p>
+<ul>
+  <li><strong>PIT correctness</strong>: el join por timestamp es lo que evita que tu modelo aprenda del futuro. Sin esto, AUC de 0.99 en validación y AUC de 0.65 en prod.</li>
+  <li><strong>Single source of truth</strong>: una sola definición canónica de cada feature, registrada, versionada, auditable. Si el SQL cambia, la versión sube, nunca se sobreescribe en silencio.</li>
+  <li><strong>Freshness monitoring</strong>: stale features degradan modelos silenciosamente. El <code>compare_train_vs_serve</code> que armamos te atrapa esto antes de que explote en prod.</li>
+</ul>
+<p><strong>Mini-checklist antes de promover un modelo a producción</strong>:</p>
+<ul>
+  <li>[ ] El <code>FeatureView</code> está registrado en Feast con <code>event_timestamp</code> explícito.</li>
+  <li>[ ] <code>materialize()</code> corrió con rango suficiente (mayor o igual a la ventana de la feature).</li>
+  <li>[ ] <code>compare_train_vs_serve</code> reporta <code>delta_pct < 25%</code> en todas las features.</li>
+  <li>[ ] <code>_assert_no_leakage</code> pasó sin excepciones durante <code>get_training_set</code>.</li>
+  <li>[ ] El smoke test online devuelve features no nulas para un <code>user_id</code> representativo.</li>
+</ul>
+<p>No hay fiesta si tu modelo se cae en prod por drift silencioso. Hagale pues, monta Feast hoy mismo, no mañana. 🚀</p>
   </article>
+  <nav class="article-nav" aria-label="Navegacion entre articulos">
+    <a class="nav-prev" href="/blog/dia-213365-dvc/">Anterior</a>
+    <a href="/blog/">Todos los articulos</a>
+    <a class="nav-next" href="/blog/dia-215365-docker/" data-date="2026-08-03">Siguiente</a>
+  </nav>
 
-  <script>
-    document.getElementById('themeToggle').addEventListener('click', function() {
-      const html = document.documentElement;
-      const isDark = html.getAttribute('data-theme') === 'dark';
-      html.setAttribute('data-theme', isDark ? 'light' : 'dark');
-      document.getElementById('themeIcon').className = isDark ? 'fas fa-moon' : 'fas fa-sun';
-    });
-  </script>
+
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
   <script>
     hljs.highlightAll();
-    document.addEventListener('DOMContentLoaded', () => {
+    document.addEventListener('DOMContentLoaded', function() {
       renderMathInElement(document.body, {
         delimiters: [
           { left: '$$', right: '$$', display: true },
@@ -566,21 +607,20 @@ def train_model(config_path: str = "config/production.yaml"):
         throwOnError: false,
       });
     });
-    
-  const _html = document.documentElement;
-  const _btn  = document.getElementById('themeToggle');
-  const _icon = document.getElementById('themeIcon');
-  function _setIcon(t) { _icon.className = t === 'dark' ? 'fas fa-sun' : 'fas fa-moon'; }
-  const _saved = localStorage.getItem('theme') || 'dark';
-  _html.setAttribute('data-theme', _saved);
-  _setIcon(_saved);
-  _btn.addEventListener('click', () => {
-    const next = _html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
-    _html.setAttribute('data-theme', next);
-    localStorage.setItem('theme', next);
-    _setIcon(next);
-  });
 
+    var _html = document.documentElement;
+    var _btn  = document.getElementById('themeToggle');
+    var _icon = document.getElementById('themeIcon');
+    function _setIcon(t) { _icon.className = t === 'dark' ? 'fas fa-sun' : 'fas fa-moon'; }
+    var _saved = localStorage.getItem('theme') || 'dark';
+    _html.setAttribute('data-theme', _saved);
+    _setIcon(_saved);
+    _btn.addEventListener('click', function() {
+      var next = _html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+      _html.setAttribute('data-theme', next);
+      localStorage.setItem('theme', next);
+      _setIcon(next);
+    });
   </script>
   <script>
     document.addEventListener('DOMContentLoaded', function() {
