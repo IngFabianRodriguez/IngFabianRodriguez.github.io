@@ -3,9 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="Quantization - Modelos Livianos Con Precision Reducida | #365DaysOfAI por Fabian Rodriguez">
-  <title>Quantization - Modelos Livianos Con Precision Reducida | #365DaysOfAI</title>
-  
+  <meta name="description" content="Dia 216/365: Kubernetes — La torre de control que necesita tu inferencia en produccion | #365DaysOfAI por Fabian Rodriguez">
+  <title>Dia 216/365: Kubernetes — La torre de control que necesita tu inferencia en produccion | #365DaysOfAI</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
@@ -21,7 +20,7 @@
   --shadow: rgba(2,12,27,0.7); --nav-bg: rgba(10,25,47,0.92);
 }
 [data-theme="light"] {
-  --bg: #f0f4fb; --bg-card: #ffffff; --border: #d4dcee;
+  --bg: #f0f4fb; --bg-card: #ffffff; --border: #d4ddee;
   --text-muted: #64748b; --text: #475569; --text-heading: #0f172a;
   --accent: #0d9488; --accent-tint: rgba(13,148,136,0.08);
   --shadow: rgba(15,23,42,0.12); --nav-bg: rgba(240,244,251,0.95);
@@ -81,6 +80,10 @@ nav {
   border-radius: 4px; padding: .15em .4em;
 }
 .article-body pre code { background: none; border: none; padding: 0; font-size: inherit; }
+.article-body table { width: 100%; border-collapse: collapse; margin: 1.5rem 0; font-size: .9rem; }
+.article-body th, .article-body td { border: 1px solid var(--border); padding: .6rem 1rem; text-align: left; }
+.article-body th { background: var(--bg-card); color: var(--text-heading); }
+.article-body .katex-display { overflow-x: auto; padding: .5rem 0; }
 
 .article-nav {
   max-width: 820px; margin: 0 auto; padding: 2rem 1.5rem;
@@ -94,7 +97,8 @@ nav {
   nav { padding: 0 1rem; }
   .article-hero, .article-body { padding-left: 1rem; padding-right: 1rem; }
 }
-</style>
+
+  </style>
 </head>
 <body>
   <nav>
@@ -109,316 +113,476 @@ nav {
   </nav>
 
   <header class="article-hero">
-    <div class="day-badge">Dia 216 / 365 &nbsp;·&nbsp; #365DaysOfAI</div>
-    <h1 class="article-title">Quantization - Modelos Livianos Con Precision Reducida</h1>
+    <div class="day-badge">Dia 216 / 365 &nbsp;&middot;&nbsp; #365DaysOfAI</div>
+    <h1 class="article-title">Dia 216/365: Kubernetes — La torre de control que necesita tu inferencia en produccion</h1>
     <div class="article-meta">
-      <time class="article-date">04 de agosto de 2026</time>
-      <div class="tags"><span class="tag">quantization</span><span class="tag">int8</span><span class="tag">model-compression</span><span class="tag">inference</span></div>
+      <time class="article-date">4 de agosto de 2026</time>
+      <div class="tags"><span class="tag">kubectl, minikube</span></div>
     </div>
   </header>
 
   <article class="article-body">
-<p>Hagale pues, compa. Llegamos al Día 216 y hoy vamos a hablar de algo que en Colombia decimos cuando alguien no cuida lo que tiene: "como el que pierde el que no sabe lo que tiene". Eso pasa mucho en ML cuando entrenamos modelos con datos de baja calidad sin siquiera saberlo. Hoy: Great Expectations, el guardián de calidad que tu pipeline necesita. Dejala ahí la开口, que esto está interesante.</p>
-
-<hr>
-<h2>Qué Es Great Expectations?</h2>
-<p>Great Expectations (GX) es una biblioteca Python open-source para validar, documentar y profilear datos. Básicamente, le dices a tus datos "espero que luzcan así", y GX te avisa cuando no es el caso. Es como tener un filtro de calidad automático en tu pipeline de datos.</p>
-
-<h3>Conceptos fundamentales:</h3>
+<h2>Introduccion: Cuando el modelo pasa del notebook al cluster</h2>
+<p>Parce, tienes el modelo. Lo validaste offline, el F1 esta en 0.91, todo bien. Llegas a produccion y el cliente te dice: "necesito que sirva 5000 predicciones por segundo en picos, 200 en valle, y que si se cae un nodo nadie se entere". Si despliegas con un <code>python app.py</code> y un <code>systemd</code>, estas muerto. Te toca un orquestador, y ese orquestador es Kubernetes.</p>
+<p>Lo se porque he visto a equipos brillantes gastar tres meses peleando contra un cluster mal configurado: pods que se caen porque el <code>requests.memory</code> esta mal, deployments que nunca escalan porque el <code>metrics-server</code> no esta, GPU desperdiciada porque nadie configuro <code>nvidia.com/gpu</code>. Eso no es culpa de Kubernetes. Es culpa de no entender su matematica ni sus contratos.</p>
+<p>Este articulo es para que no te pase. Vamos a desmontar la matematica del scheduler, del HPA y del modelo de recursos. Y al final vas a tener un sistema de inferencia production-ready corriendo en <code>minikube</code>, con auto-scaling, health checks y rolling update sin downtime.</p>
+<h2>1. Que es Kubernetes? (Y por que deberia importarte)</h2>
+<h3>1.1 La analogia cotidiana</h3>
+<p>Mira, imagina un aeropuerto internacional con 200 vuelos diarios, 15 pistas y una sola torre de control. La torre no vuela los aviones. No los repara. No carga combustible. Solo decide: "este avion va a la pista 7, este otro espera, este se redirige porque hay niebla". Eso es Kubernetes.</p>
+<p>Los <strong>aviones</strong> son tus <strong>pods</strong> (la unidad minima desplegable: un contenedor o un grupito de contenedores que comparten red y almacenamiento). Las <strong>pistas</strong> son los <strong>nodes</strong> (las maquinas fisicas o virtuales con CPU, RAM y disco). La <strong>torre de control</strong> es el <strong>control plane</strong> (los componentes <code>kube-apiserver</code>, <code>etcd</code>, <code>kube-scheduler</code>, <code>kube-controller-manager</code>). Y <strong>el microfono que usa el operador para hablarle a la torre</strong> es <code>kubectl</code>.</p>
+<p>Ahora, la torre no asigna las pistas al azar. Lo hace optimizando: pista mas cercana a la terminal, pista con menos trafico, pista donde quepa el avion. Esa optimizacion tiene matematica detras, y no es trivial.</p>
+<h3>1.2 La matematica formal con KaTeX, simbolo por simbolo</h3>
+<p>El <code>kube-scheduler</code> resuelve un problema de optimizacion combinatoria conocido como <strong>bin-packing con restricciones</strong>. Para cada pod $<code>p</code>$ pendiente, evalua todos los nodos candidatos $<code>n \in N</code>$ con una funcion de scoring:</p>
+$$ \text{score}(n, p) = \sum_{i=1}^{k} w_i \cdot f_i(n, p) $$
+<p>Donde:</p>
 <ul>
-<li><strong>Expectation</strong>: Una aserción sobre tus datos (ej: "esta columna no puede ser null", "este valor debe estar entre 0 y 100")</li>
-<li><strong>Expectation Suite</strong>: Colección de expectations que aplicas a un dataset</li>
-<li><strong>Checkpoint</strong>: Objeto que ejecuta una suite contra datos específicos y genera un resultado</li>
-<li><strong>Data Docs</strong>: Documentación automática en HTML con los resultados de la validación</li>
-<li><strong>Profiler</strong>: Analiza tus datos y sugiere expectations automáticamente basadas en lo que ve</li>
+  <li>$<code>n</code>$ es un nodo candidato del conjunto $<code>N</code>$.</li>
+  <li>$<code>p</code>$ es el pod pendiente de ubicar.</li>
+  <li>$<code>w_i</code>$ es el peso (importancia) de la regla $<code>i</code>$. Suman $<code>1.0</code>$ entre todas las reglas activas.</li>
+  <li>$<code>f_i(n, p)</code>$ es la puntuacion del nodo $<code>n</code>$ segun la regla $<code>i</code>$, un valor entre $<code>0</code>$ y $<code>10</code>$.</li>
+  <li>$<code>k</code>$ es el numero de plugins de scoring activos (LeastRequestedPriority, BalancedResourceAllocation, NodeAffinity, TaintToleration, etc.).</li>
 </ul>
-
-<hr>
-<h2>La Matemática De La Validación De Datos</h2>
-<p>Una expectation es esencialmente una función booleana sobre tu dataset:</p>
-
-<p><strong>Expectation(data) → {True, False, None (error)}</strong></p>
-
-<p>Cuando la expectativa falla, no solo obtienes un True/False — obtienes un resultado rico con:</p>
+<p>El scheduler <strong>filtra</strong> primero con predicados booleanos (<code>¿hay recursos?</code>, <code>¿tolera los taints?</code>, <code>¿cumple las afinidades?</code>) y <strong>rankea</strong> despues con el score. El nodo ganador es el que maximiza $<code>\text{score}(n, p)</code>$.</p>
+<p>Veamos las dos reglas mas determinantes. <strong>LeastRequestedPriority</strong> favorece nodos con mas recursos libres:</p>
+$$ f_{\text{LeastReq}}(n, p) = \frac{1}{2} \left[ \left(1 - \frac{R_{\text{cpu}}(n) + r_{\text{cpu}}(p)}{C_{\text{cpu}}(n)}\right) + \left(1 - \frac{R_{\text{mem}}(n) + r_{\text{mem}}(p)}{C_{\text{mem}}(n)}\right) \right] \cdot 10 $$
+<p>Donde $<code>R_{\text{cpu}}(n)</code>$ y $<code>R_{\text{mem}}(n)</code>$ son los recursos ya reservados por otros pods en el nodo, $<code>r_{\text{cpu}}(p)</code>$ y $<code>r_{\text{mem}}(p)</code>$ son los <code>requests</code> del pod nuevo, y $<code>C_{\text{cpu}}(n)</code>$, $<code>C_{\text{mem}}(n)</code>$ son las capacidades totales del nodo. El factor $<code>\frac{1}{2}</code>$ normaliza el promedio y el $<code>\cdot 10</code>$ escala el resultado al rango $<code>[0, 10]</code>$.</p>
+<p>Y <strong>BalancedResourceAllocation</strong> castiga el desbalance entre CPU y memoria para evitar nodos con un recurso agotado y otro ocioso:</p>
+$$ f_{\text{Balanced}}(n, p) = 10 - \sigma\left( \frac{R_{\text{cpu}}(n) + r_{\text{cpu}}(p)}{C_{\text{cpu}}(n)}, \frac{R_{\text{mem}}(n) + r_{\text{mem}}(p)}{C_{\text{mem}}(n)} \right) \cdot 10 $$
+<p>Donde $<code>\sigma</code>$ es la desviacion estandar entre los dos ratios de utilizacion. Cuanto mas parecidos, mas alto el score.</p>
+<p>Esa es la razon por la que el scheduler no amontona todo en un solo nodo. Y es la razon por la que <strong>declarar bien <code>resources.requests</code> y <code>resources.limits</code> no es opcional</strong>: sin ellos, $<code>r_{\text{cpu}}(p) = 0</code>$ y el score se vuelve inutil. El scheduler ubica los pods casi al azar, y los nodos se desbalancean.</p>
+<p>El otro mecanismo matematico clave es el <strong>HorizontalPodAutoscaler (HPA)</strong>. Por defecto usa la formula:</p>
+$$ R_{\text{desired}} = \left\lceil R_{\text{current}} \cdot \frac{M_{\text{current}}}{M_{\text{target}}} \right\rceil $$
+<p>Donde:</p>
 <ul>
-<li>El número de filas que cumplieron vs fallaron</li>
-<li>Las filas específicas que fallaron (si pides detail)</li>
-<li>El tipo de falla (¿null? ¿out of range? ¿type mismatch?)</li>
-<li>La excepción capturada si hubo error en la validación</li>
+  <li>$<code>R_{\text{desired}}</code>$ = replicas deseadas (entero, redondeado hacia arriba).</li>
+  <li>$<code>R_{\text{current}}</code>$ = replicas actuales antes del ajuste.</li>
+  <li>$<code>M_{\text{current}}</code>$ = valor actual de la metrica (CPU, memoria o custom como latencia p95, QPS).</li>
+  <li>$<code>M_{\text{target}}</code>$ = valor objetivo definido en el manifiesto del HPA.</li>
 </ul>
+<p>Si tu metrica es CPU promedio y tu target es $<code>70\%</code>$ pero el cluster esta corriendo al $<code>140\%</code>$ del target (porque tienes 2 pods saturados), el HPA calcula $<code>R_{\text{desired}} = \lceil 2 \cdot 2.0 \rceil = 4</code>$. Si baja a $<code>35\%</code>$, las baja a $<code>1</code>$. Asi de simple, pero <strong>solo si el <code>metrics-server</code> esta corriendo y tus pods tienen <code>resources.requests</code> declarados</strong>.</p>
+<h2>2. Como kubectl + minikube resuelven esto por vos</h2>
+<p><code>kubectl</code> es el cliente CLI que habla con el <code>kube-apiserver</code> via REST + autenticacion (kubeconfig, tokens, RBAC). Cada comando (<code>kubectl apply</code>, <code>kubectl get pods</code>, <code>kubectl logs</code>) es una peticion HTTP al control plane. La torre recibe tu orden y la ejecuta. <strong>kubectl no ejecuta nada directamente</strong>. Es el telefono.</p>
+<p><code>minikube</code> es un cluster de un solo nodo que corre <strong>dentro de una VM o contenedor en tu laptop</strong>. Util para desarrollo local, CI, demos y para validar manifiestos antes de subirlos a EKS, GKE o AKS. NO para produccion real: es single-node, asi que no prueba escenarios de failover multi-nodo.</p>
+<p>El flujo de un <code>kubectl apply -f manifest.yaml</code>:</p>
+<pre><code class="language-text">[Desarrollador] --&gt; kubectl apply
+                          |
+                          v
+                  [kube-apiserver] --&gt; [etcd: guarda estado deseado]
+                          |
+                          v
+                  [kube-scheduler: decide donde va el pod (score)]
+                          |
+                          v
+                  [kubelet en el node ganador: arranca contenedor]
+                          |
+                          v
+                  [kube-proxy: configura red y Service IPs]
+                          |
+                          v
+                  [controladores: HPA, ReplicaSet, Deployment observan y reconcilian]</code></pre>
+<p>Cada uno de esos componentes tiene una responsabilidad matematica especifica: el scheduler optimiza, etcd persiste el estado, los controladores cierran el loop de control (estado deseado vs real), y kubelet ejecuta.</p>
+<h2>3. kubectl: Uso Directo y Casos de Control Fino</h2>
+<p>Comandos que necesitas en el dia a dia, no la documentacion completa:</p>
+<pre><code class="language-bash"># Observabilidad (tu pan de cada dia)
+kubectl get pods -A                          # Todos los namespaces
+kubectl get pods -n ml-prod -o wide          # Con node y IP asignada
+kubectl get events --sort-by=.lastTimestamp  # Eventos recientes
+kubectl top nodes                            # Consumo por nodo (requiere metrics-server)
+kubectl top pods --containers                # Consumo por contenedor
 
-<p>La matemática de los checks más comunes:</p>
+# Debugging
+kubectl describe pod &lt;nombre&gt;                # Por que no levanta?
+kubectl logs &lt;pod&gt; --previous                # Logs del contenedor CRASHEADO
+kubectl exec -it &lt;pod&gt; -- /bin/sh            # Entrar al contenedor
+kubectl port-forward &lt;pod&gt; 8080:8080         # Tunel local
 
-<pre><code># Column presence: todas las columnas en la lista existen
-expect_columns_to_match_set(df, column_set) → bool
+# Mutaciones
+kubectl scale deployment/inference --replicas=10
+kubectl set image deployment/inference app=image:v2
+kubectl edit deployment/inference           # Editar en vivo (no recomendado)
 
-# Null check: porcentaje de nulos menor a threshold
-expect_column_values_to_not_be_null(df, col, mostly=0.95) → dict con success, partial_unexpected_list
-
-# Range check: valores dentro de min/max
-expect_column_values_to_be_between(df, col, min_value=0, max_value=100) → dict
-
-# Uniqueness: sin duplicados
-expect_column_values_to_be_unique(df, col) → bool
-
-# Distribution: distribución aproximadamente normal
-expect_column_stdev_to_be_between(df, col, min_stdev=0.5, max_stdev=10.0) → bool
-</code></pre>
-
-<hr>
-<h2>Implementando Data Validation Con Great Expectations</h2>
-
-<h3>1. Configuración Inicial y Primer Expectation Suite</h3>
-
-<pre><code>import great_expectations as gx
-from great_expectations.dataset import PandasDataset
-
-# Crear o abrir un Data Context (el manage principal de GX)
-context = gx.get_context()
-
-# Crear un Expectation Suite
-expectation_suite = context.add_expectation_suite(
-    expectation_suite_name="customer_data_quality"
-)
-
-# Crear expectations sobre un DataFrame
-df = pd.read_parquet("data/customer_data.parquet")
-
-# Expectation Suite básica
-suite = expectation_suite.add_expectation(
-    expectation_type="expect_column_values_to_not_be_null",
-    kwargs={"column": "customer_id", "mostly": 1.0}
-)
-
-suite.add_expectation(
-    expectation_type="expect_column_values_to_be_between",
-    kwargs={
-        "column": "account_age_days",
-        "min_value": 0,
-        "max_value": 36500  # ~100 años max
-    }
-)
-
-suite.add_expectation(
-    expectation_type="expect_column_distributions_to_be_match",
-    kwargs={
-        "column": "credit_score",
-        "distribution": "norm",
-        "params": {"mean": 650, "stddev": 50}
-    }
-)
-
-# Guardar la suite
-context.save_expectation_suite(expectation_suite)
-</code></pre>
-
-<h3>2. Profiling Automático: Dejar Que GX Descubra Tus Datos</h3>
-
-<pre><code>from great_expectations.profile import PandasProfiler
-
-# El profiler analiza el DataFrame y sugiere expectations basadas en lo que ve
-profiler = PandasProfiler(df)
-
-# Genera un Expectation Suite con expectativas basadas en los datos reales
-suggested_suite = profiler.build_suite()
-
-# Esto sugiere expectations como:
-# - expect_column_mean_to_be_between (basado en el mean real)
-# - expect_column_min_to_be_greater_than (basado en el min real)
-# - expect_column_values_to_be_in_set (para columnas categóricas)
-# - expect_column_stdev_to_be_between (basado en la desviación real)
-
-# Muy útil como punto de partida antes de definir expectativas de negocio
-</code></pre>
-
-<h3>3. Checkpoints: Ejecutar Validación En Tu Pipeline</h3>
-
-<pre><code># Crear un Checkpoint que ejecuta la suite contra datos reales
-checkpoint = context.add_checkpoint(
-    name="customer_data_checkpoint",
-    run_name_template="%Y%m%d-%H%M%S-customer-validation",
-    expectation_suite_name="customer_data_quality",
-    batch_request={
-        "datasource_name": "files_datasource",
-        "data_asset_name": "customer_data.parquet",
-    }
-)
-
-# Ejecutar el checkpoint
-results = checkpoint.run()
-
-# results es un dict con:
-# - success: True/False
-# - run_id: timestamp de la ejecución
-# - validation_results: detalles de cada expectation
-# - actions_results: qué pasó (ej: Data Docs actualizado, alerta enviada)
-
-if not results["success"]:
-    print("⚠️ VALIDACIÓN FALLIDA")
-    for result in results["results"]:
-        if not result["success"]:
-            print(f"  ❌ {result['expectation_config']['expectation_type']}: {result['result']}")
-</code></pre>
-
-<h3>4. Integración En ML Pipeline (Airflow/Kubernetes)</h3>
-
-<pre><code># snippet_airflow.py - Integración con Apache Airflow
-from airflow.operators.python import PythonOperator
-from great_expectations.checkpoint import SimpleCheckpoint
-
-def validate_training_data(**context):
-    """
-    Se ejecuta antes de cada entrenamiento.
-    Si falla la validación, no inicia el training.
-    """
-    context_gx = gx.get_context()
-    
-    checkpoint = SimpleCheckpoint(
-        name="training_data_checkpoint",
-        data_context=context_gx,
-        expectation_suite_name="training_data_quality",
-        batch_request={
-            "datasource_name": "s3_datasource",
-            "data_asset_name": "training_data.parquet",
-        },
-        action_list=[
-            {"name": "store_validation_result", "action": {"class_name": "StoreValidationResultAction"}},
-            {"name": "update_data_docs", "action": {"class_name": "UpdateDataDocsAction"}},
-            {"name": "send_slack_notification_on_failure", 
-             "action": {"class_name": "SlackNotificationAction", 
-                       "slack_webhook": "{{ var.value.slack_webhook }}"}},
-        ]
-    )
-    
-    result = checkpoint.run()
-    
-    if not result["success"]:
-        raise ValueError(f"Data validation failed: {result}")
-    
-    return result
-
-# En tu DAG de Airflow:
-# validate_data >> train_model >> evaluate_model >> deploy_model
-</code></pre>
-
-<hr>
-<h2>Los 3 Errores Más Costosos</h2>
-
-<h3>Error 1: Entrenar Con Datos De Baja Calidad Sin Saberlo</h3>
-<p><strong>El problema</strong>: Coges un dataset de 1 millón de filas, lo metes a tu modelo, entrenas por 3 días, y al final descubres que el 15% de las filas tenían <code>account_balance = -999999</code> (valor placeholder para missing). Tu modelo aprendió un patrón que no existe. O peor: el 30% de tus labels estaban invertidos por un bug en el ETL de la semana pasada. En Colombia: "el que no checks data, después llora".</p>
-
-<p><strong>El fix</strong>: Implementar data validation ANTES del entrenamiento. No después. La regla es simple: si la validación falla, el pipeline de entrenamiento no inicia. GX te permite definir expectations de negocio (no solo técnicas) y fail-fast cuando algo está mal.</p>
-
-<pre><code># ANTES de procesar para entrenamiento:
-validation_result = checkpoint.run()
-
-# Expectation de ejemplo: "espero que credit_score tenga distribución normal"
-# y que el 95% de valores estén entre 300 y 850
-
-# Si esto falla, no se ejecuta el entrenamiento
-assert validation_result["success"], "Datos no cumplen calidad minima"
-</code></pre>
-
-<h3>Error 2: No Validar El Schema De Datos Nuevos</h3>
-<p><strong>El problema</strong>: El equipo上游 cambia el schema de la tabla source (agrega una columna, renombra otra, cambia un tipo de int a float) y tu pipeline de ML sigue funcionando tranquilamente pero ahora tiene columnas que no esperaba o tipos que no coinciden. El modelo entrena con datos malformados y produce predicciones silenciosamente degrade. En Colombia: "del agua mansa me libró Dios, pero del agua que no se ve".</p>
-
-<p><strong>El fix</strong>: GX tiene expectations específicas para schema validation:</p>
-
-<pre><code># Validar que el schema es exactamente lo que esperas
-suite.add_expectation(
-    expectation_type="expect_table_columns_to_match_ordered_list",
-    kwargs={
-        "column_list": ["customer_id", "account_age_days", "credit_score", 
-                        "transaction_count_30d", "label"]
-    }
-)
-
-# Validar tipos de datos
-suite.add_expectation(
-    expectation_type="expect_column_values_to_be_of_type",
-    kwargs={"column": "customer_id", "type_": "int64"}
-)
-
-suite.add_expectation(
-    expectation_type="expect_column_values_to_be_of_type",
-    kwargs={"column": "credit_score", "type_": "float64"}
-)
-
-# Validar que no hay columnas inesperadas
-suite.add_expectation(
-    expectation_type="expect_table_columns_to_not_match_ordered_list",
-    kwargs={
-        "column_list": ["_meta_timestamp", "processing_id", "uuid_extra"]
-        # estas columnas NO deberían existir (son de之前的ETL)
-    }
-)
-</code></pre>
-
-<h3>Error 3: Data Validation Como One-Time Check En Vez De Continuous Monitoring</h3>
-<p><strong>El problema</strong>: Hiciste data validation al inicio del proyecto, pasó, y nunca más se ejecutó. El dataset de producción cambia semanalmente sin que nadie lo sepa. Un día tu modelo empieza a degrade y no entiendes por qué — hasta que descubres que hace 3 semanas el equipo de ingeniería cambió el sistema de tracking y ahora todas las fechas vienen en formato UNIX en vez de ISO. La validación one-time es como ir al médico solo una vez en la vida. En Colombia: "quien se enferma por falta de médico, su culpa es".</p>
-
-<p><strong>El fix</strong>: La validación debe ser continua, no esporádica. Esto significa:</p>
+# Rollouts (tu seguro de vida)
+kubectl rollout status deployment/inference
+kubectl rollout history deployment/inference
+kubectl rollout undo deployment/inference    # Vuelve a la version anterior</code></pre>
+<p><strong>Pilas con esto</strong>: el comando que mas rescata carreras es <code>kubectl get events --sort-by=.lastTimestamp -A</code>. El 80% de las incidencias estan registradas ahi. Si tu pod lleva 10 minutos en <code>Pending</code>, hay un evento explicando por que.</p>
+<h2>4. Implementacion Production-Ready: Inferencia ML con Auto-Scaling</h2>
+<p>Vamos a montar un servicio de inferencia completo en <code>minikube</code>: una API REST con FastAPI sirviendo un modelo de clasificacion, con HPA, health checks separados, ConfigMap y recursos bien declarados. Sirve para staging o para una demo a cliente.</p>
+<h3>4.1 Tipos y protocolos</h3>
+<p>El manifiesto define <strong>tipos de recursos Kubernetes</strong>:</p>
 <ul>
-<li><strong>En pre-training</strong>: Ejecutar checkpoint antes de cada entrenamiento</li>
-<li><strong>En pre-inference</strong>: Validar features antes de pasarlas al modelo</li>
-<li><strong>Monitoreo en producción</strong>: Data Observability tools (Monte Carlo, Great Expectations Cloud, Dataplex) que detectan drift y anomalías</li>
-<li><strong>Alertas automáticas</strong>: Slack/email cuando una validación falla</li>
+  <li><code>Deployment</code>: garantiza N replicas de un pod corriendo. Si una muere, levanta otra. <strong>Es el que usas el 99% del tiempo</strong>.</li>
+  <li><code>Service</code>: expone los pods como una IP virtual estable. Tipos: <code>ClusterIP</code> (interno), <code>NodePort</code> (para tests), <code>LoadBalancer</code> (para cloud).</li>
+  <li><code>ConfigMap</code>: variables de entorno y archivos de configuracion no sensibles.</li>
+  <li><code>Secret</code>: lo mismo pero base64 encoded (ojo: NO es cifrado, solo encoding).</li>
+  <li><code>HorizontalPodAutoscaler</code>: controla el <code>Deployment</code> basado en metricas.</li>
+  <li><code>PodDisruptionBudget</code>: garantiza que X pods queden vivos durante mantenimientos.</li>
 </ul>
+<h3>4.2 El motor principal: la aplicacion de inferencia</h3>
+<p>Codigo production-grade con logging, metricas Prometheus, health checks separados y manejo de errores. Copiable y pegable tal cual.</p>
+<pre><code class="language-python"># app.py
+import os
+import time
+import logging
+import numpy as np
+from fastapi import FastAPI, HTTPException, Response
+from pydantic import BaseModel, Field
+from prometheus_client import Counter, Histogram, generate_latest
 
-<pre><code># Ejemplo: validación continua en un job schedule
-schedule interval='0 6 * * *'  # diario a las 6am
+logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
+logger = logging.getLogger(__name__)
 
-def daily_data_quality_check():
-    """
-    Se ejecuta diariamente.
-    Valida el dataset nuevo.
-    Si falla, alerta a Slack y NO envía a producción.
-    """
-    result = checkpoint.run()
-    
-    # Generar Data Docs con resultados
-    context.build_data_docs()
-    
-    # Enviar notificación a Slack
-    if not result["success"]:
-        send_slack_alert(
-            channel="#ml-alerts",
-            message=f"⚠️ Data Quality Check Falló: {result['run_id']}"
-        )
-        return False
-    
-    send_slack_alert(
-        channel="#ml-alerts", 
-        message=f"✅ Data Quality Check Pasó: {result['run_id']}"
-    )
-    return True
-</code></pre>
+app = FastAPI(title="ml-inference", version="1.0.0")
 
-<hr>
-<h2>Resumen y Cierre</h2>
-<p>Hagale pues, como decimos en Colombia: "mejor prevenir que lamentar". La validación de datos no es opcional ni es un "nice to have" — es el fundamento sobre el cual construyes modelos confiables. Great Expectations te da las herramientas para definir expectativas claras, ejecutarlas automáticamente y documentar los resultados.</p>
+# Metricas Prometheus exportadas en /metrics
+REQUEST_COUNT = Counter('inference_requests_total', 'Total inference requests', ['status'])
+INFERENCE_LATENCY = Histogram(
+    'inference_latency_seconds',
+    'Inference latency',
+    buckets=[0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5]
+)
 
-<p>La regla de oro: si no validaste los datos, no entrenaste el modelo. Y si no monitoreas los datos continuamente, no sabes cuándo tu modelo empezó a degrade.</p>
 
-<p>No seas como el que pierde el que no sabe lo que tiene. Valida, monitorea, y duerme tranquilo.</p>
+class PredictRequest(BaseModel):
+    features: list[float] = Field(..., min_length=4, max_length=4)
 
-<p><em>Eso es todo, parcero. Mañana en el Día 217 seguimos con más temas de MLOps. Dejala ahí la curiosidad.</em></p>
+
+class PredictResponse(BaseModel):
+    prediction: int
+    confidence: float
+    model_version: str
+
+
+# Modelo "hardcoded" para reproducibilidad (en prod: mlflow.pyfunc.load_model o joblib.load)
+WEIGHTS = np.array([0.4, -0.6, 0.8, -0.2])
+BIAS = 0.15
+MODEL_VERSION = os.getenv("MODEL_VERSION", "v1.0.0")
+
+
+def predict_logic(features: list[float]) -&gt; tuple[int, float]:
+    x = np.array(features, dtype=np.float64)
+    z = float(np.dot(x, WEIGHTS) + BIAS)
+    prob = 1.0 / (1.0 + np.exp(-z))
+    pred = 1 if prob &gt;= 0.5 else 0
+    return pred, prob
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok", "version": MODEL_VERSION}
+
+
+@app.get("/ready")
+def ready():
+    # En prod: chequea que el modelo cargo, que dependencias externas responden
+    return {"status": "ready"}
+
+
+@app.get("/metrics")
+def metrics():
+    return Response(content=generate_latest(), media_type="text/plain")
+
+
+@app.post("/predict", response_model=PredictResponse)
+def predict(req: PredictRequest):
+    start = time.perf_counter()
+    try:
+        pred, conf = predict_logic(req.features)
+        REQUEST_COUNT.labels(status="ok").inc()
+        return PredictResponse(prediction=pred, confidence=conf, model_version=MODEL_VERSION)
+    except Exception as e:
+        REQUEST_COUNT.labels(status="error").inc()
+        logger.exception("Inference failed")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        INFERENCE_LATENCY.observe(time.perf_counter() - start)</code></pre>
+<p><code>Dockerfile</code> multi-stage, sin root, capas minimas:</p>
+<pre><code class="language-dockerfile">FROM python:3.11-slim AS builder
+WORKDIR /build
+COPY requirements.txt .
+RUN pip install --no-cache-dir --user -r requirements.txt
+
+FROM python:3.11-slim
+RUN useradd -m -u 1000 appuser
+WORKDIR /app
+COPY --from=builder /root/.local /home/appuser/.local
+COPY app.py .
+USER appuser
+ENV PATH=/home/appuser/.local/bin:$PATH
+EXPOSE 8080
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8080"]</code></pre>
+<p>Manifiestos Kubernetes. <strong>Ojo con <code>requests</code> y <code>limits</code></strong>: si los pones mal, o el scheduler no sabe donde poner el pod, o el pod se vuelve inmortal y mata el nodo.</p>
+<pre><code class="language-yaml"># namespace.yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ml-prod
+---
+# configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: inference-config
+  namespace: ml-prod
+data:
+  MODEL_VERSION: "v1.0.0"
+  LOG_LEVEL: "INFO"
+---
+# deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inference
+  namespace: ml-prod
+  labels:
+    app: inference
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: inference
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0  # cero downtime
+  template:
+    metadata:
+      labels:
+        app: inference
+    spec:
+      containers:
+      - name: inference
+        image: ml-inference:1.0.0
+        imagePullPolicy: IfNotPresent
+        ports:
+        - name: http
+          containerPort: 8080
+        envFrom:
+        - configMapRef:
+            name: inference-config
+        resources:
+          requests:        # lo que el scheduler GARANTIZA al pod
+            cpu: "250m"     # 0.25 vCPU
+            memory: "256Mi"
+          limits:          # lo que el contenedor PUEDE consumir maximo
+            cpu: "1000m"
+            memory: "512Mi"
+        readinessProbe:    # el Service empieza a mandarle trafico cuando pasa esto
+          httpGet:
+            path: /ready
+            port: http
+          initialDelaySeconds: 5
+          periodSeconds: 3
+        livenessProbe:     # si falla, kubelet mata el contenedor
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 15
+          periodSeconds: 10
+          failureThreshold: 3
+        securityContext:
+          runAsNonRoot: true
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+---
+# service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: inference
+  namespace: ml-prod
+spec:
+  type: ClusterIP
+  selector:
+    app: inference
+  ports:
+  - name: http
+    port: 80
+    targetPort: http
+---
+# hpa.yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: inference-hpa
+  namespace: ml-prod
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: inference
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+    scaleUp:
+      stabilizationWindowSeconds: 30
+      policies:
+      - type: Percent
+        value: 100            # puede duplicar las replicas en cada ciclo
+        periodSeconds: 30</code></pre>
+<h3>4.3 Utilidades de analisis y verificacion</h3>
+<p>Script para levantar todo en <code>minikube</code>, probarlo y dejarlo corriendo:</p>
+<pre><code class="language-bash">#!/usr/bin/env bash
+# deploy.sh - ejecutar desde el directorio del proyecto
+set -euo pipefail
+
+# 1. Levantar cluster
+minikube start --cpus=4 --memory=4096 --driver=docker
+minikube addons enable metrics-server   # sin esto, HPA no ve metricas
+
+# 2. Construir imagen y cargarla al registry interno de minikube
+docker build -t ml-inference:1.0.0 .
+minikube image load ml-inference:1.0.0
+
+# 3. Aplicar manifiestos
+kubectl apply -f namespace.yaml
+kubectl apply -f configmap.yaml
+kubectl apply -f deployment.yaml
+kubectl apply -f service.yaml
+kubectl apply -f hpa.yaml
+
+# 4. Esperar a que este listo
+kubectl wait --for=condition=available deployment/inference -n ml-prod --timeout=120s
+
+# 5. Probar
+kubectl port-forward -n ml-prod svc/inference 8080:80 &amp;
+sleep 3
+curl -s http://localhost:8080/health
+echo
+curl -s -X POST http://localhost:8080/predict \
+  -H "Content-Type: application/json" \
+  -d '{"features": [0.5, -0.3, 0.8, 0.1]}'
+echo</code></pre>
+<h2>5. Ejemplos de Uso en Casos Reales</h2>
+<p><strong>Caso 1: Verificar que el HPA realmente escala bajo carga.</strong></p>
+<pre><code class="language-bash"># Generar carga sostenida durante 3 minutos, 50 concurrentes
+kubectl run loadgen --rm -it --image=williamyeh/hey --restart=Never -- \
+  -z 3m -c 50 -m POST -t 5 \
+  -H "Content-Type: application/json" \
+  -d '{"features":[0.5,-0.3,0.8,0.1]}' \
+  http://inference.ml-prod.svc/predict
+
+# Mientras tanto, observar
+watch -n 2 'kubectl get hpa,pods -n ml-prod'</code></pre>
+<p>Verificacion numerica: arrancas con $<code>R_{\text{current}} = 2</code>$ y la CPU promedio llega a $<code>140\%</code>$ del target. El HPA calcula $<code>R_{\text{desired}} = \lceil 2 \cdot \frac{140}{70} \rceil = 4</code>$ y en 30 segundos deberias ver 4 pods corriendo.</p>
+<p><strong>Caso 2: Rolling update sin downtime.</strong></p>
+<pre><code class="language-bash">docker build -t ml-inference:1.1.0 .
+minikube image load ml-inference:1.1.0
+kubectl set image deployment/inference -n ml-prod inference=ml-inference:1.1.0
+kubectl rollout status deployment/inference -n ml-prod
+kubectl logs -n ml-prod -l app=inference --since=2m | grep -c "error"</code></pre>
+<p><strong>Caso 3: Aislamiento de tenants con namespaces + quotas.</strong></p>
+<pre><code class="language-yaml">apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: tenant-a-quota
+  namespace: tenant-a
+spec:
+  hard:
+    requests.cpu: "10"
+    requests.memory: "20Gi"
+    limits.cpu: "20"
+    limits.memory: "40Gi"
+    pods: "50"</code></pre>
+<h2>6. Debugging: Cuando Todo se Va a la Mierda</h2>
+<p><strong>Problema 1: Pod en <code>Pending</code> indefinidamente.</strong></p>
+<pre><code class="language-bash">kubectl describe pod &lt;pod&gt; -n ml-prod | grep -A 10 Events</code></pre>
+<p>Salida tipica: <code>0/3 nodes are available: 3 Insufficient memory.</code> Eso significa que pediste mas memoria de la que cabe en cualquier nodo. <strong>Deteccion numerica</strong>: si tu pod pide $<code>4 \text{ Gi}</code>$ y tus nodos tienen $<code>3.8 \text{ Gi}</code>$ libres, no cabe.</p>
+<p>Soluciones:</p>
+<ol>
+  <li>Bajar el <code>requests.memory</code> si el modelo no necesita tanto (perfila con <code>kubectl top</code>).</li>
+  <li>Anadir nodos al cluster.</li>
+  <li>Usar un <code>PriorityClass</code> mas alto para抢占 scheduling de tenants menos criticos.</li>
+</ol>
+<p><strong>Problema 2: <code>CrashLoopBackOff</code>.</strong></p>
+<pre><code class="language-bash">kubectl logs &lt;pod&gt; -n ml-prod --previous</code></pre>
+<p>El <code>--previous</code> es clave: te muestra los logs del contenedor que ya murio. Si tu <code>livenessProbe</code> falla, kubelet mata el contenedor, pero los logs del actual estan vacios.</p>
+<p>Soluciones:</p>
+<ol>
+  <li>Subir <code>initialDelaySeconds</code> del <code>livenessProbe</code> si tu app tarda en arrancar (modelos grandes, lazy loading).</li>
+  <li>Mover chequeos pesados al <code>readinessProbe</code> y dejar el <code>livenessProbe</code> minimalista.</li>
+  <li>Verificar el <code>OOMKilled</code> con <code>kubectl describe pod | grep -i oom</code>. Si aparece, chocaste <code>limits.memory</code> y subiste.</li>
+</ol>
+<p><strong>Problema 3: HPA nunca escala aunque la CPU este al 100%.</strong></p>
+<p>Causa numero uno: <code>metrics-server</code> no esta corriendo. Verifica:</p>
+<pre><code class="language-bash">kubectl get deployment metrics-server -n kube-system
+kubectl top pods -n ml-prod</code></pre>
+<p>Si <code>kubectl top</code> falla, el HPA ve $<code>M_{\text{current}} = 0</code>$ siempre y nunca escala. En <code>minikube</code> se arregla con <code>minikube addons enable metrics-server</code>. En EKS/GKE/AKS es un add-on que debes instalar explicitamente.</p>
+<p><strong>Problema 4: Pod reiniciado sin causa aparente.</strong></p>
+<pre><code class="language-bash">kubectl get pod &lt;pod&gt; -n ml-prod -o jsonpath='{.status.containerStatuses[*].lastState.terminated.reason}'</code></pre>
+<p>Si devuelve <code>OOMKilled</code>, el contenedor exploto la <code>limits.memory</code>. Soluciones: subir el limite, o detectar memory leaks con <code>py-spy</code> o <code>memray</code>.</p>
+<h2>7. Optimizaciones de Produccion</h2>
+<p><strong>Optimizacion 1: <code>topologySpreadConstraints</code> para inferencia de baja latencia.</strong></p>
+<p>Si tienes nodos en multiples zonas de disponibilidad y tus pods se amontonan en una sola, cada vez que esa zona cae pierdes todo. Restringe la distribucion:</p>
+<pre><code class="language-yaml">spec:
+  topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: topology.kubernetes.io/zone
+    whenUnsatisfiable: ScheduleAnyway
+    labelSelector:
+      matchLabels:
+        app: inference</code></pre>
+<p><strong>Trade-off</strong>: si una zona cae y tienes <code>minReplicas=2</code> con 3 zonas, Kubernetes intenta cumplir pero puede dejarte con pods desbalanceados. Para inferencia de baja latencia, casi siempre vale la pena.</p>
+<p><strong>Optimizacion 2: <code>resources.requests</code> calibrados con datos reales.</strong></p>
+<p>El truco esta en correr tu modelo en un pod aislado, medir el P95 de uso de memoria y CPU bajo carga realista, y declarar <strong>el P95 como <code>requests</code></strong>. El promedio subdimensiona. El maximo desperdicia recursos porque el scheduler asume que cada pod usa el max siempre.</p>
+<p>Flujo:</p>
+<pre><code class="language-bash"># Test de carga sostenido
+hey -z 10m -c 100 -m POST -t 5 \
+  -H "Content-Type: application/json" \
+  -d '{"features":[0.5,-0.3,0.8,0.1]}' \
+  http://inference.ml-prod.svc/predict &amp;
+
+# Capturar metricas cada 5 segundos durante el test
+for i in $(seq 1 120); do
+  kubectl top pod -n ml-prod -l app=inference --no-headers &gt;&gt; /tmp/cpu_mem_samples.txt
+  sleep 5
+done
+
+# Calcular P95 (ejemplo con awk sobre la columna de memoria en Mi)
+awk '{print $3}' /tmp/cpu_mem_samples.txt | sort -n | awk '
+  {a[NR]=$1} END {print a[int(NR*0.95)]}
+'</code></pre>
+<p>Ese numero es tu <code>requests.memory</code> recomendado.</p>
+<h2>8. Conclusion: Por Que Esto te Salva el Pellejo en Produccion</h2>
+<ul>
+  <li><strong><code>resources.requests</code> bien declarados.</strong> Sin ellos, el scheduler y el HPA son ciegos. Es el bug #1 que veo en cada auditoria de cluster.</li>
+  <li><strong><code>readinessProbe</code> separado del <code>livenessProbe</code>.</strong> El primero decide si el pod recibe trafico, el segundo si se reinicia. Mezclarlos mata pods que solo estaban cargando un modelo grande.</li>
+  <li><strong><code>maxUnavailable: 0</code></strong> en <code>RollingUpdate</code> para cero downtime. Cuesta un poco mas de capacidad durante el deploy, pero no te llaman a las 3am.</li>
+  <li><strong><code>PodDisruptionBudget</code></strong> minimo de 1 siempre: garantiza que <code>kubectl drain</code> no tumbe todos los pods simultaneamente durante un upgrade del cluster.</li>
+  <li><strong>HPA con <code>behavior.stabilizationWindowSeconds</code></strong>: sin esto, el HPA oscila como loco (sube, baja, sube, baja) y genera mas dano que beneficio.</li>
+</ul>
+<p>Codigo real, listo para pegar:</p>
+<pre><code class="language-bash"># Mini-checklist antes de subir a produccion
+kubectl get events -A --sort-by=.lastTimestamp | tail -20   # sin errores recientes
+kubectl top nodes                                            # uso sano (&lt;80%)
+kubectl get hpa -A                                           # todos mostrando &lt;X&gt;/&lt;target&gt;%
+kubectl rollout history deployment/inference -n ml-prod     # historial completo</code></pre>
+<p>Mañana seguimos. Mientras tanto, <strong>deja el cluster de <code>minikube</code> apagado cuando no lo uses</strong>: consume RAM como si no hubiera manana. <code>minikube stop</code> y listo.</p>
+<p><strong>Brutal</strong> recordatorio final: si llegaste hasta aca y tu primer cluster lo armaste en un laptop con 8GB de RAM, ya le ganaste al 70% de los que dicen "yo se Kubernetes" en LinkedIn.</p>
   </article>
+  <nav class="article-nav" aria-label="Navegacion entre articulos">
+    <a class="nav-prev" href="/blog/dia-215365-docker/">Anterior</a>
+    <a href="/blog/">Todos los articulos</a>
+    <a class="nav-next" href="/blog/dia-217365-pipelines/" data-date="2026-08-05">Siguiente</a>
+  </nav>
 
-  <script>
-    document.getElementById('themeToggle').addEventListener('click', function() {
-      const html = document.documentElement;
-      const isDark = html.getAttribute('data-theme') === 'dark';
-      html.setAttribute('data-theme', isDark ? 'light' : 'dark');
-      document.getElementById('themeIcon').className = isDark ? 'fas fa-moon' : 'fas fa-sun';
-    });
-  </script>
+
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
   <script>
     hljs.highlightAll();
-    document.addEventListener('DOMContentLoaded', () => {
+    document.addEventListener('DOMContentLoaded', function() {
       renderMathInElement(document.body, {
         delimiters: [
           { left: '$$', right: '$$', display: true },
@@ -429,21 +593,20 @@ def daily_data_quality_check():
         throwOnError: false,
       });
     });
-    
-  const _html = document.documentElement;
-  const _btn  = document.getElementById('themeToggle');
-  const _icon = document.getElementById('themeIcon');
-  function _setIcon(t) { _icon.className = t === 'dark' ? 'fas fa-sun' : 'fas fa-moon'; }
-  const _saved = localStorage.getItem('theme') || 'dark';
-  _html.setAttribute('data-theme', _saved);
-  _setIcon(_saved);
-  _btn.addEventListener('click', () => {
-    const next = _html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
-    _html.setAttribute('data-theme', next);
-    localStorage.setItem('theme', next);
-    _setIcon(next);
-  });
 
+    var _html = document.documentElement;
+    var _btn  = document.getElementById('themeToggle');
+    var _icon = document.getElementById('themeIcon');
+    function _setIcon(t) { _icon.className = t === 'dark' ? 'fas fa-sun' : 'fas fa-moon'; }
+    var _saved = localStorage.getItem('theme') || 'dark';
+    _html.setAttribute('data-theme', _saved);
+    _setIcon(_saved);
+    _btn.addEventListener('click', function() {
+      var next = _html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+      _html.setAttribute('data-theme', next);
+      localStorage.setItem('theme', next);
+      _setIcon(next);
+    });
   </script>
   <script>
     document.addEventListener('DOMContentLoaded', function() {
