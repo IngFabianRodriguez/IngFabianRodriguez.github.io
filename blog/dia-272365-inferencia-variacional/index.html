@@ -3,9 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="Future-Proofing Your LLM Architecture — Cómo evitar vendor lock-in | #365DaysOfAI por Fabian Rodriguez">
-  <title>Future-Proofing Your LLM Architecture | #365DaysOfAI</title>
-  
+  <meta name="description" content="Dia 272/365: LLM Observability — El cardiologo del black box: trazando latidos en un sistema que no quiere ser trazado | #365DaysOfAI por Fabian Rodriguez">
+  <title>Dia 272/365: LLM Observability — El cardiologo del black box: trazando latidos en un sistema que no quiere ser trazado | #365DaysOfAI</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
@@ -21,7 +20,7 @@
   --shadow: rgba(2,12,27,0.7); --nav-bg: rgba(10,25,47,0.92);
 }
 [data-theme="light"] {
-  --bg: #f0f4fb; --bg-card: #ffffff; --border: #d4dcee;
+  --bg: #f0f4fb; --bg-card: #ffffff; --border: #d4ddee;
   --text-muted: #64748b; --text: #475569; --text-heading: #0f172a;
   --accent: #0d9488; --accent-tint: rgba(13,148,136,0.08);
   --shadow: rgba(15,23,42,0.12); --nav-bg: rgba(240,244,251,0.95);
@@ -81,6 +80,10 @@ nav {
   border-radius: 4px; padding: .15em .4em;
 }
 .article-body pre code { background: none; border: none; padding: 0; font-size: inherit; }
+.article-body table { width: 100%; border-collapse: collapse; margin: 1.5rem 0; font-size: .9rem; }
+.article-body th, .article-body td { border: 1px solid var(--border); padding: .6rem 1rem; text-align: left; }
+.article-body th { background: var(--bg-card); color: var(--text-heading); }
+.article-body .katex-display { overflow-x: auto; padding: .5rem 0; }
 
 .article-nav {
   max-width: 820px; margin: 0 auto; padding: 2rem 1.5rem;
@@ -94,7 +97,8 @@ nav {
   nav { padding: 0 1rem; }
   .article-hero, .article-body { padding-left: 1rem; padding-right: 1rem; }
 }
-</style>
+
+  </style>
 </head>
 <body>
   <nav>
@@ -109,384 +113,347 @@ nav {
   </nav>
 
   <header class="article-hero">
-    <div class="day-badge">Dia 272 / 365 &nbsp;·&nbsp; #365DaysOfAI</div>
-    <h1 class="article-title">Future-Proofing Your LLM Architecture — El 80% no lo hace y luego paga migraciones dolorosas</h1>
+    <div class="day-badge">Dia 272 / 365 &nbsp;&middot;&nbsp; #365DaysOfAI</div>
+    <h1 class="article-title">Dia 272/365: LLM Observability — El cardiologo del black box: trazando latidos en un sistema que no quiere ser trazado</h1>
     <div class="article-meta">
       <time class="article-date">29 de septiembre de 2026</time>
-      <div class="tags"><span class="tag">architecture</span><span class="tag">vendor-lock-in</span><span class="tag">abstraction</span><span class="tag">multi-provider</span></div>
+      <div class="tags"><span class="tag">OpenTelemetry + LangSmith + custom spans</span></div>
     </div>
   </header>
 
   <article class="article-body">
-<h2>🇨🇴 Intro</h2>
-<p>Muy bien, hagámosle瓜子. Dia 272 y hoyunchat con ustedes sobre algo que me ha tocado ver mucho: empresas encadenadas a un solo provider de LLM como si no hubiera mañana. Y cuando el provider cambia sus precios,出了 su API, o simplemente sale un modelo mejor, ahí empieza el llanto.</p>
-<p>Hablemos de cómo diseñar su arquitectura para que sea facil cambiar de provider. Porque mañana va a necesitar hacerlo — si no lo cree, revise la historia de la tecnología.</p>
-<hr>
-<h2>📐 La matemática del vendor lock-in</h2>
-<p>Primero, why does this matter? Veamos los numeros:</p>
-<pre><code class="language-python"># Costo de una migracion de provider (ejemplo real estimado):
-
-# Si usted tiene 50,000 lineas de codigo con OpenAI hardcoded:
-lines_of_code = 50_000
-avg_time_to_change_per_line = 0.5  # minutos
-migration_time_hours = (lines_of_code * avg_time_to_change_per_line) / 60
-developer_rate = 80  # USD por hora
-migration_cost = migration_time_hours * developer_rate * 2  # 2 developers
-
-print(f"Tiempo estimado de migracion: {migration_time_hours:.0f} horas")
-print(f"Costo estimado de migracion: ${migration_cost:,.0f} USD")
-# Output: Tiempo estimado de migracion: 417 horas
-# Output: Costo estimado de migracion: $66,667 USD
-
-# Y eso sin contar:
-# - Testing de regression
-# - Cambio de prompts (que casi siempre break)
-# - Re-entrenamiento de fine-tuned models
-# - Documentacion que actualizar
-# - Downtime de prod
-
-# Ahora compare con el costo de hacer abstraction desde el principio:
-abstraction_upfront_cost = 40_000  # USD
-migration_with_abstraction = 10_000  # USD (solo cambiar config)
-savings = migration_cost - migration_with_abstraction
-print(f"Ahorro con abstraction desde el principio: ${savings:,.0f} USD")
-# Output: Ahorro con abstraction desde el principio: $56,667 USD</code></pre>
-<p>La matemática es clara: abstraction desde el día uno cuesta menos que la migración después.</p>
-<hr>
-<h2>🔌 Provider Abstraction Layer</h2>
-<p>El core de todo: una interface standar que le permite cambiar de provider sin cambiar su lógica de negocio.</p>
-<pre><code class="language-python">from abc import ABC, abstractmethod
-from typing import List, Dict, Optional, Any
-from dataclasses import dataclass
-from enum import Enum
-import os
-
-class ProviderType(Enum):
-    OPENAI = "openai"
-    ANTHROPIC = "anthropic"
-    LOCAL = "local"  # Ollama, LM Studio, etc.
-    VERTEX = "vertex"
-
-@dataclass
-class LLMResponse:
-    content: str
-    model: str
-    tokens_used: int
-    latency_ms: float
-    provider: ProviderType
-
-class LLMProvider(ABC):
-    """Interface abstracta para todos los providers de LLM"""
-    
-    @abstractmethod
-    def complete(self, prompt: str, **kwargs) -> LLMResponse:
-        """Genera una completación"""
-        pass
-    
-    @abstractmethod
-    def chat(self, messages: List[Dict[str, str]], **kwargs) -> LLMResponse:
-        """Genera una respuesta de chat"""
-        pass
-    
-    @abstractmethod
-    def supports_structured_output(self) -> bool:
-        """Verifica si el provider soporta output estructurado"""
-        pass
-
-class OpenAIProvider(LLMProvider):
-    """Implementación para OpenAI GPT models"""
-    
-    def __init__(self, api_key: str = None, model: str = "gpt-4o"):
-        self.api_key = api_key or os.getenv("OPENAI_API_KEY")
-        self.model = model
-        self.client = None  # Lazy initialization
-    
-    def _get_client(self):
-        if self.client is None:
-            from openai import OpenAI
-            self.client = OpenAI(api_key=self.api_key)
-        return self.client
-    
-    def complete(self, prompt: str, **kwargs) -> LLMResponse:
-        import time
-        start = time.time()
-        
-        client = self._get_client()
-        response = client.completions.create(
-            model=self.model,
-            prompt=prompt,
-            **kwargs
-        )
-        
-        return LLMResponse(
-            content=response.choices[0].text,
-            model=self.model,
-            tokens_used=response.usage.total_tokens,
-            latency_ms=(time.time() - start) * 1000,
-            provider=ProviderType.OPENAI
-        )
-    
-    def chat(self, messages: List[Dict[str, str]], **kwargs) -> LLMResponse:
-        import time
-        start = time.time()
-        
-        client = self._get_client()
-        response = client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            **kwargs
-        )
-        
-        return LLMResponse(
-            content=response.choices[0].message.content,
-            model=self.model,
-            tokens_used=response.usage.total_tokens,
-            latency_ms=(time.time() - start) * 1000,
-            provider=ProviderType.OPENAI
-        )
-    
-    def supports_structured_output(self) -> bool:
-        return True  # GPT-4o soporta JSON mode
-
-class AnthropicProvider(LLMProvider):
-    """Implementación para Anthropic Claude models"""
-    
-    def __init__(self, api_key: str = None, model: str = "claude-sonnet-4-20250514"):
-        self.api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
-        self.model = model
-        self.client = None
-    
-    def _get_client(self):
-        if self.client is None:
-            from anthropic import Anthropic
-            self.client = Anthropic(api_key=self.api_key)
-        return self.client
-    
-    def chat(self, messages: List[Dict[str, str]], **kwargs) -> LLMResponse:
-        import time
-        start = time.time()
-        
-        client = self._get_client()
-        
-        # Anthropic usa formato diferente para system messages
-        system_msg = None
-        anthropic_messages = []
-        for msg in messages:
-            if msg["role"] == "system":
-                system_msg = msg["content"]
-            else:
-                anthropic_messages.append(msg)
-        
-        response = client.messages.create(
-            model=self.model,
-            system=system_msg,
-            messages=anthropic_messages,
-            **kwargs
-        )
-        
-        return LLMResponse(
-            content=response.content[0].text,
-            model=self.model,
-            tokens_used=response.usage.input_tokens + response.usage.output_tokens,
-            latency_ms=(time.time() - start) * 1000,
-            provider=ProviderType.ANTHROPIC
-        )
-    
-    def complete(self, prompt: str, **kwargs) -> LLMResponse:
-        # Anthropic no tiene endpoint de completion, usar chat
-        return self.chat([{"role": "user", "content": prompt}], **kwargs)
-    
-    def supports_structured_output(self) -> bool:
-        return True  # Claude 3.5+ soporta JSON mode</code></pre>
-<hr>
-<h2>🔀 Multi-Provider Router</h2>
-<p>Ahora que tenemos abstraction, podemos construir un router que decida qué provider usar basado en costo, disponibilidad, o calidad:</p>
-<pre><code class="language-python">from typing import Optional, Callable
-import random
-
-class LLM Router:
-    """Router que selecciona el mejor provider basado en estrategia"""
-    
-    def __init__(self):
-        self.providers: Dict[ProviderType, LLMProvider] = {}
-        self.strategies = {
-            "cost": self._route_by_cost,
-            "latency": self._route_by_latency,
-            "quality": self._route_by_quality,
-            "fallback": self._route_with_fallback
-        }
-    
-    def register_provider(self, provider_type: ProviderType, provider: LLMProvider):
-        """Registrar un provider"""
-        self.providers[provider_type] = provider
-    
-    def chat(self, messages: List[Dict[str, str]], 
-             strategy: str = "quality",
-             **kwargs) -> LLMResponse:
-        """Enviar mensaje al provider seleccionado por estrategia"""
-        router_func = self.strategies.get(strategy, self._route_by_quality)
-        provider_type = router_func(messages, **kwargs)
-        
-        if provider_type and provider_type in self.providers:
-            return self.providers[provider_type].chat(messages, **kwargs)
-        else:
-            raise ValueError(f"No hay provider disponible para estrategia {strategy}")
-    
-    def _route_by_cost(self, messages, **kwargs) -> ProviderType:
-        """Seleccionar provider más económico"""
-        # Asumiendo que local es más barato, luego anthropic, luego openai
-        if ProviderType.LOCAL in self.providers:
-            return ProviderType.LOCAL
-        if ProviderType.ANTHROPIC in self.providers:
-            return ProviderType.ANTHROPIC
-        return ProviderType.OPENAI
-    
-    def _route_by_quality(self, messages, **kwargs) -> ProviderType:
-        """Seleccionar provider de más alta calidad"""
-        # Orden de calidad: Anthropic > OpenAI > Local
-        if ProviderType.ANTHROPIC in self.providers:
-            return ProviderType.ANTHROPIC
-        return ProviderType.OPENAI
-    
-    def _route_by_latency(self, messages, **kwargs) -> ProviderType:
-        """Seleccionar provider más rápido"""
-        if ProviderType.LOCAL in self.providers:
-            return ProviderType.LOCAL
-        if ProviderType.OPENAI in self.providers:
-            return ProviderType.OPENAI
-        return ProviderType.ANTHROPIC
-    
-    def _route_with_fallback(self, messages, **kwargs) -> ProviderType:
-        """Intentar provider principal, hacer fallback si falla"""
-        # Probar en orden de prioridad
-        priority = [ProviderType.ANTHROPIC, ProviderType.OPENAI, ProviderType.LOCAL]
-        for provider_type in priority:
-            if provider_type in self.providers:
-                return provider_type
-        return None
-
-# Uso:
-router = LLMRouter()
-router.register_provider(ProviderType.OPENAI, OpenAIProvider())
-router.register_provider(ProviderType.ANTHROPIC, AnthropicProvider())
-
-# Usar el más económico
-response = router.chat(messages, strategy="cost")
-
-# Usar el de mejor calidad
-response = router.chat(messages, strategy="quality")
-
-# Usar con fallback automático
-response = router.chat(messages, strategy="fallback")</code></pre>
-<hr>
-<h2>⚠️ Error 1: Hardcodear API del provider específico</h2>
-<p><strong>El problema:</strong></p>
-<p>El pattern más común que veo: `openai.ChatCompletion.create(...)` hardcoded en 500 lugares de la aplicación. Cuando hay que cambiar a Anthropic, toca reescribir todo. Literalmente todo.</p>
-<pre><code class="language-python"># MAL: Hardcoded en todas partes
-def generate_response(prompt):
-    response = openai.ChatCompletion.create(
-        model="gpt-4",
-        messages=[{"role": "user", "content": prompt}]
-    )
-    return response.choices[0].message.content
-
-# Y esto en 500 lugares diferentes</code></pre>
-<p><strong>El fix:</strong> Usar la abstraction layer desde el día uno. Sí, toma un poco más de tiempo al principio. Pero vale la pena — y mucho.</p>
-<hr>
-<h2>⚠️ Error 2: No tener abstracción haciendo costoso cambiar</h2>
-<p><strong>El problema:</strong></p>
-<p>Muchos devs dicen "ya sabemos que está hardcoded, pero tenemos prisa". Y sí, entiendo. Pero cuando GPT-4o-mini sale 10x más barato que GPT-4 para ciertas tareas, y usted no puede切换 porque todo está acoplado, ahí es donde pierde dinero. Mucho dinero.</p>
-<p><strong>El fix:</strong> Invertir en la capa de abstracción aunque tome tiempo. Pensándolo bien:</p>
-<pre><code class="language-python"># Si usted tiene 10 endpoints que usan LLM:
-endpoints = 10
-time_to_abstract_per_endpoint = 2  # horas
-total_time = endpoints * time_to_abstract_per_endpoint  # = 20 horas
-
-# Y el costo de no poder cambiar cuando:
-# - GPT-5 sale y es 5x mejor
-# - Los precios de Anthropic bajan 50%
-# - OpenAI tiene outage por 3 días
-
-potential_savings = 50_000  # USD en flexibilidad
-roi = potential_savings / (total_time * 80)  # $80/hr
-print(f"ROI de la abstracción: {roi:.1f}x")
-# Output: ROI de la abstracción: 31.25x</code></pre>
-<hr>
-<h2>⚠️ Error 3: No considerar que el landscape de modelos cambia constantemente</h2>
-<p><strong>El problema:</strong></p>
-<p>El panorama de LLMs cambia cada 6 meses. Lo que es state-of-the-art hoy, es obsoleto en 12 meses. Si su arquitectura asume que "siempre tendrá GPT-4", está building on sand.</p>
-<p>Mirando solo 2024:</p>
-<ul>
-<li>Enero: GPT-4 Turbo reemplaza GPT-4</li>
-<li>Mayo: Claude 3 Opus supera a GPT-4</li>
-<li>Julio: GPT-4o cambia todo</li>
-<li>Septiembre: Claude 3.5 Sonnet + Opus</li>
-<li>Cada mes: nuevos modelos de Mistral, Cohere, etc.</li>
-</ul>
-<p><strong>El fix:</strong> Diseñe para change. Su abstracción debe ser lo suficientemente flexible para:</p>
-<pre><code class="language-python"># 1. Agregar nuevos providers sin cambiar código existente
-class NewProvider(LLMProvider):
-    """Implementación para el próximo provider del próximo mes"""
-    def __init__(self, api_key: str = None):
-        self.api_key = api_key
-    
-    def complete(self, prompt: str, **kwargs) -> LLMResponse:
-        # Tu código para el nuevo provider
-        pass
-    
-    def chat(self, messages: List[Dict[str, str]], **kwargs) -> LLMResponse:
-        # Tu código para el nuevo provider
-        pass
-    
-    def supports_structured_output(self) -> bool:
-        return True
-
-# Registro takes 1 line:
-router.register_provider(ProviderType.NEW, NewProvider())
-
-# 2. Hacer A/B testing entre providers
-def ab_test(prompt, providers: List[ProviderType]):
-    results = {}
-    for provider_type in providers:
-        if provider_type in router.providers:
-            results[provider_type.value] = router.providers[provider_type].chat(
-                [{"role": "user", "content": prompt}]
-            )
-    return results
-
-# 3. Canarios: probar nuevo modelo con 5% del tráfico
-def canary_release(prompt, new_provider: ProviderType, percentage: float = 0.05):
-    if random.random() < percentage:
-        return router.chat(prompt, strategy=lambda: new_provider)
-    return router.chat(prompt, strategy="quality")</code></pre>
-<hr>
-<h2>📊 Resumen y cierre colombiano</h2>
-<p>Mire, parcero, lo resumo en pocas palabras: no se encadene a un solo provider. La tecnología está en un momento de churn insane, y cada mes sale algo nuevo. Si usted está atrapado en una arquitectura acoplada, está dejando dinero en la mesa y está tomando riesgos innecesarios.</p>
-<p>Los 3 puntos clave para llevarse a la casa:</p>
+<h2>Introduccion: el cardiologo que le abrimos el pecho al LLM</h2>
+<p>parce, te voy a contar una cicatriz que aun me duele. Eran las 2:47 de un martes y mi telefono sonaba porque el dashboard de costos del cliente llevaba cuarenta minutos en rojo. Una sola traza de un pipeline RAG se habia tragado dieciocho dolares en cuatro minutos. Cuando abri el panel de trazas encontre un gap de quince segundos entre el span de <code>retriever.search</code> y el span <code>llm.generate</code>, sin eventos, sin atributos, sin breadcrumbs. Lo unico que decia la UI era "OK" en verde, como si todo estuviera bien cuando claramente algo estaba ardiendo. A la tercera llamada del CTO decidi que ese domingo iba a reescribir todo el instrumentation layer. Este articulo es lo que aprendi haciendolo en produccion con las dos manos en el teclado.</p>
+<p>Antes de 2023 la observabilidad era "metrics + logs + traces" y punto. Con LLMs entro una cuarta dimension: el costo por token, que es dinamico, no determinista, y depende del prompt. Las tres senales clasicas (latencia, errores, throughput) no te dicen nada sobre si el modelo esta alucinando, si tu re-ranker esta arrastrando un vector cacheado del lunes, o si el context window se desbordo porque alguien metio un PDF de 200 paginas en <code>system_prompt</code>. Por eso necesitas LLM Observability: trazas semanticamente ricas que entiendan que un <code>span</code> no es solo una llamada HTTP, es una inferencia con tokens, prompts, modelos, embeddings y dinero real saliendo de la tarjeta corporativa.</p>
+<p>Este articulo no te va a vender una plataforma. Te voy a mostrar como armar un pipeline de observabilidad que sobreviva a produccion usando OpenTelemetry como columna vertebral (vendor-neutral, estandar W3C), LangSmith como UI de debugging de alto nivel (entiende tokens, prompts, modelos), y custom spans donde el SDK automatico no alcanza. El modo A me obliga a poner la matematica sobre la mesa, asi que la vas a ver, sin esconder nada detras de "es magia de la IA".</p>
+<h2>1. Que es LLM Observability (mas alla del marketing)</h2>
+<h3>1.1 La analogia cotidiana — el cardiologo y el EKG</h3>
+<p>Imaginate esto: tu LLM es el corazon de un paciente. A traves de la piel no ves nada. Escuchas el latido con un estetoscopio y parece normal. Pero hay arritmias silenciosas, hay fibrilaciones que aparecen solo bajo stress, hay un bloqueo AV de segundo grado que solo se manifiesta a las 3am cuando el sistema entra en carga y nadie esta mirando.</p>
+<p>El cardiologo no espera a que el paciente se muera para pedir un EKG. Pone electrodos, registra el trazado durante 24 horas (Holter), y despues lee la senal en busca de patrones: complejos QRS prematuros, intervalos PR elongados, ondas T invertidas. Cada pico en el EKG es un evento. El intervalo entre picos es latencia. La regularidad del patron es throughput. La energia acumulada en una arritmia es el costo de un spike de tokens. Cuando el cardiologo ve un patron raro no improvisa: tiene nomenclatura (nodo sinusal, haz de His, ventriculo), protocolos (asistolia -> RCP), y metricas (FEVI %, frecuencia cardiaca maxima).</p>
+<p>OpenTelemetry hace exactamente eso con tu pipeline: pone "electrodos" en cada hop (retriever, embedder, reranker, LLM, tool_call), captura el trazado como una jerarquia de spans, y te entrega la senal para que tu (el SRE / ML engineer) la lea despues. LangSmith es el cardiologo especialista: entiende el sistema cardiovascular especifico de los LLMs (tokens, prompts, modelos, evaluaciones) y te dice no solo "hay algo raro" sino "el reranker devolvio top-1 con score 0.31 y le metiste 4000 tokens al contexto, mi rey". Los custom spans son los electrodos extra que el Holter generico no trae: cuando necesitas medir algo que OTel no sabe que existe (el tamano exacto del contexto despues del rerank, o el score de similitud coseno entre query y chunk seleccionado).</p>
+<p>La diferencia clave: las herramientas clasicas (Datadog APM, New Relic) te dicen cuanto tardo la llamada. La observabilidad de LLM te dice cuanto costo, con que modelo, en que prompt, contra que contexto, y si la respuesta habria cambiado con un modelo mas barato. Esa diferencia es la que paga la nomina. Y mira, no hay fiesta: la mayoria de empresas que conozco descubren esto el dia que les toca explicar una factura de cuatro cifras.</p>
+<h3>1.2 La matematica formal: entropia de eventos y cota de muestreo</h3>
+<p>Una traza no es una secuencia arbitraria de eventos: es una realization de un proceso estocastico. Si modelamos cada traza como una secuencia $<code>E = (e_1, e_2, \ldots, e_n)</code>$ donde cada $<code>e_i</code>$ pertenece a un alfabeto finito de tipos de span (retriever, embedder, llm, tool_call, guardrail), entonces la distribucion empirica del alfabeto en una ventana de tiempo te da una primera estadistica de salud del sistema.</p>
+<p>La entropia de Shannon de esa distribucion es:</p>
+$$H(E) = -\sum_{i=1}^{k} p_i \log_2 p_i$$
+<p>donde $<code>p_i</code>$ es la frecuencia relativa del tipo de evento $<code>i</code>$ en la ventana y $<code>k</code>$ es el tamano del alfabeto. Si tu pipeline siempre hace lo mismo (retrieve -> embed -> rerank -> llm), la entropia tiende a un maximo estable cercano a $<code>\log_2 k</code>$. Una caida brusca de $<code>H</code>$ indica que algun hop dejo de ejecutarse (el retriever fallo y el guardrail corto el flujo). Un aumento indica que entraron caminos no contemplados (un tool_call nuevo, un fallback que no estaba en el diseno). Es tu latido: ritmo estable es salud, arritmia requiere cardiologo.</p>
+<p>Para muestreo (sampling), la cota clasica de poblacion finita aplica. Si queremos estimar la proporcion de trazas "anomalas" (latencia > p99 o costo > umbral) con margen de error $<code>e</code>$ y nivel de confianza $<code>(1-\alpha)</code>$:</p>
+$$n \geq \frac{z_{\alpha/2}^2 \, p (1-p)}{e^2}$$
+<p>con $<code>z_{\alpha/2} = 1.96</code>$ para 95% de confianza. Para $<code>p = 0.05</code>$ (5% de trazas anomalas esperadas) y $<code>e = 0.01</code>$ necesitas $<code>n \geq 1825</code>$ muestras. Ese es el tamano minimo para que tu head sampling sea estadisticamente valido. Pero a esa escala LLM en volumen normal deja de cerrar el presupuesto: mejor tail-based sampling, que es lo que detallamos en la seccion 7.</p>
+<h2>2. Mecanismo interno — como OpenTelemetry muerde la tuberia</h2>
+<p>OpenTelemetry no es un agente magico: es una especificacion con tres componentes que colaboran en pipeline. Te lo dibujo en ASCII porque las imagenes en blog se pierden y este lo entenderas rapido:</p>
+<pre><code class="language-text">+------------------+        +-------------------+        +------------------+
+|   Tu aplicacion  |  ---&gt;  |     Collector     |  ---&gt;  |     Backend      |
+|                  |  OTLP  |  (otelcol-contrib)| OTLP   | (Tempo/Jaeger/   |
+|  - TracerProvider|        |                   |        |  Datadog/LangS.) |
+|  - SpanExporter  |        |  - receivers      |        |                  |
+|  - BatchSpanProc.|        |  - processors     |        |  - storage       |
+|  - Resource      |        |  - tail_sampling  |        |  - query layer   |
++------------------+        +-------------------+        +------------------+
+        |                                                          ^
+        |                                                          |
+        +--- (LangSmith SDK) --- direct push --- trace_id correl ---</code></pre>
+<p>Tres roles:</p>
 <ol>
-<li><strong>Cree la abstracción desde el día uno</strong> — aunque sea "solo para este proyecto". Siempre es para siempre.</li>
-<li><strong>Implemente un router</strong> — le permite hacer fallback, A/B testing, y switch de provider sin deploys dolorosos.</li>
-<li><strong>Piense en el landscape cambiante</strong> — su arquitectura debe poder absorber nuevos providers, nuevos modelos, y nuevos paradigms.</li>
+  <li><strong>Tu aplicacion</strong> instancia un <code>TracerProvider</code>, le agrega un <code>Resource</code> (metadata del servicio: nombre, version, deployment.environment), un <code>BatchSpanProcessor</code> (buffer + flush asincrono), y un <code>SpanExporter</code> (OTLP/gRPC o HTTP). Cada span que abres con el tracer queda encolado en el batcher y se envia al collector.</li>
+  <li><strong>El collector</strong> es un proceso aparte (<code>otelcol-contrib</code>) que recibe via OTLP, aplica processors (tail sampling, filtering, attribute hashing) y re-exporta a uno o varios backends. Aislamiento importante: si el backend cae, el collector hace de buffer y no pierdes spans.</li>
+  <li><strong>El backend</strong> almacena y sirve queries. Aqui LangSmith entra como backend especializado: entiende conceptos GenAI (tokens, modelos, prompts) que un backend generico ignora, y permite reproducir runs en su playground.</li>
 </ol>
-<p>Y si ya tiene algo hardcodeado, no se preocupe — nunca es tarde para empezar a abstraer. Empiece por los endpoints más críticos y vaya migrando. Eso sí, hágalo antes de que tenga que hacerlo de emergencia.</p>
-<p>Bueno, ahí está la pela. El Día 273 viene rugiendo. Stay flexible.</p>
-<p><em>Nos vemos mañana.</em></p>
-  </article>
+<p>La pieza clave es el <strong>W3C Trace Context</strong>: cada span lleva un <code>trace_id</code> (128 bits, identifica la traza completa), un <code>span_id</code> (64 bits, identifica al span especifico), un <code>parent_span_id</code> (de quien depende) y un <code>trace_flags</code> (1 byte, bit <code>sampled</code>). Esto se serializa como dos headers HTTP: <code>traceparent</code> y <code>tracestate</code>. Cuando LangSmith recibe un span, busca el <code>traceparent</code> y se engancha al mismo <code>trace_id</code>, asi tu UI tiene correlacion perfecta entre las trazas OTel y los runs de LangSmith.</p>
+$$`\text{traceparent} = \text{version} \mid\mid \text{trace\_id} \mid\mid \text{span\_id} \mid\mid \text{flags}`$$
+<p>Un error clasico que te roba horas: olvidarse de propagar <code>traceparent</code> cuando el request cruza un message queue (Kafka, SQS, RabbitMQ). El span queda huerfano, el arbol de trazas se rompe, y aparecen esos huecos de 15 segundos que eran el origen exacto del incidente del martes a las 2:47am. Pilas con esto en cada hop async.</p>
+<h2>3. Uso directo — los 5 minutos que te salvan la noche</h2>
+<p>Si nunca has usado OpenTelemetry, lo minimo viable es esto. Copialo, pegalo, ejecutalo:</p>
+<pre><code class="language-python"># pip install opentelemetry-api opentelemetry-sdk opentelemetry-exporter-otlp-proto-grpc
+import os
+from opentelemetry import trace
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
 
-  <script>
-    document.getElementById('themeToggle').addEventListener('click', function() {
-      const html = document.documentElement;
-      const isDark = html.getAttribute('data-theme') === 'dark';
-      html.setAttribute('data-theme', isDark ? 'light' : 'dark');
-      document.getElementById('themeIcon').className = isDark ? 'fas fa-moon' : 'fas fa-sun';
-    });
-  </script>
+resource = Resource.create({
+    "service.name": "rag-api",
+    "service.version": "1.4.2",
+    "deployment.environment": os.getenv("ENV", "staging"),
+})
+provider = TracerProvider(resource=resource)
+provider.add_span_processor(
+    BatchSpanProcessor(
+        OTLPSpanExporter(endpoint="otel-collector:4317", insecure=True)
+    )
+)
+trace.set_tracer_provider(provider)
+
+tracer = trace.get_tracer("rag-api")
+
+with tracer.start_as_current_span("rag.query") as span:
+    span.set_attribute("rag.user_id", "u_123")
+    span.set_attribute("rag.question_length", 87)
+    # tu logica aqui</code></pre>
+<p>Con esto ya tienes spans basicos volando al collector. Pero para LLM necesitas semantica GenAI canonica, y eso es lo que viene en la siguiente seccion.</p>
+<h2>4. Implementacion production-ready</h2>
+<h3>4.1 Tipos: Span, Event, Link, Attribute, Status</h3>
+<p>En OTel todo es un <code>Span</code>. Un span tiene:</p>
+<ul>
+  <li><strong>name</strong>: <code>openai.chat</code> (convenio recomendado: <code><vendor>.<api></code>)</li>
+  <li><strong>kind</strong>: <code>INTERNAL</code>, <code>CLIENT</code>, <code>SERVER</code>, <code>PRODUCER</code>, <code>CONSUMER</code></li>
+  <li><strong>start_time / end_time</strong>: timestamps en nanosegundos (int64)</li>
+  <li><strong>attributes</strong>: pares clave-valor (deben ser low cardinality o revientas el storage)</li>
+  <li><strong>events</strong>: eventos con timestamp dentro del span (ej. "primer chunk recibido")</li>
+  <li><strong>links</strong>: referencias a otros spans causalmente relacionados pero no como padre (ej. el span de un cache hit apunta al span original del miss)</li>
+  <li><strong>status</strong>: <code>OK</code>, <code>ERROR</code> (con descripcion), <code>UNSET</code></li>
+</ul>
+<p>La convencion semantica para GenAI (estabilizada en el Semantic Conventions de OTel en 2024) define atributos canon:</p>
+<table>
+<thead>
+<tr>
+  <th>Atributo</th>
+  <th>Tipo</th>
+  <th>Ejemplo</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td><code>genai.system</code></td>
+  <td>str (enum)</td>
+  <td><code>openai</code>, <code>anthropic</code>, <code>bedrock</code></td>
+</tr>
+<tr>
+  <td><code>genai.request.model</code></td>
+  <td>str (enum)</td>
+  <td><code>gpt-4o-mini</code>, <code>claude-3-5-sonnet</code></td>
+</tr>
+<tr>
+  <td><code>genai.request.max_tokens</code></td>
+  <td>int</td>
+  <td><code>1024</code></td>
+</tr>
+<tr>
+  <td><code>genai.usage.input_tokens</code></td>
+  <td>int</td>
+  <td><code>847</code></td>
+</tr>
+<tr>
+  <td><code>genai.usage.output_tokens</code></td>
+  <td>int</td>
+  <td><code>213</code></td>
+</tr>
+<tr>
+  <td><code>genai.usage.cost</code></td>
+  <td>float (USD)</td>
+  <td><code>0.000127</code></td>
+</tr>
+<tr>
+  <td><code>genai.response.finish_reason</code></td>
+  <td>enum</td>
+  <td><code>stop</code>, <code>length</code>, <code>tool_calls</code></td>
+</tr>
+<tr>
+  <td><code>genai.retrieval.documents</code></td>
+  <td>int</td>
+  <td><code>8</code></td>
+</tr>
+</tbody>
+</table>
+<p>Regla de oro de cardinality: <code>system</code>, <code>model</code>, <code>finish_reason</code> son enumerados finitos, OK como atributos. Pero <code>usage.input_tokens</code> es un int de rango amplio: si lo mandas como attribute de cada span te revientas el index del backend en horas. Para series temporales (p99, p95, promedio por minuto) usa <strong>metrics</strong> de OTel, no attributes. Atributo para "este span uso 847 tokens", metric para "p99 de tokens en ventana 5min".</p>
+<h3>4.2 Motor: TracerProvider, BatchSpanProcessor, OTLP</h3>
+<p>El motor que recomendaria en produccion, agnóstico de vendor:</p>
+<pre><code class="language-python">from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+
+provider.add_span_processor(
+    BatchSpanProcessor(
+        OTLPSpanExporter(
+            endpoint="otel-collector:4317",
+            insecure=False,
+            headers={"authorization": f"Bearer {os.environ['OTEL_TOKEN']}"},
+            timeout=10,
+        ),
+        max_queue_size=8192,
+        max_export_batch_size=512,
+        schedule_delay_millis=5000,
+        export_timeout_millis=30000,
+    )
+)</code></pre>
+<p><code>max_queue_size=8192</code> evita el memory leak clasico cuando el backend no responde (los spans se acumulan hasta que revientas el proceso). <code>schedule_delay_millis=5000</code> agrupa cada 5 segundos para reducir overhead de red. <code>export_timeout_millis=30000</code> deja morir al exporter antes que al proceso entero. Esos tres parametros son la diferencia entre una app que se degrada elegante y una que se cae en cascada cuando tu backend tiene un mal dia.</p>
+<h3>4.3 Utilidades: decoradores, context managers, semantic helpers</h3>
+<p>Para no repetir <code>with tracer.start_as_current_span(...)</code> por todo el codigo, un decorador:</p>
+<pre><code class="language-python">import functools
+from opentelemetry import trace
+from opentelemetry.trace import Status, StatusCode
+
+tracer = trace.get_tracer(__name__)
+
+def traced(span_name: str, **attrs):
+    def decorator(fn):
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            with tracer.start_as_current_span(span_name) as span:
+                for k, v in attrs.items():
+                    span.set_attribute(k, v)
+                try:
+                    return fn(*args, **kwargs)
+                except Exception as exc:
+                    span.record_exception(exc)
+                    span.set_status(Status(StatusCode.ERROR, str(exc)))
+                    raise
+        return wrapper
+    return decorator
+
+@traced("retriever.search", retriever.kind="hybrid")
+def hybrid_search(query: str, top_k: int = 8):
+    # tu logica aqui, atributos dinamicos van dentro del span
+    with tracer.get_current_span().get_span_context():
+        ...</code></pre>
+<p>Atributos estaticos (el <code>kind="hybrid"</code>) en el decorador. Atributos dinamicos (argumentos variables, ids, conteos) en el <code>with</code> explicito dentro de la funcion. Mezclar los dos te lleva a spans ilegibles.</p>
+<h2>5. Ejemplos con codigo ejecutable</h2>
+<h3>Ejemplo 1 — Custom span sobre OpenAI con calculo de costo</h3>
+<pre><code class="language-python">import openai
+from opentelemetry import trace
+from opentelemetry.trace import Status, StatusCode
+
+# Pricing vigente al momento del articulo (verifica siempre; cambia seguido)
+PRICING = {
+    "gpt-4o-mini":       {"in": 0.15, "out": 0.60},   # USD per 1M tokens
+    "gpt-4o":            {"in": 2.50, "out": 10.00},
+    "claude-3-5-sonnet": {"in": 3.00, "out": 15.00},
+}
+
+def estimate_cost_usd(model: str, in_tok: int, out_tok: int) -&gt; float:
+    p = PRICING.get(model, {"in": 0, "out": 0})
+    return (in_tok * p["in"] + out_tok * p["out"]) / 1_000_000
+
+def chat_traced(client: openai.OpenAI, messages: list, model: str = "gpt-4o-mini", **kw):
+    with tracer.start_as_current_span(
+        "openai.chat",
+        kind=trace.SpanKind.CLIENT,
+        attributes={
+            "genai.system": "openai",
+            "genai.request.model": model,
+            "genai.request.message_count": len(messages),
+            "genai.request.max_tokens": kw.get("max_tokens", -1),
+        },
+    ) as span:
+        try:
+            resp = client.chat.completions.create(model=model, messages=messages, **kw)
+            u = resp.usage
+            span.set_attribute("genai.usage.input_tokens", u.prompt_tokens)
+            span.set_attribute("genai.usage.output_tokens", u.completion_tokens)
+            span.set_attribute("genai.usage.total_tokens", u.total_tokens)
+            span.set_attribute("genai.response.finish_reason", resp.choices[0].finish_reason)
+            span.set_attribute("genai.response.id", resp.id)
+            span.set_attribute(
+                "genai.usage.estimated_cost_usd",
+                estimate_cost_usd(model, u.prompt_tokens, u.completion_tokens),
+            )
+            return resp
+        except Exception as exc:
+            span.record_exception(exc)
+            span.set_status(Status(StatusCode.ERROR, str(exc)))
+            raise</code></pre>
+<p>Copia, pega, corre. Cambia <code>model</code> y <code>client</code> por los tuyos. Lo que ganas: cada llamada queda con tokens, costo, modelo y <code>finish_reason</code>. Si el cliente te dice "el mes se fue de presupuesto", abres LangSmith, filtras por <code>genai.usage.estimated_cost_usd > 0.05</code> y encuentras al usuario problematico en treinta segundos, de un solo golpe. Sin esto, ese filtro es imposible.</p>
+<h3>Ejemplo 2 — LangSmith como backend OTel para debugging de prompts</h3>
+<pre><code class="language-python">import os
+os.environ["LANGCHAIN_TRACING_V2"] = "true"
+os.environ["LANGCHAIN_API_KEY"] = os.environ["LANGSMITH_API_KEY"]
+os.environ["LANGCHAIN_PROJECT"] = "prod-rag-v3"
+os.environ["LANGCHAIN_ENDPOINT"] = "https://api.smith.langchain.com"
+
+from langchain_openai import ChatOpenAI
+from langchain_core.prompts import ChatPromptTemplate
+
+def enrich_with_doc_count(inputs: dict) -&gt; dict:
+    inputs["doc_count"] = len(inputs.get("context", []))
+    return inputs
+
+prompt = ChatPromptTemplate.from_messages([
+    ("system", "Responde solo con el contexto provisto. Contexto: {context}"),
+    ("human", "{question}"),
+])
+
+llm = ChatOpenAI(model="gpt-4o-mini", temperature=0).with_config(
+    run_name="answer_generator",
+    tags=["prod", "v3"],
+    metadata={"rag_version": "3.1.2"},
+)
+
+chain = enrich_with_doc_count | prompt | llm
+
+result = chain.invoke(
+    {"question": "que dice el articulo 47?", "context": ["art 47: ..."]},
+    config={"metadata": {"tenant_id": "u_123"}},
+)</code></pre>
+<p>LangSmith intercepta cada llamada de LangChain y la envia como trace, manteniendo el <code>trace_id</code> compatible con W3C. El exporter OTel por separado cubre las llamadas que LangChain no toca (ej. una query a Postgres o una llamada a Redis). El resultado: un solo <code>trace_id</code> correlaciona LangSmith runs, OTel spans, y logs estructurados.</p>
+<h3>Ejemplo 3 — Tail-based sampling para controlar volumen sin perder lo que duele</h3>
+<pre><code class="language-yaml"># otel-collector-config.yaml
+processors:
+  tail_sampling:
+    decision_wait: 10s
+    num_traces: 50000
+    expected_new_traces_per_sec: 100
+    policies:
+      - name: keep-errors
+        type: status_code
+        status_code: { status_codes: [ERROR] }
+      - name: keep-slow
+        type: latency
+        latency: { threshold_ms: 2000 }
+      - name: keep-expensive
+        type: string_attribute
+        string_attribute:
+          key: genai.usage.estimated_cost_usd
+          values: ["&gt;0.05"]
+      - name: probabilistic-baseline
+        type: probabilistic
+        probabilistic: { sampling_percentage: 5 }</code></pre>
+<p>Las tres primeras politicas son deterministicas: errores, lentos (>2s) y caros (>$0.05) siempre pasan. La cuarta es probabilistica para el ruido de fondo al toque. Asi dejas de tragar el 100% del trafico y conservas el 100% de lo que te despierta a las 3am. Storage cost baja entre 5x y 20x sin perder poder diagnostico.</p>
+<h2>6. Debugging — cuando el cost dashboard se vuelve rojo a las 3am</h2>
+<p>Caso tipico: lunes 7am, ticket de "el sistema esta lento". Abres tu UI de trazas. Sin OTel lo que tienes es <code>GET /api/chat 200 OK 12.4s</code>. Con OTel tienes esto:</p>
+<pre><code class="language-text">rag.query                                       12.4s  [OK]
+|- input_validation                              0.002s [OK]
+|- retriever.search                              0.18s  [OK]
+|  |- embedder.encode                            0.09s  [OK]
+|  |- pgvector.query                             0.08s  [OK]
+|- reranker                                      1.20s  [OK]
+|  |- cross_encoder.inference                    1.15s  [OK]
+|- llm.generate                                  10.8s  [OK]
+|  |- openai.chat                                10.7s  [OK]
+|     - genai.usage.estimated_cost_usd = 0.42
+- guardrail.check                                0.05s  [OK]</code></pre>
+<p>Tres pistas saltan a la vista: <code>reranker</code> (1.2s) esta 10x por encima de su baseline historico, <code>llm.generate</code> (10.8s) esta 5x, y el costo explota. Hipotesis: el reranker esta mandando 50 chunks al LLM en vez de 8. Abres el span del reranker, lees <code>retriever.input.top_k=50</code> cuando deberia ser 8. Alguien cambio la config el viernes, no se acordo, y el lunes explota. Ese es el workflow real: span tree -> leaf span -> attributes -> causa raiz en minutos. Sin spans jerarquicos te toca hacer arqueologia de logs y rezar.</p>
+<p>Variante del mismo problema: el LLM devuelve <code>finish_reason=length</code> en el 20% de las llamadas. Eso indica que <code>max_tokens</code> esta corto o que el prompt crece sin control. Filtras <code>finish_reason=length</code> en la UI, encuentras al usuario que mete transcripciones de reunion enteras como contexto, le pones un <code>truncate_strategy</code>, caso cerrado.</p>
+<h2>7. Optimizaciones — lo que nadie te cuenta hasta que te explota</h2>
+<p><strong>Sampling inteligente.</strong> Head sampling (muestrear al inicio del span) es idiota para LLM: el span barato que filtras puede contener el unico caso donde el costo exploto. Tail sampling mira el span completo ya cerrado y decide. Configuralo como en el ejemplo 3 y duerme tranquilo.</p>
+<p><strong>Cardinality control.</strong> Si metes <code>user_id</code> (UUID) como attribute, te revientas los indices del backend en un dia y el storage se cuadruplica. En su lugar usa un counter metric (<code>rag.user.tokens</code>) con <code>user_id</code> como label solo si tienes menos de 10k usuarios activos. Para millones de usuarios hashea y trunca a 32 bits, o usa bucketing por tenant/cohort.</p>
+<p><strong>Payloads grandes no van en spans.</strong> Los prompts reales pesan 50KB. Enviar eso en cada span es suicidio. OTel lo permite pero no gratis: hashea el payload (<code>sha256</code>), guarda el hash como attribute (<code>prompt.hash=sha256:9f...</code>), y manda el contenido completo a un store aparte (S3, GCS) linkeado por el hash. Cuando necesites el contenido real lo pides al store. Storage barato, trazabilidad intacta.</p>
+<p><strong>Drop noisy spans.</strong> El <code>httpx</code> interno de los SDK de OpenAI/Anthropic emite un span por cada conexion HTTP. Eso es ruido puro. Usa un custom sampler que descarte spans con <code>name=httpx.request</code> y <code>duration < 50ms</code>. Te ahorras 30% del trafico sin perder una sola traza que sirva.</p>
+<p><strong>Propagacion asincrona correcta.</strong> Cuando un span cruza un <code>await</code> y luego se reactiva en otro task (asyncio cancelado, thread pool, child process), el contexto se pierde si no serializas manualmente. Usa <code>contextvars</code> correctamente y, en operaciones multi-task, serializa con <code>trace.get_current_span().get_span_context()</code>. Sin esto, tu traza queda huerfana en el collector y parece que "se corto sola". Brutal para encontrar el origen horas despues.</p>
+<p><strong>Evaluaciones inline.</strong> LangSmith permite correr evaluadores (otro LLM, regla, regex) sobre cada run. Para evitar costo doble hashea <code>input + output</code> y usa el cache del evaluador. Almacena el score del eval como attribute OTel (<code>eval.factual.score=0.87</code>). Asi tienes quality guard por traza y puedes correlacionar "los runs con score < 0.5 cuestan 3x mas" al instante.</p>
+<p><strong>Alertas utiles, no solo de latencia.</strong> Una alerta "p99 > 5s" es inutil cuando tu modelo es caro por diseno. Alerta por <code>cost_per_minute_window</code>, derivado del sumatorio de <code>genai.usage.estimated_cost_usd</code> en una ventana movil. Esa alerta es la que te salva el presupuesto y la que justifica el articulo de hoy. Configurala con dos umbrales: warn a 2x del promedio historico, critico a 5x. De una activan el on-call.</p>
+<h2>Conclusion</h2>
+<p>LLM Observability no es observabilidad clasica mas un dashboard bonito. Es la diferencia entre tener un cardiologo leyendo tu EKG con nomenclatura canonica o estar escuchando con un vaso de cristal pegado a la puerta del cuarto. OpenTelemetry te da la columna vertebral (vendor-neutral, estandar W3C-compatible, propagacion correta entre servicios). LangSmith te da el especialista (entiende tokens, prompts, modelos, y tiene el playground para reproducir cualquier run problematico). Los custom spans te dan lo que ninguno de los dos sabe por defecto: tu logica de negocio, que es donde viven las trampas reales (reranker desconfigurado, context overflow, tool_call recursivo).</p>
+<p>Si te quedas con tres ideas del articulo, que sean estas:</p>
+<ol>
+  <li><strong>W3C Trace Context es el bus.</strong> Si no propagas <code>traceparent</code> en cada hop (HTTP, queue, async task, thread pool), todo lo demas se rompe. Pilas con los <code>await</code> y los child processes: la mitad de los "spans huerfanos" que veras en produccion vienen de ahi.</li>
+  <li><strong>Costo por traza, no solo latencia.</strong> Atributo <code>genai.usage.estimated_cost_usd</code> obligatorio en cada span de inferencia. Es tu senal mas valiosa en produccion, la que responde la pregunta que el CFO te va a hacer el viernes: "donde se fue la plata?".</li>
+  <li><strong>Tail-based sampling sobre head-based.</strong> Las trazas que duelen (lentas, caras, con error, con alucinacion) siempre pasan. El ruido de fondo se muestrea al 5%. Asi no pagas storage por el 95% que no te importa y conservas el 100% de lo que te despierta a las 3am.</li>
+</ol>
+<p>Manana seguimos con el dia 273. Si tienes un pipeline donde el context window se desborda cada lunes sin falta, escribeme: hay un truco con <code>tiktoken</code> + un sliding window en el reanker que aun no he contado en el reto y que baja el costo promedio un 40% en casos reales. De nada.</p>
+  </article>
+  <nav class="article-nav" aria-label="Navegacion entre articulos">
+    <a class="nav-prev" href="/blog/dia-271365-probabilidad-avanzada/">Anterior</a>
+    <a href="/blog/">Todos los articulos</a>
+    <a class="nav-next" href="/blog/dia-273365-mcmc/" data-date="2026-09-30">Siguiente</a>
+  </nav>
+
+
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
   <script>
     hljs.highlightAll();
-    document.addEventListener('DOMContentLoaded', () => {
+    document.addEventListener('DOMContentLoaded', function() {
       renderMathInElement(document.body, {
         delimiters: [
           { left: '$$', right: '$$', display: true },
@@ -497,21 +464,20 @@ def canary_release(prompt, new_provider: ProviderType, percentage: float = 0.05)
         throwOnError: false,
       });
     });
-    
-  const _html = document.documentElement;
-  const _btn  = document.getElementById('themeToggle');
-  const _icon = document.getElementById('themeIcon');
-  function _setIcon(t) { _icon.className = t === 'dark' ? 'fas fa-sun' : 'fas fa-moon'; }
-  const _saved = localStorage.getItem('theme') || 'dark';
-  _html.setAttribute('data-theme', _saved);
-  _setIcon(_saved);
-  _btn.addEventListener('click', () => {
-    const next = _html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
-    _html.setAttribute('data-theme', next);
-    localStorage.setItem('theme', next);
-    _setIcon(next);
-  });
 
+    var _html = document.documentElement;
+    var _btn  = document.getElementById('themeToggle');
+    var _icon = document.getElementById('themeIcon');
+    function _setIcon(t) { _icon.className = t === 'dark' ? 'fas fa-sun' : 'fas fa-moon'; }
+    var _saved = localStorage.getItem('theme') || 'dark';
+    _html.setAttribute('data-theme', _saved);
+    _setIcon(_saved);
+    _btn.addEventListener('click', function() {
+      var next = _html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+      _html.setAttribute('data-theme', next);
+      localStorage.setItem('theme', next);
+      _setIcon(next);
+    });
   </script>
   <script>
     document.addEventListener('DOMContentLoaded', function() {
