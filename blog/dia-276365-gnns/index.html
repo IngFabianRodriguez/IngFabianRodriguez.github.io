@@ -3,9 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="ImageNet — El dataset que cambió todo | #365DaysOfAI por Fabián Rodríguez">
-  <title>ImageNet — El dataset que cambió todo | #365DaysOfAI</title>
-  
+  <meta name="description" content="Dia 276/365: Vector Search Performance — La hemeroteca donde buscar un articulo concreto toma milisegundos y nadie quiere pagarte el cluster | #365DaysOfAI por Fabian Rodriguez">
+  <title>Dia 276/365: Vector Search Performance — La hemeroteca donde buscar un articulo concreto toma milisegundos y nadie quiere pagarte el cluster | #365DaysOfAI</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
@@ -21,7 +20,7 @@
   --shadow: rgba(2,12,27,0.7); --nav-bg: rgba(10,25,47,0.92);
 }
 [data-theme="light"] {
-  --bg: #f0f4fb; --bg-card: #ffffff; --border: #d4dcee;
+  --bg: #f0f4fb; --bg-card: #ffffff; --border: #d4ddee;
   --text-muted: #64748b; --text: #475569; --text-heading: #0f172a;
   --accent: #0d9488; --accent-tint: rgba(13,148,136,0.08);
   --shadow: rgba(15,23,42,0.12); --nav-bg: rgba(240,244,251,0.95);
@@ -81,6 +80,10 @@ nav {
   border-radius: 4px; padding: .15em .4em;
 }
 .article-body pre code { background: none; border: none; padding: 0; font-size: inherit; }
+.article-body table { width: 100%; border-collapse: collapse; margin: 1.5rem 0; font-size: .9rem; }
+.article-body th, .article-body td { border: 1px solid var(--border); padding: .6rem 1rem; text-align: left; }
+.article-body th { background: var(--bg-card); color: var(--text-heading); }
+.article-body .katex-display { overflow-x: auto; padding: .5rem 0; }
 
 .article-nav {
   max-width: 820px; margin: 0 auto; padding: 2rem 1.5rem;
@@ -94,7 +97,8 @@ nav {
   nav { padding: 0 1rem; }
   .article-hero, .article-body { padding-left: 1rem; padding-right: 1rem; }
 }
-</style>
+
+  </style>
 </head>
 <body>
   <nav>
@@ -109,251 +113,337 @@ nav {
   </nav>
 
   <header class="article-hero">
-    <div class="day-badge">Día 276 / 365 &nbsp;·&nbsp; #365DaysOfAI</div>
-    <h1 class="article-title">ImageNet — El dataset que cambió todo</h1>
+    <div class="day-badge">Dia 276 / 365 &nbsp;&middot;&nbsp; #365DaysOfAI</div>
+    <h1 class="article-title">Dia 276/365: Vector Search Performance — La hemeroteca donde buscar un articulo concreto toma milisegundos y nadie quiere pagarte el cluster</h1>
     <div class="article-meta">
-      <time class="article-date">03 de octubre de 2026</time>
-      <div class="tags"><span class="tag">imagenet</span><span class="tag">dataset</span><span class="tag">ilsvrc</span><span class="tag">benchmark</span></div>
+      <time class="article-date">3 de octubre de 2026</time>
+      <div class="tags"><span class="tag">HNSW, IVF, Pinecone, FAISS, Qdrant</span></div>
     </div>
   </header>
 
   <article class="article-body">
-    <h2>La Historia Del Dataset Que Hizo Posible Deep Learning</h2>
-    <p>Antes de 2012, la comunidad de computer vision trabajaba con datasets pequeños: Caltech 101 (9,000 imágenes), PASCAL VOC (20,000 imágenes). Los modelos se overfitteaban fácilmente porque no había suficiente diversidad. Fei-Fei Li tuvo una visión: crear un dataset masivo que cubriera las 80,000+ categorías de nouns en inglés. Así nació ImageNet — 14 millones de imágenes etiquetadas a mano en 22,000 categorías. Pero lo más importante no fue el tamaño. Fue el <strong>ImageNet Large Scale Visual Recognition Challenge (ILSVRC)</strong> — la competencia anual que convirtió computer vision en un campo de investigación con benchmark claro.</p>
+<h2>Introduccion: La hemeroteca donde tu RAG se cae a pedazos</h2>
+<p>Si tu pipeline de retrieval devuelve los top-10 de una coleccion de 80 millones de vectores en menos de 100 ms, no es porque tu embedding sea magico. Es porque elegiste el indice correcto y lo configuraste con criterio. Si devolvio basura, tambien fue por el indice. Y si se cayo en produccion el viernes a las 6 pm cuando el trafico se triplico, casi siempre fue por el mismo motivo: alguien asume ANN = magia y nunca midio recall contra brute force.</p>
+<p>Parce, el problema con el vector search es que todo el mundo cree que el embedding model es el rey. Error. En produccion, el embedding model aporta tal vez el 20 % del rendimiento final. El otro 80 % lo gobiernan tres cosas: la eleccion del indice aproximado (ANN), el tipo de distancia, y como lo configuraste. Un HNSW mal tuneado puede ser 10x mas lento que uno bien tuneado. Un IVF con <code>nprobe</code> mal elegido devuelve recall del 60 % y tu LLM alucina en silencio. Un FAISS sin cuantizacion se te dispara el consumo de RAM apenas superas los 30 millones de vectores y no hay fiesta.</p>
+<p>En este articulo te voy a mostrar la matematica real, los numeros de benchmark que importan, y como elegir entre FAISS, Pinecone y Qdrant sin venderte humo. Sin codigo pseudo, sin "depende", sin tutorial generico de Medium. Produccion real, con cicatrices incluidas.</p>
+<h2>1. Vector Search como problema formal</h2>
+<h3>1.1 La analogia cotidiana: la hemeroteca nacional</h3>
+<p>Imaginate que trabajas como investigador en la Hemeroteca Nacional. Hay 50 millones de paginas de periodicos archivadas entre 1900 y 2024. Un usuario te pide: "encontreme todos los articulos donde se mencione el terremoto del Quindeo de 1999".</p>
+<p>Opcion 1, fuerza bruta: leer las 50 millones de paginas una por una. Imposible.</p>
+<p>Opcion 2, indice por fecha: vas directo a la seccion de 1999, reduces a 365 ediciones. Luego lees cada una. Ya es viable, pero lento.</p>
+<p>Opcion 3, indice por seccion y fecha: vas a la seccion "Sucesos / Desastres" del ano 1999. Encuentras en minutos.</p>
+<p>Opcion 4, indice por palabra clave con catalogos cruzados: el sistema ya sabe que "terremoto", "Quindeo", "1999", "sismo" co-ocurren en los mismos articulos. Vas directo al subconjunto correcto, en segundos.</p>
+<p>El vector search hace exactamente esto. La fuerza bruta es $<code>O(N \cdot d)</code>$ donde $<code>N</code>$ es el numero de vectores y $<code>d</code>$ la dimensionalidad. Con $<code>N = 10^8</code>$ y $<code>d = 1536</code>$ estas mirando operaciones del orden de $<code>10^{11}</code>$ comparaciones por query. A 1 TFLOPS con instrucciones SIMD te sale cerca de 100 ms solo en memoria si sos generoso. Por eso existen los indices ANN: HNSW te da algo cercano a $<code>O(\log N)</code>$ con grafos navegables, y IVF te da $<code>O(N/k \cdot d)</code>$ con particiones Voronoi donde $<code>k</code>$ es el numero de centroides.</p>
+<h3>1.2 Matematica formal del problema KNN exacto</h3>
+<p>El problema de los $<code>k</code>$ vecinos mas cercanos se define asi: dado un conjunto $<code>S = \{v_1, v_2, \dots, v_N\}</code>$ donde cada $<code>v_i \in \mathbb{R}^d</code>$, y un vector de consulta $<code>q \in \mathbb{R}^d</code>$, encontrar el subconjunto $<code>T \subset S</code>$ con $<code>|T| = k</code>$ tal que para todo $<code>v_i \in T</code>$ y $<code>v_j \in S \setminus T</code>$:</p>
+$$d(v_q, v_i) \leq d(v_q, v_j)$$
+<p>Las metricas de distancia mas usadas en embeddings son tres:</p>
+<ul>
+  <li><strong>Coseno</strong> (similitud direccional): $\text{sim}(q, v) = \dfrac{q \cdot v}{\|q\| \cdot \|v\|}$</li>
+  <li><strong>L2 / Euclidiana</strong>: $d(q, v) = \sqrt{\sum_{i=1}^{d}(q_i - v_i)^2}$</li>
+  <li><strong>Producto punto</strong>: $d(q, v) = q \cdot v$</li>
+</ul>
+<p>Coseno es invariante a la magnitud, solo importa la direccion. Util cuando el embedding model no normaliza, o cuando el largo del documento no deberia pesar. L2 es sensible a magnitud, util para embeddings ya normalizados donde L2 y producto punto son equivalentes hasta constante.</p>
+<p>El recall@$<code>k</code>$ se mide asi:</p>
+$$\text{recall@k} = \frac{|T_{\text{approx}} \cap T_{\text{exact}}|}{k}$$
+<p>Donde $<code>T_{\text{exact}}</code>$ es el ground truth por fuerza bruta y $<code>T_{\text{approx}}</code>$ lo que devolvio tu indice. Si tu indice devuelve recall@10 = 0.95, te faltan 5 de cada 100 vecinos correctos. En RAG eso se traduce en alucinaciones silenciosas: tu LLM no sabe que se le escapo contexto relevante y aun asi responde con conviccion.</p>
+<h2>2. Mecanismo interno: como ANN gana 100x</h2>
+<h3>IVF (Inverted File Index)</h3>
+<p>El algoritmo IVF parte el espacio vectorial en $<code>k</code>$ celdas de Voronoi usando clustering k-means. Cada vector pertenece a la celda cuyo centroide esta mas cerca. En query, solo buscas en las $<code>n_{\text{probe}}</code>$ celdas mas cercanas al query, no en las $<code>k</code>$ totales.</p>
+<p>Diagrama conceptual en 2D:</p>
+<pre><code class="language-text">            c1
+          ·   ·
+        ·       ·     c3
+      ·  ···········
+    ·   ·           ·
+   ·    ·      ·    ·     c5
+   ·    ·      ·    ·
+    ·   ·           ·
+      ·  ···········
+        ·       ·     c4
+          ·   ·
+            c2
 
-    <h2>ImageNet En Números</h2>
-    <p>Para entender la escala de ImageNet:</p>
-    <ul>
-      <li><strong>14 millones</strong> de imágenes total en ImageNet</li>
-      <li><strong>22,000</strong> categorías de objetos (synsets de WordNet)</li>
-      <li><strong>1.2 millones</strong> de imágenes en ILSVRC training set</li>
-      <li><strong>150,000</strong> imágenes en ILSVRC validation set</li>
-      <li><strong>1000</strong> categorías en ILSVRC (el subset más famoso)</li>
-    </ul>
+  Query Q cae en c1
+  Solo buscas en c1 + c2 + c3 (nprobe = 3)
+  Ignoras c4 y c5</code></pre>
+<p>Tradeoff: si $<code>n_{\text{probe}}</code>$ es muy bajo, perdes recall. Si es alto, perdes velocidad. La formula aproximada de complejidad:</p>
+$$T_{\text{IVF}} \approx \frac{n_{\text{probe}}}{k} \cdot N \cdot d \cdot c_{\text{comp}}$$
+<p>Donde $<code>c_{\text{comp}}</code>$ es el costo por comparacion. Con $<code>n_{\text{probe}} = 8</code>$ y $<code>k = 4096</code>$, estas buscando en solo el 0.2 % del espacio. Por eso IVF escala bien en datasets masivos, especialmente combinado con cuantizacion.</p>
+<h3>HNSW (Hierarchical Navigable Small World)</h3>
+<p>HNSW es un grafo multinivel donde cada nodo tiene conexiones a vecinos cercanos en su capa y enlaces hacia abajo. La busqueda empieza en la capa superior (pocos nodos, saltos largos) y va refinando hacia abajo (mas nodos, saltos cortos).</p>
+<p>Parametros criticos:</p>
+<ul>
+  <li><code>M</code>: numero maximo de conexiones por nodo. Default 16, sube a 32-64 para recall alto.</li>
+  <li><code>efConstruction</code>: tamano de la lista de candidatos al insertar. Default 200, sube a 400-800 para mejor calidad de grafo.</li>
+  <li><code>efSearch</code>: tamano de la lista de candidatos al buscar. Default 50. Mas alto = mas recall, mas latencia.</li>
+</ul>
+<pre><code class="language-text">Layer 2:   [1]─────[42]
+            |        |
+Layer 1:   [1]─[7]─[42]─[88]
+            |   |    |    |
+Layer 0:   [1][7][15][42][56][88][103][...]</code></pre>
+<p>Complejidad de busqueda promedio: $<code>O(M \cdot \log N)</code>$ con constantes pequenas. Por eso HNSW es el favorito cuando necesitas baja latencia estable.</p>
+<p>El recall@10 vs <code>efSearch</code> sigue esta forma aproximadamente:</p>
+$$\text{recall@10} \approx 1 - e^{-\alpha \cdot \text{efSearch}}$$
+<p>Donde $<code>\alpha</code>$ depende de <code>M</code> y la distribucion de datos. En OpenAI <code>text-embedding-3-small</code> con M=32 y efSearch=128, sacas recall@10 > 0.98 sobre 10M de vectores en Cohere BeIR. Con efSearch=64 te quedas en 0.92. Esa diferencia, en RAG, es la diferencia entre respuestas correctas y alucinaciones. Brutal.</p>
+<h2>3. Uso directo: por que FAISS, Pinecone y Qdrant existen</h2>
+<table>
+<thead>
+<tr>
+  <th>Engine</th>
+  <th>Tipo</th>
+  <th>Mejor para</th>
+  <th>Costo</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td>FAISS</td>
+  <td>Libreria C++/Python</td>
+  <td>Self-hosted, control total, batch offline</td>
+  <td>Gratis, pero vos operas</td>
+</tr>
+<tr>
+  <td>Pinecone</td>
+  <td>Managed SaaS</td>
+  <td>Produccion sin DevOps, alta disponibilidad</td>
+  <td>Por pod y storage</td>
+</tr>
+<tr>
+  <td>Qdrant</td>
+  <td>Open source + cloud</td>
+  <td>Hybrid search, payloads ricos, balance</td>
+  <td>Self-host gratis, cloud pago</td>
+</tr>
+<tr>
+  <td>Weaviate</td>
+  <td>Open source</td>
+  <td>GraphQL nativo, modulos</td>
+  <td>Self-host o cloud</td>
+</tr>
+<tr>
+  <td>Milvus</td>
+  <td>Open source</td>
+  <td>Distribuido a escala masiva</td>
+  <td>Self-host, K8s obligatorio</td>
+</tr>
+</tbody>
+</table>
+<p>Regla de oro que aprendi en produccion, despues de mas de un sabado quemado:</p>
+<ul>
+  <li>Menos de 1M vectores, baja latencia, RAG interno: FAISS con HNSW en un contenedor chico.</li>
+  <li>1M a 50M vectores, payloads pesados, filtros por metadata: Qdrant.</li>
+  <li>Mas de 50M vectores, sin ganas de operar infra a las 3 am: Pinecone serverless.</li>
+  <li>Mas de 500M vectores, presupuesto, equipo MLOps grande: Milvus distribuido.</li>
+</ul>
+<h2>4. Implementacion production-ready</h2>
+<h3>4.1 Tipos: cual distancia para que embedding</h3>
+<pre><code class="language-python"># OpenAI text-embedding-3: usa coseno o dot product (estan normalizados).
+# Cohere embed-v3: coseno.
+# Sentence-Transformers (all-MiniLM, mpnet, etc.): coseno.
+# BGE / BGE-M3: coseno.
+# E5: coseno.
+# CLIP: coseno o L2 segun downstream.
+# Custom fine-tuned: depende del loss. Valida siempre.
 
-    <h2>El ILSVRC: La Competencia Que Cambió Todo</h2>
-    <p>Desde 2010, ILSVRC se convirtió en el campo de batalla donde se medían las arquitecturas. La métrica principal era Top-5 Error Rate: la fracción de imágenes donde el label correcto NO estaba en las 5 predicciones más probables del modelo.</p>
+# Regla: si tu modelo devuelve vectores normalizados (||v|| = 1),
+# dot product == coseno == -L2 (con constante). Usa dot product: es mas rapido.</code></pre>
+<p>Si el embedding no esta normalizado, primero normaliza:</p>
+<pre><code class="language-python">import numpy as np
 
-    <h3>Los Resultados Año Por Año:</h3>
-    <ul>
-      <li><strong>2010:</strong> Best non-deep learning method — 25% error</li>
-      <li><strong>2011:</strong> Best non-deep learning method — 25.3% error</li>
-      <li><strong>2012:</strong> AlexNet — 16.4% error (¡41% mejor que el segundo lugar!)</li>
-      <li><strong>2013:</strong> ZFNet — 11.7% error</li>
-      <li><strong>2014:</strong> VGG & GoogleNet — 7.3% y 6.7% error</li>
-      <li><strong>2015:</strong> ResNet — 3.6% error (¡mejor que humans!)</li>
-      <li><strong>2016+:</strong> Ensembles llegan a ~2.3% error</li>
-    </ul>
+def normalize(vectors: np.ndarray) -&gt; np.ndarray:
+    """L2-normalize each row. Required for cosine via dot product."""
+    norms = np.linalg.norm(vectors, axis=1, keepdims=True)
+    return vectors / np.clip(norms, 1e-12, None)</code></pre>
+<h3>4.2 Motor: como elegir el indice segun escala</h3>
+<pre><code class="language-python"># FAISS: seleccion por tamano de dataset y latencia target.
+#   &lt; 100k vectores ............... IndexFlatL2 (brute force, recall 1.0).
+#   100k - 10M .................... IndexHNSWFlat (rapido, mucha RAM).
+#   10M - 100M .................... IndexIVFPQ (cuantizacion, 32x compresion).
+#   &gt; 100M ........................ IndexIVFPQ + sharding distribuido.
 
-    <p>El momento crucial fue 2012. AlexNet de Krizhevsky et al. usó deep CNNs y ganó por un margen enorme. Eso convenció a toda la comunidad de que deep learning era el camino. Sin ImageNet, esta historia habría sido mucho más larga.</p>
+# Qdrant: usa HNSW por defecto, configurable por coleccion.
+# Pinecone: usa su ANN propietario, sin parametros de usuario visibles.
 
-    <h2>Construyendo Tu Propio Pipeline de ImageNet</h2>
-    <p>Aunque descargar todo ImageNet requiere mucho storage, podemos construir un pipeline para trabajar con el dataset o subsets del mismo:</p>
-    <pre><code class="language-python">import torch
-import torchvision
-import torchvision.transforms as transforms
-from torch.utils.data import DataLoader
+# HNSW regla de partida:
+#   M = 16, efConstruction = 200, efSearch = 64
+# Subi efSearch hasta que recall plateau, despues subi M si hace falta.</code></pre>
+<h3>4.3 Utilidades: filtering, hybrid search, payloads</h3>
+<pre><code class="language-python"># Filtrado por metadata antes del ANN (prefilter) vs despues (postfilter).
+# Prefilter es mas rapido pero requiere filtro selectivo (&gt; 5 % del dataset).
+# Postfilter es mas flexible pero corre ANN sobre todo el dataset.
 
-# Transformaciones estándar para ImageNet
-train_transform = transforms.Compose([
-    transforms.RandomResizedCrop(224),
-    transforms.RandomHorizontalFlip(),
-    transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], 
-                       std=[0.229, 0.224, 0.225]),
+# Hybrid search: combinar BM25 + vector con reciprocal rank fusion.
+def reciprocal_rank_fusion(results_lists, k: int = 60) -&gt; list[tuple[str, float]]:
+    """Combina multiples ranked lists. Estandar en produccion."""
+    scores: dict[str, float] = {}
+    for results in results_lists:
+        for rank, doc_id in enumerate(results):
+            scores[doc_id] = scores.get(doc_id, 0.0) + 1.0 / (k + rank + 1)
+    return sorted(scores.items(), key=lambda x: -x[1])</code></pre>
+<h2>5. Ejemplos con codigo ejecutable</h2>
+<h3>FAISS HNSW sobre 1M de vectores</h3>
+<pre><code class="language-python">import faiss
+import numpy as np
+
+# Setup reproducible
+d = 768  # dimensiones del embedding
+n = 1_000_000
+rng = np.random.default_rng(42)
+data = rng.random((n, d)).astype('float32')
+faiss.normalize_L2(data)  # coseno via dot product
+
+# Indice HNSW
+M = 32
+index = faiss.IndexHNSWFlat(d, M, faiss.METRIC_INNER_PRODUCT)
+index.hnsw.efConstruction = 200
+index.add(data)
+
+# Busqueda
+index.hnsw.efSearch = 128  # subi esto si necesitas mas recall
+queries = data[:10]
+D, I = index.search(queries, k=10)
+
+# Medir recall vs brute force
+exact = faiss.IndexFlatIP(d)
+exact.add(data)
+D_exact, I_exact = exact.search(queries, k=10)
+
+recall_at_10 = np.mean([
+    len(set(I[i].tolist()) &amp; set(I_exact[i].tolist())) / 10
+    for i in range(len(queries))
 ])
+print(f"recall@10 = {recall_at_10:.4f}")</code></pre>
+<h3>Qdrant con payload filter y HNSW configurable</h3>
+<pre><code class="language-python">from qdrant_client import QdrantClient
+from qdrant_client.models import (
+    Distance, VectorParams, PointStruct,
+    Filter, FieldCondition, MatchValue,
+)
 
-val_transform = transforms.Compose([
-    transforms.Resize(256),
-    transforms.CenterCrop(224),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], 
-                       std=[0.229, 0.224, 0.225]),
-])
+client = QdrantClient(host="localhost", port=6333)
 
-# Descargar ImageNet subset (1000 clases para ILSVRC)
-# NOTA: Necesitas descargar manualmente desde imagenet.org
-# torchvision.datasets.ImageNet(root='./data', split='train')
+# Crear coleccion
+client.create_collection(
+    collection_name="docs",
+    vectors_config=VectorParams(size=768, distance=Distance.COSINE),
+    hnsw_config={"m": 32, "ef_construct": 200},
+    optimizers_config={"default_segment_number": 4},
+)
 
-# Si solo quieres probar con una muestra pequeña:
-from torchvision.datasets import CIFAR100
+# Insertar en batch
+points = [
+    PointStruct(id=i, vector=data[i].tolist(),
+                payload={"lang": "es", "year": 2024})
+    for i in range(1000)
+]
+client.upsert(collection_name="docs", points=points, wait=True)
 
-# CIFAR100 como proxy para testing rápido (100 clases, imágenes 32x32)
-cifar100 = CIFAR100(root='./data', train=True, download=True, transform=train_transform)
-print(f"CIFAR100: {len(cifar100)} imágenes, {100} clases")
+# Buscar con filtro
+hits = client.search(
+    collection_name="docs",
+    query_vector=queries[0].tolist(),
+    limit=10,
+    query_filter=Filter(
+        must=[FieldCondition(key="lang", match=MatchValue(value="es"))]
+    ),
+    search_params={"hnsw_ef": 128},
+)</code></pre>
+<h3>Pinecone serverless</h3>
+<pre><code class="language-python">from pinecone import Pinecone, ServerlessSpec
 
-# DataLoader con batch size típico
-train_loader = DataLoader(cifar100, batch_size=256, shuffle=True, 
-                         num_workers=8, pin_memory=True)
+pc = Pinecone(api_key="PINECONE_API_KEY")
 
-# Ver algunas muestras
-for images, labels in train_loader:
-    print(f"Batch shape: {images.shape}")  # [256, 3, 32, 32]
-    print(f"Label range: [{labels.min()}, {labels.max()}]")
-    break</code></pre>
+# Crear indice serverless
+pc.create_index(
+    name="rag-prod",
+    dimension=768,
+    metric="cosine",
+    spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+)
 
-    <h2>Pre-trained Models: El Poder De ImageNet</h2>
-    <p>Lo más valioso de ImageNet no es solo el benchmark — son los modelos pre-entrenados. Un modelo entrenado en ImageNet aprende features genéricos que transfer learn a casi cualquier visión task. Esto es porque las primeras capas aprenden edges y textures (universales), mientras que las últimas capas aprenden features específicos del objeto.</p>
-    <pre><code class="language-python">import torchvision.models as models
-import torch.nn as nn
+index = pc.Index("rag-prod")
 
-# Cargar un modelo pre-entrenado en ImageNet
-model = models.resnet50(weights='IMAGENET1K_V1')
-print(f"ResNet50 parámetros: {sum(p.numel() for p in model.parameters()):,}")
+# Upsert batched y asincrono
+vectors = [
+    {"id": str(i), "values": data[i].tolist(),
+     "metadata": {"lang": "es"}}
+    for i in range(1000)
+]
+index.upsert(vectors=vectors, batch_size=100, async_req=True)
 
-# Freezar todas las capas excepto la última
-for param in model.parameters():
-    param.requires_grad = False
-
-# Reemplazar la capa final para tu dataset (ej: 10 clases)
-model.fc = nn.Linear(model.fc.in_features, 10)
-
-# Solo los parámetros de fc se entrenan
-trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-print(f"Parámetros entrenables: {trainable_params:,}")
-
-# Fine-tuning: entrenar todo el modelo con learning rate bajo
-def fine_tune_model(model, train_loader, num_epochs=10):
-    optimizer = torch.optim.AdamW([
-        {'params': model.fc.parameters(), 'lr': 1e-3},
-        {'params': model.layer4.parameters(), 'lr': 1e-4},  # Últimas capas
-        {'params': model.parameters(), 'lr': 1e-5},  # Primeras capas
-    ], weight_decay=0.01)
-    
-    criterion = nn.CrossEntropyLoss()
-    
-    for epoch in range(num_epochs):
-        model.train()
-        total_loss = 0
-        for images, labels in train_loader:
-            optimizer.zero_grad()
-            outputs = model(images)
-            loss = criterion(outputs, labels)
-            loss.backward()
-            optimizer.step()
-            total_loss += loss.item()
-        
-        print(f"Epoch {epoch+1}: loss={total_loss/len(train_loader):.4f}")
-
-# Transfer learning: usar features de ImageNet directamente
-model.eval()
-def extract_features(dataset, model):
-    """Extrae features de la penúltima capa para transfer learning."""
-    features = []
-    labels = []
-    
-    with torch.no_grad():
-        for images, lbls in DataLoader(dataset, batch_size=256):
-            feat = model.avgpool(model.layer4(model.maxpool(model.relu(model.bn1(model.conv1(images))))))
-            features.append(feat.view(feat.size(0), -1))
-            labels.append(lbls)
-    
-    return torch.cat(features), torch.cat(labels)
-
-# Features extraídos pueden usarse con cualquier classifier simple
-X_features, y_labels = extract_features(cifar100, model)</code></pre>
-
-    <h2>La Fórmula De Transfer Learning Exitoso</h2>
-    <p>No es solo usar un modelo pre-entrenado y ya. Hay una estrategia:</p>
-
-    <h3>Step 1: Choose Your Architecture</h3>
-    <p>Para datasets pequeños (< 10K imágenes): EfficientNet-B0 o MobileNetV3 — rápido y eficiente.</p>
-    <p>Para datasets grandes (> 100K imágenes): ResNet-50 o ViT-B/16 — más capacidad.</p>
-
-    <h3>Step 2: Freeze vs Fine-tune</h3>
-    <pre><code class="language-python">def get_transfer_learning_strategy(dataset_size, num_classes):
-    """
-    Estrategia de transfer learning basada en el tamaño del dataset.
-    """
-    if dataset_size < 1000:
-        # Dataset muy pequeño: freeze todo, solo entrena classifier
-        return {
-            'freeze_backbone': True,
-            'lr_head': 1e-3,
-            'epochs': 50,
-            'augmentation': 'strong'  # Más augmentation para compensar poco data
-        }
-    elif dataset_size < 50000:
-        # Dataset mediano: freeze early layers, fine-tune late
-        return {
-            'freeze_backbone': False,
-            'freeze_until': 'layer3',  # Freeze layer1 y layer2
-            'lr_backbone': 1e-4,
-            'lr_head': 1e-3,
-            'epochs': 30,
-            'augmentation': 'moderate'
-        }
-    else:
-        # Dataset grande: fine-tune todo
-        return {
-            'freeze_backbone': False,
-            'lr_backbone': 1e-5,
-            'lr_head': 1e-4,
-            'epochs': 20,
-            'augmentation': 'light'
-        }
-
-strategy = get_transfer_learning_strategy(dataset_size=5000, num_classes=10)
-print(f"Estrategia: {strategy}")</code></pre>
-
-    <h3>Step 3: Data Augmentation Es Crítico</h3>
-    <p>Para datasets pequeños, augmentation puede ser la diferencia entre success y failure:</p>
-    <pre><code class="language-python">from torchvision import transforms
-
-# Augmentation para training
-train_aug = transforms.Compose([
-    transforms.RandomResizedCrop(224, scale=(0.7, 1.0)),
-    transforms.RandomHorizontalFlip(p=0.5),
-    transforms.RandomRotation(15),
-    transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
-    transforms.RandomAffine(degrees=0, translate=(0.1, 0.1)),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-    transforms.RandomErasing(p=0.3),  # Cutout aleatorio
-])
-
-# Para validación: solo resize y normalize
-val_aug = transforms.Compose([
-    transforms.Resize(256),
-    transforms.CenterCrop(224),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-])</code></pre>
-
-    <h2>Lecciones de ImageNet Que Aplicas Hoy</h2>
-
-    <h3>1. Dataset > Architecture</h3>
-    <p>AlexNet no ganó por ser la mejor arquitectura — ganó porque tenía más datos y computación. Hoy sigue siendo verdad: datos buenos y diversos superan a arquitecturas sofisticadas con datos mediocre.</p>
-
-    <h3>2. Benchmarks Impulsan Progreso</h3>
-    <p>ImageNet ILSVRC dio a la comunidad un objetivo claro. Cada mejora se podía medir objetivamente. Eso aceleró la investigación 10x porque todos hablaban el mismo idioma.</p>
-
-    <h3>3. Pre-training Es El Standard</h3>
-    <p>Casi todo computer vision moderno empieza con ImageNet pre-training. Ya sea que uses ResNet, ViT, o CLIP, el conocimiento de ImageNet está ahí. No partes de cero.</p>
-
-    <h2>El Error Que El 80% Commete Con Transfer Learning</h2>
-    <p><strong>Usar ImageNet normalization en datos que no son como ImageNet.</strong> Si tus imágenes son de microscopía o satellite imagery, los valores mean/std de ImageNet ([0.485, 0.456, 0.406]) no son óptimos. Calcula el mean/std de tu dataset y úsalos. Esto solo no es suficiente — también necesitas domain-specific pre-training si es posible.</p>
-
-    <hr>
-
-    <p>Mañana en el Día 277 vamos a explorar cómo los transformers llegaron a visión con Vision Transformer (ViT). Otro gran salto. Nos vemos.</p>
+# Query con filtro de metadata
+results = index.query(
+    vector=queries[0].tolist(),
+    top_k=10,
+    filter={"lang": {"$eq": "es"}},
+    include_metadata=True,
+)</code></pre>
+<h2>6. Debugging: cuando el retrieval falla en produccion</h2>
+<p>Sintoma 1: recall bajo (recall@10 < 0.85).</p>
+<ul>
+  <li>Causa mas comun: <code>efSearch</code> muy bajo, o <code>nprobe</code> muy bajo, o <code>M</code> insuficiente.</li>
+  <li>Diagnostico: corre brute force como ground truth y mide. Si tu ANN da 0.75 y brute force da 1.0, es configuracion, no embedding.</li>
+  <li>Fix: subi <code>efSearch</code> de 64 a 256. Si sigue bajo, subi <code>M</code> de 16 a 32, despues rebuildea el indice.</li>
+</ul>
+<p>Sintoma 2: latencia p99 altisima aunque p50 esta bien.</p>
+<ul>
+  <li>Causa: GC pauses, re-rankers pesados, I/O a disco del indice, cold starts de pods.</li>
+  <li>Diagnostico: profilea con <code>py-spy</code> o <code>perf</code>. Si el ANN es < 5 ms pero la query total es 200 ms, el problema no es ANN.</li>
+  <li>Fix: pre-carga el indice en memoria (<code>mmap</code> con cuidado), evita re-ranker para top-k chico, usa connection pooling al cliente del motor.</li>
+</ul>
+<p>Sintoma 3: recall bajo solo para queries largas o solo para queries cortas.</p>
+<ul>
+  <li>Causa: el embedding model degrada en los extremos del input. O el chunking rompe la semantica.</li>
+  <li>Diagnostico: segmenta recall por longitud de query. Vas a ver el agujero.</li>
+  <li>Fix: pre-procesa queries al input length esperado del modelo, mejora el chunking con overlap.</li>
+</ul>
+<p>Sintoma 4: recall perfecto pero el LLM alucina igual.</p>
+<ul>
+  <li>Causa: el embedding no captura la dimension semantica que necesitas. No es tema del indice.</li>
+  <li>Fix: re-entrena el embedding con contraste en tu dominio, o complementa con BM25 + hybrid search. No toques el ANN.</li>
+</ul>
+<p>Sintoma 5: consumo de memoria desbocado en FAISS.</p>
+<ul>
+  <li>Causa: estas guardando vectores en float32 sin cuantizar. $<code>N \cdot d \cdot 4</code>$ bytes.</li>
+  <li>Diagnostico: <code>index.ntotal <em> d </em> 4</code> te da el tamano real.</li>
+  <li>Fix: pasa a IVF-PQ o SQ. 32x menos RAM por 2-5 % de recall perdido.</li>
+</ul>
+<h2>7. Optimizaciones que importan en produccion</h2>
+<p><strong>Cuantizacion de producto (PQ)</strong>: comprime cada vector de 768 floats (3072 bytes) a 96 bytes (12x menos RAM). FAISS <code>IndexIVFPQ</code> hace esto. Tradeoff: ~2-5 % de recall perdido. Para 50M+ vectores es casi obligatorio.</p>
+<pre><code class="language-python"># FAISS IVF + PQ para 50M+ vectores
+nlist = 4096  # numero de celdas Voronoi
+m = 16        # sub-quantizers
+nbits = 8     # bits per sub-quantizer
+quantizer = faiss.IndexFlatIP(d)
+index = faiss.IndexIVFPQ(quantizer, d, nlist, m, nbits)
+index.train(data[:100_000])  # training con muestra representativa
+index.add(data)
+index.nprobe = 16</code></pre>
+<p><strong>Matryoshka embeddings</strong>: modelos como <code>OpenAI text-embedding-3</code>, <code>nomic-embed-text-v1.5</code> y <code>bge-m3</code> se entrenan para que los primeros 256 dims sean utiles solos. Si indexas con 256 dims en vez de 1536, tu indice es 6x mas chico y tu query 6x mas rapida. La perdida de recall suele ser < 3 %.</p>
+<p><strong>Batching de queries</strong>: si tu sistema recibe 1 query cada 10 ms, no desperdicies capacidad. Bufferea 50 ms y manda batch de 5-10. GPU FAISS brilla aqui con <code>index.add_with_ids</code> + busquedas batched.</p>
+<p><strong>Pre-filtering con metadata selectiva</strong>: si tu filtro reduce el espacio a < 5 % del total, deja que el motor aplique el filtro antes del ANN. Qdrant y Pinecone lo hacen nativo. FAISS no: ahi necesitas indices separados o post-filter.</p>
+<p><strong>Re-rank selectivo</strong>: top-1000 por ANN, re-rank top-50 con cross-encoder (<code>cross-encoder/ms-marco-MiniLM-L-6-v2</code>), devuelve top-10. Mejora calidad de manera notable sin matar latencia. Es la combinacion que mas he visto en produccion para RAG de alta precision.</p>
+<p><strong>Sharding por tenant</strong>: si tenes clientes multi-tenant con distinto tamano, shard por tenant_id con replicas dedicadas para los grandes. Evita que el tenant gordo aplaste a los chicos en latencia.</p>
+<h2>Conclusion</h2>
+<p>Vector search performance no es un arte. Es matematica + configuracion + benchmark continuo contra brute force. Si tu retrieval falla, el 80 % de las veces es porque no mediste recall vs ground truth o porque elegiste el indice equivocado para tu escala.</p>
+<p>Memoriza esto: menos de 1M vectores HNSW plano, 1-50M HNSW con payload, 50M+ IVF-PQ o Pinecone serverless. Mide siempre con un ground truth de brute force. Tunea <code>efSearch</code> antes de cambiar de indice. Y si alguien te dice "el embedding es lo que importa", pidele el numero de recall@10 de su sistema en produccion. Probablemente no lo tiene.</p>
+<p>Mañana seguimos con sharding de indices vectoriales para cuando los 50M te quedan chicos y tenes que repartir carga entre varios nodos sin matar latencia. Nos vemos.</p>
   </article>
+  <nav class="article-nav" aria-label="Navegacion entre articulos">
+    <a class="nav-prev" href="/blog/dia-275365-grafos-teoria/">Anterior</a>
+    <a href="/blog/">Todos los articulos</a>
+    <a class="nav-next" href="/blog/dia-277365-gcn/" data-date="2026-10-04">Siguiente</a>
+  </nav>
 
-  <script>
-    document.getElementById('themeToggle').addEventListener('click', function() {
-      const html = document.documentElement;
-      const isDark = html.getAttribute('data-theme') === 'dark';
-      html.setAttribute('data-theme', isDark ? 'light' : 'dark');
-      document.getElementById('themeIcon').className = isDark ? 'fas fa-moon' : 'fas fa-sun';
-    });
-  </script>
+
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
   <script>
     hljs.highlightAll();
-    document.addEventListener('DOMContentLoaded', () => {
+    document.addEventListener('DOMContentLoaded', function() {
       renderMathInElement(document.body, {
         delimiters: [
           { left: '$$', right: '$$', display: true },
@@ -364,21 +454,20 @@ val_aug = transforms.Compose([
         throwOnError: false,
       });
     });
-    
-  const _html = document.documentElement;
-  const _btn  = document.getElementById('themeToggle');
-  const _icon = document.getElementById('themeIcon');
-  function _setIcon(t) { _icon.className = t === 'dark' ? 'fas fa-sun' : 'fas fa-moon'; }
-  const _saved = localStorage.getItem('theme') || 'dark';
-  _html.setAttribute('data-theme', _saved);
-  _setIcon(_saved);
-  _btn.addEventListener('click', () => {
-    const next = _html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
-    _html.setAttribute('data-theme', next);
-    localStorage.setItem('theme', next);
-    _setIcon(next);
-  });
 
+    var _html = document.documentElement;
+    var _btn  = document.getElementById('themeToggle');
+    var _icon = document.getElementById('themeIcon');
+    function _setIcon(t) { _icon.className = t === 'dark' ? 'fas fa-sun' : 'fas fa-moon'; }
+    var _saved = localStorage.getItem('theme') || 'dark';
+    _html.setAttribute('data-theme', _saved);
+    _setIcon(_saved);
+    _btn.addEventListener('click', function() {
+      var next = _html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+      _html.setAttribute('data-theme', next);
+      localStorage.setItem('theme', next);
+      _setIcon(next);
+    });
   </script>
   <script>
     document.addEventListener('DOMContentLoaded', function() {
