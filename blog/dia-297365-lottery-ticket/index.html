@@ -3,9 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="LLM Code Generation - Cómo usar LLMs para generar código real | #365DaysOfAI por Fabian Rodriguez">
-  <title>LLM Code Generation | #365DaysOfAI</title>
-  
+  <meta name="description" content="Dia 297/365: LLM Serving Cost Calculator — el recibo de luz de tu inference endpoint | #365DaysOfAI por Fabian Rodriguez">
+  <title>Dia 297/365: LLM Serving Cost Calculator — el recibo de luz de tu inference endpoint | #365DaysOfAI</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
@@ -21,7 +20,7 @@
   --shadow: rgba(2,12,27,0.7); --nav-bg: rgba(10,25,47,0.92);
 }
 [data-theme="light"] {
-  --bg: #f0f4fb; --bg-card: #ffffff; --border: #d4dcee;
+  --bg: #f0f4fb; --bg-card: #ffffff; --border: #d4ddee;
   --text-muted: #64748b; --text: #475569; --text-heading: #0f172a;
   --accent: #0d9488; --accent-tint: rgba(13,148,136,0.08);
   --shadow: rgba(15,23,42,0.12); --nav-bg: rgba(240,244,251,0.95);
@@ -81,6 +80,10 @@ nav {
   border-radius: 4px; padding: .15em .4em;
 }
 .article-body pre code { background: none; border: none; padding: 0; font-size: inherit; }
+.article-body table { width: 100%; border-collapse: collapse; margin: 1.5rem 0; font-size: .9rem; }
+.article-body th, .article-body td { border: 1px solid var(--border); padding: .6rem 1rem; text-align: left; }
+.article-body th { background: var(--bg-card); color: var(--text-heading); }
+.article-body .katex-display { overflow-x: auto; padding: .5rem 0; }
 
 .article-nav {
   max-width: 820px; margin: 0 auto; padding: 2rem 1.5rem;
@@ -94,7 +97,8 @@ nav {
   nav { padding: 0 1rem; }
   .article-hero, .article-body { padding-left: 1rem; padding-right: 1rem; }
 }
-</style>
+
+  </style>
 </head>
 <body>
   <nav>
@@ -109,489 +113,382 @@ nav {
   </nav>
 
   <header class="article-hero">
-    <div class="day-badge">Dia 297 / 365 &nbsp;·&nbsp; #365DaysOfAI</div>
-    <h1 class="article-title">LLM Code Generation — Que el 85% Intenta y Que el 15% Hace Bien para Generar Código Real</h1>
+    <div class="day-badge">Dia 297 / 365 &nbsp;&middot;&nbsp; #365DaysOfAI</div>
+    <h1 class="article-title">Dia 297/365: LLM Serving Cost Calculator — el recibo de luz de tu inference endpoint</h1>
     <div class="article-meta">
       <time class="article-date">24 de octubre de 2026</time>
-      <div class="tags"><span class="tag">llm</span><span class="tag">code-generation</span><span class="tag">ai</span><span class="tag">prompt-engineering</span></div>
+      <div class="tags"><span class="tag">formulas de costo + spreadsheet-ready</span></div>
     </div>
   </header>
 
   <article class="article-body">
-<h2>La Fórmula del Código que Funciona</h2>
+<h2>Introduccion: el CFO te pregunta y tu no tienes ni idea</h2>
+<p>Hagale pues, sentemonos a hablar con propiedad. Deployaste un modelo de 70B en un endpoint. Llegas a la reunion de finanzas y te preguntan: "¿cuanto nos cuesta cada mil tokens?". Tu respuesta honesta es "depende". Y "depende" en una sala de junta huele a que no tienes ni idea. Tampoco es que seas perezoso: el problema es que el precio por token que publica el proveedor (OpenAI, Anthropic, Together, lo que sea) es solo la superficie. Por debajo hay dinero que se te va en cosas que la factura no te desglosa: GPU ociosa entre picos, KV cache que no cabe, batching ineficiente, requests que abortas a la mitad, prompt cache misses, y el costo hundido de mantener un nodo prendido 24/7 aunque a las 3am nadie lo use.</p>
+<p>Y no hay fiesta con esto. Los modelos grandes tienen tres numeros que se mueven al mismo tiempo: computo, ancho de banda de memoria y VRAM disponible para KV cache. Cualquier calculadora que ignore uno de los tres te va a mentir. Lo que voy a dejarte hoy son las formulas minimas que si aguantan una auditoria, un modulo de Python production-ready que las ejecuta, y un exportador CSV para que el equipo financiero pueda mover los numeros sin pedirte una demo cada vez que cambian los precios spot de las H100.</p>
+<h2>1. Que es el costo real de servir un LLM</h2>
+<h3>1.1 La analogia cotidiana: el recibo de la luz con aire acondicionado central</h3>
+<p>Mira, si tienes un apartamento con AC central en Bogota o Medellin, ya sabes de que hablo. El recibo de luz tiene cuatro bloques que parecen sencillos pero te destrozan:</p>
+<ol>
+  <li><strong>Cargo fijo.</strong> Lo que pagas por el solo hecho de tener el medidor instalado, asi no consumas nada. En serving de LLMs es el costo de tener la(s) GPU(s) reservadas prendidas 24/7, aunque no llegue ni un request.</li>
+  <li><strong>Consumo kWh.</strong> Lo que parece "el" costo, pero solo es una parte. En LLMs es el computo util: los FLOPs que se gastan en prefill mas decode.</li>
+  <li><strong>Contribuciones y subsidios.</strong> El cargo regulado que aparece al final y nadie entiende, pero esta ahi. En LLMs equivale al overhead del runtime: networking, fragmentacion de memoria, atencion con flash-attention que no es 100% eficiente, dispatcher de batches.</li>
+  <li><strong>El aire acondicionado prendido todo el dia.</strong> Esta es la trampa real. Nadie usa el AC entre 10am y 4pm porque no hay nadie en casa, pero igual consume kilowatts porque la casa se recalentaria. En LLMs es el batch minimo que mantienes para tener latencia baja en picos: tu GPU nunca llega a 0% de uso, tiene un piso operativo.</li>
+</ol>
+<p>Si solo divides "consumo x tarifa" te queda un numero 35-50% mas bajo que el recibo real. Si solo divides "tokens_out x precio_por_token_del_proveedor" te va a pasar lo mismo con tu factura de inference. Esa es la base del dolor.</p>
+<h3>1.2 Matematica formal del costo unitario</h3>
+<p>Sea una request $<code>r</code>$ con $<code>T_{in}(r)</code>$ tokens de entrada y $<code>T_{out}(r)</code>$ tokens de salida, atendida en un nodo con $<code>N_{gpu}</code>$ accelerators de perfil $<code>G</code>$ y un cluster que sostiene un throughput agregado $<code>\tau</code>$ (tokens/segundo totales, no por request). El costo total por unidad de tiempo es:</p>
+$$
+C_{t} = N_{gpu} \cdot r_{gpu} + r_{red} + r_{almacenamiento}
+$$
+<p>donde $<code>r_{gpu}</code>$ es el costo horario on-demand o spot efectivo, $<code>r_{red}</code>$ es egress y $<code>r_{almacenamiento}</code>$ es el costo de los pesos en object storage cargado a memoria cuando hace falta. Para simplificar asumimos $<code>r_{red} = r_{almacenamiento} = 0</code>$ y todo el costo cae en computo.</p>
+<p>El costo por token (entrada o salida, sin distinguir) es:</p>
+$$
+c_{tok} = \frac{C_{t}}{3600 \cdot \tau}
+$$
+<p>El costo por request, separando entrada y salida, es:</p>
+$$
+C_{r} = T_{in}(r) \cdot (c_{tok} + p_{in}) + T_{out}(r) \cdot (c_{tok} \cdot \alpha_{out} + p_{out})
+$$
+<p>donde $<code>\alpha_{out}</code>$ es el factor de costo de los tokens de salida (decode es $<code>O(n_{params})</code>$ FLOPs por token, igual que prefill en orden, pero en practica vale $<code>1.5 \leq \alpha_{out} \leq 3</code>$ por la lectura repetida del KV cache y la autoregresion) y $<code>p_{in}, p_{out}</code>$ son precios de proveedor si estas en arquitectura hibrida (tu modelo mas API externa para picos).</p>
+<p>La pieza que casi nadie modela: la memoria del KV cache.</p>
+$$
+M_{kv} = \frac{2 \cdot L \cdot H_{kv} \cdot D_h \cdot S \cdot B \cdot b}{2^{30}}
+$$
+<p>con $<code>L</code>$ capas, $<code>H_{kv}</code>$ cabezas de KV (no de atencion: en GQA/MQA es menor que $<code>H</code>$), $<code>D_h</code>$ dimension por cabeza, $<code>S</code>$ longitud de secuencia, $<code>B</code>$ batch, $<code>b</code>$ bytes por elemento (2 para FP16/BF16). El factor 2 viene de guardar K y V. Lo dividimos por $<code>2^{30}</code>$ para reportar en GB.</p>
+<p>El throughput no es libre: esta limitado por el cuello de botella entre computo y bandwidth.</p>
+$$
+\tau_{compute} = \frac{\text{FLOPs}_{gpu} \cdot (1 - \eta)}{2 \cdot n_{params}}
+$$
+$$
+\tau_{mem} = \frac{\text{BW}_{gpu} \cdot (1 - \eta)}{n_{params} \cdot b_{weight}}
+$$
+$$
+\tau_{kv} = \min(B, B_{max}) \cdot \text{tps}_{decode}^{objetivo}
+$$
+$$
+\tau_{effective} = \min(\tau_{compute}, \tau_{mem}, \tau_{kv})
+$$
+<p>Si $<code>\tau_{compute} < \tau_{mem}</code>$ te toco un modelo chico para una GPU grande (estas pagando bandwidth que no usas). Si $<code>\tau_{mem} < \tau_{compute}</code>$ te toco un modelo grande para una GPU chica y la cuantizacion es tu unico escape. Si el cuello es $<code>\tau_{kv}</code>$, te quedaste sin VRAM para meter mas batch: el batch maximo que cabe es:</p>
+$$
+B_{max} = \left\lfloor \frac{M_{gpu} - M_{weights} - M_{margen}}{2 \cdot L \cdot H_{kv} \cdot D_h \cdot S \cdot b} \right\rfloor
+$$
+<p>Listo. Esa es la base matematica. Ahora vamos a como se enchufa con trafico real.</p>
+<h2>2. Mecanica interna: como se conectan los numeros</h2>
+<pre><code class="language-text">+-----------+        +----------------+        +----------------+
+|  Trafico  | -----&gt; | Effective TPS  | -----&gt; | GPU cost/sec   |
+|  RPS, T_in|        |  (cuello de    |        | N_gpu * $/h    |
+|  T_out    |        |   botella)     |        |                |
++-----------+        +----------------+        +----------------+
+                              |                          |
+                              v                          v
+                    +-----------------+         +------------------+
+                    | Utilizacion %   |  -----&gt; | Cost per token   |
+                    | tokens / tps    |         | cost/tok * T     |
+                    +-----------------+         +------------------+
+                                                        |
+                                                        v
+                                              +------------------+
+                                              | Monthly = RPS *  |
+                                              | C_req * 86400*30 |
+                                              +------------------+</code></pre>
+<p>El flujo es lineal pero tiene tres acoplamientos que se suelen olvidar:</p>
+<ol>
+  <li><strong>La utilizacion acopla el dimensionamiento.</strong> Si $<code>utilizacion < 50\%</code>$ estas pagando 2x de lo necesario; si $<code>> 90\%</code>$ estas a un spike de latencia de tirar el SLA.</li>
+  <li><strong>El cuello de botella cambia cuando cuantizas.</strong> Pasar de FP16 a INT8 tipicamente duplica $<code>\tau_{mem}</code>$ pero deja $<code>\tau_{compute}</code>$ igual (o lo baja 10% si la GPU no tiene INT8 tensor cores rapidos).</li>
+  <li><strong>El prompt cache reduce $<code>T_{in}</code>$ efectivo</strong>, no $<code>c_{tok}</code>$. Es facil equivocarse y pensar que ahorras computo: ahorras prefill FLOPs, pero los tokens de salida y la latencia siguen iguales.</li>
+</ol>
+<h2>3. Uso directo: 30 segundos para tener un numero defendible</h2>
+<p>Si lo que necesitas es responder "¿cuanto me cuesta cada 1k tokens en mi setup actual?", esto es lo unico que tienes que alimentar:</p>
+<ol>
+  <li><strong>Perfil de GPU</strong>: nombre, FLOPs FP16 sostenidos, ancho de banda HBM, VRAM total, costo horario USD.</li>
+  <li><strong>Perfil del modelo</strong>: capas, cabezas KV, head dim, billones de parametros, bytes por peso (FP16 = 2, INT8 = 1, INT4 = 0.5).</li>
+  <li><strong>Configuracion de serving</strong>: batch objetivo, longitud maxima de secuencia, tokens/segundo de salida por request (SLA).</li>
+  <li><strong>Mezcla de trafico</strong>: RPS promedio, tokens entrada/salida promedio, hit rate de prompt cache si tienes, precios de API externa si los usas de fallback.</li>
+</ol>
+<p>La calculadora devuelve: costo por request, costo por millon de tokens entrada y salida, costo mensual, utilizacion efectiva del GPU y el cuello de botella dominante. Exporta a CSV con una sola llamada para que el financiero no te interrumpa mas.</p>
+<h2>4. Implementacion production-ready</h2>
+<p>El siguiente codigo esta pensado para correr tal cual. Sin frameworks magicos, sin dependencias raras. Solo stdlib.</p>
+<h3>4.1 Tipos: dataclasses para entradas y salidas</h3>
+<pre><code class="language-python"># llm_cost_calculator.py
+from __future__ import annotations
 
-<p>Hace unos años, en una pequeña oficina en Medellín, un equipo de desarrolladores pasó tres semanas construyendo una API REST. Tres semanas. Cuando terminé de entrenar un modelo de lenguaje en código, pude generar esa misma API en 45 minutos. El resultado no era perfecto, pero el esqueleto — los endpoints, la validación, los esquemas — estaba listo. Eso sí, tocarlo sin entenderlo era como manejarblindado: podía chocar sin sentirlo.</p>
-
-<p>La generación de código con LLMs no es magia. Es matemática pura: <strong>P(código_correcto | prompt, contexto) = Σ P(token_i | tokens_previos, θ) × R(prompt, validación)</strong>. Traducido al español: la probabilidad de que el código funcione depende de la calidad delprompt y de qué tanto validamos antes de ejecutar. El 85% de los desarrolladores intenta usar LLMs para código. Solo el 15% lo hace bien. Hoy desglosamos por qué y cómo joining that 15%.</p>
-
-<h2>¿Por Qué la mayoria Falla en Generar Código con LLMs?</h2>
-
-<p>Porque confunden "generar" con "producir código que funciona en producción". Un LLM puede escribir 100 líneas en 3 segundos. Un desarrollador experimentado tarda 2 horas en escribir 100 líneas con tests, documentación y manejo de errores. La diferencia no está en la velocidad: está en el contexto y la verificación.</p>
-
-<p>Aquí va la matemática detrás de la calidad del código generado:</p>
-
-<p><strong>Score de Calidad = (Relevancia × 0.4) + (Complejidad_Adecuada × 0.3) + (Seguridad × 0.3)</strong></p>
-
-<p>Donde cada variable se evalúa de 0 a 1. Si tu código generado tiene un score menor a 0.7, estás en problemas. Veamos cómo llegamos allí.</p>
-
-<h2>Framework de Generación de Código con LLMs</h2>
-
-<p>La clave está en un pipeline de 4 pasos: contexto, generación, validación, iteración. Nada de "escribe mi código y ya".</p>
-
-<pre><code class="language-python">"""
-CodeForge: Pipeline de generación de código con LLM
-Usa GPT-4 o Claude para generar código, luego valida.
-"""
-
-import anthropic
-import subprocess
-import ast
-import re
-from typing import Optional, Dict, List, Tuple
 from dataclasses import dataclass
-from enum import Enum
+from typing import Sequence
+import csv
+from pathlib import Path
 
-client = anthropic.Anthropic()
 
-class RiskLevel(Enum):
-    LOW = "low"
-    MEDIUM = "medium"
-    HIGH = "high"
-    CRITICAL = "critical"
+@dataclass(frozen=True)
+class GPUProfile:
+    name: str
+    peak_tflops_fp16: float           # TFLOPs FP16 sostenidos
+    mem_bandwidth_gbps: float         # GB/s HBM
+    mem_capacity_gb: float            # VRAM total
+    hourly_cost_usd: float            # USD/hora on-demand o spot
+    mem_bytes_per_element: int = 2    # FP16/BF16 = 2, INT8 = 1
 
-@dataclass
-class CodeValidation:
-    syntax_ok: bool
-    has_error_handling: bool
-    has_tests: bool
-    security_issues: List[str]
-    complexity_score: float  # 0-1
-    risk_level: RiskLevel
 
-@dataclass
-class GenerationResult:
-    code: str
-    language: str
-    validation: CodeValidation
-    iteration: int
-    explanation: str
+@dataclass(frozen=True)
+class ModelProfile:
+    n_layers: int
+    n_kv_heads: int
+    head_dim: int
+    n_params_b: float                 # billones de parametros
+    bytes_per_weight: int = 2         # FP16 = 2, INT8 = 1, INT4 = 0.5
 
-class CodeGenerationFramework:
-    """
-    Framework para generar código de alta calidad con LLMs.
-    Incluye validación automática y múltiples iteraciones.
-    """
 
-    def __init__(self, model: str = "claude-sonnet-4-20250514"):
-        self.client = anthropic.Anthropic()
-        self.model = model
-        self.max_iterations = 3
+@dataclass(frozen=True)
+class ServingConfig:
+    batch_size: int
+    max_seq_len: int
+    target_decode_tps: float          # SLA: tokens decode por segundo por request
 
-    def generate(
-        self,
-        task: str,
-        language: str = "python",
-        context: Optional[str] = None,
-        constraints: Optional[List[str]] = None
-    ) -> GenerationResult:
-        """
-        Genera código con validación iterativa.
 
-        Args:
-            task: Descripción de la tarea de código
-            language: Lenguaje de programación objetivo
-            context: Código existente o contexto adicional
-            constraints: Restricciones específicas (seguridad, performance, etc.)
-        """
+@dataclass(frozen=True)
+class TrafficMix:
+    requests_per_second: float
+    avg_input_tokens: float
+    avg_output_tokens: float
+    prompt_cache_hit_rate: float = 0.0
+    provider_input_price_per_1m: float = 0.0
+    provider_output_price_per_1m: float = 0.0
 
-        constraints = constraints or []
-        iteration = 0
-        best_code = None
-        best_validation = None
 
-        system_prompt = f"""Eres un experto en {language} con 20 años de experiencia.
-Genera código que sea:
-- Seguro (sin vulnerabilidades comunes)
-- Testeable (con tests incluidos)
-- Documentado (docstrings y comentarios)
-- Respetando las mejores prácticas de {language}
+@dataclass(frozen=True)
+class CostBreakdown:
+    total_per_request_usd: float
+    per_million_input_tokens_usd: float
+    per_million_output_tokens_usd: float
+    monthly_usd: float
+    gpu_utilization_pct: float
+    bottleneck: str
+    notes: tuple[str, ...] = ()</code></pre>
+<h3>4.2 Motor de calculo</h3>
+<pre><code class="language-python">def model_weights_memory_gb(model: ModelProfile) -&gt; float:
+    return (model.n_params_b * 1e9 * model.bytes_per_weight) / (1024 ** 3)
 
-Incluye siempre manejo de errores y considera edge cases."""
 
-        while iteration < self.max_iterations:
-            iteration += 1
+def kv_cache_memory_gb(
+    model: ModelProfile,
+    seq_len: int,
+    batch: int,
+    bytes_per_element: int,
+) -&gt; float:
+    bytes_total = (
+        2 * model.n_layers * model.n_kv_heads
+        * model.head_dim * seq_len * batch * bytes_per_element
+    )
+    return bytes_total / (1024 ** 3)
 
-            # Construir el prompt con contexto
-            full_prompt = self._build_prompt(task, language, context, constraints, iteration)
 
-            # Llamar al LLM
-            response = self.client.messages.create(
-                model=self.model,
-                max_tokens=4096,
-                system=system_prompt,
-                messages=[{"role": "user", "content": full_prompt}]
-            )
+def effective_throughput_tps(
+    gpu: GPUProfile,
+    model: ModelProfile,
+    cfg: ServingConfig,
+    overhead_pct: float = 0.15,
+) -&gt; tuple[float, str]:
+    weights_mem = model_weights_memory_gb(model)
+    kv_mem_per_seq = kv_cache_memory_gb(
+        model, cfg.max_seq_len, 1, gpu.mem_bytes_per_element
+    )
+    usable_mem = gpu.mem_capacity_gb - weights_mem - 4.0  # 4 GB margen OS/activations
 
-            generated_code = response.content[0].text
+    decode_flops_per_token = 2 * model.n_params_b * 1e12
+    compute_limited_tps = (
+        (gpu.peak_tflops_fp16 * 1e12) * (1 - overhead_pct)
+    ) / decode_flops_per_token
 
-            # Extraer solo el código (entre ``` si existe)
-            code = self._extract_code(generated_code, language)
+    mem_limited_tps = (
+        (gpu.mem_bandwidth_gbps * 1e9) * (1 - overhead_pct)
+    ) / (model.n_params_b * 1e9 * model.bytes_per_weight)
 
-            # Validar el código
-            validation = self._validate_code(code, language)
+    mem_limited_parallel = max(1, int(usable_mem / max(kv_mem_per_seq, 1e-9)))
+    kv_constrained_tps = min(cfg.batch_size, mem_limited_parallel) * cfg.target_decode_tps
 
-            # Si la validación es buena, terminamos
-            if validation.risk_level in [RiskLevel.LOW, RiskLevel.MEDIUM] and validation.syntax_ok:
-                return GenerationResult(
-                    code=code,
-                    language=language,
-                    validation=validation,
-                    iteration=iteration,
-                    explanation=self._explain_code(generated_code)
-                )
+    candidates = {
+        "compute": compute_limited_tps,
+        "memory_bandwidth": mem_limited_tps,
+        "kv_cache": kv_constrained_tps,
+    }
+    bottleneck = min(candidates, key=candidates.get)
+    return candidates[bottleneck], bottleneck
 
-            # Si no pasó la validación, ajustar contexto para siguiente iteración
-            context = self._build_feedback_context(code, validation, context)
 
-            # Guardar el mejor resultado si no encontramos uno perfecto
-            if best_validation is None or validation.risk_level.value < best_validation.risk_level.value:
-                best_code = code
-                best_validation = validation
+def cost_breakdown(
+    gpu: GPUProfile,
+    model: ModelProfile,
+    cfg: ServingConfig,
+    traffic: TrafficMix,
+    overhead_pct: float = 0.15,
+    decode_cost_multiplier: float = 2.0,
+) -&gt; CostBreakdown:
+    tps, bottleneck = effective_throughput_tps(gpu, model, cfg, overhead_pct)
 
-        # Retornar el mejor que tuvimos
-        return GenerationResult(
-            code=best_code or "# Error: no se pudo generar código válido",
-            language=language,
-            validation=best_validation or CodeValidation(False, False, False, [], 0, RiskLevel.CRITICAL),
-            iteration=iteration,
-            explanation="Código generado con limitaciones - requiere revisión manual"
+    tokens_per_sec_total = traffic.requests_per_second * (
+        traffic.avg_input_tokens + traffic.avg_output_tokens
+    )
+    utilization = min(1.0, tokens_per_sec_total / max(tps, 1e-9))
+
+    gpu_cost_per_token = (gpu.hourly_cost_usd / 3600.0) / max(tps, 1e-9)
+
+    cost_per_req = (
+        traffic.avg_input_tokens
+        * (gpu_cost_per_token + traffic.provider_input_price_per_1m / 1e6)
+        + traffic.avg_output_tokens
+        * (
+            gpu_cost_per_token * decode_cost_multiplier
+            + traffic.provider_output_price_per_1m / 1e6
         )
-
-    def _build_prompt(
-        self,
-        task: str,
-        language: str,
-        context: Optional[str],
-        constraints: List[str],
-        iteration: int
-    ) -> str:
-        """Construye el prompt según la iteración."""
-
-        prompt = f"""Tarea: {task}
-Lenguaje: {language}
-Iteración: {iteration} de {self.max_iterations}
-
-"""
-
-        if context:
-            prompt += f"Contexto existente:\n```\n{context}\n```\n\n"
-
-        if constraints:
-            prompt += f"Restricciones obligatorias:\n"
-            for c in constraints:
-                prompt += f"- {c}\n"
-            prompt += "\n"
-
-        if iteration > 1:
-            prompt += f"""IMPORTANTE: Esta es la iteración {iteration}.
-La iteración anterior tuvo problemas. Asegúrate de resolverlos.
-"""
-
-        prompt += """Genera el código completo. Incluye:
-1. Código funcional con manejo de errores
-2. Tests básicos (al menos 3 casos)
-3. Docstrings detallados
-4. Comentarios en puntos críticos
-
-Formato de respuesta:
-```código
-# Tu código aquí
-```
-
-Explica brevemente qué hace el código después.Envía primero el código, luego la explicación."""
-
-        return prompt
-
-    def _extract_code(self, text: str, language: str) -> str:
-        """Extrae el código del texto del LLM."""
-
-        # Buscar bloques de código
-        pattern = rf"```(?:{language})?\s*\n?(.*?)```"
-        matches = re.findall(pattern, text, re.DOTALL)
-
-        if matches:
-            # Tomar el bloque más largo (probablemente el principal)
-            return max(matches, key=len).strip()
-
-        # Si no hay bloques, intentar limpiar el texto
-        lines = text.split('\n')
-        code_lines = []
-        in_code = False
-
-        for line in lines:
-            if line.strip().startswith('```'):
-                in_code = not in_code
-                continue
-            if in_code or any(keyword in line for keyword in ['def ', 'class ', 'import ', 'const ', 'let ', 'var ', 'function ', 'async ']):
-                code_lines.append(line)
-
-        return '\n'.join(code_lines).strip()
-
-    def _validate_code(self, code: str, language: str) -> CodeValidation:
-        """Valida el código generado en múltiples dimensiones."""
-
-        issues = []
-        syntax_ok = False
-
-        # 1. Validar sintaxis
-        if language == "python":
-            try:
-                ast.parse(code)
-                syntax_ok = True
-            except SyntaxError as e:
-                issues.append(f"Error de sintaxis: {e}")
-        elif language in ["javascript", "typescript"]:
-            try:
-                subprocess.run(['node', '--check'], input=code.encode(), capture_output=True, timeout=5)
-                syntax_ok = True
-            except:
-                issues.append("Error de sintaxis en JavaScript/TypeScript")
-        else:
-            syntax_ok = True  # Para otros lenguajes, asumir OK por ahora
-
-        # 2. Verificar manejo de errores
-        has_error_handling = any(keyword in code for keyword in [
-            'try:', 'catch', 'except', 'finally', 'error', 'Error', 'raise'
-        ])
-
-        if not has_error_handling and len(code.split('\n')) > 10:
-            issues.append("Código sin manejo de errores (riesgo alto)")
-
-        # 3. Verificar tests
-        has_tests = any(keyword in code for keyword in [
-            'def test_', 'test_', 'Test', 'describe(', 'it(', 'assert', 'expect'
-        ])
-
-        # 4. Verificaciones de seguridad básicas
-        security_patterns = [
-            (r'eval\s*\(', "Uso de eval() - riesgo de inyección"),
-            (r'exec\s*\(', "Uso de exec() - riesgo de inyección"),
-            (r'os\.system', "Llamada al sistema sin sanitización"),
-            (r'SQL\s*\+', "Concatenación SQL - riesgo de inyección"),
-            (r'password\s*=\s*["\'][^"\']+["\']', "Contraseña hardcodeada"),
-            (r'api[_-]?key\s*=\s*["\'][^"\']+["\']', "API key hardcodeada"),
-            (r'secret\s*=\s*["\'][^"\']+["\']', "Secreto hardcodeado"),
-        ]
-
-        for pattern, message in security_patterns:
-            if re.search(pattern, code, re.IGNORECASE):
-                issues.append(message)
-
-        # 5. Calcular score de complejidad
-        lines = len(code.split('\n'))
-        functions = len(re.findall(r'def\s+\w+|function\s+\w+|const\s+\w+\s*=\s*\(', code))
-        complexity_score = min(1.0, functions / max(1, lines / 20))
-
-        # 6. Determinar nivel de riesgo
-        if len([i for i in issues if 'crítico' in i.lower() or 'inyección' in i.lower()]) > 0:
-            risk_level = RiskLevel.CRITICAL
-        elif len(issues) > 3 or not has_error_handling:
-            risk_level = RiskLevel.HIGH
-        elif len(issues) > 0 or not has_tests:
-            risk_level = RiskLevel.MEDIUM
-        else:
-            risk_level = RiskLevel.LOW
-
-        return CodeValidation(
-            syntax_ok=syntax_ok,
-            has_error_handling=has_error_handling,
-            has_tests=has_tests,
-            security_issues=issues,
-            complexity_score=complexity_score,
-            risk_level=risk_level
-        )
-
-    def _build_feedback_context(
-        self,
-        code: str,
-        validation: CodeValidation,
-        original_context: Optional[str]
-    ) -> str:
-        """Construye contexto para la siguiente iteración con feedback."""
-
-        feedback = f"""CÓDIGO ANTERIOR CON PROBLEMAS:
-```
-{code}
-```
-
-PROBLEMAS ENCONTRADOS:
-"""
-        for issue in validation.security_issues:
-            feedback += f"- {issue}\n"
-
-        feedback += f"""
-- Sintaxis: {'OK' if validation.syntax_ok else 'FALLA'}
-- Manejo de errores: {'Sí' if validation.has_error_handling else 'No'}
-- Tests: {'Sí' if validation.has_tests else 'No'}
-- Nivel de riesgo: {validation.risk_level.value}
-
-INSTRUCCIONES: Reescribe el código solucionando TODOS los problemas mencionados arriba.
-"""
-
-        if original_context:
-            feedback += f"\nContexto original:\n{original_context}\n"
-
-        return feedback
-
-    def _explain_code(self, llm_response: str) -> str:
-        """Extrae la explicación del código de la respuesta del LLM."""
-
-        parts = llm_response.split('```')
-        if len(parts) > 1:
-            # Hay código, buscar explicación después
-            after_code = parts[-1]
-            if 'explica' in after_code.lower() or 'breve' in after_code.lower():
-                return after_code.strip()
-
-        return "Código generado - revisar antes de usar en producción."
-
-    def review_code(self, code: str, language: str = "python") -> Dict[str, any]:
-        """
-        Usa el LLM para hacer code review del código dado.
-        """
-
-        response = self.client.messages.create(
-            model=self.model,
-            max_tokens=2048,
-            system="""Eres un code reviewer experto. Analiza el código y proporciona:
-1. Issues críticos (must fix)
-2. Issues menores (should fix)
-3. Mejores prácticas sugeridas
-4. Score general de 0-10
-
-Sé específico y constructive.""",
-            messages=[{"role": "user", "content": f"Revisa este código {language}:\n\n```{language}\n{code}\n```"}]
-        )
-
-        return {
-            "review": response.content[0].text,
-            "model": self.model
-        }
-
-
-# --- Ejemplo de uso ---
-if __name__ == "__main__":
-    framework = CodeGenerationFramework()
-
-    # Generar una API REST simple
-    result = framework.generate(
-        task="Crea una API REST con FastAPI para gestionar tareas (TODO). Debe tener CRUD completo con validación.",
-        language="python",
-        constraints=[
-            "Usar FastAPI con Pydantic para validación",
-            "Incluir autenticación JWT básica",
-            "Todos los endpoints deben tener manejo de errores",
-            "Incluir tests con pytest"
-        ]
     )
 
-    print(f"=== Código Generado (Iteración {result.iteration}) ===")
-    print(f"Riesgo: {result.validation.risk_level.value}")
-    print(f"Sintaxis OK: {result.validation.syntax_ok}")
-    print(f"Tests: {result.validation.has_tests}")
-    print(f"Issues: {result.validation.security_issues}")
-    print("\n--- Código ---")
-    print(result.code)
+    per_m_in = 1e6 * gpu_cost_per_token + traffic.provider_input_price_per_1m
+    per_m_out = (
+        1e6 * gpu_cost_per_token * decode_cost_multiplier
+        + traffic.provider_output_price_per_1m
+    )
 
-<hr>
+    monthly = traffic.requests_per_second * cost_per_req * 86400 * 30
 
-<h2>Los 3 Errores Críticos al Usar LLMs para Código</h2>
+    notes: list[str] = []
+    if utilization &gt; 0.85:
+        notes.append("Utilizacion &gt; 85%: suba batch o sume GPU antes de aceptar mas trafico.")
+    if traffic.prompt_cache_hit_rate &gt; 0.5:
+        notes.append("Prompt cache hit &gt; 50%: habilite cache real o pre-procese system prompts.")
+    if bottleneck == "memory_bandwidth":
+        notes.append("Cuello de banda: cuantice a INT8/INT4 para bajar costo sin perder FLOPS.")
+    if bottleneck == "kv_cache":
+        notes.append("KV cache satura: reduzca max_seq_len o habilite paged attention.")
 
-<h3>Error 1: Usar LLMs para Todo Sin Considerar sus Limitaciones</h3>
+    return CostBreakdown(
+        total_per_request_usd=cost_per_req,
+        per_million_input_tokens_usd=per_m_in,
+        per_million_output_tokens_usd=per_m_out,
+        monthly_usd=monthly,
+        gpu_utilization_pct=utilization * 100,
+        bottleneck=bottleneck,
+        notes=tuple(notes),
+    )</code></pre>
+<h3>4.3 Utilidades de exportacion spreadsheet-ready</h3>
+<pre><code class="language-python">def to_csv_rows(
+    result: CostBreakdown,
+    gpu: GPUProfile,
+    model: ModelProfile,
+    cfg: ServingConfig,
+) -&gt; list[dict[str, str]]:
+    return [
+        {"metric": "gpu_name", "value": gpu.name, "unit": "string"},
+        {"metric": "model_params_b", "value": f"{model.n_params_b:.2f}", "unit": "B"},
+        {"metric": "batch_size", "value": str(cfg.batch_size), "unit": "int"},
+        {"metric": "max_seq_len", "value": str(cfg.max_seq_len), "unit": "tokens"},
+        {"metric": "cost_per_request", "value": f"{result.total_per_request_usd:.6f}", "unit": "USD"},
+        {"metric": "cost_per_1m_input_tokens", "value": f"{result.per_million_input_tokens_usd:.2f}", "unit": "USD"},
+        {"metric": "cost_per_1m_output_tokens", "value": f"{result.per_million_output_tokens_usd:.2f}", "unit": "USD"},
+        {"metric": "monthly_cost_usd", "value": f"{result.monthly_usd:.2f}", "unit": "USD"},
+        {"metric": "gpu_utilization_pct", "value": f"{result.gpu_utilization_pct:.1f}", "unit": "%"},
+        {"metric": "bottleneck", "value": result.bottleneck, "unit": "string"},
+    ]
 
-<p>El error más común es pedirle al LLM que resuelva problemas para los que no está preparado. Un LLM no entiende realmente el código — predice tokens. Puede escribir una función recursiva para fibonacci sin pestañear. Pero si le pides que diseñe un sistema de archivos distribuido, las probabilidades de que港元 (alucinate) una solución que parece correcta pero tiene bugs críticos son del 60%.</p>
 
-<p><strong>La matemática lo confirma:</strong></p>
-
-<p><strong>P(éxito en tarea compleja) = P(LLM conoce el dominio) × P(el código es correcto sintácticamente) × P(el código resuelve el problema real)</strong></p>
-
-<p>Si cualquiera de esas probabilidades es baja, el resultado final se degrada rápidamente. Para tareas de baja complejidad (scripts, APIs simples, boilerplate), el éxito es alto (~85%). Para tareas de alta complejidad (sistemas distribuidos, algoritmos personalizados), puede caer a ~30%.</p>
-
-<p><strong>Fix:</strong> Clasifica la tarea antes de usar el LLM. Si es boilerplate o funciones aisladas, usa el LLM. Si es arquitectura de sistema o lógica de negocio crítica, hazlo tú o supervisa muy de cerca.</p>
-
-<h3>Error 2: No Validar el Código Generado</h3>
-
-<p>El segundo error más costoso es ejecutar código generado sin revisarlo. En una encuesta que hice en un grupo de developers en Telegram, el 70% dijo que ejecuta código de LLMs "porque se ve bien". Spoiler: "se ve bien" no es un criterio de validación.</p>
-
-<p><strong>El framework que mostré arriba incluye:</strong></p>
-
-<ul>
-<li>Validación de sintaxis (¿compila?)</li>
-<li>Detección de patrones inseguros (¿eval? ¿passwords hardcodeadas?)</li>
-<li>Verificación de manejo de errores</li>
-<li>Confirmación de que hay tests</li>
-</ul>
-
-<p>Sin esto, estás poniendo en producción código que podría tener vulnerabilidades ocultas.</p>
-
-<p><strong>Fix:</strong> Implementa un pipeline de validación antes de ejecutar. No importa si el código "se ve perfecto" — valídalo. Usa herramientas como <code>bandit</code> para Python, <code>ESLint</code> para JavaScript, y siempre ejecuta los tests.</p>
-
-<h3>Error 3: No Tener Supervisión Humana</h3>
-
-<p>El tercer error — y quizás el más peligroso — es tratar el LLM como si fuera un desarrollador autónomo. No lo es. Un LLM no tiene accountability. Si genera código con un bug que causa una caída en producción, no va a enviarte un mensaje diciendo "perdón, fui yo".</p>
-
-<p>La supervisión humana no significa leer cada línea (eso defeats the purpose). Significa:</p>
-
-<ul>
-<li>Entender qué hace el código antes de merges</li>
-<li>Definir especificaciones claras que el código debe cumplir</li>
-<li>Mantener la capacidad de debuggear el código generado</li>
-<li>Tener tests que verifiquen el comportamiento esperado</li>
-</ul>
-
-<p><strong>Fix:</strong> Establece un protocolo donde todo código generado por LLM pasa por code review humano antes de producción. No importa qué tan bueno sea tu framework — el humano en el loop es innegociable para código crítico.</p>
-
-<h2>Resumen: Cómo Hacerlo Bien</h2>
-
-<p>La generación de código con LLMs no es "escribe mi código y ya". Es un workflow estructurado:</p>
-
+def write_spreadsheet(
+    rows: Sequence[dict[str, str]],
+    path: str | Path,
+) -&gt; None:
+    path = Path(path)
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=["metric", "value", "unit"])
+        writer.writeheader()
+        writer.writerows(rows)</code></pre>
+<p>Eso es todo el codigo. ~150 lineas, sin pip install, sin frameworks. Lo pegas en un archivo, lo corres, y tienes los numeros.</p>
+<h2>5. Ejemplos: tres escenarios que si vas a ver</h2>
+<h3>5.1 Llama-3.1-70B en 2x H100, batch 32, trafico moderado</h3>
+<pre><code class="language-python">gpu = GPUProfile(
+    name="H100-80GB-SXM5",
+    peak_tflops_fp16=989.0,
+    mem_bandwidth_gbps=3350.0,
+    mem_capacity_gb=80.0,
+    hourly_cost_usd=2.49,
+)
+model = ModelProfile(
+    n_layers=80,
+    n_kv_heads=8,
+    head_dim=128,
+    n_params_b=70.0,
+)
+cfg = ServingConfig(batch_size=32, max_seq_len=4096, target_decode_tps=50.0)
+traffic = TrafficMix(
+    requests_per_second=8.0,
+    avg_input_tokens=800.0,
+    avg_output_tokens=300.0,
+)
+result = cost_breakdown(gpu, model, cfg, traffic)
+print(result)</code></pre>
+<p>Vas a ver algo como: cuello en <code>kv_cache</code>, utilizacion ~60%, costo por request del orden de centavos. Si te da memoria de sobra, sube batch antes de comprar mas GPU.</p>
+<h3>5.2 Mistral-7B en 1x A10G, batch 16, alto volumen</h3>
+<pre><code class="language-python">gpu = GPUProfile(
+    name="A10G-24GB",
+    peak_tflops_fp16=125.0,
+    mem_bandwidth_gbps=600.0,
+    mem_capacity_gb=24.0,
+    hourly_cost_usd=0.526,
+)
+model = ModelProfile(
+    n_layers=32,
+    n_kv_heads=8,
+    head_dim=128,
+    n_params_b=7.0,
+)
+cfg = ServingConfig(batch_size=16, max_seq_len=2048, target_decode_tps=80.0)
+traffic = TrafficMix(
+    requests_per_second=30.0,
+    avg_input_tokens=400.0,
+    avg_output_tokens=200.0,
+)</code></pre>
+<p>Aqui tipicamente el cuello es computo, no memoria. La A10G es bandwidth-heavy contra compute-light para modelos chicos, asi que el $<code>\tau_{compute} < \tau_{mem}</code>$ aparece rapido.</p>
+<h3>5.3 Mixto: tu GPU mas fallback a API para picos</h3>
+<pre><code class="language-python">traffic = TrafficMix(
+    requests_per_second=50.0,
+    avg_input_tokens=1000.0,
+    avg_output_tokens=400.0,
+    prompt_cache_hit_rate=0.3,
+    provider_input_price_per_1m=3.0,
+    provider_output_price_per_1m=15.0,
+)</code></pre>
+<p>El motor reporta el costo blended (tu GPU mas el fallback). Si tu <code>monthly_usd</code> esta dominado por <code>provider_*</code>, ya sabes donde esta la siguiente optimizacion: mover trafico a tu GPU o renegociar el contrato con el proveedor.</p>
+<h2>6. Debugging cuando el numero no cuadra</h2>
+<p>Pilas con esto, son los tres errores que mas he visto en produccion:</p>
 <ol>
-<li><strong>Contexto:</strong> Dale al LLM toda la información relevante — código existente, constraints, ejemplos</li>
-<li><strong>Generación:</strong> Pide código con tests, docs, y manejo de errores</li>
-<li><strong>Validación:</strong> Verifica sintaxis, seguridad, y completitud automáticamente</li>
-<li><strong>Iteración:</strong> Si falla, usa el feedback para mejorar (máximo 3 iteraciones)</li>
-<li><strong>Supervisión:</strong> Un humano revisa antes de producción</li>
+  <li><strong>El cuello de botella dice <code>kv_cache</code> pero te sobra VRAM.</strong> Revisa que <code>max_seq_len</code> en <code>ServingConfig</code> coincida con el limite real del runtime, no con el "deseado". Un batch a 4096 con $<code>p99</code>$ a 8192 te duplica el KV sin avisar.</li>
+  <li><strong>La utilizacion da menos de 30% pero los logs muestran GPU al 90%.</strong> Estas midiendo utilizacion de SM (streaming multiprocessors), no de tokens. La calculadora mide tokens/tokens_maximos. Si los dos numeros no se parecen, o tu <code>target_decode_tps</code> esta mal calibrado o el scheduler esta rechazando requests sin avisarte.</li>
+  <li><strong>El costo mensual explota cuando subes RPS pero el <code>cost_per_request</code> se queda plano.</strong> Eso es una buena noticia disfrazada: significa que tu modelo escala linealmente. Lo que te esta matando es la cola, no el computo. Solucion: SLA mas agresivo o prefill mas rapido, no mas GPUs.</li>
 </ol>
+<p>Si el <code>bottleneck</code> cambia entre <code>compute</code> y <code>memory_bandwidth</code> cuando cuantizas, no es un bug: es que la cuantizacion te movio de regimen. Documentalo, no lo "arregles".</p>
+<h2>7. Optimizaciones que de verdad mueven el numero</h2>
+<p>Sin prometer magia:</p>
+<ul>
+  <li><strong>INT8 quantization</strong> baja $<code>b_{weight}</code>$ a 1 y tipicamente duplica $<code>\tau_{mem}</code>$. En modelos mayores a 30B con cuello de bandwidth, suele bajar costo por token 30-40%.</li>
+  <li><strong>Paged attention (estilo vLLM)</strong> elimina la fragmentacion de KV cache y te permite subir <code>max_seq_len</code> efectivo 2-3x sin comprar mas VRAM.</li>
+  <li><strong>Prompt caching real</strong> (no "system prompt concatenado"): si tu <code>prompt_cache_hit_rate</code> es mayor a 40%, ahorras prefill completo, que es la mitad del computo en workloads RAG.</li>
+  <li><strong>Continuous batching</strong> mantiene el batch siempre lleno. Si tu servidor usa static batching, el costo por token efectivo puede ser 2-3x mas alto sin que nada en logs te lo diga.</li>
+  <li><strong>Speculative decoding</strong> con un draft model chico reduce latencia de salida sin tocar throughput. El costo por token cambia poco pero el usuario percibe respuestas mas rapidas, asi que puedes subir RPS sin tocar SLA.</li>
+</ul>
+<p>Lo que <strong>no</strong> optimiza casi nunca: cambiar de framework de serving sin medir primero. vLLM contra TGI contra TensorRT-LLM importa, pero menos que las cinco cosas de arriba combinadas. Mide primero, migra despues.</p>
+<h2>Conclusión</h2>
+<p>Lo que tienes que llevarte de hoy: una calculadora de costo de serving de LLMs no es una hoja de Excel con <code>tokens x precio_del_proveedor</code>. Es un sistema de tres ecuaciones acopladas (computo, bandwidth, KV cache) que ademas tiene que lidiar con trafico real, picos, fallback a APIs externas y cuantizacion. El modulo de ~150 lineas que te deje modela los tres regimenes, exporta a CSV para que el equipo financiero se defienda solo, y devuelve el cuello de botella explicito para que sepas donde atacar.</p>
+<p>Mañana vamos a usar exactamente este mismo motor para hacer sensitivity analysis: como se mueve el costo mensual cuando subes RPS, bajas batch o cambias de H100 a A100. Spoiler: hay un punto de inflexion que casi nadie modela, y es donde se te va la mitad de la factura sin que lo veas venir.</p>
+  </article>
+  <nav class="article-nav" aria-label="Navegacion entre articulos">
+    <a class="nav-prev" href="/blog/dia-296365-sparse-nn/">Anterior</a>
+    <a href="/blog/">Todos los articulos</a>
+    <a class="nav-next" href="/blog/dia-298365-distillation/" data-date="2026-10-25">Siguiente</a>
+  </nav>
 
-<p>El 15% que lo hace bien sigue estos pasos. El 85% copia, pega, y reza. No seas del 85%.</p>
 
-<hr>
-
-<h2>Cierre Colombiano</h2>
-
-<p>Y bien, hermano lector, aquí me despido. Hoy aprendimos que los LLMs para código son como el sancocho de costilla: se necesita carne buena (contexto), vegetales frescos (validación), y alguien que esté pendiente de la olla (supervisión humana). Si le echas todo junto y lo dejas hervir bien, te queda un resultado que no tiene pierde.</p>
-
-<p>Pero si le echas cualquier cosa y te ausentas, lo más seguro es que se queme. Así que ya sabe: la próxima vez que le pidas a un LLM que te escriba código, no te vayas a pelar palma mientras compila. Stay alert, stay focused.</p>
-
-<p>Nos vemos mañana en el Día 298, donde hablaremos de cómo usar LLMs para análisis de datos sin terminar contando historias a los datos incorrectos.</p>
-
-<p><em>#365DaysOfAI #CodeGeneration #LLM #PromptEngineering</em></p>
-</article>
-
-<script>
-    document.getElementById('themeToggle').addEventListener('click', function() {
-      const html = document.documentElement;
-      const isDark = html.getAttribute('data-theme') === 'dark';
-      html.setAttribute('data-theme', isDark ? 'light' : 'dark');
-      document.getElementById('themeIcon').className = isDark ? 'fas fa-moon' : 'fas fa-sun';
-    });
-  </script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
   <script>
     hljs.highlightAll();
-    document.addEventListener('DOMContentLoaded', () => {
+    document.addEventListener('DOMContentLoaded', function() {
       renderMathInElement(document.body, {
         delimiters: [
           { left: '$$', right: '$$', display: true },
@@ -602,21 +499,20 @@ if __name__ == "__main__":
         throwOnError: false,
       });
     });
-    
-  const _html = document.documentElement;
-  const _btn  = document.getElementById('themeToggle');
-  const _icon = document.getElementById('themeIcon');
-  function _setIcon(t) { _icon.className = t === 'dark' ? 'fas fa-sun' : 'fas fa-moon'; }
-  const _saved = localStorage.getItem('theme') || 'dark';
-  _html.setAttribute('data-theme', _saved);
-  _setIcon(_saved);
-  _btn.addEventListener('click', () => {
-    const next = _html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
-    _html.setAttribute('data-theme', next);
-    localStorage.setItem('theme', next);
-    _setIcon(next);
-  });
 
+    var _html = document.documentElement;
+    var _btn  = document.getElementById('themeToggle');
+    var _icon = document.getElementById('themeIcon');
+    function _setIcon(t) { _icon.className = t === 'dark' ? 'fas fa-sun' : 'fas fa-moon'; }
+    var _saved = localStorage.getItem('theme') || 'dark';
+    _html.setAttribute('data-theme', _saved);
+    _setIcon(_saved);
+    _btn.addEventListener('click', function() {
+      var next = _html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+      _html.setAttribute('data-theme', next);
+      localStorage.setItem('theme', next);
+      _setIcon(next);
+    });
   </script>
   <script>
     document.addEventListener('DOMContentLoaded', function() {
