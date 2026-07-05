@@ -3,9 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="Visual Question Answering - Preguntas Sobre Imagenes | #365DaysOfAI por Fabian Rodriguez">
-  <title>Visual Question Answering - Preguntas Sobre Imagenes | #365DaysOfAI</title>
-  
+  <meta name="description" content="Dia 287/365: RAG Chunking Strategies — Cortando la res en el punto justo para que el retriever no se ahogue | #365DaysOfAI por Fabian Rodriguez">
+  <title>Dia 287/365: RAG Chunking Strategies — Cortando la res en el punto justo para que el retriever no se ahogue | #365DaysOfAI</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
@@ -21,7 +20,7 @@
   --shadow: rgba(2,12,27,0.7); --nav-bg: rgba(10,25,47,0.92);
 }
 [data-theme="light"] {
-  --bg: #f0f4fb; --bg-card: #ffffff; --border: #d4dcee;
+  --bg: #f0f4fb; --bg-card: #ffffff; --border: #d4ddee;
   --text-muted: #64748b; --text: #475569; --text-heading: #0f172a;
   --accent: #0d9488; --accent-tint: rgba(13,148,136,0.08);
   --shadow: rgba(15,23,42,0.12); --nav-bg: rgba(240,244,251,0.95);
@@ -81,6 +80,10 @@ nav {
   border-radius: 4px; padding: .15em .4em;
 }
 .article-body pre code { background: none; border: none; padding: 0; font-size: inherit; }
+.article-body table { width: 100%; border-collapse: collapse; margin: 1.5rem 0; font-size: .9rem; }
+.article-body th, .article-body td { border: 1px solid var(--border); padding: .6rem 1rem; text-align: left; }
+.article-body th { background: var(--bg-card); color: var(--text-heading); }
+.article-body .katex-display { overflow-x: auto; padding: .5rem 0; }
 
 .article-nav {
   max-width: 820px; margin: 0 auto; padding: 2rem 1.5rem;
@@ -94,7 +97,8 @@ nav {
   nav { padding: 0 1rem; }
   .article-hero, .article-body { padding-left: 1rem; padding-right: 1rem; }
 }
-</style>
+
+  </style>
 </head>
 <body>
   <nav>
@@ -109,284 +113,309 @@ nav {
   </nav>
 
   <header class="article-hero">
-    <div class="day-badge">Dia 287 / 365 &nbsp;·&nbsp; #365DaysOfAI</div>
-    <h1 class="article-title">Visual Question Answering - Preguntas Sobre Imagenes</h1>
+    <div class="day-badge">Dia 287 / 365 &nbsp;&middot;&nbsp; #365DaysOfAI</div>
+    <h1 class="article-title">Dia 287/365: RAG Chunking Strategies — Cortando la res en el punto justo para que el retriever no se ahogue</h1>
     <div class="article-meta">
       <time class="article-date">14 de octubre de 2026</time>
-      <div class="tags"><span class="tag">vqa</span><span class="tag">vision-language</span><span class="tag">multimodal</span><span class="tag">ai</span></div>
+      <div class="tags"><span class="tag">LangChain text splitters + semantic chunking</span></div>
     </div>
   </header>
 
   <article class="article-body">
-<h2>Intro</h2>
-<p>Mañana vas a analizar imágenes médicas para un proyecto de diagnóstico assistido. Necesitas hacer preguntas como "¿hay signos de neumonía en esta radiografía?" o "¿qué región muestra anomalías?". Un humano puede hacerlo, pero un modelo tradicional de visión por computador no responde preguntas en lenguaje natural sobre imágenes. Ahí es donde entra Visual Question Answering (VQA) — la habilidad de responder preguntas sobre el contenido de una imagen.</p>
+<h2>Introduccion: el bocado que le da un infarto al modelo</h2>
+<p>Mira, te voy a contar un dolor real y muy colombiano de la ingenieria de IA. Le metes un PDF de 400 paginas a tu pipeline RAG, lo trozas en pedazos de 512 tokens "porque asi lo hace el tutorial", y cuando el usuario pregunta "cual es la clausula de penalizacion por incumplimiento del contrato de marzo 2023?", el retriever le devuelve tres pedazos random: uno del indice, otro de los anexos, y un tercero con la respuesta real pero truncada. El LLM entonces inventa, mezcla, alucina, y tu chatbot queda diciendo Pergamino. Brutal el deterioro.</p>
+<p>El origen del problema es casi siempre el mismo: el chunking es tratado como un detalle de plumbing cuando en realidad es la decision mas importante de toda la arquitectura RAG. Un chunk mal cortado destruye la cohesion semantica, rompe las dependencias logicas entre frases, y mete ruido en el embedding space que el retriever despues premia con un cosine score alto pero vacio de informacion util.</p>
+<p>Pilas con esto: cambiar de <code>chunk_size=512</code> a una estrategia consciente del documento puede subir la precision de recuperacion de 0.42 a 0.78 sin tocar el modelo, sin tocar el vector store, y casi sin gastar un peso extra. En este articulo vamos a desmontar el problema matematicamente, vamos a ver como LangChain lo implementa por dentro, y vamos a construir un splitter production-ready con seleccion dinamica segun el tipo de documento.</p>
+<h2>1. Que es RAG Chunking y por que importa</h2>
+<h3>1.1 La analogia cotidiana</h3>
+<p>Piense en un carnicero experto de Plaza de Mercado, el tipo que lleva 30 años cortando res. El no coge la pierna y la pica en cubitos de 5 cm porque si. El mira donde estan las fibras, donde estan las capas de grasa que separan musculo de musculo, donde estan los tendones. Corta siguiendo las lineas naturales de la carne. Asi saca el solomito entero, la babilla completa, el muchacho limpio. Si usted le dice "corteme 20 pedazos iguales sin importar donde", el carnicero se rife y le dice "de una le saco 20 trozos pero ninguno sirve para un buen sudado".</p>
+<p>El chunking es exactamente eso. El documento es la res, las fibras y los tendones son las fronteras semanticas naturales (parrafos, secciones, cambios de topico), y el bocado util es el chunk que conserva coherencia interna. Si corta entre frase y frase a la mitad de un parrafo, obtiene ruido vectorial. Si corta justo donde termina un subtitulo y empieza otro, obtiene un chunk que el retriever puede entender, embeddear, y devolver con sentido.</p>
+<h3>1.2 Matematica formal del chunking</h3>
+<p>Formalmente, sea $<code>D</code>$ un documento representado como secuencia de tokens $<code>T = (t_1, t_2, \dots, t_n)</code>$. Un chunking es una funcion:</p>
+$$C: T \mapsto \{c_1, c_2, \dots, c_k\}$$
+<p>donde cada $<code>c_i</code>$ es un subconjunto contiguo de tokens y la reunion cubre (con posible solapamiento) el documento original. La condicion de no-trivialidad es:</p>
+$$k \cdot \bar{|c|} \approx n, \quad \bar{|c|} \in [\ell_{\min}, \ell_{\max}]$$
+<p>donde $<code>\bar{|c|}</code>$ es el tamano promedio del chunk en tokens, acotado por limites inferiores y superiores impuestos por el modelo de embedding (ej. $<code>\ell_{\max}=512</code>$ para <code>text-embedding-3-small</code>, $<code>\ell_{\max}=8192</code>$ para <code>text-embedding-3-large</code>).</p>
+<p>La estrategia de ventana deslizante (la mas simple) se define como:</p>
+$$C_i = T[i \cdot s \;:\; i \cdot s + L]$$
+<p>donde $<code>L</code>$ es la longitud del chunk (chunk_size) y $<code>s</code>$ es el stride. El solapamiento es $<code>L - s</code>$. Hagale pues aqui hay que notar que si $<code>s = L</code>$ no hay solapamiento (chunks disjuntos), y si $<code>s \ll L</code>$ se genera redundancia. La mayoria de implementaciones usan $<code>s = L - \alpha L</code>$ con $<code>\alpha \in [0.1, 0.25]</code>$, es decir 10-25% de overlap.</p>
+<p>Para chunking semantico, la idea es minimizar la varianza semantica intra-chunk. Definimos la similitud coseno entre embeddings consecutivos:</p>
+$$\cos(\theta_i) = \frac{\vec{e}_i \cdot \vec{e}_{i+1}}{||\vec{e}_i|| \cdot ||\vec{e}_{i+1}||}$$
+<p>donde $<code>\vec{e}_i</code>$ es el embedding de la oracion $<code>i</code>$. Una caida fuerte en $<code>\cos(\theta_i)</code>$ (cercana a un umbral $<code>\tau</code>$) marca una frontera de chunk:</p>
+$$\text{BreakPoint}(i) = \mathbb{1}\left[\cos(\theta_i) < \tau\right]$$
+<p>LangChain implementa esto en <code>SemanticChunker</code> usando percentiles o desviacion estandar sobre la distribucion de similitudes. La eleccion de $<code>\tau</code>$ controla la granularidad: percentil 50 produce chunks finos, percentil 90 produce chunks gruesos.</p>
+<p>La metrica teorica de calidad del chunking se puede modelar como:</p>
+$$Q(C) = \frac{1}{k} \sum_{i=1}^{k} \text{cohesion}(c_i) - \lambda \cdot \text{redundancy}(C)$$
+<p>donde cohesion mide similitud semantica intra-chunk y redundancy mide cuanto se solapan los chunks. Maximizar $<code>Q(C)</code>$ es un problema combinatorial NP-hard, por eso en la practica usamos heuristicas (recursive splitting, semantic breaks, hierarchical merging).</p>
+<h2>2. Mecanismo interno de los splitters en LangChain</h2>
+<p>LangChain expone una familia de splitters que comparten una interfaz comun: <code>split_text(text: str) -> List[str]</code>. Por dentro, todos siguen el mismo patron de tres fases:</p>
+<pre><code class="language-text">+---------------------------+
+|        INPUT TEXT         |
++-------------+-------------+
+              |
+              v
++---------------------------+
+|   1. TRANSFORM / EXTRACT  |  Markdown -&gt; headers
+|                            |  Code -&gt; AST nodes
+|                            |  HTML -&gt; DOM nodes
++-------------+-------------+
+              |
+              v
++---------------------------+
+|   2. MEASURE (tokens)      |  tiktoken, GPT2, o Heuristic
++-------------+-------------+
+              |
+              v
++---------------------------+
+|   3. SPLIT + MERGE         |  recursive con separators
+|                            |  merge por ventana
++-------------+-------------+
+              |
+              v
++---------------------------+
+|     LIST[Document]         |
++---------------------------+</code></pre>
+<p>La fase 3 es donde vive la inteligencia. El <code>RecursiveCharacterTextSplitter</code> mantiene una jerarquia de separadores <code>["\n\n", "\n", ". ", " ", ""]</code> y va probando desde el mas semanticamente denso (doble salto de linea = parrafo) hasta el menos denso (caracter individual). Esto garantiza que si puede cortar entre parrafos, lo hace; si no, corta entre oraciones; y solo en ultimo caso corta por caracter.</p>
+<p>El <code>SemanticChunker</code> es diferente: no usa separadores sino que embebe cada oracion, calcula la similitud coseno entre consecutivas, y agrupa aquellas cuya similitud supera el umbral. Internamente usa <code>langchain_experimental</code> y admite tres modos de threshold: <code>percentile</code>, <code>standard_deviation</code>, <code>interquartile</code>. El modo <code>percentile</code> es el mas estable porque se adapta a la distribucion de cada documento automaticamente.</p>
+<p>El <code>MarkdownHeaderTextSplitter</code> parsea headers <code>#</code>, <code>##</code>, etc., y construye chunks que respetan la jerarquia, anadiendo los headers como metadata. Esto es brutal para documentos tecnicos donde la estructura ya esta senalada.</p>
+<p>Para codigo fuente, <code>RecursiveCharacterTextSplitter.from_language(Language.PYTHON, ...)</code> usa el tokenizer de tree-sitter para cortar a nivel de funciones y clases, no a nivel de caracteres. Esto evita el clasico error de partir una <code>def</code> a la mitad.</p>
+<h2>3. Uso directo: cuando usar cual</h2>
+<p>De una, regla de oro que sirve para el 80% de los casos:</p>
+<ol>
+  <li><strong>Markdown, Notion, docs estructurados</strong> -> <code>MarkdownHeaderTextSplitter</code> + <code>RecursiveCharacterTextSplitter</code> encadenados.</li>
+  <li><strong>PDFscientificos, contratos, libros</strong> -> <code>RecursiveCharacterTextSplitter</code> con <code>chunk_size=800</code>, <code>chunk_overlap=150</code>, encoding <code>cl100k_base</code>.</li>
+  <li><strong>Codigo fuente</strong> -> <code>RecursiveCharacterTextSplitter.from_language(Language.PYTHON)</code>.</li>
+  <li><strong>Chat logs, conversaciones, dialogos</strong> -> splitter custom que corta por turno (turn-based).</li>
+  <li><strong>Documentos heterogeneos</strong> -> <code>SemanticChunker</code> con threshold <code>percentile=70</code>.</li>
+</ol>
+<p>No use <code>CharacterTextSplitter</code> puro. Esta deprecated en la practica desde 2024. Tampoco use el chunk_size por defecto de 1000 sin medir, porque ese numero viene de una epoca donde los modelos no miraban mas alla de 512 tokens.</p>
+<h2>4. Implementacion production-ready</h2>
+<h3>4.1 Tipos de splitter y su rol</h3>
+<p><code>RecursiveCharacterTextSplitter</code> es el caballito de batalla. <code>SemanticChunker</code> es la mejora cualitativa. <code>MarkdownHeaderTextSplitter</code> es el especialista. <code>TokenTextSplitter</code> cuenta tiktoken directo (util cuando necesitas precision byte-perfect). <code>SentenceTransformersTokenTextSplitter</code> preserva la tokenizacion del modelo de embedding que vas a usar despues, lo cual es clave para evitar tokens cortados a la mitad que el embedder no sabra interpretar.</p>
+<h3>4.2 Motor de seleccion dinamica</h3>
+<p>En produccion real no sabes de antemano que tipo de documento llega. Necesitas un motor que detecte y enrute:</p>
+<pre><code class="language-python">from dataclasses import dataclass
+from typing import List
+from langchain_core.documents import Document
+from langchain_text_splitters import (
+    RecursiveCharacterTextSplitter,
+    MarkdownHeaderTextSplitter,
+    SemanticChunker,
+    SentenceTransformersTokenTextSplitter,
+)
+from langchain_openai import OpenAIEmbeddings
+from langchain_experimental.text_splitter import SemanticChunker
 
-<p>VQA es un problema multimodal fundamental que combina visión por computador y procesamiento de lenguaje natural. No es solo clasificación de imágenes — es comprensión visual profunda combinada con razonamiento lingüístico. Hoy vamos a entender cómo funciona, qué arquitecturas lo resuelven, y cómo implementar un sistema VQA básico.</p>
 
-<h2>Qué es Visual Question Answering</h2>
+@dataclass(frozen=True)
+class ChunkingConfig:
+    chunk_size: int = 800
+    chunk_overlap: int = 150
+    semantic_percentile: float = 70.0
+    separators: tuple = ("\n\n", "\n", ". ", " ", "")
 
-<p>VQA es el problema de responder preguntas en lenguaje natural sobre una imagen. A diferencia de tareas tradicionales de visión donde la etiqueta es fija (gato o perro), en VQA la pregunta puede ser cualquier cosa:</p>
 
-<ul>
-<li><strong>¿Cuántos objetos hay en la imagen?</strong> → respuesta: "3"</li>
-<li><strong>¿El objeto rojo es un carro o un bus?</strong> → respuesta: "carro"</li>
-<li><strong>¿Qué está haciendo la persona de la izquierda?</strong> → respuesta: "caminando"</li>
-<li><strong>¿Hay algún peligro en esta escena?</strong> → respuesta: "sí, hay fuego"</li>
-</ul>
+def detect_document_kind(text: str) -&gt; str:
+    has_headers = text.count("\n#") &gt; 0 or text.count("\n##") &gt; 2
+    has_code_fence = text.count("```") &gt;= 2
+    has_avg_paragraphs = "\n\n" in text and len(text.split("\n\n")) &gt;= 5
+    if has_headers:
+        return "markdown"
+    if has_code_fence:
+        return "code"
+    if has_avg_paragraphs:
+        return "narrative"
+    return "semantic"</code></pre>
+<h3>4.3 Utilidades: overlap inteligente, metadata y control de calidad</h3>
+<p>El overlap inteligente no es solo <code>chunk_overlap=150</code>. Es asegurar que el overlap caiga en fronteras semanticas. LangChain lo intenta pero no lo garantiza. Aqui va una utilidad que valida y repara:</p>
+<pre><code class="language-python">def split_with_intelligent_overlap(
+    text: str,
+    config: ChunkingConfig,
+    embeddings: OpenAIEmbeddings,
+) -&gt; List[Document]:
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=config.chunk_size,
+        chunk_overlap=config.chunk_overlap,
+        separators=list(config.separators),
+        length_function=len,
+        is_separator_regex=False,
+    )
+    raw_chunks = splitter.create_documents([text])
+    cleaned: List[Document] = []
+    for doc in raw_chunks:
+        content = doc.page_content.strip()
+        if len(content) &lt; 50:
+            continue
+        if content.endswith((" y ", " de ", " la ", " el ")):
+            content = content.rsplit(" ", 1)[0]
+        doc.page_content = content
+        cleaned.append(doc)
+    seen: set = set()
+    unique: List[Document] = []
+    for d in cleaned:
+        key = d.page_content[:80]
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(d)
+    return _attach_metadata(unique, embeddings)
 
-<p>La dificultad radica en que el modelo debe:</p>
 
-<ul>
-<li>Entender la pregunta (NLP)</li>
-<li>Entender el contenido visual (CV)</li>
-<li>Razonar sobre la relación pregunta-imagen</li>
-<li>Generar o seleccionar una respuesta válida</li>
-</ul>
+def _attach_metadata(
+    chunks: List[Document],
+    embeddings: OpenAIEmbeddings,
+) -&gt; List[Document]:
+    for idx, c in enumerate(chunks):
+        c.metadata["chunk_index"] = idx
+        c.metadata["char_count"] = len(c.page_content)
+        token_est = max(1, len(c.page_content) // 4)
+        c.metadata["estimated_tokens"] = token_est
+    return chunks</code></pre>
+<p>La deduplicacion por prefijo de 80 caracteres es heuristica barata pero sorprendentemente efectiva para borrar chunks duplicados cuando el overlap es agresivo. La metadata por chunk es indispensable para citaciones y para debugging en evaluacion.</p>
+<h2>5. Ejemplos con codigo</h2>
+<p>Ejemplo 1: pipeline hibrido sobre una base de conocimiento markdown.</p>
+<pre><code class="language-python">from langchain_text_splitters import (
+    MarkdownHeaderTextSplitter,
+    RecursiveCharacterTextSplitter,
+)
 
-<h2>Arquitecturas VQA</h2>
 
-<h3>Arquitectura temprana: CNN + LSTM</h3>
+def hybrid_markdown_split(md_text: str) -&gt; List[Document]:
+    headers_to_split_on = [
+        ("#", "h1"),
+        ("##", "h2"),
+        ("###", "h3"),
+    ]
+    md_splitter = MarkdownHeaderTextSplitter(
+        headers_to_split_on=headers_to_split_on,
+        strip_headers=False,
+    )
+    md_docs = md_splitter.split_text(md_text)
+    body_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=600,
+        chunk_overlap=120,
+        separators=["\n\n", "\n", ". ", " "],
+    )
+    final_docs: List[Document] = []
+    for d in md_docs:
+        section = d.metadata.get("h1", "root")
+        subs = body_splitter.split_documents([d])
+        for s in subs:
+            s.metadata["section"] = section
+            final_docs.append(s)
+    return final_docs</code></pre>
+<p>Ejemplo 2: chunking semantico con threshold adaptativo.</p>
+<pre><code class="language-python">from langchain_experimental.text_splitter import SemanticChunker
+from langchain_openai import OpenAIEmbeddings
 
-<p>Las primeras arquitecturas VQA usaban una aproximación simple:</p>
 
-<pre><code class="language-python"># Arquitectura básica CNN + LSTM para VQA
-import torch
-import torch.nn as nn
-
-class VQACNNLSTM(nn.Module):
-    def __init__(self, vocab_size, embed_dim=300, hidden_dim=512):
-        super().__init__()
-        # Encoder de imagen: CNN pretrained (ej. ResNet)
-        self.image_encoder = torchvision.models.resnet50(pretrained=True)
-        self.image_encoder.fc = nn.Linear(2048, hidden_dim)
-        
-        # Encoder de pregunta: LSTM
-        self.question_encoder = nn.LSTM(
-            input_size=embed_dim,
-            hidden_size=hidden_dim,
-            batch_first=True
+def semantic_split_long_text(long_text: str) -&gt; List[Document]:
+    embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
+    splitter = SemanticChunker(
+        embeddings=embeddings,
+        breakpoint_threshold_type="percentile",
+        breakpoint_threshold_amount=70.0,
+        min_chunk_size=200,
+    )
+    return splitter.create_documents([long_text])</code></pre>
+<p>Ejemplo 3: seleccion automatica segun tipo.</p>
+<pre><code class="language-python">def smart_split(
+    text: str,
+    embeddings: OpenAIEmbeddings,
+    config: ChunkingConfig,
+) -&gt; List[Document]:
+    kind = detect_document_kind(text)
+    if kind == "markdown":
+        return hybrid_markdown_split(text)
+    if kind == "code":
+        splitter = RecursiveCharacterTextSplitter.from_language(
+            language=Language.PYTHON,
+            chunk_size=config.chunk_size,
+            chunk_overlap=config.chunk_overlap,
         )
-        
-        # Combinar características y clasificar respuesta
-        self.classifier = nn.Sequential(
-            nn.Linear(hidden_dim * 2, hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(0.5),
-            nn.Linear(hidden_dim, vocab_size)
-        )
-    
-    def forward(self, image, question):
-        # image: (batch, 3, 224, 224)
-        # question: (batch, seq_len)
-        
-        # Extraer características de imagen
-        img_features = self.image_encoder(image)  # (batch, hidden_dim)
-        img_features = img_features.unsqueeze(1).expand(-1, question.size(1), -1)
-        
-        # Codificar pregunta
-        q_output, (q_hidden, _) = self.question_encoder(question)
-        q_features = q_hidden.squeeze(0)  # (batch, hidden_dim)
-        q_features = q_features.unsqueeze(1).expand(-1, img_features.size(1), -1)
-        
-        # Combinar y clasificar
-        combined = torch.cat([img_features, q_features], dim=-1)
-        combined = combined.mean(dim=1)  # pooling
-        output = self.classifier(combined)
-        
-        return output
-</code></pre>
-
-<h3>Arquitectura con Atención</h3>
-
-<p>Las arquitecturas modernas usan atención visual para enfocar en las regiones relevantes de la imagen:</p>
-
-<pre><code class="language-python"># Atención visual para VQA
-class VisualAttention(nn.Module):
-    def __init__(self, image_dim=2048, hidden_dim=512):
-        super().__init__()
-        self.image_attention = nn.Linear(image_dim, 1)
-        self.softmax = nn.Softmax(dim=1)
-    
-    def forward(self, image_features, question_features):
-        # image_features: (batch, num_regions, image_dim)
-        # question_features: (batch, hidden_dim)
-        
-        # Calcular atención basada en la pregunta
-        q_expanded = question_features.unsqueeze(1).expand(-1, image_features.size(1), -1)
-        attention_input = image_features * q_expanded
-        attention_scores = self.image_attention(attention_input).squeeze(-1)
-        attention_weights = self.softmax(attention_scores)
-        
-        # Aplicar atención a características de imagen
-        attended_features = torch.sum(image_features * attention_weights.unsqueeze(-1), dim=1)
-        
-        return attended_features, attention_weights
+        return splitter.create_documents([text])
+    if kind == "narrative":
+        return split_with_intelligent_overlap(text, config, embeddings)
+    return semantic_split_long_text(text)</code></pre>
+<h2>6. Debugging: cuando los chunks rompen la recuperacion</h2>
+<p>Sintoma clasico: el retriever devuelve chunks que coinciden con keywords pero no contienen la respuesta. Tres causas tipicas:</p>
+<p>Causa 1: chunks demasiado pequenos. Si un chunk tiene menos de 100 tokens, su embedding vive en una region densa del espacio vectorial donde se confunde con muchos otros. Solucion: aumentar <code>chunk_size</code> o filtrar <code>min_chunk_size>=200</code>.</p>
+<p>Causa 2: overlap excesivo creando duplicados near-identical. El retriever entonces devuelve el chunk duplicado y el LLM recibe la misma informacion dos veces. Solucion: deduplicar por MinHash o por similitud coseno antes de indexar.</p>
+<p>Causa 3: chunks cortando unidades logicas. Si cortas una tabla a la mitad, ni la pregunta ni la respuesta estan en el mismo chunk. Solucion: detectores explicitos de tablas (<code>\n|</code>), codigo (```<code> </code>`<code> </code>``<code>), y listas (</code>^\s*-`) que se tratan como bloques atomicos.</p>
+<p>Para diagnosticar en produccion, instrumenta estas metricas:</p>
+<pre><code class="language-python">import numpy as np
+from statistics import mean, pstdev
 
 
-class UpDownAttentionVQA(nn.Module):
-    """
-    Bottom-Up Top-Down Attention - similar a la usada en BUTD (Anderson et al.)
-    """
-    def __init__(self, vocab_size, embed_dim=300, hidden_dim=512, num_objects=36):
-        super().__init__()
-        self.num_objects = num_objects
-        
-        # Image feature extractor (pre-trained Faster R-CNN)
-        self.image_encoder = nn.Linear(2048, hidden_dim)
-        
-        # Question encoder
-        self.word_embedding = nn.Embedding(vocab_size, embed_dim)
-        self.question_encoder = nn.LSTM(
-            input_size=embed_dim,
-            hidden_size=hidden_dim,
-            batch_first=True,
-            bidirectional=True
-        )
-        
-        # Attention layers
-        self.image_attention = nn.Linear(hidden_dim, 1)
-        self.classifier = nn.Sequential(
-            nn.Linear(hidden_dim * 2, hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(0.5),
-            nn.Linear(hidden_dim, vocab_size)
-        )
-    
-    def forward(self, image_features, question, question_length):
-        # image_features: (batch, num_objects, 2048)
-        # question: (batch, max_seq_len)
-        # question_length: (batch,)
-        
-        batch_size = image_features.size(0)
-        
-        # 1. Codificar pregunta
-        embedded = self.word_embedding(question)
-        _, (q_hidden, _) = self.question_encoder(embedded)
-        q_hidden = torch.cat([q_hidden[0], q_hidden[1]], dim=1)  # bidirectional
-        
-        # 2. Atención visual
-        image_proj = self.image_encoder(image_features)  # (batch, num_objects, hidden)
-        combined = image_proj * q_hidden.unsqueeze(1).expand(-1, self.num_objects, -1)
-        attention_logits = self.image_attention(combined).squeeze(-1)
-        
-        # Mask padding regions
-        mask = torch.arange(self.num_objects, device=attention_logits.device).unsqueeze(0).expand(batch_size, -1)
-        mask = mask < torch.tensor([self.num_objects] * batch_size, device=mask.device).unsqueeze(1)
-        attention_logits.masked_fill_(~mask, float('-inf'))
-        
-        attention_weights = F.softmax(attention_logits, dim=1)
-        attended_image = torch.sum(image_features * attention_weights.unsqueeze(-1), dim=1)
-        
-        # 3. Combinar y clasificar
-        combined_features = torch.cat([q_hidden, attended_image], dim=1)
-        output = self.classifier(combined_features)
-        
-        return output
-</code></pre>
-
-<h3>VQA con Transformers (state-of-the-art)</h3>
-
-<p>Los modelos modernos usan transformers multimodales que procesan imagen y texto conjuntamente:</p>
-
-<pre><code class="language-python"># VQA con Multimodal Transformer (simplificado)
-from transformers import BertModel, BertTokenizer, VisionEncoderDecoderModel
-
-class TransformerVQA(nn.Module):
-    def __init__(self):
-        super().__init__()
-        # Encoder de imagen (ViT) y decoder de texto (BERT)
-        self.model = VisionEncoderDecoderModel.from_pretrained(
-            "nlpconnect/vit-gpt2-image-captioning"
-        )
-        # Reemplazar decoder para VQA (preguntas como input, respuestas como output)
-        
-    def forward(self, image, question):
-        # image: (batch, 3, 224, 224)
-        # question: (batch, seq_len) - tokenized question
-        
-        # Usar pregunta como prefix para el decoder
-        outputs = self.model(
-            pixel_values=image,
-            labels=question  # training mode
-        )
-        return outputs.logits
+def chunking_quality_report(chunks: List[Document]) -&gt; dict:
+    sizes = [len(c.page_content) for c in chunks]
+    return {
+        "n_chunks": len(chunks),
+        "avg_chars": mean(sizes),
+        "std_chars": pstdev(sizes),
+        "max_chars": max(sizes),
+        "min_chars": min(sizes),
+        "cv": pstdev(sizes) / mean(sizes) if mean(sizes) else 0.0,
+    }</code></pre>
+<p>Un coeficiente de variacion (<code>cv</code>) mayor a 0.5 senala chunks muy desbalanceados, que es donde vive el dolor.</p>
+<h2>7. Optimizaciones: hierarchical, late y adaptive chunking</h2>
+<p><strong>Hierarchical chunking</strong> mantiene dos niveles: chunks grandes para contexto y chunks pequenos para retrieval. El retriever devuelve el pequeno y el LLM recibe un resumen del grande como contexto adicional. Esto preserva localizacion sin perder coherencia global.</p>
+<p><strong>Late chunking</strong> (propuesto por Anthropic en 2024) es brillante: embebes el documento completo de una vez, luego aplicas el splitting sobre los embeddings, no sobre los tokens. Cada token tiene un embedding contextualizado por todo el documento, asi cuando cortas un chunk sus embeddings ya saben del resto. Requiere un modelo que soporte long context (>= 8192 tokens) y un poquito de codigo custom:</p>
+<pre><code class="language-python">import numpy as np
+from typing import List
+from langchain_core.documents import Document
+from langchain_openai import OpenAIEmbeddings
 
 
-# Alternativa: usar modelo pre-entrenado de VQA
-from transformers import pipeline
-
-# Cargar pipeline VQA pre-entrenado
-vqa_pipeline = pipeline("vqa", model="dandelin/vilt-b32-finetuned-vqa")
-
-def answer_question(image_path, question):
-    """
-    Ejemplo de uso de pipeline VQA pre-entrenado.
-    """
-    from PIL import Image
-    import requests
-    
-    image = Image.open(image_path)
-    result = vqa_pipeline(image, question)
-    
-    # Result es una lista de dicts con 'score' y 'answer'
-    return result
-
-# Uso:
-# answer = answer_question("radiografia.jpg", "¿Hay signos de neumonía?")
-# print(answer)  # [{'answer': 'sí', 'score': 0.95}, {'answer': 'no', 'score': 0.05}, ...]
-</code></pre>
-
-<h2>Datasets y evaluación</h2>
-
-<p>Los datasets principales para VQA son:</p>
-
-<ul>
-<li><strong>VQA v2.0</strong>: 1M+ preguntas sobre imágenes de COCO, con balanceo de respuestas para reducir sesgos</li>
-<li><strong>Visual Genome</strong>: 1M+ preguntas con region descriptions más detalladas</li>
-<li><strong>VQAv2.0-E</strong>: Versión equilibrada con contrafácticos</li>
-</ul>
-
-<p>La evaluación usa <strong>VQA Accuracy</strong>:</p>
-
-<p><strong> accuracy = (1 / N) * sum(min( (# humanos que dieron respuesta r) / 3, 1 )) </strong></p>
-
-<p>Es decir, si 3 o más humanos dieron la misma respuesta, cuenta como correcta. Si 1 o 2 la dieron, cuenta parcialmente.</p>
-
-<h2>Aplicaciones reales</h2>
-
-<ul>
-<li><strong>Médicina</strong>: Preguntas sobre radiografías, tomografías, imágenes de retina</li>
-<li><strong>Accesibilidad</strong>: Describir escenas para personas con discapacidad visual</li>
-<li><strong>Seguridad</strong>: Analizar cámaras de vigilancia con preguntas naturales</li>
-<li><strong>Educación</strong>: Sistemas interactivos que responden preguntas sobre diagramas, mapas, imágenes históricas</li>
-<li><strong>Retail</strong>: Analizar productos en estantes, responder preguntas sobre inventario</li>
-</ul>
-
-<hr>
-
-<h2>Resumen y cierre</h2>
-
-<p>Visual Question Answering es una tarea multimodal que combina visión por computador y NLP para responder preguntas sobre imágenes. Las arquitecturas han evolucionado desde CNN+LSTM simples hasta transformers multimodales sofisticados. El campo avanza rápidamente con modelos como CLIP, GPT-4V, y Gemini que demuestran capacidades VQA impresionantemente robustas.</p>
-
-<p>La próxima vez que necesites que un modelo "mire" una imagen y responda preguntas específicas, ya sabes cómo funciona internamente. Y si necesitas implementar algo rápido, hay pipelines pre-entrenados que funcionan sorprendentemente bien out of the box.</p>
-
-<p>En Bogotá decíamos: "una imagen vale más que mil palabras, pero una buena pregunta vale más que mil imágenes". Con VQA, las máquinas finalmente pueden entender esa relación.</p>
+def late_chunking(
+    full_text: str,
+    boundaries: List[int],
+    embeddings: OpenAIEmbeddings,
+) -&gt; List[Document]:
+    token_embeddings = embeddings.embed_documents(
+        [full_text[i:j] for i, j in zip(boundaries[:-1], boundaries[1:])]
+    )
+    arr = np.array(token_embeddings)
+    out: List[Document] = []
+    cursor = 0
+    chunk_start = 0
+    chunk_vecs = []
+    for i, b in enumerate(boundaries[1:]):
+        chunk_vecs.append(arr[i])
+        if b - chunk_start &gt;= 800 or i == len(boundaries) - 2:
+            mean_vec = np.mean(chunk_vecs, axis=0)
+            chunk_text = full_text[chunk_start:b]
+            doc = Document(
+                page_content=chunk_text,
+                metadata={
+                    "embedding": mean_vec.tolist(),
+                    "char_start": chunk_start,
+                    "char_end": b,
+                },
+            )
+            out.append(doc)
+            chunk_start = b
+            chunk_vecs = []
+    return out</code></pre>
+<p><strong>Adaptive chunking</strong> mide la dificultad del documento (densidad de entities, longitud de oraciones, varianza lexical) y ajusta <code>chunk_size</code> por seccion. Esto es overkill para el 80% pero brutal para legal y medicina donde la densidad cambia mucho entre secciones.</p>
+<h2>Conclusion</h2>
+<p>Parce, el chunking no es plumbing. Es la decision arquitectonica que define el techo de calidad de tu sistema RAG. Cambiar de <code>chunk_size=512</code> a un pipeline que detecta el tipo de documento, elige el splitter correcto, deduplica y mide la calidad de cada chunk es la diferencia entre un demo con alucinaciones y un sistema que responde bien en produccion.</p>
+<p>La formula mental que te recomiendo es esta: primero mide con <code>chunking_quality_report</code>, despues elige splitter segun el tipo, despues valida con un golden set de preguntas-respuestas donde mides si el chunk esperado aparece en el top-k. Si no aparece, el problema no es el embedding, es el chunk. Ahi si toca volver a la mesa de diseno y cambiar la estrategia.</p>
+<p>Para manana, dia 288, vamos a meternos con <strong>RAG HyDE (Hypothetical Document Embeddings)</strong> y por que generar una respuesta hipotetica antes de recuperar mejora el recall en busquedas conversacionales. Nos vemos.</p>
   </article>
+  <nav class="article-nav" aria-label="Navegacion entre articulos">
+    <a class="nav-prev" href="/blog/dia-286365-self-supervised/">Anterior</a>
+    <a href="/blog/">Todos los articulos</a>
+    <a class="nav-next" href="/blog/dia-288365-masked-autoencoders/" data-date="2026-10-15">Siguiente</a>
+  </nav>
 
-  <script>
-    document.getElementById('themeToggle').addEventListener('click', function() {
-      const html = document.documentElement;
-      const isDark = html.getAttribute('data-theme') === 'dark';
-      html.setAttribute('data-theme', isDark ? 'light' : 'dark');
-      document.getElementById('themeIcon').className = isDark ? 'fas fa-moon' : 'fas fa-sun';
-    });
-  </script>
+
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
   <script>
     hljs.highlightAll();
-    document.addEventListener('DOMContentLoaded', () => {
+    document.addEventListener('DOMContentLoaded', function() {
       renderMathInElement(document.body, {
         delimiters: [
           { left: '$$', right: '$$', display: true },
@@ -397,21 +426,20 @@ def answer_question(image_path, question):
         throwOnError: false,
       });
     });
-    
-  const _html = document.documentElement;
-  const _btn  = document.getElementById('themeToggle');
-  const _icon = document.getElementById('themeIcon');
-  function _setIcon(t) { _icon.className = t === 'dark' ? 'fas fa-sun' : 'fas fa-moon'; }
-  const _saved = localStorage.getItem('theme') || 'dark';
-  _html.setAttribute('data-theme', _saved);
-  _setIcon(_saved);
-  _btn.addEventListener('click', () => {
-    const next = _html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
-    _html.setAttribute('data-theme', next);
-    localStorage.setItem('theme', next);
-    _setIcon(next);
-  });
 
+    var _html = document.documentElement;
+    var _btn  = document.getElementById('themeToggle');
+    var _icon = document.getElementById('themeIcon');
+    function _setIcon(t) { _icon.className = t === 'dark' ? 'fas fa-sun' : 'fas fa-moon'; }
+    var _saved = localStorage.getItem('theme') || 'dark';
+    _html.setAttribute('data-theme', _saved);
+    _setIcon(_saved);
+    _btn.addEventListener('click', function() {
+      var next = _html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+      _html.setAttribute('data-theme', next);
+      localStorage.setItem('theme', next);
+      _setIcon(next);
+    });
   </script>
   <script>
     document.addEventListener('DOMContentLoaded', function() {
