@@ -3,9 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="LLM Context Management — Qué el 80% Hace Mal y Qué el 20% Hace Bien Para Manejar Contexto | #365DaysOfAI por Fabian Rodriguez">
-  <title>LLM Context Management | #365DaysOfAI</title>
-  
+  <meta name="description" content="Dia 292/365: Streaming LLM Responses (SSE + backpressure) — Las esclusas del Canal de Panamá aplicadas a tu servidor | #365DaysOfAI por Fabian Rodriguez">
+  <title>Dia 292/365: Streaming LLM Responses (SSE + backpressure) — Las esclusas del Canal de Panamá aplicadas a tu servidor | #365DaysOfAI</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
@@ -21,7 +20,7 @@
   --shadow: rgba(2,12,27,0.7); --nav-bg: rgba(10,25,47,0.92);
 }
 [data-theme="light"] {
-  --bg: #f0f4fb; --bg-card: #ffffff; --border: #d4dcee;
+  --bg: #f0f4fb; --bg-card: #ffffff; --border: #d4ddee;
   --text-muted: #64748b; --text: #475569; --text-heading: #0f172a;
   --accent: #0d9488; --accent-tint: rgba(13,148,136,0.08);
   --shadow: rgba(15,23,42,0.12); --nav-bg: rgba(240,244,251,0.95);
@@ -81,6 +80,10 @@ nav {
   border-radius: 4px; padding: .15em .4em;
 }
 .article-body pre code { background: none; border: none; padding: 0; font-size: inherit; }
+.article-body table { width: 100%; border-collapse: collapse; margin: 1.5rem 0; font-size: .9rem; }
+.article-body th, .article-body td { border: 1px solid var(--border); padding: .6rem 1rem; text-align: left; }
+.article-body th { background: var(--bg-card); color: var(--text-heading); }
+.article-body .katex-display { overflow-x: auto; padding: .5rem 0; }
 
 .article-nav {
   max-width: 820px; margin: 0 auto; padding: 2rem 1.5rem;
@@ -94,7 +97,8 @@ nav {
   nav { padding: 0 1rem; }
   .article-hero, .article-body { padding-left: 1rem; padding-right: 1rem; }
 }
-</style>
+
+  </style>
 </head>
 <body>
   <nav>
@@ -109,818 +113,342 @@ nav {
   </nav>
 
   <header class="article-hero">
-    <div class="day-badge">Dia 292 / 365 &nbsp;·&nbsp; #365DaysOfAI</div>
-    <h1 class="article-title">LLM Context Management — Qué el 80% Hace Mal y Qué el 20% Hace Bien Para Manejar Contexto</h1>
+    <div class="day-badge">Dia 292 / 365 &nbsp;&middot;&nbsp; #365DaysOfAI</div>
+    <h1 class="article-title">Dia 292/365: Streaming LLM Responses (SSE + backpressure) — Las esclusas del Canal de Panamá aplicadas a tu servidor</h1>
     <div class="article-meta">
       <time class="article-date">19 de octubre de 2026</time>
-      <div class="tags"><span class="tag">context-management</span><span class="tag">rag</span><span class="tag">llm</span><span class="tag">conversation-history</span></div>
+      <div class="tags"><span class="tag">FastAPI + SSE + httpx + asyncio queues</span></div>
     </div>
   </header>
 
   <article class="article-body">
-    <h2>El Problema Que Ningún Equipo Quiere Admitir</h2>
+<h2>Introduccion: cuando el streaming te revienta la memoria en produccion</h2>
+<p>Tengo una cicatriz muy concreta: a las 2:47am de un martes, el servicio de chat que habia deployado el viernes empezo a tirar OOM cada 20 minutos. Nada en los logs, todo verde en Grafana excepto <code>container_memory_usage_bytes</code> trepando como un electrocardiograma plano invertido. Al final eran 12 minutos sostenidos de un power-user que mandaba consultas largas y mi servicio no tenia backpressure. El LLM provider le escupia los tokens a su ritmo, mi <code>asyncio.Queue</code> con <code>maxsize=0</code> se llenaba silenciosamente, y la memoria crecia sin tope hasta que el kernel me mataba el container.</p>
+<p>Eso es lo que pasa cuando haces streaming sin entender control de flujo. No es un bug de FastAPI, ni de httpx, ni del provider. Es una falta de matematica del lado de quien escribio el codigo. En este articulo vamos a formalizar el problema con Little's Law, vamos a leer el codigo de <code>asyncio.Queue</code> para entender como bloquea al productor, y vamos a armar una implementacion production-ready con cancelacion real cuando el cliente se desconecta.</p>
+<p>Mito a desterrar ya: "uso streaming y ya". No. Streaming sin backpressure es solo un <code>await</code> mas rapido camino al OOM. Si tu cola no tiene techo y tu productor no se cancela cuando el consumidor cierra, no tienes streaming, tienes una fuga de memoria disfrazada de feature.</p>
+<h2>1. Que es streaming LLM con backpressure</h2>
+<h3>1.1 La analogia cotidiana: las esclusas del Canal de Panama</h3>
+<p>Pensa en las esclusas del Canal de Panama. Cada esclusa es una camara con dos compuertas: una aguas arriba, otra aguas abajo. Cuando un barco entra, la camara upstream se llena hasta nivelar con el lago; las compuertas se abren; el barco pasa a la camara de abajo; luego esa camara drena al oceano. El siguiente barco no puede entrar hasta que la esclusa downstream tiene espacio. Si ignoraras las compuertas, tendrias agua desbordandose por todas partes, barcos encallados y perdidas millonarias.</p>
+<p>Si lo traduces a tu servicio: el LLM provider es el oceano (productor); tu <code>asyncio.Queue</code> es la camara de la esclusa (buffer acotado); tu cliente HTTP que recibe SSE es el puerto de destino (consumidor). Cuando el cliente es lento, la camara se llena. La compuerta upstream no se abre mas hasta que haya espacio. Esa senal de "no abrir mas" es el backpressure, propagada por toda la cadena de awaits sin que nadie la negocie explicitamente.</p>
+<p>La diferencia entre "tengo una cola" y "tengo backpressure" es exactamente la diferencia entre "tengo una esclusa" y "tengo una esclusa con compuertas operativas". Cualquier charco sirve para meter un barco una vez; sostener el sistema 24/7 requiere control de flujo real.</p>
+<h3>1.2 La matematica del control de flujo</h3>
+<p>El control de flujo no es magia. Tiene nombre formal: throughput, latencia, capacidad de buffer. Si entiendes las tres, sabes cuando vas a romper.</p>
+<p><strong>Little's Law</strong>, ley fundamental de colas:</p>
+$$ L = \lambda \cdot W $$
+<p>Donde $<code>L</code>$ es el numero promedio de tokens en el sistema, $<code>\lambda</code>$ es el throughput (tokens/segundo sostenidos) y $<code>W</code>$ es el tiempo promedio que cada token pasa en el sistema. Para nuestro caso de streaming SSE:</p>
+<ul>
+  <li>$<code>L_{\text{max}} = B \cdot s_{\text{token}}</code>$ donde $<code>B</code>$ es la capacidad del buffer y $<code>s_{\text{token}}</code>$ es el tamano serializado de un token en bytes.</li>
+  <li>$<code>\lambda_{\text{llm}}</code>$ viene del provider (GPT-4 stream: ~60-100 tok/s; Llama-3 70B en H100: ~120 tok/s).</li>
+  <li>$<code>\lambda_{\text{cliente}}</code>$ lo determina el consumidor: ancho de banda + tiempo de render en cliente + serializacion JSON.</li>
+</ul>
+<p>La condicion de estabilidad del sistema es:</p>
+$$ \lambda_{\text{llm}} \leq \lambda_{\text{cliente}} + \frac{B}{W_{\text{burst}}} $$
+<p>Si $<code>\lambda_{\text{llm}} > \lambda_{\text{cliente}}</code>$ de forma sostenida, el buffer crece sin importar su tamano. Sin backpressure, esto significa OOM en minutos. La unica salvaguarda es una de tres cosas: (a) reducir la tasa del productor, (b) aumentar la tasa del consumidor, o (c) tirar trabajo. <code>asyncio.Queue</code> implementa (a) bloqueando al productor cuando el buffer llega a <code>maxsize</code>. Esa senal se propaga aguas arriba: cuando el productor se bloquea en <code>await queue.put()</code>, deja de leer del socket, el socket del provider se llena, y el provider deja de computar. Cadena causal completa de un solo <code>await</code>.</p>
+<p>El umbral tipico para activar la senal de backpressure en sistemas reactivos esta entre:</p>
+$$ \alpha \in [0.7, 0.9] \quad \text{con} \quad q_{\text{size}} \geq \alpha \cdot B $$
+<p>Esto deja margen entre la senal y el bloqueo total, evitando ping-pong cerca del limite.</p>
+<h2>2. Mecanismo interno: como funciona SSE realmente</h2>
+<p>SSE (Server-Sent Events) no es magia nueva. Es HTTP/1.1 con <code>Content-Type: text/event-stream</code> y el servidor emitiendo chunks en este formato textual:</p>
+<pre><code class="language-text">data: {"token": "Hola"}\n
+\n
 
-<p>Ustedes saben de qué hablo. Ese momento cuando le mandan al LLM un chat de 50 mensajes y el modelo empieza a alucinar, a repetir cosas, o simplemente a ignorar información que usted le dio hace 30 mensajes. Eso no es un bug del modelo. Eso es un problema de <strong>context management</strong> — y el 80% de los equipos lo hace terriblemente mal.</p>
+data: {"token": " mundo"}\n
+\n
 
-<p>En Colombia, con empresas adoptando chatbots para atención al cliente en bancos, clínicas, supermercados y gobierno, este problema se vuelve crítico. Un sistema de atención médica que no recuerda que un paciente es alérgico a la penicilina porque esa información estaba en el mensaje 47 del chat no es solo ineficiente — es peligroso.</p>
+data: [DONE]\n
+\n</code></pre>
+<p>Las dos nuevas lineas (<code>\n\n</code>) son obligatorias: separan eventos. Cada <code>data:</code> es una linea que el <code>EventSource</code> del navegador concatena. El prefijo <code>:</code> solo es un comentario de keep-alive: <code>: ping\n\n</code> cada 15-30 segundos evita que los proxies maten la conexion idle.</p>
+<p>Diagrama del flujo completo:</p>
+<pre><code class="language-text">+----------------+      +----------------------+      +------------------+      +-----------+
+| LLM provider   | ---&gt; | asyncio.Queue[B=64] | ---&gt; | SSE generator    | ---&gt; | cliente   |
+| (httpx stream) |      | backpressure here   |      | data: {...}\n\n |      | EventSource|
++----------------+      +----------------------+      +------------------+      +-----------+
+       |                         |                          |                       |
+       | productor               | bounded                  | consumidor            | puede ser
+       | ~80 tok/s               | block on full            | await queue.get()     | lento
+       |                         |                          |                       |
+   await aiter_lines       await queue.put            yield bytes             EventSource.onmessage</code></pre>
+<p>El detalle clave que muchos se saltan: cuando la cola llega a 64 elementos, <code>await queue.put(token)</code> suspende al productor. No estamos desperdiciando tokens ni pidiendo al provider que "pare"; el provider deja de emitir porque httpx no le pide mas chunks (su socket interno se llena). Backpressure se propaga aguas arriba automaticamente por la cadena de awaits. No hay senal explicita, no hay mensajes de control: es colaboracion por bloqueo.</p>
+<h2>3. Uso directo: la trampa del Queue(maxsize=0)</h2>
+<p>El 80% de tutoriales en la web hacen esto:</p>
+<pre><code class="language-python">from fastapi import FastAPI
+from fastapi.responses import StreamingResponse
+import asyncio
+import httpx
 
-<p>La matemática es cruel: los modelos tienen context windows finitos. GPT-4o tiene 128k tokens. Claude 3.5 tiene 200k. Pero incluso esos números generosos se agotan cuando no hay estrategia de por medio. Y la mayoría de equipos simplemente manda todo — toda la historia, todos los documentos, todos los datos — sin pensar en qué, cuánto, y en qué orden.</p>
+app = FastAPI()
 
-<h2>¿Por Qué El Contexto Es Todo?</h2>
+@app.get("/stream")
+async def stream():
+    async def gen():
+        queue = asyncio.Queue()  # maxsize=0 = infinito
+        async with httpx.AsyncClient() as client:
+            async with client.stream(
+                "POST", "https://api.openai.com/v1/chat/completions",
+                headers={"Authorization": "..."},
+                json={"stream": True, "messages": [...]},
+            ) as r:
+                async for chunk in r.aiter_bytes():
+                    await queue.put(chunk)  # nunca bloquea: Queue unbounded
+            await queue.put(None)
+        while True:
+            item = await queue.get()
+            if item is None:
+                break
+            yield item
+    return StreamingResponse(gen(), media_type="text/event-stream")</code></pre>
+<p>Mira lo que esta mal: tres cosas serias.</p>
+<ol>
+  <li>La cola no tiene tope. Produce tan rapido como el LLM emita. Si el cliente es lento, la memoria crece sin limite. Esa es la fuente del incidente de las 2:47am.</li>
+</ol>
+<ol>
+  <li>El productor (httpx) y el consumidor (cliente SSE) no estan conectados en su ciclo de vida. Si el cliente cierra la conexion, el productor sigue gastando tokens del provider hasta que termine. Facturacion residual sin deliverable.</li>
+</ol>
+<ol>
+  <li>No hay cancelacion explicita. FastAPI no mata tasks colgadas por ti. Vas a tener <code>Task was destroyed but it is pending!</code> y posibles zombies que consumen budget.</li>
+</ol>
+<p><code>asyncio.Queue(maxsize=0)</code> es comfort code: te hace sentir que estas haciendo algo asincrono cuando en realidad solo estas diferiendo el OOM unos minutos.</p>
+<h2>4. Implementacion production-ready</h2>
+<h3>4.1 Tipos: el contrato del stream</h3>
+<pre><code class="language-python">from __future__ import annotations
 
-<p>El contexto es el suministro de sangre de cualquier aplicación LLM. Sin contexto, el modelo no sabe quién es el usuario, qué ha pedido antes, qué información tiene disponible. Contexto mal administrado produce respuestas que ignoran información crucial, que repiten lo que ya se dijo, o que directamente alucinan porque el modelo tiene que "llenar los vacíos" con lo que sea que tenga sentido para él.</p>
-
-<p>La fórmula del problema es simple:</p>
-
-<pre><code class="language-python">
-import math
-
-def context_efficiency(messages: list, max_context: int, 
-                      selection_strategy: str = "naive") -> dict:
-    """
-    Calcula métricas de eficiencia de uso de contexto.
-    """
-    total_tokens = sum(m.get('tokens', 0) for m in messages)
-    used_tokens = min(total_tokens, max_context)
-    wasted_tokens = max(0, total_tokens - max_context)
-    
-    if selection_strategy == "naive":
-        quality_score = 0.3
-    elif selection_strategy == "smart":
-        quality_score = 0.75
-    elif selection_strategy == "hybrid":
-        quality_score = 0.9
-    else:
-        quality_score = 0.5
-    
-    return {
-        "total_tokens": total_tokens,
-        "used_tokens": used_tokens,
-        "wasted_tokens": wasted_tokens,
-        "efficiency_ratio": used_tokens / max_context if max_context > 0 else 0,
-        "quality_score": quality_score,
-        "effective_context_quality": quality_score * (used_tokens / max_context),
-        "overflow": total_tokens > max_context
-    }
-</code></pre>
-
-<h2>Error #1: Mandar Todo Sin Gestión — "Todo Es Importante" Es Mentira</h2>
-
-<h3>El Problema</h3>
-
-<p>El error más común es creer que porque algo está en la conversación, el modelo lo va a usar correctamente. Falso. El modelo no "ve" todos los mensajes por igual. Las instrucciones systemáticas (como "eres un asistente que ayuda a clientes de banco") tienen peso diferente a un mensaje de usuario en el medio de la conversación. Y cuando mandas demasiado, lo que pasa es que la información importante se diluye entre el ruido.</p>
-
-<p>Imaginen una conversación de 100 mensajes donde el cliente mencionó en el mensaje 15 que tenía preferencia por contacto por email. Si mandas todo, el modelo tiene que "recordar" ese detalle entre 85 mensajes de contexto. En la práctica, el modelo le da más peso a la información reciente y a las instrucciones del system prompt. Ese detalle se pierde.</p>
-
-<h3>La Solución</h3>
-
-<p>Un sistema de context management que clasifique y priorice. No todo mensaje es igual de importante. Implementar un framework de priorización que determine qué entra al contexto y qué se descarta o resume.</p>
-
-<pre><code class="language-python">
+import json
+import time
 from dataclasses import dataclass, field
-from typing import Optional, Literal
-from datetime import datetime
-from enum import Enum
+from typing import Literal
 
-class MessagePriority(Enum):
-    CRITICAL = 1   # Info médica, preferencias explícitas, restricciones
-    HIGH = 2       # Decisiones tomadas, acciones completadas
-    MEDIUM = 3     # Preguntas y respuestas normales
-    LOW = 4        # Saludos, cortesías, información redundante
-    DISCARD = 5    # Cosas que se pueden ignorar
+@dataclass(slots=True, frozen=True)
+class StreamEvent:
+    type: Literal["token", "tool_call", "metadata", "error", "done"]
+    payload: str | dict
+    seq: int
+    created_at: float = field(default_factory=time.monotonic)
 
-@dataclass
-class Message:
-    role: Literal["system", "user", "assistant"]
-    content: str
-    timestamp: datetime = field(default_factory=datetime.now)
-    priority: MessagePriority = MessagePriority.MEDIUM
-    tokens: int = 0
-    metadata: dict = field(default_factory=dict)
-    
-    def __post_init__(self):
-        if self.tokens == 0:
-            self.tokens = len(self.content) // 4
+    def to_sse(self) -&gt; bytes:
+        body = json.dumps(
+            {"t": self.type, "p": self.payload, "s": self.seq},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        return f"data: {body}\n\n".encode("utf-8")
 
-
-@dataclass
-class ContextBudget:
-    system_reserved: int = 4000
-    conversation_history: int = 8000
-    retrieved_context: int = 4000
-    user_input_buffer: int = 500
-    
-    @property
-    def total(self) -> int:
-        return sum([
-            self.system_reserved,
-            self.conversation_history,
-            self.retrieved_context,
-            self.user_input_buffer
-        ])
-    
     @classmethod
-    def for_model(cls, model_name: str, utilization: float = 0.85):
-        model_limits = {
-            "gpt-4o": 128_000,
-            "claude-3-5-sonnet": 200_000,
-            "gpt-4-turbo": 128_000,
-            "claude-3-opus": 200_000,
-        }
-        
-        max_tokens = model_limits.get(model_name, 32_000)
-        total_budget = int(max_tokens * utilization)
-        
-        return cls(
-            system_reserved=min(4000, total_budget // 10),
-            conversation_history=int(total_budget * 0.5),
-            retrieved_context=int(total_budget * 0.3),
-            user_input_buffer=min(500, total_budget // 100)
+    def done(cls, seq: int) -&gt; "StreamEvent":
+        return cls(type="done", payload="[DONE]", seq=seq)
+
+    @classmethod
+    def error(cls, message: str, seq: int) -&gt; "StreamEvent":
+        return cls(type="error", payload={"message": message}, seq=seq)</code></pre>
+<p><code>__slots__</code> + <code>frozen=True</code> reduce el footprint por evento. Importante cuando $<code>B \cdot |\text{evento}|</code>$ mide memoria en MB. Para una cola de 64 tokens con payloads de ~200B JSON, ahorras ~30% de RAM vs un dataclass normal. Multiplicado por N instancias concurrentes en el mismo proceso, la diferencia duele.</p>
+<h3>4.2 Motor: la cola acotada y el protocolo productor/consumidor</h3>
+<pre><code class="language-python">import asyncio
+import contextlib
+from collections.abc import AsyncIterator, Awaitable, Callable
+
+ProducerFn = Callable[[asyncio.Queue[StreamEvent], Callable[[], int]], Awaitable[None]]
+
+class BoundedStream:
+    """Coordina productor/consumidor con backpressure real y cancelacion dura."""
+
+    def __init__(self, buffer_size: int = 64, heartbeat_s: float = 15.0):
+        if buffer_size &lt; 1:
+            raise ValueError("buffer_size debe ser &gt;= 1; 0 es OOM disfrazado")
+        self._queue: asyncio.Queue[StreamEvent] = asyncio.Queue(maxsize=buffer_size)
+        self._buffer_size = buffer_size
+        self._heartbeat_s = heartbeat_s
+        self._seq = 0
+
+    def _next_seq(self) -&gt; int:
+        self._seq += 1
+        return self._seq
+
+    async def run(self, producer: ProducerFn) -&gt; AsyncIterator[bytes]:
+        producer_task = asyncio.create_task(
+            producer(self._queue, self._next_seq),
+            name="sse-producer",
         )
-
-
-class ContextManager:
-    def __init__(self, budget: ContextBudget, 
-                 enable_summarization: bool = True):
-        self.budget = budget
-        self.enable_summarization = enable_summarization
-        self.summarized_messages: dict[str, str] = {}
-    
-    def select_context(self, messages: list[Message], 
-                       retrieved_docs: list[str] = None) -> dict:
-        result = {
-            "system_prompt_part": [],
-            "conversation_part": [],
-            "retrieved_part": [],
-            "excluded_messages": [],
-            "summaries_applied": []
-        }
-        
-        remaining = {
-            "conversation": self.budget.conversation_history,
-            "retrieved": self.budget.retrieved_context
-        }
-        
-        # 1. Mensajes de sistema primero (siempre entran)
-        system_msgs = [m for m in messages if m.role == "system"]
-        system_tokens = sum(m.tokens for m in system_msgs)
-        if system_tokens <= self.budget.system_reserved:
-            result["system_prompt_part"] = system_msgs
-        else:
-            result["system_prompt_part"] = self._truncate_messages(
-                system_msgs, self.budget.system_reserved
-            )
-        
-        # 2. Clasificar mensajes no-sistema por prioridad
-        non_system = [m for m in messages if m.role != "system"]
-        classified = self._classify_by_priority(non_system)
-        
-        # 3. Llenar contexto de conversación desde prioridad alta
-        conversation_msgs = []
-        for priority in [MessagePriority.CRITICAL, MessagePriority.HIGH,
-                        MessagePriority.MEDIUM, MessagePriority.LOW]:
-            if remaining["conversation"] <= 0:
-                break
-                
-            priority_msgs = classified.get(priority, [])
-            if priority in [MessagePriority.MEDIUM, MessagePriority.LOW]:
-                priority_msgs = sorted(priority_msgs, 
-                                      key=lambda m: m.timestamp, 
-                                      reverse=True)
-            
-            for msg in priority_msgs:
-                if msg.tokens <= remaining["conversation"]:
-                    conversation_msgs.append(msg)
-                    remaining["conversation"] -= msg.tokens
-                else:
-                    if self.enable_summarization and msg.tokens > 200:
-                        summary = self._summarize(msg)
-                        summary_tokens = len(summary) // 4
-                        if summary_tokens <= remaining["conversation"]:
-                            result["conversation_part"].append({
-                                "original_id": id(msg),
-                                "summary": summary,
-                                "was_summarized": True
-                            })
-                            result["summaries_applied"].append(id(msg))
-                            remaining["conversation"] -= summary_tokens
-                            self.summarized_messages[id(msg)] = summary
-                    else:
-                        result["excluded_messages"].append(msg)
-        
-        # Orden final: CRITICAL/HIGH mantienen orden cronológico
-        critical_high = [m for m in conversation_msgs 
-                        if m.priority in [MessagePriority.CRITICAL, MessagePriority.HIGH]]
-        rest = [m for m in conversation_msgs 
-               if m.priority not in [MessagePriority.CRITICAL, MessagePriority.HIGH]]
-        
-        result["conversation_part"] = critical_high + list(reversed(rest))
-        
-        # 4. Agregar documentos recuperados
-        if retrieved_docs:
-            for doc in retrieved_docs:
-                doc_tokens = len(doc) // 4
-                if doc_tokens <= remaining["retrieved"]:
-                    result["retrieved_part"].append(doc)
-                    remaining["retrieved"] -= doc_tokens
-        
-        return result
-    
-    def _classify_by_priority(self, messages: list[Message]) -> dict:
-        critical_keywords = [
-            "alergia", "intolerancia", "restricción", "preferencia",
-            "emergencia", "crítico", "importante", "no olvidar",
-            "preferiblemente", "exclusivamente"
-        ]
-        
-        high_keywords = [
-            "decisión", "acordamos", "confirmado", "comprado",
-            "reservado", "agendado", "completado", "enviado"
-        ]
-        
-        low_keywords = [
-            "hola", "buenos días", "buenas tardes", "gracias",
-            "por favor", "de nada", "que tal", "cómo estás"
-        ]
-        
-        classified = {p: [] for p in MessagePriority}
-        
-        for msg in messages:
-            if msg.priority != MessagePriority.MEDIUM:
-                classified[msg.priority].append(msg)
-                continue
-            
-            content_lower = msg.content.lower()
-            
-            if any(kw in content_lower for kw in critical_keywords):
-                msg.priority = MessagePriority.CRITICAL
-            elif any(kw in content_lower for kw in high_keywords):
-                msg.priority = MessagePriority.HIGH
-            elif any(kw in content_lower for kw in low_keywords) and len(msg.content) < 50:
-                msg.priority = MessagePriority.LOW
-            else:
-                msg.priority = MessagePriority.MEDIUM
-            
-            classified[msg.priority].append(msg)
-        
-        return classified
-    
-    def _truncate_messages(self, messages: list[Message], 
-                           max_tokens: int) -> list[Message]:
-        result = []
-        remaining = max_tokens
-        
-        for msg in messages:
-            if msg.tokens <= remaining:
-                result.append(msg)
-                remaining -= msg.tokens
-            elif remaining > 100:
-                truncated_content = msg.content[:remaining * 4]
-                truncated_msg = Message(
-                    role=msg.role,
-                    content=truncated_content + "...",
-                    timestamp=msg.timestamp,
-                    priority=msg.priority,
-                    tokens=remaining
+        try:
+            yield b": connected\n\n"
+            while True:
+                get_task = asyncio.create_task(
+                    self._queue.get(), name="queue-get"
                 )
-                result.append(truncated_msg)
-                break
-        
-        return result
-    
-    def _summarize(self, msg: Message) -> str:
-        content = msg.content
-        if len(content) < 200:
-            return content
-        
-        sentences = content.split('.')
-        summary = '.'.join(sentences[:2])
-        if not summary.endswith('.'):
-            summary += '.'
-        return f"[Resumen de mensaje anterior]: {summary}"
+                heartbeat_task = asyncio.create_task(
+                    asyncio.sleep(self._heartbeat_s), name="heartbeat"
+                )
+                done, _ = await asyncio.wait(
+                    {get_task, heartbeat_task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+
+                if heartbeat_task in done and not get_task.done():
+                    yield b": ping\n\n"
+                    continue
+
+                event = get_task.result()
+                self._queue.task_done()
+
+                if event.type == "done":
+                    yield event.to_sse()
+                    break
+
+                yield event.to_sse()
+        finally:
+            producer_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await producer_task</code></pre>
+<p>Pilas con esto: el truco del <code>asyncio.wait</code> con dos tasks (get y heartbeat) es lo que te da SSE "vivo" sin quemar CPU con un sleep loop y sin matar conexiones idle por timeouts de proxies. Siempre que un cliente cierre, el <code>finally</code> cancela al productor; siempre que el productor termine, el <code>yield</code> final del <code>done</code> cierra el stream limpiamente. Dos caminos al mismo cleanup, sin leaks.</p>
+<h3>4.3 Utilidades: producer real con httpx y cancelacion limpia</h3>
+<pre><code class="language-python">from typing import Any
+import httpx
+
+async def llm_producer(
+    queue: asyncio.Queue[StreamEvent],
+    next_seq: Callable[[], int],
+    *,
+    endpoint: str,
+    headers: dict[str, str],
+    payload: dict[str, Any],
+    client_timeout_s: float = 60.0,
+) -&gt; None:
+    """Lee SSE del provider, empuja eventos a la cola acotada."""
+    timeout = httpx.Timeout(client_timeout_s, connect=10.0)
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        try:
+            async with client.stream(
+                "POST", endpoint, headers=headers, json=payload
+            ) as response:
+                response.raise_for_status()
+                async for line in response.aiter_lines():
+                    evt = _parse_sse_line(line, next_seq())
+                    if evt is not None:
+                        await queue.put(evt)  # AQUI vive el backpressure real
+        except asyncio.CancelledError:
+            raise  # propaga cancelacion limpia
+        except httpx.HTTPError as e:
+            await queue.put(StreamEvent.error(f"upstream: {e!s}", next_seq()))
+        finally:
+            await queue.put(StreamEvent.done(next_seq()))
 
 
-# Ejemplo de uso
-budget = ContextBudget.for_model("gpt-4o", utilization=0.80)
-manager = ContextManager(budget, enable_summarization=True)
+def _parse_sse_line(line: str, seq: int) -&gt; StreamEvent | None:
+    if not line.startswith("data:"):
+        return None  # comentario SSE o linea vacia
+    data = line[5:].strip()
+    if data == "[DONE]":
+        return StreamEvent.done(seq)
+    try:
+        obj = json.loads(data)
+    except json.JSONDecodeError:
+        return None
+    choices = obj.get("choices") or []
+    if not choices:
+        return None
+    delta = choices[0].get("delta") or {}
+    token = delta.get("content")
+    if token:
+        return StreamEvent(type="token", payload=token, seq=seq)
+    return None</code></pre>
+<h3>Endpoint FastAPI completo</h3>
+<pre><code class="language-python">from fastapi import FastAPI
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 
-messages = [
-    Message("system", "Eres un asistente de soporte técnico."),
-    Message("user", "Hola, buenos días!", priority=MessagePriority.LOW),
-    Message("user", "Tengo un problema con mi clave TOKEN.", priority=MessagePriority.HIGH),
-    Message("assistant", "Entendido, voy a ayudarle."),
-    Message("user", "Desde ayer en la tarde."),
-    Message("assistant", "Recuerde: NO puede ser igual a su fecha de nacimiento.", priority=MessagePriority.CRITICAL),
-    Message("user", "Perfecto, gracias."),
-]
+app = FastAPI()
 
-context = manager.select_context(messages)
+class ChatRequest(BaseModel):
+    model: str
+    messages: list[dict[str, str]]
+    api_key: str
 
-print(f"System: {len(context['system_prompt_part'])} msgs")
-print(f"Conversation: {len(context['conversation_part'])} msgs")
-print(f"Excluded: {len(context['excluded_messages'])} msgs")
-print(f"Budget: {budget.total} total tokens")
-</code></pre>
+@app.post("/chat")
+async def chat(req: ChatRequest) -&gt; StreamingResponse:
+    payload = {
+        "model": req.model,
+        "stream": True,
+        "messages": req.messages,
+    }
+    headers = {"Authorization": f"Bearer {req.api_key}"}
 
-<h2>Error #2: Truncar Sin Estrategia — Perder Información Crítica</h2>
-
-<h3>El Problema</h3>
-
-<p>Cuando el contexto se agota, la solución naive es truncar — cortar los mensajes más antiguos hasta que quepa. Esto funciona, pero destruye información que puede ser crítica. Si truncaste los primeros 20 mensajes de una conversación donde el cliente dijo "tengo alergia al marisco" en el mensaje 3, acabas de perder información médica vital sin siquiera darte cuenta.</p>
-
-<p>El problema se agrava cuando usas RAG (Retrieval Augmented Generation). Los documentos recuperados compiten por el espacio del contexto con el historial de conversación. Un documento irrelevante puede desplazar información crucial del historial.</p>
-
-<h3>La Solución</h3>
-
-<p>Estrategias de truncamiento inteligente que preservan información semánticamente importante, no solo cronológicamente reciente.</p>
-
-<pre><code class="language-python">
-from typing import Optional
-import re
-
-class IntelligentTruncator:
-    PROTECTED_PATTERNS = [
-        # Identidad
-        (r"(?i)mi\s+nombre\s+es\s+(\w+)", "IDENTITY:name"),
-        (r"(?i)soy\s+(\w+)\s+(?:de\s+)?(\w+)", "IDENTITY:person"),
-        
-        # Preferencias y restricciones
-        (r"(?i)prefiero\s+(.+?)(?:\.|$)", "PREFERENCE"),
-        (r"(?i)no\s+me\s+gusta\s+(.+?)(?:\.|$)", "PREFERENCE:negative"),
-        (r"(?i)tengo\s+(?:alergia|intolerancia)\s+a\s+(.+?)(?:\.|$)", "MEDICAL:allergy"),
-        (r"(?i)restriction\s+(.+?)(?:\.|$)", "RESTRICTION"),
-        
-        # Decisiones y acuerdos
-        (r"(?i)(?:acordamos|acordé|decidimos|decidió)\s+(.+?)(?:\.|$)", "AGREEMENT"),
-        (r"(?i)(?:confirmado|confirmada|listo|perfecto)\s+(.+?)(?:\.|$)", "AGREEMENT:confirmed"),
-        (r"(?i)(?:compramos?|reservamos?|agendamos?)\s+(.+?)(?:\.|$)", "ACTION:purchase"),
-        
-        # Instrucciones especiales
-        (r"(?i)recuerde(?:\s+que)?\s+(.+?)(?:\.|$)", "REMINDER"),
-        (r"(?i)importante:\s*(.+?)(?:\.|$)", "IMPORTANT"),
-        (r"(?i)no\s+olvide(?:\s+que)?\s+(.+?)(?:\.|$)", "IMPORTANT:warning"),
-    ]
-    
-    def __init__(self):
-        self._compiled_patterns = [
-            (re.compile(pattern, re.IGNORECASE), label, group_idx)
-            for pattern, label, group_idx in self.PROTECTED_PATTERNS
-        ]
-    
-    def extract_key_information(self, messages: list[Message]) -> dict:
-        all_protected = []
-        protected_message_ids = set()
-        
-        for msg in messages:
-            if msg.role == "system":
-                continue
-                
-            facts = []
-            for compiled, label, group_idx in self._compiled_patterns:
-                matches = compiled.finditer(msg.content)
-                for match in matches:
-                    if group_idx > 0:
-                        fact = match.group(group_idx)
-                    else:
-                        fact = match.group(0)
-                    facts.append({
-                        "type": label,
-                        "fact": fact.strip(),
-                        "source_message": id(msg),
-                        "full_context": msg.content[:200]
-                    })
-                    protected_message_ids.add(id(msg))
-            
-            if facts:
-                all_protected.extend(facts)
-        
-        return {
-            "protected_facts": all_protected,
-            "protected_message_ids": protected_message_ids
-        }
-    
-    def truncate_with_protection(self, messages: list[Message],
-                                 max_tokens: int,
-                                 prefer_recent: bool = True) -> list[Message]:
-        if prefer_recent:
-            return self._truncate_recent_first(messages, max_tokens)
-        else:
-            return self._truncate_protected_first(messages, max_tokens)
-    
-    def _truncate_recent_first(self, messages: list[Message],
-                               max_tokens: int) -> list[Message]:
-        non_system = [m for m in messages if m.role != "system"]
-        protection_info = self.extract_key_information(non_system)
-        protected_ids = protection_info["protected_message_ids"]
-        
-        def sort_key(msg):
-            is_protected = id(msg) in protected_ids
-            return (not is_protected, -msg.timestamp.timestamp())
-        
-        sorted_msgs = sorted(non_system, key=sort_key)
-        
-        result = []
-        remaining = max_tokens
-        
-        for msg in sorted_msgs:
-            if msg.tokens <= remaining:
-                result.append(msg)
-                remaining -= msg.tokens
-            elif remaining >= 100:
-                truncated = self._create_minimal_message(msg, remaining)
-                if truncated:
-                    result.append(truncated)
-                break
-        
-        system_msgs = [m for m in messages if m.role == "system"]
-        non_system_result = [m for m in result if m.role != "system"]
-        
-        protected_in_result = [m for m in non_system_result 
-                              if id(m) in protected_ids]
-        non_protected_in_result = [m for m in non_system_result 
-                                  if id(m) not in protected_ids]
-        
-        return system_msgs + protected_in_result + non_protected_in_result
-    
-    def _truncate_protected_first(self, messages: list[Message],
-                                 max_tokens: int) -> list[Message]:
-        non_system = [m for m in messages if m.role != "system"]
-        protection_info = self.extract_key_information(non_system)
-        protected_ids = protection_info["protected_message_ids"]
-        
-        result = []
-        remaining = max_tokens
-        
-        # Primera pasada: solo protegidos
-        for msg in non_system:
-            if id(msg) in protected_ids and msg.tokens <= remaining:
-                result.append(msg)
-                remaining -= msg.tokens
-        
-        # Segunda pasada: resto, más recientes primero
-        remaining_msgs = [m for m in non_system if id(m) not in protected_ids]
-        remaining_msgs.sort(key=lambda m: m.timestamp, reverse=True)
-        
-        for msg in remaining_msgs:
-            if msg.tokens <= remaining:
-                result.append(msg)
-                remaining -= msg.tokens
-        
-        return [m for m in messages if m.role == "system"] + result
-    
-    def _create_minimal_message(self, msg: Message, 
-                                max_tokens: int) -> Optional[Message]:
-        if max_tokens < 50:
-            return None
-        
-        max_chars = max_tokens * 4
-        truncated_content = msg.content[:max_chars]
-        
-        return Message(
-            role=msg.role,
-            content=truncated_content + "...",
-            timestamp=msg.timestamp,
-            priority=msg.priority,
-            tokens=max_tokens
+    async def producer(q: asyncio.Queue[StreamEvent], seq_fn):
+        await llm_producer(
+            q, seq_fn,
+            endpoint="https://api.openai.com/v1/chat/completions",
+            headers=headers, payload=payload,
         )
 
-
-# Ejemplo de uso
-truncator = IntelligentTruncator()
-
-messages = [
-    Message("system", "Eres asistente de clínica médica."),
-    Message("user", "Hola, buenos días."),
-    Message("user", "Quisiera agendar cita. Tengo alergia a la penicilina y también al látex.", priority=MessagePriority.CRITICAL),
-    Message("assistant", "Entendido. Le agendo para el jueves a las 10am."),
-    Message("user", "Gracias."),
-    Message("assistant", "Recuerde llegar 15 minutos antes."),
-    Message("user", "Sí, aquí estaré."),
-    Message("assistant", "Perfecto, lo esperamos."),
-]
-
-max_tokens = 500
-
-protected = truncator.extract_key_information(messages)
-print(f"Información protegida encontrada: {len(protected['protected_facts'])}")
-for fact in protected['protected_facts']:
-    print(f"  - [{fact['type']}] {fact['fact']}")
-
-truncated = truncator.truncate_with_protection(messages, max_tokens)
-print(f"\nMensajes después de truncamiento: {len(truncated)}")
-print(f"Tokens usados: {sum(m.tokens for m in truncated)}")
-</code></pre>
-
-<h2>Error #3: Sin Estrategia de Overflow — El Contexto Estalla Sin Plan</h2>
-
-<h3>El Problema</h3>
-
-<p>El tercer error es no tener ningún plan cuando el contexto se agota. Las conversaciones largas son inevitables en aplicaciones reales. Un cliente puede tener 100 mensajes de historia. Sin una estrategia de overflow, el sistema simplemente ignora lo que no cabe, produciendo respuestas incompletas o incorrectas.</p>
-
-<p>La diferencia entre el 20% que lo hace bien y el 80% que lo hace mal es esta: los primeros tienen un <strong>plan de contingencia</strong> activado automáticamente cuando el contexto se acerca a su límite.</p>
-
-<h3>La Solución</h3>
-
-<p>Un framework de overflow management con múltiples estrategias que se activan según el nivel de saturación del contexto.</p>
-
-<pre><code class="language-python">
-from enum import Enum
-from dataclasses import dataclass
-from typing import Callable, Optional
-
-class OverflowStrategy(Enum):
-    NONE = "none"
-    TRUNCATE = "truncate"
-    SUMMARIZE_HISTORY = "summarize"
-    SESSION_TRANSFER = "transfer"
-    HYBRID = "hybrid"
-
-@dataclass
-class OverflowConfig:
-    warning_threshold: float = 0.70
-    critical_threshold: float = 0.85
-    emergency_threshold: float = 0.95
-    
-    warning_strategy: OverflowStrategy = OverflowStrategy.NONE
-    critical_strategy: OverflowStrategy = OverflowStrategy.TRUNCATE
-    emergency_strategy: OverflowStrategy = OverflowStrategy.SUMMARIZE_HISTORY
-    
-    summary_instruction: str = "Resuma manteniendo: (1) identidad del usuario, (2) preferencias y restricciones, (3) decisiones tomadas, (4) problemas no resueltos."
-    
-    transfer_instruction: str = "Genere un resumen de sesión que el próximo agente pueda usar."
-
-class OverflowManager:
-    def __init__(self, config: Optional[OverflowConfig] = None,
-                 llm_summarizer: Optional[Callable] = None):
-        self.config = config or OverflowConfig()
-        self.llm_summarizer = llm_summarizer
-        
-        self.current_level = 0.0
-        self.active_strategy = OverflowStrategy.NONE
-        self.history_summaries: list[str] = []
-        self.transfer_summaries: list[str] = []
-    
-    def assess_overflow(self, current_tokens: int, 
-                       max_tokens: int) -> tuple[float, OverflowStrategy]:
-        if max_tokens == 0:
-            return 1.0, OverflowStrategy.NONE
-        
-        level = current_tokens / max_tokens
-        self.current_level = level
-        
-        if level >= self.config.emergency_threshold:
-            strategy = self.config.emergency_strategy
-        elif level >= self.config.critical_threshold:
-            strategy = self.config.critical_strategy
-        elif level >= self.config.warning_threshold:
-            strategy = self.config.warning_strategy
-        else:
-            strategy = OverflowStrategy.NONE
-        
-        self.active_strategy = strategy
-        return level, strategy
-    
-    def execute_strategy(self, strategy: OverflowStrategy,
-                        messages: list[Message],
-                        max_tokens: int) -> dict:
-        if strategy == OverflowStrategy.NONE:
-            return {
-                "processed_messages": messages,
-                "action_taken": "none",
-                "metadata": {"level": self.current_level}
-            }
-        
-        if strategy == OverflowStrategy.TRUNCATE:
-            return self._execute_truncate(messages, max_tokens)
-        
-        if strategy == OverflowStrategy.SUMMARIZE_HISTORY:
-            return self._execute_summarize(messages, max_tokens)
-        
-        if strategy == OverflowStrategy.SESSION_TRANSFER:
-            return self._execute_transfer(messages)
-        
-        if strategy == OverflowStrategy.HYBRID:
-            return self._execute_hybrid(messages, max_tokens)
-        
-        return {
-            "processed_messages": messages,
-            "action_taken": "unknown",
-            "metadata": {}
-        }
-    
-    def _execute_truncate(self, messages: list[Message],
-                         max_tokens: int) -> dict:
-        truncator = IntelligentTruncator()
-        protected = truncator.extract_key_information(messages)
-        
-        truncated = truncator.truncate_with_protection(
-            messages, max_tokens, prefer_recent=False
-        )
-        
-        return {
-            "processed_messages": truncated,
-            "action_taken": "truncated",
-            "metadata": {
-                "protected_facts_count": len(protected['protected_facts']),
-                "original_count": len(messages),
-                "final_count": len(truncated),
-                "level": self.current_level
-            }
-        }
-    
-    def _execute_summarize(self, messages: list[Message],
-                          max_tokens: int) -> dict:
-        non_system = [m for m in messages if m.role != "system"]
-        truncator = IntelligentTruncator()
-        
-        protected = truncator.extract_key_information(non_system)
-        
-        history_to_summarize = [
-            f"[{m.role.upper()}] {m.content}"
-            for m in non_system
-            if id(m) not in protected['protected_message_ids']
-        ]
-        
-        summary_text = "\n".join(history_to_summarize)
-        
-        if self.llm_summarizer and len(summary_text) > 100:
-            summary = self.llm_summarizer(
-                summary_text, 
-                self.config.summary_instruction
-            )
-        else:
-            summary = self._simple_summarize(summary_text)
-        
-        self.history_summaries.append(summary)
-        
-        system_msgs = [m for m in messages if m.role == "system"]
-        
-        summary_msg = Message(
-            role="system",
-            content=f"[RESUMEN DE HISTORIAL ANTERIOR]\n{summary}\n\nEste resumen reemplaza los mensajes antiguos.",
-            metadata={"auto_generated": True, "type": "history_summary"}
-        )
-        
-        recent_msgs = non_system[-5:] if len(non_system) > 5 else non_system
-        
-        result = system_msgs + [summary_msg] + recent_msgs
-        
-        total_tokens = sum(m.tokens for m in result)
-        if total_tokens > max_tokens:
-            result = truncator.truncate_with_protection(
-                result, max_tokens, prefer_recent=True
-            )
-        
-        return {
-            "processed_messages": result,
-            "action_taken": "summarized",
-            "metadata": {
-                "summary": summary,
-                "summaries_count": len(self.history_summaries),
-                "protected_facts_preserved": len(protected['protected_facts']),
-                "original_message_count": len(non_system),
-                "level": self.current_level
-            }
-        }
-    
-    def _execute_transfer(self, messages: list[Message]) -> dict:
-        non_system = [m for m in messages if m.role != "system"]
-        
-        transfer_text = "\n".join([
-            f"[{m.role.upper()}] {m.content}"
-            for m in non_system
-        ])
-        
-        if self.llm_summarizer:
-            transfer_summary = self.llm_summarizer(
-                transfer_text,
-                self.config.transfer_instruction
-            )
-        else:
-            transfer_summary = self._simple_summarize(transfer_text)
-        
-        self.transfer_summaries.append(transfer_summary)
-        
-        return {
-            "processed_messages": messages,
-            "action_taken": "transfer_prepared",
-            "metadata": {
-                "transfer_summary": transfer_summary,
-                "transfer_count": len(self.transfer_summaries),
-                "can_continue_session": True,
-                "next_session_context": f"[RESUMEN DE SESIÓN ANTERIOR]\n{transfer_summary}"
-            }
-        }
-    
-    def _execute_hybrid(self, messages: list[Message],
-                       max_tokens: int) -> dict:
-        summarize_result = self._execute_summarize(messages, max_tokens)
-        
-        total_tokens = sum(m.tokens for m in summarize_result['processed_messages'])
-        
-        if total_tokens > max_tokens:
-            truncator = IntelligentTruncator()
-            final = truncator.truncate_with_protection(
-                summarize_result['processed_messages'],
-                max_tokens,
-                prefer_recent=True
-            )
-            return {
-                "processed_messages": final,
-                "action_taken": "hybrid_truncate_after_summarize",
-                "metadata": {
-                    **summarize_result['metadata'],
-                    "final_count": len(final)
-                }
-            }
-        
-        return {
-            "processed_messages": summarize_result['processed_messages'],
-            "action_taken": "hybrid_summarize_only",
-            "metadata": summarize_result['metadata']
-        }
-    
-    def _simple_summarize(self, text: str) -> str:
-        blocks = text.split('\n')
-        
-        summary_parts = []
-        for block in blocks[:10]:
-            if len(block) > 10:
-                sentences = block.split('.')
-                if sentences:
-                    summary_parts.append(sentences[0].strip())
-        
-        return '. '.join(summary_parts[:5]) + '.'
-    
-    def get_session_context(self) -> dict:
-        return {
-            "history_summaries": self.history_summaries,
-            "transfer_summaries": self.transfer_summaries,
-            "current_overflow_level": self.current_level,
-            "active_strategy": self.active_strategy.value
-        }
-
-
-# Demo de uso
-config = OverflowConfig(
-    warning_threshold=0.70,
-    critical_threshold=0.85,
-    emergency_threshold=0.95,
-    emergency_strategy=OverflowStrategy.SUMMARIZE_HISTORY
-)
-
-manager = OverflowManager(config)
-
-messages = [
-    Message("system", "Eres asistente de banco."),
-    Message("user", "Hola"),
-    Message("assistant", "Buenos días, ¿en qué puedo ayudarle?"),
-]
-
-for i in range(20):
-    messages.append(Message("user", f"Tengo una consulta número {i+1} sobre mi cuenta."))
-    messages.append(Message("assistant", f"Respecto a su consulta {i+1}, le informo que..."))
-
-max_context = 2000
-current_tokens = sum(m.tokens for m in messages)
-
-print(f"Mensajes: {len(messages)}")
-print(f"Tokens usados: {current_tokens} / {max_context}")
-
-level, strategy = manager.assess_overflow(current_tokens, max_context)
-print(f"Nivel de uso: {level:.1%}")
-print(f"Estrategia: {strategy.value}")
-
-result = manager.execute_strategy(strategy, messages, max_context)
-print(f"\nAcción tomada: {result['action_taken']}")
-print(f"Mensajes finales: {len(result['processed_messages'])}")
-</code></pre>
-
-<h2>Resumen y Cierre</h2>
-
-<p>Lo que hoy aprendimos es que el context management no es opcional ni improvisable. El 80% de los sistemas LLM en producción tienen problemas porque tratan el contexto como "mando todo y que el modelo se arregle". El 20% que lo hace bien entiende que el contexto es un recurso escaso que necesita estrategia, priorización, y planes de contingencia.</p>
-
-<p>Los tres errores que cubrimos — enviar todo sin filtro, truncar sin proteger lo importante, y no tener estrategia de overflow — son las causas raíz de esas respuestas random que parecen "el modelo no sabe lo que hace". El modelo sabe. El problema es que no le estás dando la información correcta en el orden correcto.</p>
-
-<p>La próxima vez que su chatbot olvide algo que el usuario dijo hace 5 minutos, o cuando su RAG devuelva respuestas incompletas, o cuando el modelo repita información que ya se dijo — no culpen al modelo. Revisen su context management. Ahí está el problema.</p>
-
-<p><em>Nos vemos en el día 293.</em></p>
+    bounded = BoundedStream(buffer_size=64, heartbeat_s=15.0)
+    return StreamingResponse(
+        bounded.run(producer),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",  # disable nginx buffering
+            "Connection": "keep-alive",
+        },
+    )</code></pre>
+<h2>5. Ejemplos: caso real, no toy</h2>
+<p>Caso: un cliente movil en 3G con 800 tokens de contexto que crece a 4000. Sin backpressure, eso son ~16KB por token serializado promedio -> ~1GB acumulado si la cola crece a 64000 eventos durante un minuto de pausa. Con <code>buffer_size=64</code> y payload promedio 200B: ~13KB maximo en memoria, acotado por las leyes de la cola y nada mas.</p>
+<p>Trace de un happy path operacional:</p>
+<ol>
+  <li>Cliente conecta, recibe <code>: connected\n\n</code>. Productor arranca.</li>
+  <li>LLM emite <code>data: {...token1...}\n\n</code> cada ~12ms.</li>
+  <li>Productor: <code>await queue.put(evt)</code>. Consumidor vacia cada 15ms. Cola oscila en 1-3 elementos.</li>
+  <li>Cliente se vuelve lento (300ms por procesar UI, pasa a 4G congestionada): cola crece a 20, luego 40, luego se acerca a 64. Productor se bloquea en <code>put</code>. httpx para de pedirle chunks al provider. Provider deja de facturar computo.</li>
+  <li>Cliente acelera: cola drena en decenas de ms. Productor desbloquea. Stream continua sin un solo byte perdido en el cliente.</li>
+</ol>
+<p>Si el cliente cierra a mitad de respuesta, el <code>generator</code> retorna, el <code>finally</code> corre, <code>producer_task.cancel()</code> mata al task de httpx, y el <code>async with</code> cierra el socket. Cero facturacion residual.</p>
+<h2>6. Debugging: cuando el stream se atasca</h2>
+<p><strong>Sintoma</strong>: cliente reporta "conexion se cierra despues del primer token".</p>
+<ul>
+  <li><strong>Causa 1 - Nginx buffering</strong>: <code>$</code> proxy_buffering off; <code>$</code> en el <code>location</code> correspondiente. Si no, anade <code>X-Accel-Buffering: no</code> en la respuesta (ya lo pusimos arriba). Olvidas esto y Nginx te buffereara toda la respuesta antes de enviarla - nunca llega a ser stream.</li>
+</ul>
+<ul>
+  <li><strong>Causa 2 - Heartbeat no enviado</strong>: proxies intermedios (Cloudflare, AWS ALB, GCP Load Balancer) matan conexiones idle a los 60-120s. Si tu <code>heartbeat_s</code> es mayor, aparecen cierres fantasmas. Bajalo a 15s si desconfias del proxy.</li>
+</ul>
+<ul>
+  <li><strong>Causa 3 - <code>queue.task_done()</code> faltante</strong>: si te olvidas de <code>task_done()</code> y la cola tiene <code>maxsize</code>, eventualmente <code>join()</code> se cuelga. Aqui no usamos <code>join()</code> directamente, pero si lo agregas para flush final, te va a morder.</li>
+</ul>
+<p><strong>Sintoma</strong>: <code>QueueFull</code> no aparece nunca pero la memoria del proceso sube.</p>
+<ul>
+  <li><strong>Causa: no usas <code>await queue.put()</code>, usas <code>put_nowait()</code></strong>. De vuelta al problema del articulo. <code>put_nowait</code> no es backpressure, es <code>try/except</code> sintetico. Si lo combinas con <code>except QueueFull: pass</code>, tiras trabajo silenciosamente. No hay red flag; lo unico que sube es la memoria y tu factura.</li>
+</ul>
+<p><strong>Sintoma</strong>: el stream funciona, pero el primer token llega tarde (TTFT alto).</p>
+<ul>
+  <li><strong>Causa probable</strong>: gzip habilitado a nivel de proxy o aplicacion. <code>Content-Encoding: gzip</code> ayuda a throughput pero mata TTFT porque hay que bufferear antes de comprimir. Solo activa gzip si TTFT es menos prioritario que ancho de banda, y solo si el cliente lo negocia via <code>Accept-Encoding</code>.</li>
+</ul>
+<p><strong>Sintoma</strong>: en los logs aparecen <code>Task was destroyed but it is pending!</code> despues de cada peticion.</p>
+<ul>
+  <li><strong>Causa</strong>: tasks productores huerfanos por cancellation no awaited en el <code>finally</code>. El <code>contextlib.suppress</code> que pusimos arriba los awaita aunque esten cancelados. Nunca dejes un <code>create_task</code> sin su <code>await</code> correspondiente al final del flujo.</li>
+</ul>
+<h2>7. Optimizaciones que si mueven la aguja</h2>
+<p><strong>1. Tamanos asimetricos por peso, no por evento</strong>. No todos los tokens pesan igual. Un chunk de <code>tool_call</code> con JSON de 4KB satura la cola distinto a un caracter de 1 byte. Considera un contador de bytes ademas de la cola, o usa pesos por evento. Un <code>Queue</code> simple no lo soporta nativamente; toca envolverlo con un <code>Semaphore(max_bytes)</code> o dos colas coordinadas.</p>
+<p><strong>2. Pre-buffering intencional para el TTFT</strong>. Para los primeros N tokens, quieres amortiguarlos para que el cliente vea "respuesta arrancando" aunque el TTFT del provider sea alto. Esto es un productor que prefiere <code>maxsize=128</code> durante la fase cold-start y baja a <code>maxsize=32</code> despues del primer chunk. No hay primitiva built-in en asyncio; implementalo con un <code>asyncio.Semaphore</code> que se libere despues del primer ack del cliente.</p>
+<p><strong>3. Cancelacion por timeout duro</strong>. Si el LLM tarda >60s en TTFT, no esperes infinito. Un <code>asyncio.wait_for(producer_task, timeout=X)</code> + <code>producer_task.cancel()</code> cierra la conexion con un <code>StreamEvent.error</code> claro al cliente. No degrades silenciosamente; dile al cliente "no respondi" y dejalo decidir.</p>
+<p><strong>4. Connection coalescing</strong>. Si tu endpoint recibe multiples requests al mismo modelo/prompt en una ventana de 500ms, considera multiplexar en una sola conexion upstream. Esto reduce facturacion de los "minimum billing increments" del provider (muchos cobran 100ms minimos por peticion). No abuses: la deduplicacion por prompt exacto rara vez vale la pena en produccion real.</p>
+<p><strong>5. Observabilidad obligatoria</strong>. Loguea en cada peticion: <code>buffer_size</code>, <code>current_qsize</code>, <code>ttft_ms</code>, <code>total_tokens</code>, <code>duration_ms</code>, <code>cancelled</code>. Sin estos cinco numeros por request, cualquier optimizacion que hagas despues es apuesta ciega. Si puedes meter un histograma de <code>qsize</code> cada 100ms durante el stream, mejor.</p>
+<h2>Conclusion</h2>
+<p>El streaming LLM sin backpressure es unica y exclusivamente una decision de quien escribe el codigo. El LLM provider no te va a proteger, asyncio no te va a proteger, FastAPI no te va a proteger. Lo que te protege es entender Little's Law, ponerle un techo a la cola, y conectar el ciclo de vida del productor con el del consumidor.</p>
+<p>Mirandolo en frio: tres lineas cambiaron mi vida operativa en el incidente de las 2:47am.</p>
+<pre><code class="language-python">queue = asyncio.Queue(maxsize=64)   # techo de memoria
+await queue.put(evt)                # backpressure real, no put_nowait
+producer_task.cancel()              # cerrar el grifo aguas arriba</code></pre>
+<p>De una vez por todas: si estas haciendo streaming de LLM en produccion y no tienes bounded queue + cancelacion del productor en el <code>finally</code>, no tienes streaming. Tienes una fuga de memoria disfrazada de feature que algun dia a las 3am te va a sonar el pager. La arquitectura del Canal de Panama lleva 110 anos funcionando sin OOM. Tu servicio deberia aspirar a lo mismo. Parcero, no te confies del <code>maxsize=0</code>.</p>
+<p>Manana seguimos con otro dolor de produccion. Si te quemo este, te esta protegiendo del siguiente.</p>
   </article>
+  <nav class="article-nav" aria-label="Navegacion entre articulos">
+    <a class="nav-prev" href="/blog/dia-291365-causal-inference/">Anterior</a>
+    <a href="/blog/">Todos los articulos</a>
+    <a class="nav-next" href="/blog/dia-293365-do-calculus/" data-date="2026-10-20">Siguiente</a>
+  </nav>
 
-  <script>
-    document.getElementById('themeToggle').addEventListener('click', function() {
-      const html = document.documentElement;
-      const isDark = html.getAttribute('data-theme') === 'dark';
-      html.setAttribute('data-theme', isDark ? 'light' : 'dark');
-      document.getElementById('themeIcon').className = isDark ? 'fas fa-moon' : 'fas fa-sun';
-    });
-  </script>
+
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
   <script>
     hljs.highlightAll();
-    document.addEventListener('DOMContentLoaded', () => {
+    document.addEventListener('DOMContentLoaded', function() {
       renderMathInElement(document.body, {
         delimiters: [
           { left: '$$', right: '$$', display: true },
@@ -931,21 +459,20 @@ print(f"Mensajes finales: {len(result['processed_messages'])}")
         throwOnError: false,
       });
     });
-    
-  const _html = document.documentElement;
-  const _btn  = document.getElementById('themeToggle');
-  const _icon = document.getElementById('themeIcon');
-  function _setIcon(t) { _icon.className = t === 'dark' ? 'fas fa-sun' : 'fas fa-moon'; }
-  const _saved = localStorage.getItem('theme') || 'dark';
-  _html.setAttribute('data-theme', _saved);
-  _setIcon(_saved);
-  _btn.addEventListener('click', () => {
-    const next = _html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
-    _html.setAttribute('data-theme', next);
-    localStorage.setItem('theme', next);
-    _setIcon(next);
-  });
 
+    var _html = document.documentElement;
+    var _btn  = document.getElementById('themeToggle');
+    var _icon = document.getElementById('themeIcon');
+    function _setIcon(t) { _icon.className = t === 'dark' ? 'fas fa-sun' : 'fas fa-moon'; }
+    var _saved = localStorage.getItem('theme') || 'dark';
+    _html.setAttribute('data-theme', _saved);
+    _setIcon(_saved);
+    _btn.addEventListener('click', function() {
+      var next = _html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+      _html.setAttribute('data-theme', next);
+      localStorage.setItem('theme', next);
+      _setIcon(next);
+    });
   </script>
   <script>
     document.addEventListener('DOMContentLoaded', function() {
