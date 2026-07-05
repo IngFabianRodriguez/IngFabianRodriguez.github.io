@@ -3,9 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="CNNs - Redes Neuronales Para Imagenes | #365DaysOfAI por Fabian Rodriguez">
-  <title>CNNs - Redes Neuronales Para Imagenes | #365DaysOfAI</title>
-  
+  <meta name="description" content="Dia 277/365: Hybrid Search (BM25 + Vector) — El relojero que combina el catalogo con el oido | #365DaysOfAI por Fabian Rodriguez">
+  <title>Dia 277/365: Hybrid Search (BM25 + Vector) — El relojero que combina el catalogo con el oido | #365DaysOfAI</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
@@ -21,7 +20,7 @@
   --shadow: rgba(2,12,27,0.7); --nav-bg: rgba(10,25,47,0.92);
 }
 [data-theme="light"] {
-  --bg: #f0f4fb; --bg-card: #ffffff; --border: #d4dcee;
+  --bg: #f0f4fb; --bg-card: #ffffff; --border: #d4ddee;
   --text-muted: #64748b; --text: #475569; --text-heading: #0f172a;
   --accent: #0d9488; --accent-tint: rgba(13,148,136,0.08);
   --shadow: rgba(15,23,42,0.12); --nav-bg: rgba(240,244,251,0.95);
@@ -81,6 +80,10 @@ nav {
   border-radius: 4px; padding: .15em .4em;
 }
 .article-body pre code { background: none; border: none; padding: 0; font-size: inherit; }
+.article-body table { width: 100%; border-collapse: collapse; margin: 1.5rem 0; font-size: .9rem; }
+.article-body th, .article-body td { border: 1px solid var(--border); padding: .6rem 1rem; text-align: left; }
+.article-body th { background: var(--bg-card); color: var(--text-heading); }
+.article-body .katex-display { overflow-x: auto; padding: .5rem 0; }
 
 .article-nav {
   max-width: 820px; margin: 0 auto; padding: 2rem 1.5rem;
@@ -94,7 +97,8 @@ nav {
   nav { padding: 0 1rem; }
   .article-hero, .article-body { padding-left: 1rem; padding-right: 1rem; }
 }
-</style>
+
+  </style>
 </head>
 <body>
   <nav>
@@ -109,221 +113,326 @@ nav {
   </nav>
 
   <header class="article-hero">
-    <div class="day-badge">Dia 277 / 365 &nbsp;·&nbsp; #365DaysOfAI</div>
-    <h1 class="article-title">CNNs - Redes Neuronales Para Imagenes</h1>
+    <div class="day-badge">Dia 277 / 365 &nbsp;&middot;&nbsp; #365DaysOfAI</div>
+    <h1 class="article-title">Dia 277/365: Hybrid Search (BM25 + Vector) — El relojero que combina el catalogo con el oido</h1>
     <div class="article-meta">
-      <time class="article-date">04 de octubre de 2026</time>
-      <div class="tags"><span class="tag">cnn</span><span class="tag">convolutional</span><span class="tag">computer-vision</span><span class="tag">deep-learning</span></div>
+      <time class="article-date">4 de octubre de 2026</time>
+      <div class="tags"><span class="tag">Reciprocal Rank Fusion, Qdrant hybrid retrieval</span></div>
     </div>
   </header>
 
   <article class="article-body">
-    <h2>La Revolución de las Máquinas que Ven</h2>
-    <p>En 1998, Yann LeCun demostró que las redes neuronales podían reconocer dígitos manuscritos con una precisión que superaba a los sistemas tradicionales. Llamó a su arquitectura LeNet, y fue la primera Convolutional Neural Network (CNN) que funcionó en el mundo real. El problema era que requerían demasiado compute para las GPUs de esa época. Tuvieron que pasar 14 años para que AlexNet, en 2012, ganara ImageNet con una CNN profunda y demuestre que el deep learning para visión era el camino correcto.</p>
-    <p>Hoy, las CNNs están en todas partes: en tu teléfono que detecta tu cara para desbloquearse, en los autos que reconocen señales de tránsito, en los sistemas médicos que detectan cáncer en radiografías. La pregunta ya no es si funcionan — es cómo funcionan y por qué son tan efectivas para imágenes.</p>
+<h2>Introduccion: Cuando el embedding se queda corto</h2>
+<p>Tienes un sistema RAG en produccion. Embeddings de OpenAI o de tu modelo favorito, una base vectorial decente, metricas que parecen razonables en el offline. Hasta que llega el usuario con la consulta que ningun embedding fue entrenado a ver bien: "dame el codigo de error P0420 del manual de la Corolla 2018".</p>
+<p>Mira lo que pasa: el vector embedding de "P0420" es casi ortogonal al de la pagina del manual donde aparece literal "P0420 - Catalytic Converter Efficiency Below Threshold". Tu retrieval semantico devuelve cinco documentos sobre eficiencia de convertidores cataliticos en general, mientras que el documento exacto queda en el ranking 47. Y tu LLM responde con literatura generica que no sirve para nada.</p>
+<p>Y al reves, un BM25 puro devuelve el manual correcto por la coincidencia literal, pero si el usuario escribe "el coche huele a huevo podrido y pierde potencia" - una queja legitima que ningun manual titula asi con esas palabras - el sparse retriever se queda en blanco.</p>
+<p>Eso te obliga a combinar las dos senales. El nombre elegante es <strong>hybrid search</strong>. La mecanica es fusionar dos rankings (uno lexico, uno semantico) en uno solo. Y la formula dominante en la industria hoy se llama <strong>Reciprocal Rank Fusion</strong> (RRF), propuesta por Cormack et al. en 2009 y todavia vigente porque es tonta en el mejor sentido: dos lineas de matematica, sin parametros que entrenar, robusta a distribuciones de score incompatibles entre retrievers.</p>
+<p>Este articulo va directo a la matematica, al mecanismo, y a una implementacion production-ready con Qdrant, que ya trae RRF nativo desde la 1.10.</p>
+<h2>1. Que es Hybrid Search</h2>
+<h3>1.1 La analogia cotidiana</h3>
+<p>Pensa en un relojero maestro con cincuenta anos detras del mostrador. Tiene dos herramientas en su mesa. La primera es un catalogo grueso, encuadernado en cuero, con miles de referencias exactas: calibre 7750, eta 2824-2, rolex 3135. Si vos le decis el numero de referencia al pie de la letra, abre el catalogo, busca la pagina y te dice todo sobre ese movimiento. Ese es BM25: recuperacion lexica exacta por termino.</p>
+<p>La segunda herramienta es su oido. Llega un cliente con un cronografo Swiss made de los 70, lo pone en la mesa y el relojero lo escucha cinco segundos. Sin abrirlo, sin ver el calibre, te dice: "esto es un Valjoux 72, leva de tres posiciones, probablemente tiene desgaste en el puente del automatico". No hizo match por keywords, hizo match por como suena, como vibra, el conocimiento acumulado de decadas de escuchar mecanismos similares. Eso es dense vector search: similitud semantica.</p>
+<p>El relojero maestro no usa solo una de las dos. Cuando llega el reloj extrano, <strong>primero escucha</strong>, despues abre el catalogo y compara. Combina lo que dijo el oido con lo que dice el papel, y emite un veredicto. Ese acto de combinar dos rankings heterogeneos es exactamente Reciprocal Rank Fusion.</p>
+<p>BM25 es el catalogo. Vector search es el oido. RRF es el veredicto del maestro.</p>
+<h3>1.2 La matematica formal</h3>
+<p><strong>BM25 (Okapi).</strong> Para una query $Q$ con terminos $t_1, \dots, t_n$ y un documento $D$:</p>
+$$\text{BM25}(Q, D) = \sum_{i=1}^{n} \text{IDF}(t_i) \cdot \frac{f(t_i, D) \cdot (k_1 + 1)}{f(t_i, D) + k_1 \cdot \left(1 - b + b \cdot \frac{|D|}{\text{avgdl}}\right)}$$
+<p>donde $f(t_i, D)$ es la frecuencia del termino en el documento, $|D|$ la longitud del documento en tokens, $\text{avgdl}$ la longitud promedio en la coleccion, y $k_1 \in [1.2, 2.0]$, $b \in [0, 1]$ son hiperparametros usualmente fijados en $k_1 = 1.5$, $b = 0.75$.</p>
+<p>El IDF es:</p>
+$$\text{IDF}(t) = \ln\left(\frac{N - \text{df}(t) + 0.5}{\text{df}(t) + 0.5} + 1\right)$$
+<p>con $N$ el numero total de documentos y $\text{df}(t)$ el document frequency del termino. La gracia de BM25 es que <strong>saturacion</strong> en $f(t, D)$ (el termino ya aparecio mucho no suma linealmente) y <strong>normalizacion por longitud</strong> evitan que un documento de 5000 palabras con tres menciones de tu termino gane sobre uno de 200 palabras con la misma mencion.</p>
+<p><strong>Dense vector similarity.</strong> Para una query $q$ y un documento $d$ representados como vectores $\vec{q}, \vec{d} \in \mathbb{R}^d$:</p>
+$$\text{sim}(\vec{q}, \vec{d}) = \frac{\vec{q} \cdot \vec{d}}{\|\vec{q}\| \, \|\vec{d}\|}$$
+<p>En retrieval moderno casi siempre se trabaja con vectores normalizados a norma 1, asi que el coseno colapsa al producto punto: $\vec{q} \cdot \vec{d}$. Esto es lo que computa HNSW (Hierarchical Navigable Small World) bajo el capo en Qdrant, Pinecone, Weaviate, Milvus.</p>
+<p><strong>Reciprocal Rank Fusion.</strong> Dadas $m$ listas ranqueadas $\mathcal{L}_1, \dots, \mathcal{L}_m$ y un documento candidato $d$, con $r_i(d)$ siendo el rank (1-indexed) de $d$ en la lista $\mathcal{L}_i$ o $\infty$ si no aparece:</p>
+$$\text{RRF}(d) = \sum_{i=1}^{m} \frac{1}{k + r_i(d)}$$
+<p>donde $k$ es una constante usualmente fijada en $60$ por el paper original. Este $k$ hace dos cosas: suaviza la contribucion de ranks altos (rank 1 aporta $\frac{1}{61}$, rank 2 aporta $\frac{1}{62}$, casi identico) y degrada con gracia a documentos que aparecen en una sola lista en posiciones bajas (rank 50 aporta $\frac{1}{110}$, todavia rescatable si la otra lista lo confirma).</p>
+<p>Nota que RRF <strong>no usa los scores originales</strong>. Solo los ranks. Esto es deliberado: los scores de BM25 (pueden ser 5 o 50) y los de cosine (entre -1 y 1) no son comparables en absoluto. Mezclarlos a mano requiere min-max normalization, z-score, o alguna heuristica fragil. RRF te la evita.</p>
+<h2>2. Mecanismo interno</h2>
+<p>El flujo de un hybrid retriever en produccion se ve asi:</p>
+<pre><code class="language-text">                +------------------+
+                |   Query cruda    |
+                +--------+---------+
+                         |
+              +----------+----------+
+              v                     v
+    +-----------------+    +-----------------+
+    |  Tokenizador    |    |  Embedding      |
+    |  + BM25 (sparse)|    |  model (dense)  |
+    +--------+--------+    +--------+--------+
+             |                      |
+             v                      v
+    +-----------------+    +-----------------+
+    |  Top-K docs     |    |  ANN search     |
+    |  lexicos        |    |  HNSW/IVF       |
+    |  (ranking L1)   |    |  (ranking L2)   |
+    +--------+--------+    +--------+--------+
+             |                      |
+             +----------+-----------+
+                        v
+              +---------------------+
+              | Reciprocal Rank     |
+              | Fusion (k=60)       |
+              +--------+------------+
+                       v
+              +---------------------+
+              |  Top-N fused        |
+              |  (reranking o LLM)  |
+              +---------------------+</code></pre>
+<p>Tres puntos criticos:</p>
+<ol>
+  <li><strong>Cada retriever opera independiente.</strong> El sparse index (tipicamente invertido en memoria o en Lucene) y el dense index (HNSW o IVF en Qdrant) se consultan en paralelo. Suma latencia, no la multiplicas.</li>
+  <li><strong>El parametro <code>limit</code> por retriever debe ser mayor que el <code>limit</code> final.</strong> Si queres top-10 al final, pedi top-50 o top-100 a cada uno. Si pedis top-10 a cada uno y los dos coinciden en solo 3 documentos, te quedas con 3 resultados fusionados. La heuristica de produccion: <code>over_fetch = 3x</code> a <code>5x</code>.</li>
+  <li><strong>RRF no es el final del camino.</strong> En sistemas serios, el output de RRF va a un reranker cross-encoder (Cohere Rerank, BGE-reranker, Jina reranker) que si mira el query y el documento juntos, no solo la similitud independiente. RRF es el filtro grueso, el reranker es la cirugia fina.</li>
+</ol>
+<h2>3. Cuando te sirve y cuando no</h2>
+<p>Usa hybrid search cuando:</p>
+<ul>
+  <li>Tu coleccion mezcla terminologia tecnica exacta (codigos de error, IDs, nombres propios, siglas) con lenguaje natural.</li>
+  <li>Tenes queries que son tanto keywords ("error 502 nginx") como descripciones ("mi servidor gateway esta rebotando requests").</li>
+  <li>Tu evaluacion offline muestra que ni BM25 puro ni vector puro llegan a un NDCG@10 aceptable, pero su union rankeada si.</li>
+</ul>
+<p>No lo uses cuando:</p>
+<ul>
+  <li>Tu dominio es estrictamente semantico (chatbot sobre ficcion literaria, por ejemplo).</li>
+  <li>Tu latencia budget es sub-50ms y no podes permitirte el costo de dos retrievers.</li>
+  <li>Tu embedding ya fue fine-tuneado en exactamente tu dominio y lexico, y el BM25 no aporta nada nuevo. Esto pasa, aunque menos de lo que la gente cree.</li>
+</ul>
+<h2>4. Implementacion production-ready</h2>
+<h3>4.1 Tipos</h3>
+<pre><code class="language-python">from __future__ import annotations
 
-    <h2>La Anatomía de una CNN</h2>
-    <p>Una CNN no procesa una imagen como una lista plana de píxeles. La procesa como lo haría tu corteza visual: reconociendo patrones locales primero (bordes, texturas), y luego combinándolos en representaciones más abstractas (formas, objetos, escenas).</p>
+from dataclasses import dataclass
+from typing import Sequence
 
-    <h3>1. Capas Convolucionales: Los Filtros que Aprenden</h3>
-    <p>Una convolución es simplemente un filtro que se desliza sobre la imagen. En lugar de filtros fijos como los de Sobel o Gaussian, en una CNN estos filtros tienen valores aprendibles. Durante el entrenamiento, la red descubre qué patrones necesita detectar.</p>
-    <p>Matemáticamente, para una imagen de entrada $I$ y un kernel $K$:</p>
-    <p>$$(I * K)_{ij} = \sum_m \sum_n I_{i+m, j+n} \cdot K_{m,n}$$</p>
-    <p>Después de cada convolución, la salida pasa por una función de activación (típicamente ReLU):</p>
-    <p>$$f(x) = \max(0, x)$$</p>
-    <pre><code class="language-python">import torch
-import torch.nn as nn
 
-class SimpleConvLayer(nn.Module):
-    """Una capa convolucional básica."""
-    def __init__(self, in_channels=3, out_channels=64, kernel_size=3):
-        super().__init__()
-        # Kernel aprendible: 64 filtros de 3x3
-        self.conv = nn.Conv2d(
-            in_channels=in_channels,
-            out_channels=out_channels,
-            kernel_size=kernel_size,
-            padding=kernel_size // 2  # Mantener dimensiones
-        )
-        self.relu = nn.ReLU()
-    
-    def forward(self, x):
-        # x: (batch, channels, height, width)
-        x = self.conv(x)
-        x = self.relu(x)
-        return x
+@dataclass(frozen=True, slots=True)
+class ScoredDoc:
+    """Un documento con un score de similaridad o fusion."""
+    doc_id: str
+    score: float
 
-# Ejemplo: procesar una imagen de 224x224
-layer = SimpleConvLayer(in_channels=3, out_channels=64)
-img = torch.randn(1, 3, 224, 224)  # batch=1, 3 canales, 224x224
-output = layer(img)
-print(f"Output shape: {output.shape}")  # (1, 64, 224, 224)</code></pre>
 
-    <h3>2. Pooling: Reduciendo Dimensionalidad</h3>
-    <p>Después de las capas convolucionales, usamos pooling para reducir el tamaño espacial. Max pooling toma el valor máximo en cada región, mientras que average pooling promedia los valores.</p>
-    <p>$$\text{MaxPool}(X)_{i,j} = \max_{(m,n) \in \text{window}} X_{m,n}$$</p>
-    <p>Una ventana de 2x2 con stride 2 reduce la imagen a la mitad en cada dimensión:</p>
-    <pre><code class="language-python"># Max pooling reduce 224x224 a 112x112
-pool = nn.MaxPool2d(kernel_size=2, stride=2)
-pooled = pool(output)
-print(f"After pooling: {pooled.shape}")  # (1, 64, 112, 112)
+@dataclass(frozen=True, slots=True)
+class RankedList:
+    """Una lista de documentos ya ordenada por relevancia descendente."""
+    name: str
+    docs: Sequence[ScoredDoc]
 
-# En PyTorch:
-# - Conv2d + ReLU + MaxPool2d = bloque básico de VGG
-# - Cada bloque reduce espacialmente pero aumenta canales</code></pre>
 
-    <h3>3. Capas Fully Connected: La Clasificación</h3>
-    <p>Después de varias capas convolucionales y de pooling, la representación es un tensor de forma (batch, channels, height, width). Se aplana a un vector y pasa por capas densas para la clasificación final:</p>
-    <pre><code class="language-python">class CNNClassifier(nn.Module):
-    def __init__(self, num_classes=1000):
-        super().__init__()
-        # Bloque 1: 224 -> 112
-        self.block1 = nn.Sequential(
-            nn.Conv2d(3, 64, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.MaxPool2d(2, 2)
-        )
-        # Bloque 2: 112 -> 56
-        self.block2 = nn.Sequential(
-            nn.Conv2d(64, 128, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.MaxPool2d(2, 2)
-        )
-        # Bloque 3: 56 -> 28
-        self.block3 = nn.Sequential(
-            nn.Conv2d(128, 256, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.MaxPool2d(2, 2)
-        )
-        # Clasificación
-        self.classifier = nn.Sequential(
-            nn.Flatten(),
-            nn.Linear(256 * 28 * 28, 4096),
-            nn.ReLU(),
-            nn.Dropout(0.5),
-            nn.Linear(4096, num_classes)
-        )
-    
-    def forward(self, x):
-        x = self.block1(x)
-        x = self.block2(x)
-        x = self.block3(x)
-        x = self.classifier(x)
-        return x
+@dataclass(frozen=True, slots=True)
+class HybridConfig:
+    """Config inmutable para el retriever hibrido."""
+    over_fetch_factor: int = 4
+    rrf_k: int = 60
+    final_limit: int = 10</code></pre>
+<p><code>frozen=True</code> y <code>slots=True</code> no son adornos: en retrieval manejas millones de documentos, no queres un dict por punto ni mutaciones accidentales.</p>
+<h3>4.2 Motor: RRF</h3>
+<pre><code class="language-python">from collections import defaultdict
 
-model = CNNClassifier(num_classes=1000)
-print(model(torch.randn(1, 3, 224, 224)).shape)  # (1, 1000)</code></pre>
 
-    <h2>Arquitecturas Que Definieron la Era</h2>
+def reciprocal_rank_fusion(
+    ranked_lists: Sequence[RankedList],
+    k: int = 60,
+) -&gt; list[ScoredDoc]:
+    """Fusiona multiples listas ranqueadas usando Reciprocal Rank Fusion.
 
-    <h3>LeNet-5 (1998): El Abuelo</h3>
-    <p>7 capas, 60K parámetros. Reconocía dígitos MNIST con 99.2% de accuracy. Para su época era revolucionario. Hoy es el "Hello World" de CNNs.</p>
+    RRF no usa los scores originales, solo el rank posicional.
+    Documentos que no aparecen en una lista aportan 0 a esa lista.
+    """
+    if k &lt; 1:
+        raise ValueError(f"k debe ser &gt;= 1, recibio {k}")
+    if not ranked_lists:
+        return []
 
-    <h3>AlexNet (2012): El Renacimiento</h3>
-    <p>8 capas, 60M parámetros. Ganó ImageNet con 16.4% de error (el segundo lugar tuvo 26.2%). Usó ReLU, dropout, y GPU training. Demostró que deep learning funcionaba para visión a escala.</p>
+    fused_scores: dict[str, float] = defaultdict(float)
+    for ranked in ranked_lists:
+        for rank, doc in enumerate(ranked.docs, start=1):
+            fused_scores[doc.doc_id] += 1.0 / (k + rank)
 
-    <h3>VGGNet (2014): La Profundidad Simple</h3>
-    <p>16-19 capas, 138M parámetros. Su contribución: usar solo filtros 3x3, apilados. Tres capas 3x3 tienen el mismo receptive field que una 7x7, pero con menos parámetros y más no-linearidad.</p>
+    ordered = sorted(
+        fused_scores.items(),
+        key=lambda item: item[1],
+        reverse=True,
+    )
+    return [ScoredDoc(doc_id=doc_id, score=score) for doc_id, score in ordered]</code></pre>
+<p>Esa funcion es la version canonica de Cormack et al. Funciona con cualquier retriever que devuelva una lista ordenada. La complejidad es $O(N \cdot m)$ con $N$ el total de documentos unicos y $m$ el numero de listas. Para colecciones de hasta unos cientos de miles de documentos unicos por query, esto es sub-milisegundo.</p>
+<h3>4.3 Utilidades</h3>
+<pre><code class="language-python">import heapq
 
-    <h3>ResNet (2015): Las Conexiones Residuales</h3>
-    <p>152 capas con skip connections: la salida de una capa se suma a la entrada de capas más profundas. Esto resuelve el problema de degradación: cuando agregas más capas, la red puede aprender identidad y no empeorar.</p>
-    <p>$$\mathbf{y} = \mathcal{F}(\mathbf{x}) + \mathbf{x}$$</p>
-    <pre><code class="language-python">class ResidualBlock(nn.Module):
-    """Bloque residual básico."""
-    def __init__(self, channels):
-        super().__init__()
-        self.conv1 = nn.Conv2d(channels, channels, 3, padding=1)
-        self.bn1 = nn.BatchNorm2d(channels)
-        self.conv2 = nn.Conv2d(channels, channels, 3, padding=1)
-        self.bn2 = nn.BatchNorm2d(channels)
-        self.relu = nn.ReLU()
-    
-    def forward(self, x):
-        residual = x
-        out = self.relu(self.bn1(self.conv1(x)))
-        out = self.bn2(self.conv2(out))
-        out += residual  # Skip connection
-        out = self.relu(out)
-        return out</code></pre>
 
-    <h2>Data Augmentation: Crear Datos de la Nada</h2>
-    <p>Las CNNs necesitan muchos datos. Data augmentation genera variaciones de las imágenes existentes: rotaciones, flips, crops, cambios de color. Durante training, la red ve versiones transformadas, lo que mejora generalización.</p>
-    <pre><code class="language-python">from torchvision import transforms
+def fuse_top_k(
+    ranked_lists: Sequence[RankedList],
+    k: int,
+    limit: int,
+) -&gt; list[ScoredDoc]:
+    """RRF con corte al top-N sin materializar el ranking completo."""
+    if limit &lt;= 0:
+        raise ValueError(f"limit debe ser positivo, recibio {limit}")
 
-train_transform = transforms.Compose([
-    transforms.RandomResizedCrop(224, scale=(0.8, 1.0)),
-    transforms.RandomHorizontalFlip(p=0.5),
-    transforms.ColorJitter(brightness=0.2, contrast=0.2),
-    transforms.RandomRotation(degrees=15),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                         std=[0.229, 0.224, 0.225])
-])
+    fused: dict[str, float] = defaultdict(float)
+    for ranked in ranked_lists:
+        for rank, doc in enumerate(ranked.docs, start=1):
+            fused[doc.doc_id] += 1.0 / (k + rank)
 
-# Para inferencia: solo normalizar
-val_transform = transforms.Compose([
-    transforms.Resize(256),
-    transforms.CenterCrop(224),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                         std=[0.229, 0.224, 0.225])
-])</code></pre>
+    top = heapq.nlargest(limit, fused.items(), key=lambda item: item[1])
+    return [ScoredDoc(doc_id=doc_id, score=score) for doc_id, score in top]</code></pre>
+<p><code>heapq.nlargest</code> evita ordenar los $N$ documentos cuando solo necesitas los primeros <code>limit</code>. Para una coleccion de 1M de candidatos unicos y <code>limit=10</code>, la diferencia es material.</p>
+<h2>5. Ejemplos con codigo</h2>
+<h3>5.1 RRF puro en Python</h3>
+<pre><code class="language-python">from rrf import RankedList, ScoredDoc, reciprocal_rank_fusion
 
-    <h2>Transfer Learning: No Entrenes de Cero</h2>
-    <p>Un modelo entrenado en ImageNet ya aprendió características genéricas de visión: bordes, texturas, formas. Puedes usar esas características como punto de partida y afinar para tu tarea específica:</p>
-    <pre><code class="language-python">import torchvision.models as models
+bm25_results = RankedList(
+    name="bm25",
+    docs=[
+        ScoredDoc("doc_p0420", 18.3),
+        ScoredDoc("doc_catalyst", 12.1),
+        ScoredDoc("doc_obd_codes", 9.7),
+    ],
+)
 
-# Descargar ResNet pre-entrenada
-model = models.resnet50(weights='IMAGENET1K_V1')
+dense_results = RankedList(
+    name="dense",
+    docs=[
+        ScoredDoc("doc_catalyst", 0.91),
+        ScoredDoc("doc_p0420", 0.88),
+        ScoredDoc("doc_egg_smell", 0.82),
+    ],
+)
 
-# Freezar capas base (no entrenar)
-for param in model.parameters():
-    param.requires_grad = False
+fused = reciprocal_rank_fusion(
+    [bm25_results, dense_results],
+    k=60,
+)
+for doc in fused[:5]:
+    print(f"{doc.doc_id}: {doc.score:.4f}")</code></pre>
+<p>Output esperado:</p>
+<pre><code class="language-text">doc_p0420: 0.0328
+doc_catalyst: 0.0325
+doc_obd_codes: 0.0164
+doc_egg_smell: 0.0164</code></pre>
+<p>Nota como <code>doc_p0420</code> gana a <code>doc_catalyst</code> por aparecer en el top de ambas listas (rank 1 + rank 2 $\approx$ 0.0328) versus rank 2 + rank 1 $\approx$ 0.0325. La diferencia es minima porque $k=60$ suaviza mucho. Sube $k$ a 5 si queres penalizacion mas agresiva de ranks bajos.</p>
+<h3>5.2 Qdrant hybrid con Prefetch + FusionQuery</h3>
+<p>Qdrant expone hybrid search de forma nativa desde la 1.10 via <code>Prefetch</code> + <code>FusionQuery</code>. Esto ejecuta los dos retrievers y la fusion server-side, sin que vos tengas que traer los candidatos al cliente.</p>
+<pre><code class="language-python">from qdrant_client import QdrantClient
+from qdrant_client.models import (
+    Fusion,
+    FusionQuery,
+    Prefetch,
+    SparseVector,
+)
 
-# Reemplazar classifier para nueva tarea (e.g., 10 clases)
-model.fc = nn.Linear(model.fc.in_features, 10)
+client = QdrantClient(url="http://localhost:6333")
 
-# Solo el nuevo classifier se entrena
-optimizer = torch.optim.Adam(model.fc.parameters(), lr=0.001)
+dense_vec: list[float] = embed_model.encode(query_text).tolist()
+sparse_vec = SparseVector(
+    indices=[12, 47, 103, 888, 1024],
+    values=[0.42, 0.31, 0.55, 0.18, 0.66],
+)
 
-# Fine-tuning: después de entrenar el classifier, descongelar
-# las últimas capas y entrenar todo con learning rate bajo</code></pre>
+results = client.query_points(
+    collection_name="manuals",
+    prefetch=[
+        Prefetch(query=dense_vec, using="dense", limit=50),
+        Prefetch(query=sparse_vec, using="sparse", limit=50),
+    ],
+    query=FusionQuery(fusion=Fusion.RRF),
+    limit=10,
+    with_payload=True,
+)
 
-    <h2>Los 3 Errores Más Comunes</h2>
+for point in results.points:
+    print(f"{point.id}: {point.score:.4f} - {point.payload['title']}")</code></pre>
+<p><strong>Requisito critico:</strong> tu coleccion en Qdrant tiene que tener <strong>dos vectores nombrados</strong> en el schema, uno <code>dense</code> y uno <code>sparse</code>, ambos indexados:</p>
+<pre><code class="language-python">from qdrant_client.models import (
+    Distance,
+    SparseIndexParams,
+    SparseVectorParams,
+    VectorParams,
+)
 
-    <h3>Error 1: Usar arquitecturas complicadas cuando algo simple funciona</h3>
-    <p><strong>El error:</strong> Implementar una ResNet de 152 capas para clasificar gatos vs perros cuando un VGG de 11 capas logra 97% de accuracy. Over-engineering genera modelos lentos y difíciles de mantener.</p>
-    <p><strong>La solución:</strong> Empieza con algo simple: una arquitectura tipo LeNet aumentada, evalúa baseline, y solo aumenta complejidad si el accuracy plateau requiere más capacidad.</p>
+client.create_collection(
+    collection_name="manuals",
+    vectors_config={
+        "dense": VectorParams(size=1024, distance=Distance.COSINE),
+    },
+    sparse_vectors_config={
+        "sparse": SparseVectorParams(
+            index=SparseIndexParams(
+                on_disk=False,
+                full_scan_threshold=10000,
+            ),
+        ),
+    },
+)</code></pre>
+<p><code>on_disk=False</code> mantiene el indice sparse en RAM, lo cual es lo habitual: el sparse index es chico comparado con el HNSW denso.</p>
+<h3>5.3 FastEmbed para generar el sparse vector localmente</h3>
+<p>No queres tener un servidor separado de BM25. Qdrant recomienda <code>fastembed</code> para generar ambos vectores en el mismo cliente:</p>
+<pre><code class="language-python">from fastembed import SparseTextEmbedding, TextEmbedding
 
-    <h3>Error 2: No usar batch normalization correctamente</h3>
-    <p><strong>El error:</strong> Poner batch norm antes o después de la convolución sin entender el orden correcto. En PyTorch, la convención es: Conv -> BatchNorm -> Activation.</p>
-    <p><strong>La solución:</strong> Usa la estructura correcta y asegúrate de que el batch size no sea demasiado pequeño (idealmente 32+ para que las estadísticas del batch sean estables).</p>
+dense_model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
+sparse_model = SparseTextEmbedding(model_name="Qdrant/bm25")
 
-    <h3>Error 3: Ignorar el receptive field</h3>
-    <p><strong>El error:</strong> No pensar en qué parte de la imagen puede "ver" cada neurona. Capas muy profundas con kernels pequeños pueden tener un receptive field insuficiente para capturar patrones globales.</p>
-    <p><strong>La solución:</strong> Calcula el receptive field acumulativo: con kernels de 3x3, después de 3 capas el campo receptivo es 7x7, después de 5 capas es 11x11, etc. Usa dilations o aumenta el kernel si necesitas más contexto global.</p>
+query_text = "P0420 catalytic converter efficiency below threshold"
 
-    <h2>Resumen y Cierre</h2>
-    <p>Las CNNs son la columna vertebral de Computer Vision moderna. Su poder viene de tres ideas simples: convoluciones locales que capturan patrones espaciales, pooling que reduce dimensionalidad mientras preserva información, y capas profundas que construyen representaciones cada vez más abstractas.</p>
-    <p>Desde LeNet hasta ResNet, la evolución ha sido constante. Lo importante no es memorizar arquitecturas — es entender por qué funcionan: localidad, traducción invariante, y jerarquía de características.</p>
-    <p>La próxima vez que tu teléfono reconozca tu cara o un radiólogo use IA para detectar anomalías, recuerda: todo empieza con filtros que detectan bordes. El resto es matemáticas apiladas en profundidad.</p>
-    <p><strong>Hasta el próximo día.</strong></p>
+dense_query = list(dense_model.embed([query_text]))[0]
+sparse_query = next(sparse_model.embed([query_text]))</code></pre>
+<p><code>Qdrant/bm25</code> es un modelo sparse de FastEmbed que aproxima BM25 clasico y devuelve <code>SparseVector</code> listo para enviar a Qdrant. La consistencia numerica entre el BM25 offline de tu evaluacion y el BM25 online de produccion mejora cuando usas el mismo modelo en ambos lados.</p>
+<h2>6. Debugging</h2>
+<p><strong>"Hybrid me da peores resultados que BM25 puro."</strong></p>
+<p>Suele pasar cuando tu embedding es malo para tu dominio o cuando tu over-fetch es muy bajo. Sube <code>over_fetch_factor</code> de 4 a 10 y volve a evaluar. Si BM25 gana por mas de 5 puntos de NDCG, tu dense retriever probablemente no esta alineado con el dominio. No es un bug de RRF, es bug del embedding.</p>
+<p><strong>"La latencia se duplico."</strong></p>
+<p>Estas ejecutando los retrievers en serie en vez de en paralelo. Qdrant <code>Prefetch</code> los ejecuta en paralelo internamente. Si lo haces a mano con dos requests HTTP secuenciales, sumas las latencias. Usa <code>asyncio.gather</code> o el cliente nativo con <code>Prefetch</code>.</p>
+<p><strong>"RRF siempre devuelve los mismos documentos en el mismo orden."</strong></p>
+<p>Eso es bueno, no malo. RRF es deterministico dados los rankings de entrada. Si te preocupa la diversidad, el reranker downstream se encarga. No metas un random shuffle en RRF, eso seria sabotaje del ranking.</p>
+<p><strong>"Mi metrica de MRR mejora, NDCG@10 empeora."</strong></p>
+<p>Sintoma clasico de que estas sobreponderando un retriever sobre el otro. RRF es neutral por construccion; el problema suele estar en los <code>limit</code> de cada Prefetch. Si el sparse tiene <code>limit=10</code> y el dense <code>limit=100</code>, el dense domina la cola del ranking. Balancealos.</p>
+<p><strong>"Los scores fusionados son todos casi iguales."</strong></p>
+<p>Con $k=60$ y solo dos listas, el score maximo posible es $\frac{2}{61} \approx 0.0328$. Si queres mas separacion visual en logs y dashboards, normaliza el output por el maximo: <code>normalized_score = rrf_score / max(rrf_scores)</code>. Para el reranker downstream esto no importa, el orden relativo es lo unico que cuenta.</p>
+<h2>7. Optimizaciones</h2>
+<p><strong>1. Pre-filtrado por metadata antes del retrieval.</strong> Si tu coleccion tiene <code>payload</code> con categorias (manual de servicio vs. manual de usuario), filtra primero:</p>
+<pre><code class="language-python">from qdrant_client.models import FieldCondition, Filter, MatchValue
+
+results = client.query_points(
+    collection_name="manuals",
+    prefetch=[
+        Prefetch(
+            query=dense_vec,
+            using="dense",
+            limit=50,
+            filter=Filter(
+                must=[FieldCondition(key="category", match=MatchValue(value="service"))]
+            ),
+        ),
+        Prefetch(query=sparse_vec, using="sparse", limit=50),
+    ],
+    query=FusionQuery(fusion=Fusion.RRF),
+    limit=10,
+)</code></pre>
+<p>Qdrant aplica el filtro en cada Prefetch y despues fusiona, lo cual es lo que queres. Filtrar despues de RRF te obligaria a re-fusionar manualmente.</p>
+<p><strong>2. Tuning de <code>k</code> en RRF.</strong> El paper original fija $k=60$, pero en practica con datasets cortos $k=10$ o $k=20$ penaliza mas fuerte a ranks bajos. Hace grid search sobre tu set de evaluacion con valores $[10, 20, 40, 60, 100]$. En BEIR, el sweet spot suele estar entre 40 y 80.</p>
+<p><strong>3. Hybrid con reranker.</strong> Despues de RRF, pasa los top-50 a un reranker cross-encoder. Esto tipicamente sube NDCG@10 otro 5 a 15 por ciento. La combinacion RRF + cross-encoder es hoy el estado del arte en retrieval no-MAR.</p>
+<p><strong>4. Sparse con expansion de query.</strong> Si tu BM25 es ingenuo, agrega sinonimos y stemming en el preprocesamiento. Qdrant soporta <code>Snowball</code> y <code>Multilingual</code> tokenizers via <code>TextIndexParams</code> en el <code>SparseVectorParams</code>. Para espanol, <code>Multilingual</code> es obligatorio; <code>Snowball</code> te da cobertura razonable en espanol peninsular pero se queda corto en variantes latinas.</p>
+<p><strong>5. Cachear embeddings.</strong> Si tu trafico tiene repeticion de queries (chatbot, FAQ), cachea el par <code>(dense_vec, sparse_vec)</code> por hash del query normalizado. Reduce carga de GPU al toque y baja latencia p99 de manera brutal.</p>
+<p><strong>6. Hybrid con busqueda semantica adicional.</strong> Algunos sistemas agregan un tercer retriever: ColBERT (late interaction por token) o SPLADE (sparse expandido). El RRF escala trivialmente a $m > 2$: la formula no distingue entre dos o cinco listas.</p>
+<h2>Conclusion</h2>
+<p>Hybrid search no es magia, es ingenieria. BM25 te ancla al lexico exacto, el dense retriever te ancla al significado, y RRF te da una fusion que no necesita entrenamiento ni calibracion de scores.</p>
+<p>La formula es brutal en su simpleza: $\frac{1}{k + r_i}$. Dos parametros: el $k$ de suavizado y los <code>limit</code> de cada retriever. No hay loss function, no hay gradient descent, no hay modelo que mantener. Y sin embargo, sistematicamente le gana a cualquiera de los dos retrievers por separado en casi todos los benchmarks publicos (TREC, BEIR, MS MARCO).</p>
+<p>Si tu sistema RAG sigue siendo puro vector o puro BM25, ya sabes por que algunas consultas revientan el NDCG y otras vuelan. Combinalos. Qdrant te da el andamio server-side via <code>Prefetch + FusionQuery</code>, RRF te da la matematica, y esta guia te da el codigo production-ready para que no termines haciendo dos requests secuenciales en tu notebook a las 2am.</p>
   </article>
+  <nav class="article-nav" aria-label="Navegacion entre articulos">
+    <a class="nav-prev" href="/blog/dia-276365-gnns/">Anterior</a>
+    <a href="/blog/">Todos los articulos</a>
+    <a class="nav-next" href="/blog/dia-278365-gat/" data-date="2026-10-05">Siguiente</a>
+  </nav>
 
-  <script>
-    document.getElementById('themeToggle').addEventListener('click', function() {
-      const html = document.documentElement;
-      const isDark = html.getAttribute('data-theme') === 'dark';
-      html.setAttribute('data-theme', isDark ? 'light' : 'dark');
-      document.getElementById('themeIcon').className = isDark ? 'fas fa-moon' : 'fas fa-sun';
-    });
-  </script>
+
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
   <script>
     hljs.highlightAll();
-    document.addEventListener('DOMContentLoaded', () => {
+    document.addEventListener('DOMContentLoaded', function() {
       renderMathInElement(document.body, {
         delimiters: [
           { left: '$$', right: '$$', display: true },
@@ -334,21 +443,20 @@ optimizer = torch.optim.Adam(model.fc.parameters(), lr=0.001)
         throwOnError: false,
       });
     });
-    
-  const _html = document.documentElement;
-  const _btn  = document.getElementById('themeToggle');
-  const _icon = document.getElementById('themeIcon');
-  function _setIcon(t) { _icon.className = t === 'dark' ? 'fas fa-sun' : 'fas fa-moon'; }
-  const _saved = localStorage.getItem('theme') || 'dark';
-  _html.setAttribute('data-theme', _saved);
-  _setIcon(_saved);
-  _btn.addEventListener('click', () => {
-    const next = _html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
-    _html.setAttribute('data-theme', next);
-    localStorage.setItem('theme', next);
-    _setIcon(next);
-  });
 
+    var _html = document.documentElement;
+    var _btn  = document.getElementById('themeToggle');
+    var _icon = document.getElementById('themeIcon');
+    function _setIcon(t) { _icon.className = t === 'dark' ? 'fas fa-sun' : 'fas fa-moon'; }
+    var _saved = localStorage.getItem('theme') || 'dark';
+    _html.setAttribute('data-theme', _saved);
+    _setIcon(_saved);
+    _btn.addEventListener('click', function() {
+      var next = _html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+      _html.setAttribute('data-theme', next);
+      localStorage.setItem('theme', next);
+      _setIcon(next);
+    });
   </script>
   <script>
     document.addEventListener('DOMContentLoaded', function() {
