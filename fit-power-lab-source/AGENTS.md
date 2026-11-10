@@ -44,17 +44,23 @@ Before a change is called done: typecheck, lint, all unit tests, and the e2e tes
 
 ## How it is versioned
 
-There are two things to version, and both are always done:
+Versioning always means three things, done together every time the owner asks to version the work:
+
+1. Commit the source in this repository (below).
+2. Upload the code to <https://github.com/IngFabianRodriguez/IngFabianRodriguez.github.io/tree/main/fit-power-lab-source>.
+3. Upload the production build (`dist/`) to <https://github.com/IngFabianRodriguez/IngFabianRodriguez.github.io/tree/main/fit-power-lab>.
+
+The owner's request to version covers the upload to those two folders of that repository, with their `gh` session, and nothing else: no other repository, branch or folder. If only the code changed in a way that does not alter the build (for example documentation), the build is left as it is. Never leave the folders behind the commits: after versioning, both must hold what this repository holds.
 
 ### 1. The source: this repository
 
 - Branch `feat/ideas`. History is local: there is no remote for this repository.
 - Commit messages follow the git conventions skill of the organisation (`aranda-git-workflow`): Spanish, one short line, no body, no signature or co-author lines. That skill is the source of truth; do not copy its rules here.
-- Group the change by area (one commit per area of the app, with its tests), after the checks above pass. No commit and no publication without the owner's go-ahead.
+- Group the change by area (one commit per area of the app, with its tests), after the checks above pass. No commit, and so no upload, until the owner asks to version.
 - After a commit, assess it with `gentle-ai review assess --committed-only` as the project's review workflow asks; the owner decides per candidate whether it is reviewed.
 - Never commit `dist/`, `samples/`, `.agent-generated/`, `node_modules/` or anything with real positions.
 
-### 2. What is published: the GitHub Pages site
+### 2. The two folders of the GitHub Pages site
 
 The site `https://ingfabianrodriguez.github.io/` lives in the repository `IngFabianRodriguez/IngFabianRodriguez.github.io` (branch `main`). The project goes there twice:
 
@@ -63,7 +69,7 @@ The site `https://ingfabianrodriguez.github.io/` lives in the repository `IngFab
 | `fit-power-lab/`          | The production build (the app that runs at `https://ingfabianrodriguez.github.io/fit-power-lab/`) | `npm run build` (`dist/`, which uses relative addresses so it works in any folder) |
 | `fit-power-lab-source/`   | The source code, a mirror of this repository's tracked files                                      | `git ls-files` of this repository                                                  |
 
-To publish (with the owner's go-ahead for that repository, with their `gh` session):
+To upload both folders (this is part of versioning, as above):
 
 1. Commit the source here first, build from that committed state (`npm run build`), and make sure the checks pass.
 2. Make a scratch clone outside the project (`mktemp -d`): `git clone --no-checkout`, then `git config core.protectNTFS false` (only in that clone: the repository has a file name that Windows cannot hold), set the owner's personal GitHub identity there (the one already used by the earlier commits of that repository, never a corporate address), and sparse-checkout only `/fit-power-lab/`, `/fit-power-lab-source/`, `/README.md` and `/index.html`. In Git Bash set `MSYS_NO_PATHCONV=1` for the sparse-checkout command, or the patterns are rewritten.
