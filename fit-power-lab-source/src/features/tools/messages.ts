@@ -1,0 +1,86 @@
+import type { Messages } from "@/app/i18n";
+
+export const messages: Messages = {
+  en: {
+    "tools.noRide": "Load a ride first: the tools work on the active ride.",
+    "tools.added": 'Added "{name}" to the loaded rides. Export it from the Overview tab.',
+    "tools.error.empty": "No record is left with those settings.",
+    "tools.error.overlap": "These rides overlap in time and cannot be merged.",
+    "tools.error.noGps": "This ride has no GPS positions.",
+    "tools.error.service": "The elevation service did not answer. Nothing was changed.",
+    "tools.error.unknown": "The tool could not finish. Nothing was changed.",
+    "tools.trim.title": "Trim",
+    "tools.trim.description":
+      "Cut the start and the end of the active ride, or remove its stops, into a new ride.",
+    "tools.trim.from": "From ({unit})",
+    "tools.trim.to": "To ({unit})",
+    "tools.trim.fromPlaceholder": "start",
+    "tools.trim.toPlaceholder": "end ({total})",
+    "tools.trim.useRange": "Use the selected range ({from} to {to})",
+    "tools.trim.noRange": "Use the selected range (select one on a chart first)",
+    "tools.trim.removePauses": "Remove pauses (under 0.5 m/s for more than 10 s)",
+    "tools.trim.create": "Create trimmed ride",
+    "tools.merge.title": "Merge",
+    "tools.merge.description": "Join several loaded rides, in time order, into one new ride.",
+    "tools.merge.select": "Rides to merge",
+    "tools.merge.need": "Load at least two rides to merge them.",
+    "tools.merge.create": "Merge {count} rides",
+    "tools.altitude.title": "Altitude and GPS",
+    "tools.altitude.description":
+      "Smooth the GPS track on your computer, or correct the altitude with an elevation model.",
+    "tools.gps.window": "Smoothing window (records)",
+    "tools.gps.help": "Moving average of latitude and longitude. Use 3 to 9 records.",
+    "tools.gps.smooth": "Smooth the GPS track",
+    "tools.elev.warningTitle": "Privacy warning",
+    "tools.elev.warning":
+      "Correcting the altitude sends the coordinates of this route ({count} points, rounded to about 10 m) to a public elevation service (api.open-meteo.com), outside your computer. Nothing is sent unless you confirm.",
+    "tools.elev.start": "Correct altitude online…",
+    "tools.elev.confirmText":
+      "You are about to send {count} coordinates of this route to api.open-meteo.com.",
+    "tools.elev.confirm": "Send coordinates and correct altitude",
+    "tools.elev.cancel": "Cancel",
+    "tools.elev.working": "Asking the elevation service…",
+  },
+  es: {
+    "tools.noRide":
+      "Cargue primero un recorrido: las herramientas trabajan sobre el recorrido activo.",
+    "tools.added":
+      'Se agregó "{name}" a los recorridos cargados. Expórtelo desde la pestaña Resumen.',
+    "tools.error.empty": "No queda ningún registro con esos ajustes.",
+    "tools.error.overlap": "Estos recorridos se superponen en el tiempo y no se pueden unir.",
+    "tools.error.noGps": "Este recorrido no tiene posiciones GPS.",
+    "tools.error.service": "El servicio de elevación no respondió. No se cambió nada.",
+    "tools.error.unknown": "La herramienta no pudo terminar. No se cambió nada.",
+    "tools.trim.title": "Recortar",
+    "tools.trim.description":
+      "Corte el inicio y el final del recorrido activo, o quite sus paradas, en un recorrido nuevo.",
+    "tools.trim.from": "Desde ({unit})",
+    "tools.trim.to": "Hasta ({unit})",
+    "tools.trim.fromPlaceholder": "inicio",
+    "tools.trim.toPlaceholder": "final ({total})",
+    "tools.trim.useRange": "Usar el rango seleccionado ({from} a {to})",
+    "tools.trim.noRange": "Usar el rango seleccionado (seleccione uno en una gráfica primero)",
+    "tools.trim.removePauses": "Quitar pausas (menos de 0,5 m/s durante más de 10 s)",
+    "tools.trim.create": "Crear recorrido recortado",
+    "tools.merge.title": "Unir",
+    "tools.merge.description":
+      "Una varios recorridos cargados, en orden de tiempo, en un recorrido nuevo.",
+    "tools.merge.select": "Recorridos por unir",
+    "tools.merge.need": "Cargue al menos dos recorridos para unirlos.",
+    "tools.merge.create": "Unir {count} recorridos",
+    "tools.altitude.title": "Altitud y GPS",
+    "tools.altitude.description":
+      "Suavice la traza GPS en su equipo, o corrija la altitud con un modelo de elevación.",
+    "tools.gps.window": "Ventana de suavizado (registros)",
+    "tools.gps.help": "Promedio móvil de latitud y longitud. Use de 3 a 9 registros.",
+    "tools.gps.smooth": "Suavizar la traza GPS",
+    "tools.elev.warningTitle": "Aviso de privacidad",
+    "tools.elev.warning":
+      "Corregir la altitud envía las coordenadas de esta ruta ({count} puntos, redondeados a unos 10 m) a un servicio público de elevación (api.open-meteo.com), fuera de su equipo. No se envía nada si no lo confirma.",
+    "tools.elev.start": "Corregir altitud en línea…",
+    "tools.elev.confirmText": "Va a enviar {count} coordenadas de esta ruta a api.open-meteo.com.",
+    "tools.elev.confirm": "Enviar coordenadas y corregir altitud",
+    "tools.elev.cancel": "Cancelar",
+    "tools.elev.working": "Consultando el servicio de elevación…",
+  },
+};
