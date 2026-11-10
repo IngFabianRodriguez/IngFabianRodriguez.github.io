@@ -3,6 +3,7 @@ import { mergeMessages, type Messages } from "@/app/i18n";
 import { messages as charts } from "@/features/charts/messages";
 import { messages as device } from "@/features/device/messages";
 import { messages as exportMessages } from "@/features/export/messages";
+import { messages as flyover } from "@/features/flyover/messages";
 import { messages as library } from "@/features/library/messages";
 import { messages as map } from "@/features/map/messages";
 import { messages as metrics } from "@/features/metrics/messages";
@@ -21,6 +22,7 @@ export const AREA_MESSAGES: Messages[] = [
   charts,
   device,
   exportMessages,
+  flyover,
   library,
   map,
   metrics,

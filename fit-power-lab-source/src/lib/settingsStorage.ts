@@ -1,4 +1,10 @@
-import { DEFAULT_MAP_PRIVACY, type MapPrivacy, type Theme } from "@/app/appState";
+import {
+  DEFAULT_MAP_PRIVACY,
+  DEFAULT_TERRAIN_PRIVACY,
+  type MapPrivacy,
+  type TerrainPrivacy,
+  type Theme,
+} from "@/app/appState";
 import { LOCALES, type Locale } from "@/app/i18n";
 import { DEFAULT_MODEL_SETTINGS, type ModelSettings } from "@/domain/modelSettings";
 import type { UnitSystem } from "@/lib/units";
@@ -11,6 +17,8 @@ export interface StoredSettings {
   theme: Theme;
   model: ModelSettings;
   mapPrivacy: MapPrivacy;
+  /** Missing in settings saved before the 3D video existed. */
+  terrainPrivacy?: TerrainPrivacy;
 }
 
 const UNITS: UnitSystem[] = ["metric", "imperial"];
@@ -56,6 +64,22 @@ function readMapPrivacy(raw: unknown): MapPrivacy | undefined {
   };
 }
 
+const TERRAIN_MODES: TerrainPrivacy["mode"][] = ["public", "custom", "none"];
+
+function readTerrainPrivacy(raw: unknown): TerrainPrivacy | undefined {
+  if (typeof raw !== "object" || raw === null) return undefined;
+  const source = raw as Record<string, unknown>;
+  const mode = TERRAIN_MODES.includes(source["mode"] as TerrainPrivacy["mode"])
+    ? (source["mode"] as TerrainPrivacy["mode"])
+    : undefined;
+  const customUrl = typeof source["customUrl"] === "string" ? source["customUrl"] : undefined;
+  if (mode === undefined && customUrl === undefined) return undefined;
+  return {
+    mode: mode ?? DEFAULT_TERRAIN_PRIVACY.mode,
+    customUrl: customUrl ?? DEFAULT_TERRAIN_PRIVACY.customUrl,
+  };
+}
+
 /** Saved preferences; any field that is missing or not valid is left out. */
 export function loadSettings(): Partial<StoredSettings> {
   try {
@@ -74,6 +98,8 @@ export function loadSettings(): Partial<StoredSettings> {
     if (model) settings.model = model;
     const mapPrivacy = readMapPrivacy(source["mapPrivacy"]);
     if (mapPrivacy) settings.mapPrivacy = mapPrivacy;
+    const terrainPrivacy = readTerrainPrivacy(source["terrainPrivacy"]);
+    if (terrainPrivacy) settings.terrainPrivacy = terrainPrivacy;
     return settings;
   } catch {
     return {};

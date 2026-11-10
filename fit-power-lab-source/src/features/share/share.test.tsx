@@ -171,8 +171,25 @@ describe("ShareCardButton", () => {
     return texts;
   }
 
+  /** Stands in for the images of the map tiles: records what is asked and loads or fails at once. */
+  function stubTiles(outcome: "load" | "fail") {
+    const requested: string[] = [];
+    class FakeImage {
+      crossOrigin = "";
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      set src(url: string) {
+        requested.push(url);
+        queueMicrotask(() => (outcome === "load" ? this.onload : this.onerror)?.());
+      }
+    }
+    vi.stubGlobal("Image", FakeImage);
+    return requested;
+  }
+
   it("draws the summary card and downloads it as a PNG", async () => {
     const texts = stubCanvas();
+    stubTiles("load");
     const user = userEvent.setup();
     renderWithApp(<ShareCardButton analysis={analysis} fileName="Morning ride.fit" />);
 
@@ -184,6 +201,50 @@ describe("ShareCardButton", () => {
     expect(texts).toEqual(
       expect.arrayContaining(["Morning ride", "February 25, 2024", "1 km", "1:40", "180 W"]),
     );
+  });
+
+  it("puts the map behind the route, with tiles from the server of the privacy settings", async () => {
+    const texts = stubCanvas();
+    const requested = stubTiles("load");
+    const user = userEvent.setup();
+    renderWithApp(<ShareCardButton analysis={analysis} fileName="r.fit" />);
+
+    await user.click(screen.getByRole("button", { name: "Download summary card" }));
+
+    await waitFor(() => expect(downloads).toHaveLength(1));
+    expect(requested.length).toBeGreaterThan(0);
+    expect(
+      requested.every((url) =>
+        /^https:\/\/tile\.openstreetmap\.org\/\d+\/\d+\/\d+\.png$/.test(url),
+      ),
+    ).toBe(true);
+    expect(texts).toContain("© OpenStreetMap contributors");
+  });
+
+  it("asks for no tile when the map has no background, and still downloads the card", async () => {
+    stubCanvas();
+    const requested = stubTiles("load");
+    const user = userEvent.setup();
+    renderWithApp(<ShareCardButton analysis={analysis} fileName="r.fit" />, {
+      mapPrivacy: { mode: "none", customUrl: "", hideEndsM: 0 },
+    });
+
+    await user.click(screen.getByRole("button", { name: "Download summary card" }));
+
+    await waitFor(() => expect(downloads).toHaveLength(1));
+    expect(requested).toEqual([]);
+  });
+
+  it("still downloads the card, with the route alone, when the tiles cannot be loaded", async () => {
+    const texts = stubCanvas();
+    stubTiles("fail");
+    const user = userEvent.setup();
+    renderWithApp(<ShareCardButton analysis={analysis} fileName="r.fit" />);
+
+    await user.click(screen.getByRole("button", { name: "Download summary card" }));
+
+    await waitFor(() => expect(downloads).toHaveLength(1));
+    expect(texts).not.toContain("© OpenStreetMap contributors");
   });
 
   it("tells the user when the image cannot be made", async () => {

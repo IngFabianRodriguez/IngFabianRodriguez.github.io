@@ -23,6 +23,15 @@ export interface MapPrivacy {
 
 export const DEFAULT_MAP_PRIVACY: MapPrivacy = { mode: "osm", customUrl: "", hideEndsM: 0 };
 
+/** Where the relief of the 3D video comes from: a terrain server is asked for the area flown over. */
+export interface TerrainPrivacy {
+  mode: "public" | "custom" | "none";
+  /** Tile URL template with {z}, {x} and {y} of Terrarium elevation tiles; used when `mode` is "custom". */
+  customUrl: string;
+}
+
+export const DEFAULT_TERRAIN_PRIVACY: TerrainPrivacy = { mode: "public", customUrl: "" };
+
 export type RideSource = "fit" | "gpx" | "tcx" | "merged" | "sample";
 
 /** A stretch of the ride selected on the charts, in km. */
@@ -62,6 +71,7 @@ export interface AppState {
   mapVariable: SeriesKey;
   xAxis: XAxis;
   mapPrivacy: MapPrivacy;
+  terrainPrivacy: TerrainPrivacy;
 }
 
 export type AppAction =
@@ -79,7 +89,8 @@ export type AppAction =
   | { type: "setRange"; range: KmRange | null }
   | { type: "setMapVariable"; variable: SeriesKey }
   | { type: "setXAxis"; axis: XAxis }
-  | { type: "setMapPrivacy"; patch: Partial<MapPrivacy> };
+  | { type: "setMapPrivacy"; patch: Partial<MapPrivacy> }
+  | { type: "setTerrainPrivacy"; patch: Partial<TerrainPrivacy> };
 
 export function initialAppState(overrides: Partial<AppState> = {}): AppState {
   return {
@@ -96,6 +107,7 @@ export function initialAppState(overrides: Partial<AppState> = {}): AppState {
     mapVariable: "power",
     xAxis: "distance",
     mapPrivacy: DEFAULT_MAP_PRIVACY,
+    terrainPrivacy: DEFAULT_TERRAIN_PRIVACY,
     ...overrides,
   };
 }
@@ -153,5 +165,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       return { ...state, xAxis: action.axis };
     case "setMapPrivacy":
       return { ...state, mapPrivacy: { ...state.mapPrivacy, ...action.patch } };
+    case "setTerrainPrivacy":
+      return { ...state, terrainPrivacy: { ...state.terrainPrivacy, ...action.patch } };
   }
 }

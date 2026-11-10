@@ -107,12 +107,14 @@ describe("OnboardingDialog", () => {
     }
   });
 
-  it("says that nothing leaves the computer except the map tiles", () => {
+  it("says that nothing leaves the computer except the map and terrain tiles", () => {
     renderWithApp(<OnboardingDialog open onOpenChange={() => undefined} />);
 
     expect(screen.getByText(/not uploaded/)).toBeInTheDocument();
     expect(
-      screen.getByText(/only thing that goes out is the request for the map tiles/),
+      screen.getByText(
+        /only things that go out are the requests for the map tiles and for the terrain tiles of the 3D video/,
+      ),
     ).toBeInTheDocument();
   });
 
@@ -120,7 +122,9 @@ describe("OnboardingDialog", () => {
     renderWithApp(<OnboardingDialog open onOpenChange={() => undefined} />, { locale: "es" });
 
     expect(screen.getByRole("dialog", { name: "Cómo se estima tu potencia" })).toBeInTheDocument();
-    expect(screen.getByText(/Lo único que sale es la petición de las teselas/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/Lo único que sale son las peticiones de las teselas/),
+    ).toBeInTheDocument();
   });
 
   it("is not shown while closed", () => {

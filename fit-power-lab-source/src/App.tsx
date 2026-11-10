@@ -22,6 +22,7 @@ import { useKeyboardShortcuts } from "@/features/help/useKeyboardShortcuts";
 import { useOnboarding } from "@/features/help/useOnboarding";
 import { OfflineCard } from "@/features/offline/OfflineCard";
 import { PrintReportButton } from "@/features/share/PrintReportButton";
+import { FlyoverVideoButton } from "@/features/flyover/FlyoverVideoButton";
 import { ShareCardButton } from "@/features/share/ShareCardButton";
 import { WeightsForm } from "@/features/weights/WeightsForm";
 import { getDefaultRideStore } from "@/lib/persistence/defaultStore";
@@ -97,6 +98,7 @@ function Overview({ onSampleLoaded }: { onSampleLoaded: () => void }) {
             />
             <PrintReportButton analysis={analysis} fileName={active.fileName} />
             <ShareCardButton analysis={analysis} fileName={active.fileName} />
+            <FlyoverVideoButton analysis={analysis} fileName={active.fileName} />
           </div>
           <Suspense fallback={<Loading />}>
             <RouteMap key={active.id} ride={analysis.ride} watts={analysis.watts} />

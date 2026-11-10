@@ -1,13 +1,19 @@
 import { useId, useState, type ReactNode } from "react";
 import { useAppActions, useAppState } from "@/app/AppContext";
 import { useI18n } from "@/app/I18nContext";
-import { DEFAULT_MAP_PRIVACY, initialAppState, type Theme } from "@/app/appState";
+import {
+  DEFAULT_MAP_PRIVACY,
+  DEFAULT_TERRAIN_PRIVACY,
+  initialAppState,
+  type Theme,
+} from "@/app/appState";
 import { LOCALES, type Locale } from "@/app/i18n";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader } from "@/components/ui/card";
 import { describeShortcut, SHORTCUT_DOCS } from "@/features/help/shortcuts";
 import { useOnboarding } from "@/features/help/useOnboarding";
 import { MapPrivacySettings } from "@/features/settings/MapPrivacySettings";
+import { TerrainPrivacySettings } from "@/features/settings/TerrainPrivacySettings";
 import { OptionGroup } from "@/features/settings/OptionGroup";
 import type { UnitSystem } from "@/lib/units";
 
@@ -39,7 +45,7 @@ const UNIT_SYSTEMS: UnitSystem[] = ["metric", "imperial"];
 export function SettingsPanel() {
   const { t } = useI18n();
   const { locale, units, theme } = useAppState();
-  const { setLocale, setUnits, setTheme, setMapPrivacy } = useAppActions();
+  const { setLocale, setUnits, setTheme, setMapPrivacy, setTerrainPrivacy } = useAppActions();
   const onboarding = useOnboarding();
   const id = useId();
   const [restored, setRestored] = useState(false);
@@ -50,6 +56,7 @@ export function SettingsPanel() {
     setUnits(defaults.units);
     setTheme(defaults.theme);
     setMapPrivacy(DEFAULT_MAP_PRIVACY);
+    setTerrainPrivacy(DEFAULT_TERRAIN_PRIVACY);
     setRestored(true);
   }
 
@@ -96,6 +103,7 @@ export function SettingsPanel() {
 
       <Section id={`${id}-map`} title={t("settings.map.title")}>
         <MapPrivacySettings />
+        <TerrainPrivacySettings />
       </Section>
 
       <Section

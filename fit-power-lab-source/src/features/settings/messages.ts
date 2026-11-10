@@ -31,8 +31,19 @@ export const messages: Messages = {
       "This address cannot be used, so the map shows no background. It must start with http:// or https:// and contain {z}, {x} and {y}.",
     "settings.map.hide": "Meters hidden at each end of the route",
     "settings.map.hide.hint":
-      "The first and the last meters of the route are not drawn, so the place you start from is not shown. 0 draws the whole route.",
+      "The first and the last meters of the route are not drawn, so the place you start from is not drawn. The map tiles around what is shown can still cover the start: use a larger number, or no background, to keep the area private. 0 draws the whole route.",
     "settings.map.hide.invalid": "Enter a whole number of meters from 0 to 5000.",
+    "settings.terrain.title": "Terrain relief of the 3D video",
+    "settings.terrain.explain":
+      "To show the relief, the video asks a terrain server for the relief of the area it flies over. That tells the server which area you rode. Use a server you trust, or ask for no relief.",
+    "settings.terrain.public": "Public terrain tiles (AWS Open Data)",
+    "settings.terrain.custom": "My own terrain server",
+    "settings.terrain.none": "No relief (nothing is requested)",
+    "settings.terrain.url": "Terrain server address",
+    "settings.terrain.url.hint":
+      "Use http:// or https:// and the placeholders {z}, {x} and {y}. The server must give Terrarium elevation tiles (PNG), for example https://terrain.example.org/{z}/{x}/{y}.png",
+    "settings.terrain.url.invalid":
+      "This address cannot be used, so the video has no relief. It must start with http:// or https:// and contain {z}, {x} and {y}.",
     "settings.help.title": "Help",
     "settings.help.description":
       "A short introduction to how the power is estimated and what it cannot tell you.",
@@ -70,7 +81,7 @@ export const messages: Messages = {
       "Use the numbers to compare efforts and follow your progress, not as laboratory values.",
     "help.onboarding.privacy.title": "Your data stays here",
     "help.onboarding.privacy.body":
-      "Your files are read and analysed on this computer and are not uploaded. The only thing that goes out is the request for the map tiles, which shows the area you are looking at. You can change that in Settings.",
+      "Your files are read and analysed on this computer and are not uploaded. The only things that go out are the requests for the map tiles and for the terrain tiles of the 3D video, which show the area you are looking at. You can change that in Settings.",
     "help.onboarding.close": "Got it",
     "help.sample.button": "Load a sample ride",
     "help.sample.hint":
@@ -106,8 +117,19 @@ export const messages: Messages = {
       "Esta dirección no se puede usar, así que el mapa se muestra sin fondo. Debe empezar por http:// o https:// y contener {z}, {x} y {y}.",
     "settings.map.hide": "Metros ocultos en cada extremo de la ruta",
     "settings.map.hide.hint":
-      "Los primeros y los últimos metros de la ruta no se dibujan, para que no se vea el lugar de donde sales. Con 0 se dibuja toda la ruta.",
+      "Los primeros y los últimos metros de la ruta no se dibujan, para que no se dibuje el lugar de donde sales. Las teselas del mapa alrededor de lo que se muestra aún pueden cubrir la salida: usa un número mayor o sin fondo para que la zona sea privada. Con 0 se dibuja toda la ruta.",
     "settings.map.hide.invalid": "Escribe un número entero de metros de 0 a 5000.",
+    "settings.terrain.title": "Relieve del terreno del video 3D",
+    "settings.terrain.explain":
+      "Para mostrar el relieve, el video le pide a un servidor de terreno el relieve de la zona que sobrevuela. Eso le dice al servidor qué zona recorriste. Usa un servidor de confianza o pide que no haya relieve.",
+    "settings.terrain.public": "Teselas de terreno públicas (AWS Open Data)",
+    "settings.terrain.custom": "Mi propio servidor de terreno",
+    "settings.terrain.none": "Sin relieve (no se pide nada)",
+    "settings.terrain.url": "Dirección del servidor de terreno",
+    "settings.terrain.url.hint":
+      "Usa http:// o https:// y los marcadores {z}, {x} y {y}. El servidor debe dar teselas de elevación Terrarium (PNG), por ejemplo https://terrain.example.org/{z}/{x}/{y}.png",
+    "settings.terrain.url.invalid":
+      "Esta dirección no se puede usar, así que el video no tendrá relieve. Debe empezar por http:// o https:// y contener {z}, {x} y {y}.",
     "settings.help.title": "Ayuda",
     "settings.help.description":
       "Una introducción corta a cómo se estima la potencia y qué no puede decirte.",
@@ -145,7 +167,7 @@ export const messages: Messages = {
       "Usa los números para comparar esfuerzos y seguir tu progreso, no como valores de laboratorio.",
     "help.onboarding.privacy.title": "Tus datos se quedan aquí",
     "help.onboarding.privacy.body":
-      "Tus archivos se leen y se analizan en este equipo y no se suben a ningún sitio. Lo único que sale es la petición de las teselas del mapa, que muestra la zona que estás mirando. Puedes cambiarlo en Ajustes.",
+      "Tus archivos se leen y se analizan en este equipo y no se suben a ningún sitio. Lo único que sale son las peticiones de las teselas del mapa y las del terreno del video 3D, que muestran la zona que estás mirando. Puedes cambiarlo en Ajustes.",
     "help.onboarding.close": "Entendido",
     "help.sample.button": "Cargar un recorrido de ejemplo",
     "help.sample.hint":

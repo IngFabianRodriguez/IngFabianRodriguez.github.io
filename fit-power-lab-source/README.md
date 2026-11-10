@@ -6,16 +6,19 @@ Everything runs in your browser. There is no server and no account.
 
 ## Privacy
 
-| What                                                 | Where it goes                                                                                                                                    |
-| ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Your `.fit` files, weights and results               | Nowhere. They are read and analysed on your computer.                                                                                            |
-| Preferences (language, units, theme, model settings) | Saved in your browser (`localStorage`).                                                                                                          |
-| Map background                                       | The browser asks a tile server for map tiles, and each request reveals the area you are looking at. This is the only network traffic of the app. |
+| What                                                 | Where it goes                                                                                                                                                                                      |
+| ---------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Your `.fit` files, weights and results               | Nowhere. They are read and analysed on your computer.                                                                                                                                              |
+| Preferences (language, units, theme, model settings) | Saved in your browser (`localStorage`).                                                                                                                                                            |
+| Map background                                       | The browser asks a tile server for map tiles, and each request reveals the area you are looking at.                                                                                                |
+| Terrain relief of the 3D video                       | Only when you make the 3D video: the browser asks a terrain server for elevation tiles of the area flown over, and each request reveals that area. You can choose the server or ask for no relief. |
+| Anything else                                        | Nothing. The map and terrain tiles are the only network traffic of the app.                                                                                                                        |
 
 You decide what the map does, in **Settings > Map privacy**:
 
 - OpenStreetMap (the default), your own tile server, or no background at all (nothing is requested);
-- hide the first and the last meters of the route, so the place you start from is not drawn.
+- hide the first and the last meters of the route, so the place you start from is not drawn;
+- for the 3D video, use the public terrain tiles (AWS Open Data), your own terrain server (Terrarium elevation tiles) or no relief at all (nothing is requested).
 
 The device itself is only ever read. The app never writes to it.
 
@@ -89,12 +92,14 @@ Keyboard shortcuts: `1` to `7` go to the sections in this order, `u` switches th
 ### Files in and out
 
 - **In:** `.fit` (the bike computer's own files), `.gpx` and `.tcx`. Several files can be chosen or dropped on the page at once, and the last few rides are kept in this browser between visits.
-- **Out:** a new `.fit` with the estimated power in every record (with a flag that marks the power as estimated, on by default, so that opening the file again never takes the estimate for a power meter reading; optionally also the session and lap power summary and a new file identity so that services do not take it for a duplicate of the original), and CSV, GPX, TCX and JSON. The charts download as PNG or SVG, and the ride can be printed as a report (save it as PDF from the print dialog) or shared as a summary card image.
+- **Out:** a new `.fit` with the estimated power in every record (with a flag that marks the power as estimated, on by default, so that opening the file again never takes the estimate for a power meter reading; optionally also the session and lap power summary and a new file identity so that services do not take it for a duplicate of the original), and CSV, GPX, TCX and JSON. The charts download as PNG or SVG, and the ride can be printed as a report (save it as PDF from the print dialog) or shared as a summary card image (with the route on its map) or as a one-minute video of the whole route (see below).
+- **The summary card** puts the route on the map tiles of the server chosen in **Settings > Map privacy**; with no background, or when the tiles cannot be loaded, it shows the route alone. The hidden first and last meters are not drawn and do not choose the area asked for, but the tiles that cover what is shown can still include the start: use a larger distance, or no background, to keep it private.
+- **The 3D video** is a one-minute flight over the whole route, whatever its length: the rider is a dot in the middle, the map goes by under it with the relief of the terrain, and the speed, power, cadence, heart rate, grade, altitude, distance and time are written on top. **Download 3D video** gives a vertical MP4 (1080 x 1920, for phones); the menu next to it gives a horizontal one (1920 x 1080, for screens). It is made on this computer, faster than real time, with the browser's own H.264 encoder (it needs WebGL 2 and WebCodecs with H.264 encoding; it was tested in Chrome, and in a browser that lacks them the button says so and is switched off), and **Cancel video** stops it without a download. It asks for the map tiles and for the terrain tiles along the route (up to about 240 and 60 tiles: a long route uses a less detailed zoom), from the servers chosen in **Settings > Map privacy**; the hidden first and last meters are not drawn and do not choose the area asked for, but the tiles are asked for in blocks around what is shown, so a short hidden distance can still include the area of the start (use a larger distance, or no relief and no background, to keep it private). The relief is exaggerated a little so that it can be seen; the readings come from the ride, and the power is the estimate.
 - A file that was exported by this app and opened again is recognised: its estimated power is never taken for a power meter reading, and exporting it again replaces the estimate.
 
 ### Offline and install
 
-In the production build (`npm run build`, then `npm run preview`) the app registers a service worker. After one visit it opens without a connection, and it can be installed as an app. The map tiles you have already seen are kept for offline use; the **Settings** section shows what is saved and clears it. Anyone with access to the browser profile could infer the areas ridden from those tiles, so clear them before sharing a device.
+In the production build (`npm run build`, then `npm run preview`) the app registers a service worker. After one visit it opens without a connection, and it can be installed as an app. The map tiles (and the terrain tiles of the 3D video) you have already seen are kept for offline use, up to 1500 tiles in all; the **Settings** section shows what is saved and clears it. Anyone with access to the browser profile could infer the areas ridden from those tiles, so clear them before sharing a device.
 
 ## Desktop version (Tauri)
 
@@ -117,7 +122,7 @@ A copy runs at <https://ingfabianrodriguez.github.io/fit-power-lab/>. The source
 
 ## Stack
 
-React 18, Vite 5, TypeScript (strict), Tailwind CSS 4, shadcn/ui, Recharts, Leaflet, `@garmin/fitsdk`, Vitest with Testing Library and vitest-axe, and Playwright with axe-core.
+React 18, Vite 5, TypeScript (strict), Tailwind CSS 4, shadcn/ui, Recharts, Leaflet, `@garmin/fitsdk`, `mp4-muxer` (loaded only when a video is made), Vitest with Testing Library and vitest-axe, and Playwright with axe-core.
 
 ## License
 

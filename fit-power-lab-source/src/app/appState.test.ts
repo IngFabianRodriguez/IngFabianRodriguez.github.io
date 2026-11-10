@@ -100,6 +100,22 @@ describe("appReducer", () => {
     expect(s.mapPrivacy).toEqual({ mode: "none", customUrl: "", hideEndsM: 300 });
   });
 
+  it("asks for the public terrain relief until the user chooses otherwise, and merges changes", () => {
+    expect(initialAppState().terrainPrivacy).toEqual({ mode: "public", customUrl: "" });
+
+    let s = appReducer(initialAppState(), { type: "setTerrainPrivacy", patch: { mode: "custom" } });
+    s = appReducer(s, {
+      type: "setTerrainPrivacy",
+      patch: { customUrl: "https://t.example/{z}/{x}/{y}.png" },
+    });
+
+    expect(s.terrainPrivacy).toEqual({
+      mode: "custom",
+      customUrl: "https://t.example/{z}/{x}/{y}.png",
+    });
+    expect(s.mapPrivacy).toEqual(initialAppState().mapPrivacy);
+  });
+
   it("stores the preferences and the shared view state", () => {
     let s = appReducer(initialAppState(), { type: "setUnits", units: "imperial" });
     s = appReducer(s, { type: "setLocale", locale: "es" });

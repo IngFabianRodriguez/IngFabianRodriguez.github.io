@@ -5,14 +5,16 @@ import { useI18n } from "@/app/I18nContext";
 import { Button } from "@/components/ui/button";
 import type { Analysis } from "@/domain/analysis";
 import { canvasToBytes, safeFileName } from "@/features/share/imageExport";
+import { loadTileImage } from "@/features/share/mapScene";
 import {
   buildCardModel,
-  cardRoute,
+  buildCardScene,
   CARD_HEIGHT,
   CARD_WIDTH,
   drawSummaryCard,
 } from "@/features/share/summaryCard";
 import { downloadFile } from "@/lib/download";
+import { tileConfig } from "@/lib/tiles";
 
 interface ShareCardButtonProps {
   analysis: Pick<Analysis, "ride" | "watts">;
@@ -20,9 +22,11 @@ interface ShareCardButtonProps {
 }
 
 /**
- * Draws a summary card of the ride (title, date, distance, time, average power and a small map of
- * the route) on a canvas and downloads it as a PNG, ready to share. Nothing is uploaded. The
- * meters hidden by the map privacy settings are left out of the route.
+ * Draws a summary card of the ride (title, date, distance, time, average power and the route on its
+ * map) on a canvas and downloads it as a PNG, ready to share. Nothing is uploaded; the only request
+ * is for the map tiles, from the server chosen in the map privacy settings, and none is made when
+ * the map has no background. The meters hidden by those settings are not drawn and do not choose the
+ * area asked for, but the tiles that cover what is shown can still include the start.
  */
 export function ShareCardButton({ analysis, fileName }: ShareCardButtonProps) {
   const { t, locale } = useI18n();
@@ -40,7 +44,12 @@ export function ShareCardButton({ analysis, fileName }: ShareCardButtonProps) {
 
       const hideEndsM = mapPrivacy.hideEndsM;
       const model = buildCardModel(analysis, fileName, { units, locale, t, hideEndsM });
-      drawSummaryCard(ctx, model, cardRoute(analysis, hideEndsM));
+      const map = await buildCardScene(analysis, {
+        hideEndsM,
+        tiles: tileConfig(mapPrivacy),
+        loadTile: loadTileImage,
+      });
+      drawSummaryCard(ctx, model, map);
       downloadFile(await canvasToBytes(canvas), `${safeFileName(model.title)}-card.png`);
     } catch {
       setFailed(true);

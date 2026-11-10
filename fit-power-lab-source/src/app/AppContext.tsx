@@ -15,6 +15,7 @@ import {
   type AppState,
   type KmRange,
   type MapPrivacy,
+  type TerrainPrivacy,
   type LoadedRide,
   type Theme,
   type XAxis,
@@ -74,8 +75,17 @@ export function AppProvider({ children, initial }: AppProviderProps) {
       theme: state.theme,
       model: state.model,
       mapPrivacy: state.mapPrivacy,
+      terrainPrivacy: state.terrainPrivacy,
     });
-  }, [persist, state.units, state.locale, state.theme, state.model, state.mapPrivacy]);
+  }, [
+    persist,
+    state.units,
+    state.locale,
+    state.theme,
+    state.model,
+    state.mapPrivacy,
+    state.terrainPrivacy,
+  ]);
 
   const value = useMemo(() => ({ state, dispatch }), [state]);
   return (
@@ -125,6 +135,7 @@ export interface AppActions {
   setMapVariable(variable: SeriesKey): void;
   setXAxis(axis: XAxis): void;
   setMapPrivacy(patch: Partial<MapPrivacy>): void;
+  setTerrainPrivacy(patch: Partial<TerrainPrivacy>): void;
 }
 
 let counter = 0;
@@ -157,6 +168,7 @@ export function useAppActions(): AppActions {
       setMapVariable: (variable) => dispatch({ type: "setMapVariable", variable }),
       setXAxis: (axis) => dispatch({ type: "setXAxis", axis }),
       setMapPrivacy: (patch) => dispatch({ type: "setMapPrivacy", patch }),
+      setTerrainPrivacy: (patch) => dispatch({ type: "setTerrainPrivacy", patch }),
     }),
     [dispatch],
   );

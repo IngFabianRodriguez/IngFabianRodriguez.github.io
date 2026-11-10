@@ -1,4 +1,4 @@
-import type { MapPrivacy } from "@/app/appState";
+import type { MapPrivacy, TerrainPrivacy } from "@/app/appState";
 
 export interface TileConfig {
   /** Tile URL template with {z}, {x} and {y}, or null when the map has no background. */
@@ -24,4 +24,27 @@ export function tileConfig(privacy: MapPrivacy): TileConfig {
     return { url: privacy.customUrl, attribution: "", maxZoom: 19 };
   }
   return { url: null, attribution: "", maxZoom: 19 };
+}
+
+const TERRAIN_URL = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png";
+const TERRAIN_ATTRIBUTION = "Terrain: Mapzen, AWS Open Data";
+
+/** Elevation tiles in the Terrarium encoding, and the most detailed zoom the public ones have. */
+export interface TerrainConfig {
+  /** Tile URL template with {z}, {x} and {y}, or null when the video has no relief. */
+  url: string | null;
+  /** Plain text to credit the terrain data; empty when there is nothing to credit. */
+  attribution: string;
+  maxZoom: number;
+}
+
+/** Where the relief of the 3D video comes from, according to the user's privacy choice. */
+export function terrainConfig(privacy: TerrainPrivacy): TerrainConfig {
+  if (privacy.mode === "public") {
+    return { url: TERRAIN_URL, attribution: TERRAIN_ATTRIBUTION, maxZoom: 15 };
+  }
+  if (privacy.mode === "custom" && isTemplate(privacy.customUrl)) {
+    return { url: privacy.customUrl, attribution: "", maxZoom: 15 };
+  }
+  return { url: null, attribution: "", maxZoom: 15 };
 }

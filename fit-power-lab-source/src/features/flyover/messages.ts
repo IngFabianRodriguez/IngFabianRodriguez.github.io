@@ -1,0 +1,56 @@
+import type { Messages } from "@/app/i18n";
+
+export const messages: Messages = {
+  en: {
+    "flyover.hud.speed": "Speed",
+    "flyover.hud.power": "Power (est.)",
+    "flyover.hud.cadence": "Cadence",
+    "flyover.hud.heartRate": "Heart rate",
+    "flyover.hud.grade": "Grade",
+    "flyover.hud.altitude": "Altitude",
+    "flyover.hud.distance": "Distance",
+    "flyover.hud.time": "Time",
+    "flyover.hud.cadenceUnit": "rpm",
+    "flyover.hud.heartRateUnit": "bpm",
+    "flyover.button": "Download 3D video (MP4, vertical)",
+    "flyover.more": "More video formats",
+    "flyover.horizontal": "Horizontal MP4, for screens",
+    "flyover.cancel": "Cancel video",
+    "flyover.stage.tiles": "Loading the map and the terrain… {percent}%",
+    "flyover.stage.video": "Making the video… {percent}%",
+    "flyover.progress": "Video progress",
+    "flyover.hint":
+      "A one-minute 3D flight over your route with your numbers on top. It is made on this computer and takes about a minute. Only the map and terrain tiles are asked of their servers.",
+    "flyover.failed": "The video could not be created.",
+    "flyover.noRoute": "This ride has no GPS positions to fly over.",
+    "flyover.unsupported.webgl": "This browser cannot draw 3D maps (WebGL 2 is not available).",
+    "flyover.unsupported.encoder":
+      "This browser cannot encode H.264 video, so it cannot make the video.",
+  },
+  es: {
+    "flyover.hud.speed": "Velocidad",
+    "flyover.hud.power": "Potencia (est.)",
+    "flyover.hud.cadence": "Cadencia",
+    "flyover.hud.heartRate": "Frec. cardíaca",
+    "flyover.hud.grade": "Pendiente",
+    "flyover.hud.altitude": "Altitud",
+    "flyover.hud.distance": "Distancia",
+    "flyover.hud.time": "Tiempo",
+    "flyover.hud.cadenceUnit": "rpm",
+    "flyover.hud.heartRateUnit": "lpm",
+    "flyover.button": "Descargar video 3D (MP4, vertical)",
+    "flyover.more": "Más formatos de video",
+    "flyover.horizontal": "MP4 horizontal, para pantallas",
+    "flyover.cancel": "Cancelar video",
+    "flyover.stage.tiles": "Cargando el mapa y el terreno… {percent} %",
+    "flyover.stage.video": "Haciendo el video… {percent} %",
+    "flyover.progress": "Progreso del video",
+    "flyover.hint":
+      "Un vuelo 3D de un minuto sobre su ruta, con sus cifras encima. Se hace en este equipo y tarda alrededor de un minuto. Solo se piden a sus servidores las teselas del mapa y del terreno.",
+    "flyover.failed": "No se pudo crear el video.",
+    "flyover.noRoute": "Esta salida no tiene posiciones GPS para sobrevolar.",
+    "flyover.unsupported.webgl": "Este navegador no puede dibujar mapas 3D (no tiene WebGL 2).",
+    "flyover.unsupported.encoder":
+      "Este navegador no puede codificar video H.264, así que no puede hacer el video.",
+  },
+};

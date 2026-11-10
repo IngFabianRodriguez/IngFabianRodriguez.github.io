@@ -50,6 +50,53 @@ describe("settingsStorage", () => {
     expect(loadSettings()).toEqual({ mapPrivacy: { mode: "osm", customUrl: "", hideEndsM: 120 } });
   });
 
+  it("returns the terrain privacy that was saved", () => {
+    const base = {
+      units: "metric" as const,
+      locale: "en" as const,
+      theme: "system" as const,
+      model: DEFAULT_MODEL_SETTINGS,
+      mapPrivacy: { mode: "osm" as const, customUrl: "", hideEndsM: 0 },
+    };
+    const terrainPrivacy = {
+      mode: "custom" as const,
+      customUrl: "https://t.example/{z}/{x}/{y}.png",
+    };
+
+    saveSettings({ ...base, terrainPrivacy });
+
+    expect(loadSettings().terrainPrivacy).toEqual(terrainPrivacy);
+  });
+
+  it("has no terrain privacy for settings saved before it existed", () => {
+    localStorage.setItem(
+      "fit-power-web.settings",
+      JSON.stringify({
+        units: "imperial",
+        mapPrivacy: { mode: "none", customUrl: "", hideEndsM: 0 },
+      }),
+    );
+
+    expect(loadSettings()).toEqual({
+      units: "imperial",
+      mapPrivacy: { mode: "none", customUrl: "", hideEndsM: 0 },
+    });
+  });
+
+  it("keeps only valid terrain privacy fields", () => {
+    localStorage.setItem(
+      "fit-power-web.settings",
+      JSON.stringify({ terrainPrivacy: { mode: "satellite", customUrl: 5 } }),
+    );
+    expect(loadSettings()).toEqual({});
+
+    localStorage.setItem(
+      "fit-power-web.settings",
+      JSON.stringify({ terrainPrivacy: { mode: "none", customUrl: 5 } }),
+    );
+    expect(loadSettings()).toEqual({ terrainPrivacy: { mode: "none", customUrl: "" } });
+  });
+
   it("survives corrupted storage", () => {
     localStorage.setItem("fit-power-web.settings", "{not json");
     expect(loadSettings()).toEqual({});

@@ -48,7 +48,13 @@ export const test = base.extend<Options & Fixtures>({
     // Every request that is not for the preview server is answered here with a blank tile.
     await context.route(
       (url) => url.hostname !== "127.0.0.1",
-      (route) => route.fulfill({ contentType: "image/png", body: BLANK_TILE }),
+      (route) =>
+        // The CORS header lets the summary card and the video read the pixels of the tile.
+        route.fulfill({
+          contentType: "image/png",
+          body: BLANK_TILE,
+          headers: { "access-control-allow-origin": "*" },
+        }),
     );
     await provide(context);
   },
