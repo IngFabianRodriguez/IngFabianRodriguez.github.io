@@ -1,1 +1,0 @@
-import{r as a}from"./index-CQwVga4D.js";import{av as t,aw as o}from"./chart-CN6UhQPL.js";var i=["axis"],s=a.forwardRef((r,e)=>a.createElement(t,{chartName:"LineChart",defaultTooltipEventType:"axis",validateTooltipEventTypes:i,tooltipPayloadSearcher:o,categoricalChartProps:r,ref:e}));export{s as L};
