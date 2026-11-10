@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   chaseCamera,
   clearPitch,
+  lerpCameraParams,
   lookAt,
   multiply,
+  overviewCamera,
   perspective,
   projectPoint,
   shiftView,
@@ -201,5 +203,118 @@ describe("smoothPitches", () => {
 
   it("leaves a steady pitch as it is", () => {
     for (const value of smoothPitches([0.5, 0.5, 0.5, 0.5], 2)) expect(value).toBeCloseTo(0.5, 9);
+  });
+});
+
+describe("lerpCameraParams", () => {
+  const a = {
+    target: { x: 0, y: 100, z: 0 },
+    bearingRad: 0,
+    distanceM: 20_000,
+    pitchRad: 55 * DEG,
+  };
+  const b = {
+    target: { x: 1000, y: 300, z: -2000 },
+    bearingRad: 90 * DEG,
+    distanceM: 1_250,
+    pitchRad: 30 * DEG,
+  };
+
+  it("is the first camera at 0 and the second at 1", () => {
+    expect(lerpCameraParams(a, b, 0)).toEqual(a);
+    const end = lerpCameraParams(a, b, 1);
+    expect(end.target).toEqual(b.target);
+    expect(end.bearingRad).toBeCloseTo(b.bearingRad, 9);
+    expect(end.distanceM).toBeCloseTo(b.distanceM, 6);
+    expect(end.pitchRad).toBeCloseTo(b.pitchRad, 9);
+  });
+
+  it("zooms by proportion, not by distance: half way is the geometric mean", () => {
+    const middle = lerpCameraParams(a, b, 0.5);
+
+    expect(middle.distanceM).toBeCloseTo(Math.sqrt(20_000 * 1_250), 4);
+    expect(middle.target).toEqual({ x: 500, y: 200, z: -1000 });
+    expect(middle.pitchRad).toBeCloseTo(42.5 * DEG, 9);
+  });
+
+  it("turns the short way round the circle", () => {
+    const left = { ...a, bearingRad: 350 * DEG };
+    const right = { ...a, bearingRad: 10 * DEG };
+
+    const middle = lerpCameraParams(left, right, 0.5);
+
+    expect(
+      Math.abs(Math.atan2(Math.sin(middle.bearingRad), Math.cos(middle.bearingRad))),
+    ).toBeLessThan(1e-9);
+  });
+});
+
+describe("overviewCamera", () => {
+  const options = {
+    aspect: 9 / 16,
+    fovRad: 55 * DEG,
+    pitchRad: 55 * DEG,
+    minDistanceM: 1_500,
+    usableHeight: 0.6,
+    margin: 1.25,
+  };
+
+  it("is centred on the middle of the route", () => {
+    const view = overviewCamera({ minE: 1000, maxE: 3000, minN: -500, maxN: 5500 }, options);
+
+    expect(view.center).toEqual({ e: 2000, n: 2500 });
+  });
+
+  it("puts the long side of the route along the height of the picture", () => {
+    const tall = overviewCamera({ minE: 0, maxE: 2000, minN: 0, maxN: 9000 }, options);
+    const wide = overviewCamera({ minE: 0, maxE: 9000, minN: 0, maxN: 2000 }, options);
+
+    expect(tall.bearingRad).toBe(0);
+    expect(wide.bearingRad).toBeCloseTo(90 * DEG, 9);
+    // The same route turned, so the same distance.
+    expect(wide.distanceM).toBeCloseTo(tall.distanceM, 6);
+  });
+
+  it("goes further for a bigger route, and has room around a small one", () => {
+    const small = overviewCamera({ minE: 0, maxE: 500, minN: 0, maxN: 500 }, options);
+    const medium = overviewCamera({ minE: 0, maxE: 5000, minN: 0, maxN: 8000 }, options);
+    const big = overviewCamera({ minE: 0, maxE: 20_000, minN: 0, maxN: 40_000 }, options);
+
+    expect(small.distanceM).toBe(1_500);
+    expect(medium.distanceM).toBeGreaterThan(small.distanceM);
+    expect(big.distanceM).toBeGreaterThan(medium.distanceM);
+    expect(big.distanceM / medium.distanceM).toBeCloseTo(5, 0);
+  });
+
+  it("fits the whole route in the picture, in both directions", () => {
+    const route = { minE: 0, maxE: 6000, minN: 0, maxN: 14_000 };
+    const view = overviewCamera(route, options);
+    const camera = chaseCamera({
+      target: { x: view.center.e, y: 0, z: -view.center.n },
+      bearingRad: view.bearingRad,
+      distanceM: view.distanceM,
+      pitchRad: options.pitchRad,
+      minHeightM: -Infinity,
+    });
+    const vp = multiply(
+      shiftView(1 - 2 * 0.62),
+      multiply(
+        perspective(options.fovRad, options.aspect, 100, 500_000),
+        lookAt(camera.eye, camera.target),
+      ),
+    );
+
+    for (const [e, n] of [
+      [0, 0],
+      [6000, 0],
+      [0, 14_000],
+      [6000, 14_000],
+    ] as const) {
+      const p = projectPoint(vp, { x: e, y: 0, z: -n });
+      expect(Math.abs(p.x)).toBeLessThan(1);
+      // Below the strip with the numbers, above the footer.
+      expect(p.y).toBeGreaterThan(-0.9);
+      expect(p.y).toBeLessThan(0.45);
+    }
   });
 });

@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { LatLon } from "@/domain/route";
 import {
+  centeredOrigin,
   keyOf,
+  overviewZoom,
   PATCH_TILES,
   patchOrigin,
   patchTiles,
@@ -140,5 +142,37 @@ describe("planTerrain", () => {
 
     expect(long.zoom).toBeLessThan(short.zoom);
     expect(long.tiles.length).toBeLessThanOrEqual(40);
+  });
+});
+
+describe("overviewZoom", () => {
+  it("is the most detailed zoom at which the whole route fits in three tiles", () => {
+    for (const sideM of [800, 6000, 40_000, 300_000]) {
+      const zoom = overviewZoom(sideM, 45, { maxZoom: 15, minZoom: 5 });
+
+      expect(sideM).toBeLessThanOrEqual(3 * groundMetersPerTile(45, zoom));
+      if (zoom < 15) expect(sideM).toBeGreaterThan(3 * groundMetersPerTile(45, zoom + 1));
+    }
+  });
+
+  it("uses the least detailed zoom allowed for a route bigger than any tile can hold", () => {
+    expect(overviewZoom(10_000_000, 45, { maxZoom: 15, minZoom: 5 })).toBe(5);
+  });
+
+  it("does not go more detailed than the server has", () => {
+    expect(overviewZoom(50, 45, { maxZoom: 13, minZoom: 5 })).toBe(13);
+  });
+});
+
+describe("centeredOrigin", () => {
+  it("gives the block that has the position near its middle", () => {
+    const [tx, ty] = tileCoords(45.123, 7.456, 12);
+    const origin = centeredOrigin(45.123, 7.456, 12);
+
+    expect(tx - origin.x).toBeGreaterThan(2.4);
+    expect(tx - origin.x).toBeLessThan(3.6);
+    expect(ty - origin.y).toBeGreaterThan(2.4);
+    expect(ty - origin.y).toBeLessThan(3.6);
+    expect(patchTiles(origin, 12)).toHaveLength(36);
   });
 });

@@ -2,13 +2,13 @@ import { describe, expect, it, vi } from "vitest";
 import { createTranslator } from "@/app/i18n";
 import { MESSAGES } from "@/app/messages";
 import {
-  FLYOVER_BITRATE,
   makeFlyoverVideo,
   NoRouteError,
   type MakeVideoDeps,
   type MakeVideoOptions,
 } from "@/features/flyover/makeFlyoverVideo";
 import type { FlyoverSession } from "@/features/flyover/flyoverSession";
+import { flyoverBitrate } from "@/features/flyover/format";
 import { flyoverSupport } from "@/features/flyover/support";
 import { canvasRecorder } from "@/test/canvasRecorder";
 import { rideOf } from "@/test/rideOf";
@@ -22,10 +22,12 @@ function fakeSession(over: Partial<FlyoverSession> = {}): FlyoverSession {
     renderFrame: vi.fn(),
     dispose: vi.fn(),
     info: {
-      imageryZoom: 15,
+      imageryZoom: 14,
+      overviewImageryZoom: 12,
       imageryRequested: 10,
       imageryLoaded: 10,
       terrainZoom: 13,
+      overviewTerrainZoom: 11,
       terrainRequested: 4,
       terrainLoaded: 4,
     },
@@ -61,6 +63,7 @@ function options(over: Partial<MakeVideoOptions> = {}): MakeVideoOptions {
     ride: rideOf([]),
     watts: [],
     orientation: "vertical",
+    minutes: 1,
     units: "metric",
     t: createTranslator(MESSAGES, "en"),
     title: "Morning ride",
@@ -100,11 +103,26 @@ describe("makeFlyoverVideo", () => {
         size: { width: 1080, height: 1920 },
         fps: 30,
         frames: 1800,
-        bitrate: FLYOVER_BITRATE,
+        bitrate: flyoverBitrate(1),
       }),
     );
-    expect(FLYOVER_BITRATE).toBe(4_000_000);
     expect(session.renderFrame).toHaveBeenCalledWith(7, expect.anything());
+  });
+
+  it("makes a video of the minutes asked for, at a bitrate that keeps the file in reach", async () => {
+    for (const [minutes, frames, bitrate] of [
+      [1, 1800, 4_000_000],
+      [2, 3600, 4_000_000],
+      [3, 5400, 3_000_000],
+      [5, 9000, 3_000_000],
+    ] as const) {
+      const { deps, createSession, encode } = setup();
+
+      await makeFlyoverVideo(options({ minutes }), deps);
+
+      expect(createSession).toHaveBeenCalledWith(expect.objectContaining({ frames }));
+      expect(encode).toHaveBeenCalledWith(expect.objectContaining({ bitrate }));
+    }
   });
 
   it("reports the loading of the tiles and then the making of the video", async () => {

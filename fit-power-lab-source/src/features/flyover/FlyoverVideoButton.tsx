@@ -1,22 +1,21 @@
-import { ChevronDownIcon, VideoIcon } from "lucide-react";
+import { VideoIcon } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import { useAppState } from "@/app/AppContext";
 import { useI18n } from "@/app/I18nContext";
-import { Button, buttonVariants } from "@/components/ui/button";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import type { Analysis } from "@/domain/analysis";
 import {
   Mp4EncodingUnsupportedError,
   NoRouteError,
   WebGlUnavailableError,
 } from "@/features/flyover/errors";
-import type { Orientation } from "@/features/flyover/hud";
+import {
+  DEFAULT_FLYOVER_MINUTES,
+  FLYOVER_DURATIONS,
+  type FlyoverMinutes,
+} from "@/features/flyover/format";
 import { flyoverSupport, type FlyoverSupport } from "@/features/flyover/support";
 import { safeFileName } from "@/features/share/imageExport";
 import { rideTitle } from "@/features/share/summary";
@@ -48,9 +47,10 @@ function problemOf(error: unknown): Problem | null {
 }
 
 /**
- * Makes a one-minute 3D flight over the whole route — the rider in the middle, the relief of the
- * terrain, the readings on top — and downloads it as an MP4: vertical for phones, horizontal from
- * the menu. It is made on this computer; the only requests are for the map and terrain tiles from
+ * Makes a 3D flight over the whole route — it opens from above the map, follows the rider in the
+ * middle over the relief of the terrain with the readings on top, and ends showing the whole
+ * route — and downloads it as a vertical MP4 for phones, of one, two, three or five minutes. It is
+ * made on this computer; the only requests are for the map and terrain tiles from
  * the servers chosen in Settings, and none for a kind of tile switched off there. The meters hidden
  * by the map privacy settings are not drawn and do not choose the area asked for, but the tiles are
  * asked for in blocks around what is shown, so a short hidden distance can still include the start.
@@ -62,6 +62,7 @@ export function FlyoverVideoButton({ analysis, fileName }: FlyoverVideoButtonPro
   const [support, setSupport] = useState<FlyoverSupport>("ok");
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
   const [problem, setProblem] = useState<Problem | null>(null);
+  const [minutes, setMinutes] = useState<FlyoverMinutes>(DEFAULT_FLYOVER_MINUTES);
   const running = useRef<AbortController | null>(null);
 
   useEffect(() => {
@@ -76,7 +77,7 @@ export function FlyoverVideoButton({ analysis, fileName }: FlyoverVideoButtonPro
   // Leaving the page cancels a video in progress.
   useEffect(() => () => running.current?.abort(), []);
 
-  async function start(orientation: Orientation) {
+  async function start() {
     const abort = new AbortController();
     running.current = abort;
     setProblem(null);
@@ -88,7 +89,8 @@ export function FlyoverVideoButton({ analysis, fileName }: FlyoverVideoButtonPro
       const video = await makeFlyoverVideo({
         ride: analysis.ride,
         watts: analysis.watts,
-        orientation,
+        orientation: "vertical",
+        minutes,
         units,
         t,
         title,
@@ -108,7 +110,7 @@ export function FlyoverVideoButton({ analysis, fileName }: FlyoverVideoButtonPro
           );
         },
       });
-      downloadFile(video, `${safeFileName(title)}-3d-${orientation}.mp4`);
+      downloadFile(video, `${safeFileName(title)}-3d-${minutes}min.mp4`);
     } catch (cause) {
       setProblem(problemOf(cause));
     } finally {
@@ -126,31 +128,35 @@ export function FlyoverVideoButton({ analysis, fileName }: FlyoverVideoButtonPro
   return (
     <div className="grid gap-2">
       <div className="flex flex-wrap items-center gap-2">
+        <ToggleGroup
+          type="single"
+          variant="outline"
+          size="sm"
+          spacing={0}
+          value={String(minutes)}
+          disabled={blocked}
+          onValueChange={(value) => {
+            // Clicking the length already chosen would leave none: it is kept.
+            const chosen = FLYOVER_DURATIONS.find((option) => String(option) === value);
+            if (chosen) setMinutes(chosen);
+          }}
+          aria-label={t("flyover.duration")}
+        >
+          {FLYOVER_DURATIONS.map((option) => (
+            <ToggleGroupItem key={option} value={String(option)}>
+              {t("flyover.duration.option", { minutes: option })}
+            </ToggleGroupItem>
+          ))}
+        </ToggleGroup>
         <Button
           variant="outline"
           disabled={blocked}
           aria-describedby={hintId}
-          onClick={() => void start("vertical")}
+          onClick={() => void start()}
         >
           <VideoIcon aria-hidden="true" />
           {t("flyover.button")}
         </Button>
-        <DropdownMenu>
-          {/* No `asChild`: the shadcn Button does not forward refs under React 18. */}
-          <DropdownMenuTrigger
-            disabled={blocked}
-            aria-label={t("flyover.more")}
-            className={buttonVariants({ variant: "outline", size: "icon" })}
-          >
-            <ChevronDownIcon aria-hidden="true" />
-          </DropdownMenuTrigger>
-          {/* Above the Leaflet map, whose panes and controls reach z-index 1000. */}
-          <DropdownMenuContent align="start" style={{ zIndex: 1100 }}>
-            <DropdownMenuItem onSelect={() => void start("horizontal")}>
-              {t("flyover.horizontal")}
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
         {working ? (
           <Button variant="ghost" onClick={() => running.current?.abort()}>
             {t("flyover.cancel")}

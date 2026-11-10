@@ -218,6 +218,45 @@ describe("buildFlight", () => {
   });
 });
 
+describe("the smoothing of the readings", () => {
+  it("covers the same seconds of the ride whatever the length of the video", () => {
+    const r = ride(600, () => ({}));
+    // Alternating 0 and 300 W every second: a window of about ten seconds averages to 150.
+    const watts = r.samples.map((_, i) => (i % 2 === 0 ? 0 : 300));
+    const spread = (frames: number) => {
+      const values = sampleValues(r, watts);
+      const flight = buildFlight(r, values, { frames, hideEndsM: 0 });
+      const power = flight
+        .slice(Math.round(frames * 0.1), Math.round(frames * 0.9))
+        .map((f) => f.metrics.power ?? NaN);
+      return Math.max(...power) - Math.min(...power);
+    };
+
+    // 601 frames: one frame a second. 3001 frames: five frames a second.
+    expect(spread(601)).toBeLessThan(30);
+    expect(spread(3001)).toBeLessThan(30);
+  });
+
+  it("does not average away a ride that goes by faster than the readings change", () => {
+    const r = ride(7200, (i) => ({ speed: i < 3600 ? 5 : 15 }));
+
+    const flight = buildFlight(
+      r,
+      sampleValues(
+        r,
+        r.samples.map(() => 100),
+      ),
+      {
+        frames: 60,
+        hideEndsM: 0,
+      },
+    );
+
+    expect(flight[5]?.metrics.speed).toBeCloseTo(18, 0);
+    expect(flight[55]?.metrics.speed).toBeCloseTo(54, 0);
+  });
+});
+
 describe("smoothValues", () => {
   it("averages around each value and ignores the missing ones", () => {
     expect(smoothValues([0, 10, undefined, 20, 30], 1)).toEqual([5, 5, 15, 25, 25]);

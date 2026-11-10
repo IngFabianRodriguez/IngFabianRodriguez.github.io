@@ -3,9 +3,6 @@ import { createTranslator } from "@/app/i18n";
 import { MESSAGES } from "@/app/messages";
 import {
   createFlyoverSession,
-  FLYOVER_FPS,
-  FLYOVER_FRAMES,
-  FLYOVER_SECONDS,
   WebGlUnavailableError,
   type SessionDeps,
   type SessionOptions,
@@ -95,14 +92,6 @@ function options(over: Partial<SessionOptions> = {}): SessionOptions {
   };
 }
 
-describe("the video", () => {
-  it("lasts one minute at thirty frames a second", () => {
-    expect(FLYOVER_SECONDS).toBe(60);
-    expect(FLYOVER_FPS).toBe(30);
-    expect(FLYOVER_FRAMES).toBe(1800);
-  });
-});
-
 describe("createFlyoverSession", () => {
   it("has a frame for each frame of the video, of the size of the orientation", async () => {
     const { deps } = fakes();
@@ -143,9 +132,10 @@ describe("createFlyoverSession", () => {
     const terrain = requested.filter((url) => url.startsWith("https://terrain.example.org/"));
     expect(map.length + terrain.length).toBe(requested.length);
     expect(map.length).toBeGreaterThan(0);
-    expect(map.length).toBeLessThanOrEqual(240);
+    // Up to 240 along the route, and the block of the view of the whole route.
+    expect(map.length).toBeLessThanOrEqual(240 + 36);
     expect(terrain.length).toBeGreaterThan(0);
-    expect(terrain.length).toBeLessThanOrEqual(60);
+    expect(terrain.length).toBeLessThanOrEqual(120);
     expect(session?.info).toMatchObject({
       imageryRequested: map.length,
       imageryLoaded: map.length,
@@ -275,10 +265,11 @@ describe("renderFrame", () => {
     const session = await createFlyoverSession(options({ deps }));
     const { ctx } = canvasRecorder();
 
-    session?.renderFrame(0, ctx);
-    session?.renderFrame(1, ctx);
+    // The first frames of the flight (6 of opening before them), then one at the end of it.
+    session?.renderFrame(6, ctx);
+    session?.renderFrame(7, ctx);
     const after = renderer.setGroundTexture.mock.calls.length;
-    session?.renderFrame(59, ctx);
+    session?.renderFrame(52, ctx);
 
     expect(after).toBe(1);
     expect(renderer.setGroundTexture.mock.calls.length).toBeGreaterThan(1);
@@ -295,5 +286,179 @@ describe("renderFrame", () => {
     expect(eye?.z).toBeGreaterThan(100);
     expect(eye?.y).toBeGreaterThan(100);
     expect(Math.abs(eye?.x ?? 99)).toBeLessThan(5);
+  });
+});
+
+/** Frames of the test video: 6 of opening, 47 of flight and 7 of closing. */
+const OPENING = 6;
+const LAST = 59;
+
+describe("the opening, the flight and the closing", () => {
+  const eyeHeights = async (frames: number[]) => {
+    const { deps, draws } = fakes();
+    const session = await createFlyoverSession(options({ deps }));
+    return frames.map((k) => {
+      session?.renderFrame(k, canvasRecorder().ctx);
+      return draws.at(-1)?.eye.y ?? NaN;
+    });
+  };
+
+  it("starts high above the whole route, comes down to the rider and goes back up at the end", async () => {
+    const [start, firstOfFlight, middle, lastOfFlight, end] = await eyeHeights([
+      0,
+      OPENING,
+      30,
+      OPENING + 46,
+      LAST,
+    ]);
+
+    expect(start).toBeGreaterThan(5000);
+    expect(firstOfFlight).toBeLessThan(1600);
+    expect(middle).toBeLessThan(1600);
+    expect(lastOfFlight).toBeLessThan(1600);
+    expect(end).toBeGreaterThan(5000);
+    expect(start ?? 0).toBeGreaterThan((firstOfFlight ?? 1) * 4);
+  });
+
+  it("comes down gradually through the opening and goes up gradually through the closing", async () => {
+    const down = await eyeHeights([0, 1, 2, 3, 4, 5, OPENING]);
+    const up = await eyeHeights([OPENING + 46, OPENING + 47, 55, 56, 57, 58, LAST]);
+
+    for (let i = 1; i < down.length; i++) expect(down[i]).toBeLessThan(down[i - 1] ?? 0);
+    for (let i = 1; i < up.length; i++) expect(up[i]).toBeGreaterThan(up[i - 1] ?? Infinity);
+  });
+
+  it("looks from a little higher and further than before while it follows the rider", async () => {
+    const { deps, draws } = fakes();
+    const session = await createFlyoverSession(options({ deps }));
+
+    session?.renderFrame(30, canvasRecorder().ctx);
+
+    const eye = draws[0]?.eye;
+    // North-bound: the camera is to the south and above, at about 1300 m in all.
+    expect(eye?.z).toBeGreaterThan(900);
+    expect(eye?.y).toBeGreaterThan(600);
+    const distance = Math.hypot(eye?.x ?? 0, eye?.y ?? 0, eye?.z ?? 0);
+    expect(distance).toBeGreaterThan(1200);
+    expect(distance).toBeLessThan(1500);
+  });
+
+  it("shows nothing of the route ridden at the start and all of it ridden at the end", async () => {
+    const { deps, draws } = fakes();
+    const session = await createFlyoverSession(options({ deps }));
+    const colorsOf = (k: number) => {
+      session?.renderFrame(k, canvasRecorder().ctx);
+      const colors = draws.at(-1)?.ribbon.colors ?? new Float32Array();
+      const vertices: number[][] = [];
+      for (let i = 0; i < colors.length; i += 4) vertices.push(Array.from(colors.slice(i, i + 4)));
+      return vertices;
+    };
+    const done = (c: number[]) => Math.abs((c[2] ?? 0) - 0.97) < 0.01;
+
+    const atStart = colorsOf(0);
+    const atEnd = colorsOf(LAST);
+
+    expect(atStart.length).toBeGreaterThan(0);
+    expect(atStart.filter(done).length / atStart.length).toBeLessThan(0.05);
+    expect(atEnd.length).toBeGreaterThan(0);
+    expect(atEnd.every(done)).toBe(true);
+  });
+
+  it("draws the whole route in the overview, much more of it than around the rider", async () => {
+    const { deps, draws } = fakes();
+    const session = await createFlyoverSession(options({ deps }));
+
+    session?.renderFrame(0, canvasRecorder().ctx);
+    session?.renderFrame(30, canvasRecorder().ctx);
+
+    expect(draws[0]?.ribbon.vertexCount).toBeGreaterThan((draws[1]?.ribbon.vertexCount ?? 0) * 1.5);
+  });
+
+  it("draws both pictures of the ground, one over the other, while it changes from one to the other", async () => {
+    const { deps, draws } = fakes();
+    const session = await createFlyoverSession(options({ deps }));
+
+    const draw = (k: number) => {
+      const before = draws.length;
+      const { ctx, calls } = canvasRecorder();
+      session?.renderFrame(k, ctx);
+      return { layers: draws.length - before, calls };
+    };
+
+    expect(draw(0).layers).toBe(1);
+    expect(draw(OPENING + 20).layers).toBe(1);
+    const mixing = draw(4);
+    expect(mixing.layers).toBe(2);
+    const alphas = mixing.calls.filter((c) => c[0] === "set globalAlpha").map((c) => Number(c[1]));
+    expect(alphas.some((a) => a > 0 && a < 1)).toBe(true);
+    expect(alphas.at(-1)).toBe(1);
+  });
+
+  it("puts each picture of the ground in the renderer only when it has to", async () => {
+    const { deps, renderer } = fakes();
+    const session = await createFlyoverSession(options({ deps }));
+    const { ctx } = canvasRecorder();
+
+    session?.renderFrame(0, ctx);
+    session?.renderFrame(1, ctx);
+    const afterOverview = renderer.setGroundTexture.mock.calls.length;
+    session?.renderFrame(OPENING + 5, ctx);
+    session?.renderFrame(OPENING + 6, ctx);
+    const afterChase = renderer.setGroundTexture.mock.calls.length;
+
+    expect(afterOverview).toBe(1);
+    expect(afterChase).toBe(2);
+    expect(renderer.setGroundTexture.mock.calls[0]?.[0]).not.toBe(
+      renderer.setGroundTexture.mock.calls[1]?.[0],
+    );
+  });
+
+  it("asks for the tiles of the view of the whole route at a lower zoom than the ones along it", async () => {
+    const { deps, requested } = fakes();
+
+    const session = await createFlyoverSession(options({ deps }));
+
+    const zooms = new Set(
+      requested
+        .filter((url) => url.startsWith("https://tiles.example.org/"))
+        .map((url) => Number(/\/(\d+)\/\d+\/\d+\.png$/.exec(url)?.[1])),
+    );
+    expect(session?.info.imageryZoom).toBe(14);
+    expect(session?.info.overviewImageryZoom).toBe(12);
+    expect(zooms).toEqual(new Set([12, 14]));
+  });
+
+  it("shows the progress of the whole video, not of the flight, on the bar of the overlay", async () => {
+    const { deps } = fakes();
+    const session = await createFlyoverSession(options({ deps }));
+    const barWidth = (k: number) => {
+      const { ctx, calls } = canvasRecorder();
+      session?.renderFrame(k, ctx);
+      return calls.filter((c) => c[0] === "fillRect" && c[4] === 10 && c[2] === 1910).at(-1)?.[3];
+    };
+
+    expect(barWidth(0)).toBe(0);
+    expect(barWidth(LAST)).toBe(1080);
+    expect(barWidth(30)).toBeCloseTo((1080 * 30) / 59, 3);
+  });
+
+  it("is only the flight when the video has too few frames for an opening and a closing", async () => {
+    const { deps, draws } = fakes();
+    const session = await createFlyoverSession(options({ deps, frames: 20 }));
+
+    session?.renderFrame(0, canvasRecorder().ctx);
+    session?.renderFrame(19, canvasRecorder().ctx);
+
+    expect(session?.frameCount).toBe(20);
+    expect(draws).toHaveLength(2);
+    for (const frame of draws) expect(frame.eye.y).toBeLessThan(1600);
+  });
+
+  it("makes a video of the length asked for", async () => {
+    const { deps } = fakes();
+
+    const session = await createFlyoverSession(options({ deps, frames: 9000 }));
+
+    expect(session?.frameCount).toBe(9000);
   });
 });

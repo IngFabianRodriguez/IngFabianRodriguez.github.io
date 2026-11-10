@@ -3,8 +3,8 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { axe } from "vitest-axe";
 import { FlyoverVideoButton } from "@/features/flyover/FlyoverVideoButton";
-import * as make from "@/features/flyover/makeFlyoverVideo";
 import { WebGlUnavailableError } from "@/features/flyover/flyoverSession";
+import * as make from "@/features/flyover/makeFlyoverVideo";
 import * as supportModule from "@/features/flyover/support";
 import { renderWithApp } from "@/test/renderWithApp";
 import { rideOf, type Point } from "@/test/rideOf";
@@ -45,6 +45,10 @@ const ride = rideOf(
   })),
 );
 const analysis = { ride, watts: Array<number>(101).fill(180) };
+const noGps = {
+  ride: rideOf(ride.samples.map((s) => ({ t: s.t, distance: s.distance, altitude: 0, speed: 1 }))),
+  watts: analysis.watts,
+};
 
 /** A video that the test finishes, fails or reports on when it decides to. */
 function controlled() {
@@ -69,24 +73,26 @@ function controlled() {
   };
 }
 
-const vertical = () => screen.getByRole("button", { name: "Download 3D video (MP4, vertical)" });
+const download = () => screen.getByRole("button", { name: "Download 3D video (MP4, vertical)" });
+const length = (minutes: number) => screen.getByRole("radio", { name: `${minutes} min` });
 
 describe("FlyoverVideoButton", () => {
-  it("makes the vertical video of the ride with the choices of the app, and downloads the MP4", async () => {
+  it("makes a vertical video of one minute by default, with the choices of the app, and downloads the MP4", async () => {
     const video = controlled();
     const user = userEvent.setup();
     renderWithApp(<FlyoverVideoButton analysis={analysis} fileName="Morning ride.fit" />, {
       mapPrivacy: { mode: "osm", customUrl: "", hideEndsM: 300 },
       units: "imperial",
     });
-    await waitFor(() => expect(vertical()).toBeEnabled());
+    await waitFor(() => expect(download()).toBeEnabled());
 
-    await user.click(vertical());
+    await user.click(download());
 
     await waitFor(() => expect(makeVideo).toHaveBeenCalledTimes(1));
     const options = makeVideo.mock.calls[0]?.[0];
     expect(options).toMatchObject({
       orientation: "vertical",
+      minutes: 1,
       units: "imperial",
       hideEndsM: 300,
       title: "Morning ride",
@@ -97,23 +103,46 @@ describe("FlyoverVideoButton", () => {
     video.finish();
 
     await waitFor(() => expect(downloads).toHaveLength(1));
-    expect(downloads[0]?.name).toBe("Morning-ride-3d-vertical.mp4");
+    expect(downloads[0]?.name).toBe("Morning-ride-3d-1min.mp4");
     expect([...(downloads[0]?.bytes ?? [])]).toEqual([...file]);
   });
 
-  it("makes the horizontal video from the menu of more formats", async () => {
+  it("offers one, two, three and five minutes, with one minute chosen", async () => {
+    renderWithApp(<FlyoverVideoButton analysis={analysis} fileName="r.fit" />);
+
+    expect(screen.getByRole("radiogroup", { name: "Video length" })).toBeInTheDocument();
+    expect(
+      screen.getAllByRole("radio").map((r) => r.getAttribute("aria-label") ?? r.textContent),
+    ).toEqual(["1 min", "2 min", "3 min", "5 min"]);
+    expect(length(1)).toBeChecked();
+    for (const minutes of [2, 3, 5]) expect(length(minutes)).not.toBeChecked();
+    expect(screen.queryByRole("button", { name: "More video formats" })).not.toBeInTheDocument();
+  });
+
+  it.each([2, 3, 5])("makes a video of %i minutes when that length is chosen", async (minutes) => {
     const video = controlled();
     const user = userEvent.setup();
     renderWithApp(<FlyoverVideoButton analysis={analysis} fileName="Morning ride.fit" />);
-    await waitFor(() => expect(vertical()).toBeEnabled());
+    await waitFor(() => expect(download()).toBeEnabled());
 
-    await user.click(screen.getByRole("button", { name: "More video formats" }));
-    await user.click(await screen.findByRole("menuitem", { name: "Horizontal MP4, for screens" }));
+    await user.click(length(minutes));
+    expect(length(minutes)).toBeChecked();
+    await user.click(download());
 
     await waitFor(() => expect(makeVideo).toHaveBeenCalledTimes(1));
-    expect(makeVideo.mock.calls[0]?.[0].orientation).toBe("horizontal");
+    expect(makeVideo.mock.calls[0]?.[0].minutes).toBe(minutes);
     video.finish();
-    await waitFor(() => expect(downloads[0]?.name).toBe("Morning-ride-3d-horizontal.mp4"));
+    await waitFor(() => expect(downloads[0]?.name).toBe(`Morning-ride-3d-${minutes}min.mp4`));
+  });
+
+  it("keeps a length chosen when it is clicked again, instead of leaving none", async () => {
+    const user = userEvent.setup();
+    renderWithApp(<FlyoverVideoButton analysis={analysis} fileName="r.fit" />);
+
+    await user.click(length(3));
+    await user.click(length(3));
+
+    expect(length(3)).toBeChecked();
   });
 
   it("asks for no map and no relief when the privacy settings say so", async () => {
@@ -123,9 +152,9 @@ describe("FlyoverVideoButton", () => {
       mapPrivacy: { mode: "none", customUrl: "", hideEndsM: 0 },
       terrainPrivacy: { mode: "none", customUrl: "" },
     });
-    await waitFor(() => expect(vertical()).toBeEnabled());
+    await waitFor(() => expect(download()).toBeEnabled());
 
-    await user.click(vertical());
+    await user.click(download());
 
     await waitFor(() => expect(makeVideo).toHaveBeenCalled());
     const options = makeVideo.mock.calls[0]?.[0];
@@ -137,9 +166,9 @@ describe("FlyoverVideoButton", () => {
     const video = controlled();
     const user = userEvent.setup();
     renderWithApp(<FlyoverVideoButton analysis={analysis} fileName="r.fit" />);
-    await waitFor(() => expect(vertical()).toBeEnabled());
+    await waitFor(() => expect(download()).toBeEnabled());
 
-    await user.click(vertical());
+    await user.click(download());
     await video.report("tiles", 0.4);
 
     expect(screen.getByRole("status")).toHaveTextContent("Loading the map and the terrain… 40%");
@@ -149,12 +178,13 @@ describe("FlyoverVideoButton", () => {
       "aria-valuenow",
       "70",
     );
-    expect(vertical()).toBeDisabled();
-    expect(screen.getByRole("button", { name: "More video formats" })).toBeDisabled();
+    expect(download()).toBeDisabled();
+    for (const minutes of [1, 2, 3, 5]) expect(length(minutes)).toBeDisabled();
     expect(screen.getByRole("button", { name: "Cancel video" })).toBeEnabled();
 
     video.finish();
-    await waitFor(() => expect(vertical()).toBeEnabled());
+    await waitFor(() => expect(download()).toBeEnabled());
+    expect(length(2)).toBeEnabled();
     expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
   });
 
@@ -162,13 +192,13 @@ describe("FlyoverVideoButton", () => {
     controlled();
     const user = userEvent.setup();
     renderWithApp(<FlyoverVideoButton analysis={analysis} fileName="r.fit" />);
-    await waitFor(() => expect(vertical()).toBeEnabled());
-    await user.click(vertical());
+    await waitFor(() => expect(download()).toBeEnabled());
+    await user.click(download());
     await waitFor(() => expect(makeVideo).toHaveBeenCalled());
 
     await user.click(screen.getByRole("button", { name: "Cancel video" }));
 
-    await waitFor(() => expect(vertical()).toBeEnabled());
+    await waitFor(() => expect(download()).toBeEnabled());
     expect(makeVideo.mock.calls[0]?.[0].signal?.aborted).toBe(true);
     expect(downloads).toHaveLength(0);
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
@@ -178,23 +208,23 @@ describe("FlyoverVideoButton", () => {
     const video = controlled();
     const user = userEvent.setup();
     renderWithApp(<FlyoverVideoButton analysis={analysis} fileName="r.fit" />);
-    await waitFor(() => expect(vertical()).toBeEnabled());
-    await user.click(vertical());
+    await waitFor(() => expect(download()).toBeEnabled());
+    await user.click(download());
     await waitFor(() => expect(makeVideo).toHaveBeenCalled());
 
     video.fail(new Error("encoder lost"));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("The video could not be created.");
     expect(downloads).toHaveLength(0);
-    expect(vertical()).toBeEnabled();
+    expect(download()).toBeEnabled();
   });
 
   it("says when the ride has no route to fly over", async () => {
     const video = controlled();
     const user = userEvent.setup();
-    renderWithApp(<FlyoverVideoButton analysis={analysis} fileName="r.fit" />);
-    await waitFor(() => expect(vertical()).toBeEnabled());
-    await user.click(vertical());
+    renderWithApp(<FlyoverVideoButton analysis={noGps} fileName="r.fit" />);
+    await waitFor(() => expect(download()).toBeEnabled());
+    await user.click(download());
     await waitFor(() => expect(makeVideo).toHaveBeenCalled());
 
     video.fail(new make.NoRouteError());
@@ -208,8 +238,8 @@ describe("FlyoverVideoButton", () => {
     const video = controlled();
     const user = userEvent.setup();
     renderWithApp(<FlyoverVideoButton analysis={analysis} fileName="r.fit" />);
-    await waitFor(() => expect(vertical()).toBeEnabled());
-    await user.click(vertical());
+    await waitFor(() => expect(download()).toBeEnabled());
+    await user.click(download());
     await waitFor(() => expect(makeVideo).toHaveBeenCalled());
 
     video.fail(new WebGlUnavailableError());
@@ -225,8 +255,8 @@ describe("FlyoverVideoButton", () => {
     renderWithApp(<FlyoverVideoButton analysis={analysis} fileName="r.fit" />);
 
     expect(await screen.findByText(message)).toBeInTheDocument();
-    expect(vertical()).toBeDisabled();
-    expect(screen.getByRole("button", { name: "More video formats" })).toBeDisabled();
+    expect(download()).toBeDisabled();
+    for (const minutes of [1, 2, 3, 5]) expect(length(minutes)).toBeDisabled();
   });
 
   it("explains what the video is and what it asks of the network", () => {
@@ -235,6 +265,7 @@ describe("FlyoverVideoButton", () => {
     expect(
       screen.getByText(/Only the map and terrain tiles are asked of their servers/),
     ).toBeVisible();
+    expect(screen.getByText(/opens from above the map/)).toBeVisible();
   });
 
   it("speaks Spanish when the app does", async () => {
@@ -243,6 +274,7 @@ describe("FlyoverVideoButton", () => {
     expect(
       await screen.findByRole("button", { name: "Descargar video 3D (MP4, vertical)" }),
     ).toBeInTheDocument();
+    expect(screen.getByRole("radiogroup", { name: "Duración del video" })).toBeInTheDocument();
   });
 
   it("has no automatically detectable violations, also while it works", async () => {
@@ -251,10 +283,10 @@ describe("FlyoverVideoButton", () => {
     const { container } = renderWithApp(
       <FlyoverVideoButton analysis={analysis} fileName="r.fit" />,
     );
-    await waitFor(() => expect(vertical()).toBeEnabled());
+    await waitFor(() => expect(download()).toBeEnabled());
     expect(await axe(container)).toHaveNoViolations();
 
-    await user.click(vertical());
+    await user.click(download());
     await video.report("video", 0.3);
 
     expect(await axe(container)).toHaveNoViolations();

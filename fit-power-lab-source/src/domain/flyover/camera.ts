@@ -172,3 +172,81 @@ export function smoothPitches(needed: number[], radius: number): number[] {
     return window.reduce((a, b) => a + b, 0) / window.length;
   });
 }
+
+export interface CameraParams {
+  target: Vec3;
+  bearingRad: number;
+  distanceM: number;
+  pitchRad: number;
+}
+
+const shortestTurn = (from: number, to: number) =>
+  Math.atan2(Math.sin(to - from), Math.cos(to - from));
+
+/**
+ * A camera between two others. The target and the pitch move in a straight line, the bearing turns
+ * the short way round, and the distance goes by proportion, so that coming down from far away
+ * feels like a steady zoom and not a rush at the end.
+ */
+export function lerpCameraParams(a: CameraParams, b: CameraParams, t: number): CameraParams {
+  return {
+    target: {
+      x: a.target.x + (b.target.x - a.target.x) * t,
+      y: a.target.y + (b.target.y - a.target.y) * t,
+      z: a.target.z + (b.target.z - a.target.z) * t,
+    },
+    bearingRad: a.bearingRad + shortestTurn(a.bearingRad, b.bearingRad) * t,
+    distanceM: a.distanceM * (b.distanceM / a.distanceM) ** t,
+    pitchRad: a.pitchRad + (b.pitchRad - a.pitchRad) * t,
+  };
+}
+
+export interface RouteExtents {
+  minE: number;
+  maxE: number;
+  minN: number;
+  maxN: number;
+}
+
+export interface OverviewOptions {
+  /** Width over height of the picture. */
+  aspect: number;
+  /** Vertical field of view. */
+  fovRad: number;
+  pitchRad: number;
+  /** The overview is never closer than this. */
+  minDistanceM: number;
+  /** The part of the height of the picture that is free for the map, under the overlay. */
+  usableHeight: number;
+  /** More than 1 leaves room around the route. */
+  margin: number;
+}
+
+/**
+ * Where to look from to see the whole route. The route is turned so that its longer side runs
+ * along the height of the picture, which is the longer side of a phone, and the camera goes as far
+ * as it needs for both sides to fit.
+ */
+export function overviewCamera(
+  extents: RouteExtents,
+  options: OverviewOptions,
+): { center: { e: number; n: number }; bearingRad: number; distanceM: number } {
+  const width = extents.maxE - extents.minE;
+  const height = extents.maxN - extents.minN;
+  const wide = width > height;
+  const across = wide ? height : width;
+  const along = wide ? width : height;
+
+  const tanV = Math.tan(options.fovRad / 2);
+  const tanH = tanV * options.aspect;
+  const fitAcross = (across * options.margin) / (2 * tanH);
+  // The ground seen along the height of the picture is stretched by how flat the camera looks.
+  const fitAlong =
+    (along * options.margin * Math.sin(options.pitchRad)) / (2 * tanV * options.usableHeight);
+
+  return {
+    center: { e: (extents.minE + extents.maxE) / 2, n: (extents.minN + extents.maxN) / 2 },
+    bearingRad: wide ? Math.PI / 2 : 0,
+    distanceM: Math.max(options.minDistanceM, fitAcross, fitAlong),
+  };
+}

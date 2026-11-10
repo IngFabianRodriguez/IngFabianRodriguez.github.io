@@ -1,5 +1,5 @@
 import type { LatLon } from "@/domain/route";
-import { tileCoords } from "@/domain/viz/mercator";
+import { groundMetersPerTile, tileCoords } from "@/domain/viz/mercator";
 
 /** Tiles on each side of the block of imagery that is put together around the rider. */
 export const PATCH_TILES = 6;
@@ -123,4 +123,25 @@ export function planTerrain(positions: LatLon[], range: TerrainRange): TilePlan 
     }
     return [...tiles.values()];
   });
+}
+
+/** The most detailed zoom at which a side of this many meters fits in three tiles of the block. */
+export function overviewZoom(
+  sideM: number,
+  lat: number,
+  range: { maxZoom: number; minZoom: number },
+): number {
+  for (let zoom = range.maxZoom; zoom > range.minZoom; zoom--) {
+    if (sideM <= 3 * groundMetersPerTile(lat, zoom)) return zoom;
+  }
+  return range.minZoom;
+}
+
+/**
+ * The block of imagery that has a position at its middle, for the view of the whole route. It is
+ * fixed, unlike the block that follows the rider, because the overview does not move.
+ */
+export function centeredOrigin(lat: number, lon: number, zoom: number): { x: number; y: number } {
+  const [tx, ty] = tileCoords(lat, lon, zoom);
+  return { x: Math.round(tx) - PATCH_TILES / 2, y: Math.round(ty) - PATCH_TILES / 2 };
 }

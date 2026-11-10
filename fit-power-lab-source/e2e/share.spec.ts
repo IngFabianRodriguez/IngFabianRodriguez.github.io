@@ -42,7 +42,9 @@ test.describe("sharing a ride", () => {
       page.getByText(/(Loading the map and the terrain|Making the video)… \d+%/),
     ).toBeVisible();
     await expect(button).toBeDisabled();
-    await expect(page.getByRole("button", { name: "More video formats" })).toBeDisabled();
+    for (const minutes of [1, 2, 3, 5]) {
+      await expect(page.getByRole("radio", { name: `${minutes} min` })).toBeDisabled();
+    }
 
     await page.getByRole("button", { name: "Cancel video" }).click();
 
@@ -80,36 +82,37 @@ test.describe("sharing a ride", () => {
 });
 
 test.describe("the 3D video file", () => {
-  // The whole video is made: a minute of video, vertical and then horizontal.
-  test.setTimeout(420_000);
+  // The whole videos are made: one minute and then two.
+  test.setTimeout(480_000);
 
-  test("is an MP4 of one minute, vertical by default and horizontal from the menu", async ({
+  test("is a vertical MP4 of the length chosen: one minute by default, two minutes when asked", async ({
     page,
   }) => {
     await page.goto("/");
     await enterWeights(page);
     await chooseRides(page, rideFile("morning-climb.fit"));
     await expect(page.getByText(/Average power while pedalling/)).toBeVisible();
+    await expect(page.getByRole("radio", { name: "1 min" })).toBeChecked();
 
-    const vertical = page.waitForEvent("download", { timeout: 200_000 });
+    const one = page.waitForEvent("download", { timeout: 240_000 });
     await page.getByRole("button", { name: "Download 3D video (MP4, vertical)" }).click();
-    const first = await vertical;
-    expect(first.suggestedFilename()).toBe("morning-climb-3d-vertical.mp4");
-    const verticalFile = mp4Facts(readFileSync(await first.path()));
-    expect(verticalFile.brand).toBe("isom");
-    expect(verticalFile.seconds).toBeCloseTo(60, 0);
-    expect(verticalFile.width).toBe(1080);
-    expect(verticalFile.height).toBe(1920);
+    const first = await one;
+    expect(first.suggestedFilename()).toBe("morning-climb-3d-1min.mp4");
+    const oneMinute = mp4Facts(readFileSync(await first.path()));
+    expect(oneMinute.brand).toBe("isom");
+    expect(oneMinute.seconds).toBeCloseTo(60, 0);
+    expect(oneMinute.width).toBe(1080);
+    expect(oneMinute.height).toBe(1920);
 
-    const horizontal = page.waitForEvent("download", { timeout: 200_000 });
-    await page.getByRole("button", { name: "More video formats" }).click();
-    await page.getByRole("menuitem", { name: "Horizontal MP4, for screens" }).click();
-    const second = await horizontal;
-    expect(second.suggestedFilename()).toBe("morning-climb-3d-horizontal.mp4");
-    const horizontalFile = mp4Facts(readFileSync(await second.path()));
-    expect(horizontalFile.seconds).toBeCloseTo(60, 0);
-    expect(horizontalFile.width).toBe(1920);
-    expect(horizontalFile.height).toBe(1080);
+    await page.getByRole("radio", { name: "2 min" }).click();
+    const two = page.waitForEvent("download", { timeout: 360_000 });
+    await page.getByRole("button", { name: "Download 3D video (MP4, vertical)" }).click();
+    const second = await two;
+    expect(second.suggestedFilename()).toBe("morning-climb-3d-2min.mp4");
+    const twoMinutes = mp4Facts(readFileSync(await second.path()));
+    expect(twoMinutes.seconds).toBeCloseTo(120, 0);
+    expect(twoMinutes.width).toBe(1080);
+    expect(twoMinutes.height).toBe(1920);
     await expect(page.getByRole("alert")).toHaveCount(0);
   });
 });

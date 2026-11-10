@@ -31,7 +31,9 @@ const LOOK_BEHIND_M = 60;
 const LOOK_AHEAD_M = 200;
 /** Frames on each side that are averaged: the camera turns slowly and the numbers can be read. */
 const BEARING_RADIUS_FRAMES = 20;
-const METRIC_RADIUS_FRAMES = 7;
+/** The readings are averaged over about this many seconds of the ride on each side. */
+const SMOOTHING_SECONDS = 5;
+const MAX_METRIC_RADIUS_FRAMES = 60;
 /** Less movement than this between the two points the camera looks at gives no direction. */
 const MIN_LOOK_M = 1;
 
@@ -174,13 +176,21 @@ export function buildFlight(ride: Ride, values: Values, options: FlightOptions):
     BEARING_RADIUS_FRAMES,
   );
 
+  // The window is a number of seconds of the ride, so it is more frames in a longer video of the
+  // same ride and fewer when the ride goes by fast.
+  const rideSeconds = (points[frames - 1]?.point.elapsedS ?? 0) - (points[0]?.point.elapsedS ?? 0);
+  const metricRadius = Math.min(
+    MAX_METRIC_RADIUS_FRAMES,
+    Math.max(1, Math.round((SMOOTHING_SECONDS * frames) / Math.max(1, rideSeconds))),
+  );
+
   const keys = Object.keys(values) as SeriesKey[];
   const smoothed = Object.fromEntries(
     keys.map((key) => [
       key,
       smoothValues(
         points.map(({ point }) => interpolate(values[key], point)),
-        METRIC_RADIUS_FRAMES,
+        metricRadius,
       ),
     ]),
   ) as Values;

@@ -1,9 +1,14 @@
 import { encodeMp4 } from "@/features/flyover/encodeMp4";
 import { NoRouteError } from "@/features/flyover/errors";
-import { FLYOVER_BITRATE, FLYOVER_FPS } from "@/features/flyover/format";
+import {
+  FLYOVER_FPS,
+  flyoverBitrate,
+  flyoverFrames,
+  type FlyoverMinutes,
+} from "@/features/flyover/format";
 import { createFlyoverSession, type SessionOptions } from "@/features/flyover/flyoverSession";
 
-export { FLYOVER_BITRATE, NoRouteError };
+export { NoRouteError };
 
 export interface MakeVideoDeps {
   createSession: typeof createFlyoverSession;
@@ -26,6 +31,8 @@ export interface MakeVideoOptions extends Omit<
   SessionOptions,
   "onTilesProgress" | "frames" | "deps"
 > {
+  /** How long the video is, in minutes. */
+  minutes: FlyoverMinutes;
   /** First the tiles are loaded, then the video is made; each reports from 0 to 1. */
   onProgress?: (stage: "tiles" | "video", progress: number) => void;
 }
@@ -38,9 +45,10 @@ export async function makeFlyoverVideo(
   options: MakeVideoOptions,
   deps: MakeVideoDeps = browserDeps,
 ): Promise<Uint8Array> {
-  const { onProgress, ...sessionOptions } = options;
+  const { onProgress, minutes, ...sessionOptions } = options;
   const session = await deps.createSession({
     ...sessionOptions,
+    frames: flyoverFrames(minutes),
     onTilesProgress: (progress) => onProgress?.("tiles", progress),
   });
   if (!session) throw new NoRouteError();
@@ -54,7 +62,7 @@ export async function makeFlyoverVideo(
       size: session.size,
       fps: FLYOVER_FPS,
       frames: session.frameCount,
-      bitrate: FLYOVER_BITRATE,
+      bitrate: flyoverBitrate(minutes),
       drawFrame: (k) => session.renderFrame(k, ctx),
       onProgress: (progress) => onProgress?.("video", progress),
       ...(options.signal ? { signal: options.signal } : {}),
